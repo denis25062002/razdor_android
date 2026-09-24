@@ -83,7 +83,8 @@ need.
 - **Battle flow**: initiative order, attacker +1 initiative, `Manevres` actions per turn, move to
   c−1..c+1 in own rows, 25-turn limit, no retreat. The hero survives badly wounded while any unit
   lives; defeat = whole army dead. XP after battle per the pool formula.
-- **World**: hex map from the scenario grid (row parity chosen to match the minimap; *guess*),
+- **World**: the scenario grid as 8-neighbour 32×22 cells (the data rule out a hex layout: diagonal
+  bridge chains, unstaggered editor grid, 8-direction arrows; see `dtm-format.md` §4; *guess*),
   terrain costs *(guess, not in the data)*, objects: mountains and thickets block, hills and trees
   slow. Clock in minutes, 30-day months, 12 months, starting at the scenario's date. Villages
   refill at 00:00; the daily report (income, wages) at **12:00** as seen in the footage. Time passes
@@ -114,8 +115,14 @@ files with `RAZDOR_DT_DIR`, and ends in its own commit.
    reach, damage, magic, bonuses (the vanilla 21 first), turn flow, XP and levels. Built-in demo
    re-expressed in the new model. Battle UI updated (card stats, reserve row, previews).
    2b (parallel): **graphics decoders** in `dt::gfx` + `ui::assets` loading original art.
-3. **World from scenarios**: map select screen, hex terrain and objects, buildings, armies, hero
-   preset start, new clock and daily ticks, terrain costs.
+3. **World from scenarios**: map select screen, terrain and objects, buildings, armies, hero
+   preset start, new clock and daily ticks, terrain costs. *Done:* `World::from_scenario`
+   (`rules/world.rs`), `map::Grid::Square8`, clock with noon report and midnight refill, waits,
+   army contact battles, garrison battles and capture, scenario and class select screens,
+   original terrain/objects/buildings/figures via one sprite atlas, path preview with travel
+   time, bottom bar, army and building tooltips. Walkability checked on all 15 maps: every
+   building of РК1 and РК3 is reachable; maps with islands (ДС1, ДС2, РК7, some of the
+   tutorials) need ships.
 4. **Buildings and economy**: building screens, capture, garrisons, income, wages, healing,
    resurrection, loot, markets, barracks restock.
 5. **Fog of war, minimap, army hover preview, waiting.**

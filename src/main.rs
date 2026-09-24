@@ -11,8 +11,8 @@ use ui::App;
 fn conf() -> Conf {
     Conf {
         window_title: "Razdor".to_owned(),
-        window_width: 1100,
-        window_height: 720,
+        window_width: 1280,
+        window_height: 800,
         high_dpi: true,
         ..Default::default()
     }
@@ -20,6 +20,7 @@ fn conf() -> Conf {
 
 #[macroquad::main(conf)]
 async fn main() {
+    ui::widgets::load_font().await;
     let content = Arc::new(Content::builtin());
     let mut app = App::new(Assets::load(content.clone()).await, content);
     loop {

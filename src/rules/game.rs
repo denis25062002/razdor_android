@@ -1,36 +1,43 @@
 use std::sync::Arc;
 
+use crate::dt::dtm::Scenario;
+
 use super::battle::{Battle, Outcome, Team};
-use super::clock::Clock;
+use super::clock::{Clock, Tick};
 use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId};
 use super::formation::Slot;
 use super::items::{self, EquipError};
-use super::map::{center, tile_at, Tile, TileMap};
+use super::map::{Tile, TileMap};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
-use super::world::{LocationKind, World, GANG_REWARD};
+use super::world::{LocationKind, Owner, Troop, World};
 
 /// Game minutes that pass per real second while the party walks (1 h ≈ 0.2 s).
 pub const MINUTES_PER_SECOND: f32 = 300.0;
-/// Gangs chase the player inside this many tiles.
-pub const CHASE_RADIUS: f32 = 5.0;
-/// Touching distance that starts a battle.
-const CONTACT: f32 = 0.75;
-/// Gangs are slower than the player: their terrain costs are multiplied by this.
-const GANG_SLOWNESS: f32 = 1.25;
+/// Hostile armies chase the player inside this many cells *(guess)*.
+pub const CHASE_RADIUS: i32 = 6;
+/// Armies meet (and hostile ones attack) on neighbouring cells (mechanics.md 5.2).
+const CONTACT: i32 = 1;
 /// Largest slice of game time simulated at once, so chases stay smooth.
 const STEP_MINUTES: f32 = 5.0;
-const WANDER_RADIUS: i32 = 8;
-const SPAWN_EVERY_DAYS: u32 = 3;
+/// Cells an AI army's pathfinder may expand per search.
+const AI_PATH_NODES: usize = 4000;
+/// A friendly army greets the player again only after he has gone this far away.
+const MEET_AGAIN_DISTANCE: i32 = 4;
+const SPAWN_EVERY_DAYS: u64 = 3;
 const MAX_GANGS_PER_CAMP: usize = 2;
+/// Demo markets restock every 7 days.
+const RESTOCK_EVERY_DAYS: u64 = 7;
 /// Unworn items the party can carry.
 pub const PACK_SIZE: usize = 16;
-/// Items on sale in each market after a restock.
+/// Items on sale in each demo market after a restock.
 pub const MARKET_STOCK: usize = 6;
-/// Percent chance that a beaten gang drops an item.
+/// Percent chance that a beaten demo gang drops an item.
 const GANG_LOOT_CHANCE: i32 = 30;
-/// Percent chance that a village pays tribute with an item instead of gold.
+/// Percent chance that a demo village pays tribute with an item instead of gold.
 const TRIBUTE_ITEM_CHANCE: i32 = 25;
+/// The Ranger hero moves 20% faster on the map (mechanics.md 7).
+const RANGER_SPEED: f32 = 1.2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HireError {
@@ -59,34 +66,47 @@ pub enum Tribute {
 #[derive(Debug, PartialEq, Eq)]
 pub enum BattleResult {
     /// `loot` went into the pack; `left_behind` items did not fit.
-    /// `level_ups`: (squad index, new level).
-    Victory { reward: i32, lost: usize, loot: Vec<ItemId>, left_behind: usize, level_ups: Vec<(usize, i32)> },
+    /// `level_ups`: (squad index, new level). `captured`: the castle or fort now the player's.
+    Victory {
+        reward: i32,
+        lost: usize,
+        loot: Vec<ItemId>,
+        left_behind: usize,
+        level_ups: Vec<(usize, i32)>,
+        captured: Option<usize>,
+    },
     Withdrew { lost: usize, level_ups: Vec<(usize, i32)> },
     Defeat,
 }
 
+/// The noon report (video notes: the daily report comes at 12:00).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DayReport {
-    pub day: u32,
+    /// Absolute day index (see [`Clock::day_index`]).
+    pub day: u64,
     pub income: i32,
+    pub mana: i32,
     pub wages: i32,
     pub unpaid: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The party stopped on a location.
+    /// The party stopped on a location (index into `world.locations`).
     Arrived(usize),
-    /// A gang caught the party (index into `world.parties`).
+    /// A hostile army caught the party (index into `world.armies`).
     Encounter(usize),
+    /// A friendly army met the party on the road; no battle.
+    Met(usize),
     NewDay(DayReport),
 }
 
 /// Who the next battle is against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Foe {
-    Camp(usize),
-    Party(usize),
+    /// The garrison of a location (a castle, a fort, ruins, a demo camp).
+    Garrison(usize),
+    Army(usize),
 }
 
 pub struct Game {
@@ -94,6 +114,7 @@ pub struct Game {
     /// Squad member 0 is always the hero.
     pub squad: Vec<Unit>,
     pub gold: i32,
+    pub mana: i32,
     pub clock: Clock,
     /// Party position in world units (see `map::center`).
     pub pos: (f32, f32),
@@ -105,23 +126,32 @@ pub struct Game {
     pub foe: Option<Foe>,
     /// Shared bag of unworn items.
     pub pack: Vec<ItemId>,
+    /// Spells known (1-based spell index; used from Stage 7).
+    pub spells: Vec<u8>,
+    start_day: u64,
     rng: Rng,
     battles: u64,
 }
 
-/// Moves `pos` along `path` for up to `minutes` of game time. Returns the minutes used.
-fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32, slowness: f32) -> f32 {
+/// Moves `pos` along `path` for up to `minutes` of game time; cell costs are multiplied by
+/// `slowness`. Stops early on a cell `stop` accepts (the rest of the path is dropped).
+/// Returns the minutes used.
+fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32, slowness: f32, stop: &dyn Fn(Tile) -> bool) -> f32 {
     let mut left = minutes;
     while left > 0.0 {
         let Some(&next) = path.first() else { break };
-        let per_tile = map.terrain(next).minutes().unwrap_or(60.0) * slowness;
-        let goal = center(next);
+        let per_tile = map.minutes(next).unwrap_or(60) as f32 * slowness;
+        let goal = map.center(next);
         let (dx, dy) = (goal.0 - pos.0, goal.1 - pos.1);
         let need = (dx * dx + dy * dy).sqrt() * per_tile;
         if need <= left {
             *pos = goal;
             path.remove(0);
             left -= need;
+            if stop(next) {
+                path.clear();
+                break;
+            }
         } else {
             let k = left / need;
             pos.0 += dx * k;
@@ -132,28 +162,23 @@ fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32,
     minutes - left
 }
 
-fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
-    ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
-}
-
 impl Game {
-    /// A new demo game. `content` must hold the demo units (see [`World::standard`]).
-    pub fn new(content: Arc<Content>, hero: HeroClass, seed: u64) -> Self {
-        let world = World::standard(&content);
-        let home = world.locations[0].tile;
-        let id = hero.unit();
-        let slot = content.formation.free_slot(&[], Stats::of_level(&content, id, 1).preferred_row()).expect("empty formation");
+    fn with_world(content: Arc<Content>, world: World, squad: Vec<Unit>, tile: Tile, seed: u64) -> Game {
+        let clock = world.start;
         let mut g = Game {
-            squad: vec![Unit::new(&content, id, slot)],
-            gold: content.start_gold(hero),
+            squad,
+            gold: 0,
+            mana: 0,
             content,
-            clock: Clock::start(),
-            pos: center(home),
+            clock,
+            pos: world.map.center(tile),
             path: Vec::new(),
+            location: world.location_at(tile),
             world,
-            location: Some(0),
             foe: None,
             pack: Vec::new(),
+            spells: Vec::new(),
+            start_day: clock.day_index(),
             rng: Rng::new(seed ^ 0x9e37_79b9),
             battles: 0,
         };
@@ -161,8 +186,41 @@ impl Game {
         g
     }
 
+    /// A new demo game. `content` must hold the demo units (see [`World::standard`]).
+    pub fn new(content: Arc<Content>, hero: HeroClass, seed: u64) -> Self {
+        let world = World::standard(&content);
+        let home = world.locations[0].tile;
+        let id = hero.unit();
+        let slot = content.formation.free_slot(&[], Stats::of_level(&content, id, 1).preferred_row()).expect("empty formation");
+        let squad = vec![Unit::new(&content, id, slot)];
+        let gold = content.start_gold(hero);
+        let mut g = Game::with_world(content, world, squad, home, seed);
+        g.gold = gold;
+        g
+    }
+
+    /// A new game on an original scenario, with the hero preset of `hero`.
+    pub fn from_scenario(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
+        let world = World::from_scenario(scenario, &content);
+        let start = world.hero_start(scenario, &content, hero);
+        let mut leader = Unit::new(&content, hero.unit(), start.hero_slot);
+        leader.gain_xp(&content, start.experience);
+        leader.heal_full(&content);
+        let mut squad = vec![leader];
+        squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
+        let mut g = Game::with_world(content, world, squad, start.tile, seed);
+        g.gold = start.gold;
+        g.pack = start.items;
+        g.spells = start.spells;
+        g
+    }
+
     pub fn hero(&self) -> &Unit {
         &self.squad[0]
+    }
+
+    pub fn hero_class(&self) -> Option<HeroClass> {
+        HeroClass::of_unit(self.hero().def)
     }
 
     /// Army cap: the formation's size.
@@ -209,42 +267,59 @@ impl Game {
     }
 
     pub fn tile(&self) -> Tile {
-        tile_at(self.pos)
+        self.world.map.tile_at(self.pos)
     }
 
     pub fn moving(&self) -> bool {
         !self.path.is_empty()
     }
 
-    fn today(&self) -> u32 {
-        self.clock.day()
-    }
-
-    pub fn recruits_here(&self) -> &[UnitId] {
-        match self.location.map(|l| &self.world.locations[l].kind) {
-            Some(LocationKind::Castle { recruits, .. }) => recruits,
-            _ => &[],
+    /// Terrain-cost multiplier of the hero's army.
+    fn slowness(&self) -> f32 {
+        if self.hero_class() == Some(HeroClass::Ranger) {
+            1.0 / RANGER_SPEED
+        } else {
+            1.0
         }
     }
 
-    /// Total wages due at the next midnight.
+    /// Minutes the hero needs to walk `path`.
+    pub fn travel_minutes(&self, path: &[Tile]) -> f32 {
+        self.world.map.path_minutes(self.tile(), path) as f32 * self.slowness()
+    }
+
+    /// Minutes left on the current route.
+    pub fn minutes_left(&self) -> f32 {
+        self.travel_minutes(&self.path)
+    }
+
+    /// Unit types the barracks here offers (the player's or a friendly building).
+    pub fn recruits_here(&self) -> Vec<UnitId> {
+        match self.location.map(|l| &self.world.locations[l]) {
+            Some(l) if !l.hostile() => l.recruits.iter().filter(|r| r.stock != Some(0)).map(|r| r.unit).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Total wages due at the next report.
     pub fn daily_wages(&self) -> i32 {
         (0..self.squad.len()).map(|i| self.wage(i)).sum()
     }
 
+    /// Gold the player's buildings pay each day.
     pub fn daily_income(&self) -> i32 {
-        self.world
-            .locations
-            .iter()
-            .map(|l| match l.kind {
-                LocationKind::Castle { income, owned: true, .. } => income,
-                _ => 0,
-            })
-            .sum()
+        self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.gold_income).sum()
     }
 
-    /// Walk to `to` along the cheapest path. Returns false if it can't be reached.
+    /// Mana the player's buildings give each day.
+    pub fn daily_mana(&self) -> i32 {
+        self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.mana_income).sum()
+    }
+
+    /// Walk to `to` along the cheapest path. Clicking a building's walls means its entry.
+    /// Returns false if it can't be reached.
     pub fn set_destination(&mut self, to: Tile) -> bool {
+        let to = self.world.location_covering(to).map(|l| &self.world.locations[l]).filter(|l| !l.kind.is_bridge()).map_or(to, |l| l.tile);
         let path = self.world.map.path(self.tile(), to);
         if path.is_empty() {
             return false;
@@ -265,15 +340,17 @@ impl Game {
             return events;
         }
         let mut budget = real_dt * MINUTES_PER_SECOND;
+        let slowness = self.slowness();
         while budget > 0.0 && self.moving() {
             let slice = budget.min(STEP_MINUTES);
-            let used = walk(&self.world.map, &mut self.pos, &mut self.path, slice, 1.0);
+            let Game { world, pos, path, .. } = self;
+            // A hostile garrison stops the party at its gate.
+            let at_gate = |t: Tile| world.location_at(t).is_some_and(|l| world.locations[l].defended());
+            let used = walk(&world.map, pos, path, slice, slowness, &at_gate);
             budget -= slice;
             self.pass_time(used, &mut events);
-            if let Some(i) = self.touching_party() {
-                self.path.clear();
-                self.foe = Some(Foe::Party(i));
-                events.push(Event::Encounter(i));
+            if let Some(e) = self.contact() {
+                events.push(e);
                 return events;
             }
             if !self.moving() {
@@ -286,28 +363,81 @@ impl Game {
         events
     }
 
-    fn touching_party(&self) -> Option<usize> {
+    /// Stand still for `hours` (the original's 1 h and 4 h waits): time passes, armies move,
+    /// the daily moments happen. A hostile army reaching the party ends the wait.
+    pub fn wait(&mut self, hours: u32) -> Vec<Event> {
+        let mut events = Vec::new();
+        if self.foe.is_some() {
+            return events;
+        }
+        self.stop();
+        let mut left = hours as f32 * 60.0;
+        while left > 0.0 {
+            let slice = left.min(STEP_MINUTES);
+            left -= slice;
+            self.pass_time(slice, &mut events);
+            if let Some(e) = self.contact() {
+                events.push(e);
+                break;
+            }
+        }
+        events
+    }
+
+    /// An army on a neighbouring cell: a hostile one attacks, a friendly one greets once.
+    fn contact(&mut self) -> Option<Event> {
         let now = self.clock.total_minutes();
-        self.world.parties.iter().position(|p| now >= p.ignore_until && distance(p.pos, self.pos) < CONTACT)
+        let here = self.tile();
+        let mut found = None;
+        let map = &self.world.map;
+        for (i, a) in self.world.armies.iter_mut().enumerate() {
+            let d = map.distance(a.tile(map), here);
+            if d > MEET_AGAIN_DISTANCE {
+                a.met = false;
+            }
+            if found.is_some() || d > CONTACT || now < a.ignore_until {
+                continue;
+            }
+            if a.hostile() {
+                found = Some(Event::Encounter(i));
+            } else if !a.met {
+                a.met = true;
+                found = Some(Event::Met(i));
+            }
+        }
+        if let Some(e) = &found {
+            self.path.clear();
+            if let Event::Encounter(i) = e {
+                self.foe = Some(Foe::Army(*i));
+            }
+        }
+        found
     }
 
     fn arrive(&mut self, l: usize) {
         self.location = Some(l);
         let loc = &self.world.locations[l];
-        match loc.kind {
-            LocationKind::Castle { .. } | LocationKind::Church => self.heal_all(),
-            LocationKind::Camp { .. } if !loc.cleared => self.foe = Some(Foe::Camp(l)),
-            _ => {}
+        if loc.defended() {
+            self.foe = Some(Foe::Garrison(l));
+            return;
+        }
+        let heals = matches!(loc.kind, LocationKind::Castle | LocationKind::Fort | LocationKind::Town | LocationKind::Church);
+        if heals && !loc.hostile() {
+            self.heal_all();
         }
     }
 
     fn pass_time(&mut self, minutes: f32, events: &mut Vec<Event>) {
-        let midnights = self.clock.advance(minutes as f64);
-        for k in 0..midnights {
-            let day = self.today() + 1 - midnights + k;
-            events.push(Event::NewDay(self.new_day(day)));
+        for tick in self.clock.advance(minutes as f64) {
+            match tick {
+                Tick::Midnight(_) => self.world.locations.iter_mut().for_each(|l| l.refill()),
+                Tick::Noon(day) => {
+                    let report = self.new_day(day);
+                    events.push(Event::NewDay(report));
+                }
+            }
         }
-        self.move_parties(minutes);
+        self.move_armies(minutes);
     }
 
     fn heal_all(&mut self) {
@@ -319,13 +449,17 @@ impl Game {
     /// hero (mechanics.md 1.2, 1.3). They do not add up *(guess)*.
     pub fn daily_heal_percent(&self) -> i32 {
         let medic = if self.squad_has(&Bonus::ArmyMedic) { 15 } else { 0 };
-        let ranger = if HeroClass::of_unit(self.hero().def) == Some(HeroClass::Ranger) { 20 } else { 0 };
+        let ranger = if self.hero_class() == Some(HeroClass::Ranger) { 20 } else { 0 };
         medic.max(ranger)
     }
 
-    fn new_day(&mut self, day: u32) -> DayReport {
+    /// The noon report: income and mana from the player's buildings, wages (units that
+    /// cannot be paid are marked unpaid), daily healing.
+    fn new_day(&mut self, day: u64) -> DayReport {
         let income = self.daily_income();
+        let mana = self.daily_mana();
         self.gold += income;
+        self.mana += mana;
         let (mut wages, mut unpaid) = (0, 0);
         for i in 1..self.squad.len() {
             let w = self.wage(i);
@@ -347,51 +481,55 @@ impl Game {
                 u.hp = (u.hp + max * heal / 100).min(max);
             }
         }
-        if (day - 1).is_multiple_of(7) {
-            self.restock_markets(); // Monday
-        }
-        if day.is_multiple_of(SPAWN_EVERY_DAYS) {
-            let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
-            for (camp, tile) in camps {
-                if self.world.parties.iter().filter(|p| p.home == camp).count() < MAX_GANGS_PER_CAMP {
-                    self.world.spawn_party(camp, tile);
+        let n = day.saturating_sub(self.start_day) + 1; // the game's first noon is day 1
+        if self.world.demo {
+            if (n - 1).is_multiple_of(RESTOCK_EVERY_DAYS) && n > 1 {
+                self.restock_markets();
+            }
+            if n.is_multiple_of(SPAWN_EVERY_DAYS) {
+                let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
+                for (camp, tile) in camps {
+                    if self.world.armies.iter().filter(|p| p.home == Some(camp)).count() < MAX_GANGS_PER_CAMP {
+                        self.world.spawn_gang(camp, tile);
+                    }
                 }
             }
         }
-        DayReport { day, income, wages, unpaid }
+        DayReport { day, income, mana, wages, unpaid }
     }
 
-    fn move_parties(&mut self, minutes: f32) {
+    fn move_armies(&mut self, minutes: f32) {
         let now = self.clock.total_minutes();
-        let (hero_pos, hero_tile) = (self.pos, self.tile());
-        let World { map, locations, parties, .. } = &mut self.world;
-        for p in parties.iter_mut() {
-            let near = now >= p.ignore_until && distance(p.pos, hero_pos) <= CHASE_RADIUS;
+        let hero_tile = self.tile();
+        let entries: Vec<Tile> = self.world.locations.iter().map(|l| l.tile).collect();
+        let World { map, armies, .. } = &mut self.world;
+        for a in armies.iter_mut() {
+            let here = a.tile(map);
+            let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS;
             if near {
-                if !p.chasing || p.path.last() != Some(&hero_tile) {
-                    p.path = map.path(tile_at(p.pos), hero_tile);
-                    p.chasing = true;
+                if !a.chasing || a.path.last() != Some(&hero_tile) {
+                    a.path = map.path_limited(here, hero_tile, AI_PATH_NODES);
+                    a.chasing = true;
                 }
-            } else if p.chasing {
-                p.chasing = false;
-                p.path.clear();
+            } else if a.chasing {
+                a.chasing = false;
+                a.path.clear();
             }
-            if p.path.is_empty() && !p.chasing {
-                let home = locations[p.home].tile;
-                for _ in 0..10 {
-                    let t = (
-                        home.0 + self.rng.range(-WANDER_RADIUS, WANDER_RADIUS),
-                        home.1 + self.rng.range(-WANDER_RADIUS, WANDER_RADIUS),
-                    );
-                    if map.passable(t) && locations.iter().all(|l| l.tile != t) {
-                        p.path = map.path(tile_at(p.pos), t);
-                        if !p.path.is_empty() {
+            if a.path.is_empty() && !a.chasing && a.patrols && a.patrol_radius > 0 && now >= a.rest_until {
+                let r = a.patrol_radius;
+                for _ in 0..3 {
+                    let t = (a.post.0 + self.rng.range(-r, r), a.post.1 + self.rng.range(-r, r));
+                    if map.passable(t) && !entries.contains(&t) && map.distance(t, a.post) <= r {
+                        a.path = map.path_limited(here, t, AI_PATH_NODES);
+                        if !a.path.is_empty() {
                             break;
                         }
                     }
                 }
+                // Rest between patrol legs, or after failing to find one *(guess)*.
+                a.rest_until = now + self.rng.range(30, 180) as f64;
             }
-            walk(map, &mut p.pos, &mut p.path, minutes, GANG_SLOWNESS);
+            walk(map, &mut a.pos, &mut a.path, minutes, a.slowness, &|_| false);
         }
     }
 
@@ -411,6 +549,13 @@ impl Game {
             return Err(HireError::NotEnoughGold);
         }
         self.gold -= cost;
+        if let Some(l) = self.location {
+            if let Some(r) = self.world.locations[l].recruits.iter_mut().find(|r| r.unit == kind) {
+                if let Some(n) = r.stock.as_mut() {
+                    *n -= 1;
+                }
+            }
+        }
         self.squad.push(Unit::new(&self.content, kind, slot));
         Ok(())
     }
@@ -425,39 +570,34 @@ impl Game {
         Ok(())
     }
 
-    /// Village here whose once-a-day service is still available today.
+    /// Village here with tribute waiting.
     fn village_ready(&self) -> Option<usize> {
         let l = self.location?;
-        match self.world.locations[l].kind {
-            LocationKind::Village { used_on_day, .. } if used_on_day != Some(self.today()) => Some(l),
-            _ => None,
-        }
+        let v = &self.world.locations[l];
+        (v.kind == LocationKind::Village && (v.tribute_gold > 0 || v.tribute_mana > 0) && !v.hostile()).then_some(l)
     }
 
-    /// Tribute the village here would pay today, if it hasn't been used yet.
+    /// Tribute the village here would pay now, if any is waiting.
     pub fn tribute_available(&self) -> Option<i32> {
-        match self.world.locations[self.village_ready()?].kind {
-            LocationKind::Village { tribute, .. } => Some(tribute),
-            _ => None,
-        }
+        self.village_ready().map(|l| self.world.locations[l].tribute_gold)
     }
 
-    fn use_village(&mut self) -> Option<i32> {
+    /// Takes the village's waiting tribute: (gold, mana).
+    fn use_village(&mut self) -> Option<(i32, i32)> {
         let l = self.village_ready()?;
-        let today = self.today();
-        match &mut self.world.locations[l].kind {
-            LocationKind::Village { tribute, used_on_day } => {
-                *used_on_day = Some(today);
-                Some(*tribute)
-            }
-            _ => None,
-        }
+        let v = &mut self.world.locations[l];
+        let got = (v.tribute_gold, v.tribute_mana);
+        v.tribute_gold = 0;
+        v.tribute_mana = 0;
+        Some(got)
     }
 
-    /// Collects today's tribute: usually gold, sometimes an item (gold if the pack is full).
+    /// Collects the waiting tribute: gold and mana; in the demo sometimes an item instead
+    /// (gold if the pack is full).
     pub fn collect_tribute(&mut self) -> Option<Tribute> {
-        let gold = self.use_village()?;
-        if self.pack.len() < PACK_SIZE && self.rng.range(1, 100) <= TRIBUTE_ITEM_CHANCE {
+        let (gold, mana) = self.use_village()?;
+        self.mana += mana;
+        if self.world.demo && self.pack.len() < PACK_SIZE && self.rng.range(1, 100) <= TRIBUTE_ITEM_CHANCE {
             if let Some(item) = self.roll_item(Source::Tribute) {
                 self.pack.push(item);
                 return Some(Tribute::Item(item));
@@ -476,26 +616,39 @@ impl Game {
         used
     }
 
-    /// Battle against the pending foe. Unpaid units refuse to fight. Walking into a camp
-    /// makes the player the attacker; a gang that catches the player attacks.
+    /// Battle against the pending foe. Unpaid units refuse to fight. Walking into a garrison
+    /// makes the player the attacker (the building's extra defence helps the garrison); an
+    /// army that catches the player attacks.
     pub fn start_battle(&mut self) -> Battle {
-        let (enemies, attacker) = match self.foe {
-            Some(Foe::Camp(l)) => match &self.world.locations[l].kind {
-                LocationKind::Camp { enemies, .. } => (enemies.clone(), Team::Player),
-                _ => (Vec::new(), Team::Player),
-            },
-            Some(Foe::Party(i)) => (self.world.parties[i].enemies.clone(), Team::Enemy),
-            None => (Vec::new(), Team::Player),
+        let (enemies, attacker, defence) = match self.foe {
+            Some(Foe::Garrison(l)) => {
+                let loc = &self.world.locations[l];
+                (loc.garrison.clone(), Team::Player, loc.garrison_defence)
+            }
+            Some(Foe::Army(i)) => (self.world.armies[i].troops.clone(), Team::Enemy, 0),
+            None => (Vec::new(), Team::Player, 0),
         };
-        let enemies: Vec<Unit> = enemies.iter().map(|&(id, slot)| Unit::new(&self.content, id, slot)).collect();
+        let enemies: Vec<Unit> = enemies.iter().map(|t| troop_unit(&self.content, t)).collect();
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || !u.unpaid).collect();
         self.battles += 1;
-        Battle::new(self.content.clone(), &player, &enemies, attacker)
+        let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
+        if defence > 0 {
+            b.set_building_defence(Team::Enemy, defence);
+        }
+        b
+    }
+
+    /// Gold the victor takes from a beaten army: `gold / VictoryGoldDiv`, at least
+    /// `MinVictoryGold` (mechanics.md 7).
+    fn victory_gold(&self, gold: i32) -> i32 {
+        let o = &self.content.options;
+        (gold / o.victory_gold_div.max(1)).max(o.min_victory_gold)
     }
 
     /// Writes the battle back into the squad: HP, deployed cells, XP and levels. The dead
     /// (except the hero, who survives while his army does) leave the squad with their items;
-    /// potion effects end.
+    /// potion effects end. A won garrison fight captures a castle or fort (owner = player,
+    /// its income starts) and gives ruins' treasure; a beaten army leaves the map.
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
         for r in battle.player_results() {
             let u = &mut self.squad[r.squad_index];
@@ -528,29 +681,43 @@ impl Game {
         let foe = self.foe.take();
 
         match (battle.outcome(), foe) {
-            (Outcome::Victory, Some(Foe::Camp(l))) => {
+            (Outcome::Victory, Some(Foe::Garrison(l))) => {
                 let loc = &mut self.world.locations[l];
                 loc.cleared = true;
-                let (reward, drops) = match loc.kind {
-                    LocationKind::Camp { reward, loot, .. } => (reward, loot),
-                    _ => (0, 0),
-                };
+                loc.garrison.clear();
+                let reward = std::mem::take(&mut loc.treasure_gold);
+                let treasure = std::mem::take(&mut loc.treasure);
+                let rolls = std::mem::take(&mut loc.loot_rolls);
+                let captured = loc.kind.capturable().then(|| {
+                    loc.owner = Owner::Player;
+                    loc.faction = 1;
+                    loc.attitude = 3;
+                    l
+                });
                 self.gold += reward;
-                let (loot, left_behind) = self.take_loot(drops);
-                BattleResult::Victory { reward, lost, loot, left_behind, level_ups }
+                let mut found = treasure;
+                found.extend((0..rolls).filter_map(|_| self.roll_item(Source::Loot)));
+                let (loot, left_behind) = self.take_items(found);
+                BattleResult::Victory { reward, lost, loot, left_behind, level_ups, captured }
             }
-            (Outcome::Victory, Some(Foe::Party(i))) => {
-                self.world.parties.remove(i);
-                self.gold += GANG_REWARD;
-                let drops = u32::from(self.rng.range(1, 100) <= GANG_LOOT_CHANCE);
-                let (loot, left_behind) = self.take_loot(drops);
-                BattleResult::Victory { reward: GANG_REWARD, lost, loot, left_behind, level_ups }
+            (Outcome::Victory, Some(Foe::Army(i))) => {
+                let army = self.world.armies.remove(i);
+                let reward = self.victory_gold(army.gold);
+                self.gold += reward;
+                let mut found = army.items;
+                if army.id == 0 && self.rng.range(1, 100) <= GANG_LOOT_CHANCE {
+                    found.extend(self.roll_item(Source::Loot));
+                }
+                let (loot, left_behind) = self.take_items(found);
+                BattleResult::Victory { reward, lost, loot, left_behind, level_ups, captured: None }
             }
-            (Outcome::Victory, None) => BattleResult::Victory { reward: 0, lost, loot: Vec::new(), left_behind: 0, level_ups },
+            (Outcome::Victory, None) => {
+                BattleResult::Victory { reward: 0, lost, loot: Vec::new(), left_behind: 0, level_ups, captured: None }
+            }
             (Outcome::Defeat, _) => BattleResult::Defeat,
             (_, foe) => {
-                if let Some(Foe::Party(i)) = foe {
-                    self.world.parties[i].ignore_until = self.clock.total_minutes() + 120.0;
+                if let Some(Foe::Army(i)) = foe {
+                    self.world.armies[i].ignore_until = self.clock.total_minutes() + 120.0;
                 }
                 BattleResult::Withdrew { lost, level_ups }
             }
@@ -570,12 +737,11 @@ impl Game {
         Some(pool[self.rng.range(0, pool.len() as i32 - 1) as usize])
     }
 
-    /// Rolls `drops` loot items into the pack. Returns (kept, left behind).
-    fn take_loot(&mut self, drops: u32) -> (Vec<ItemId>, usize) {
+    /// Puts found items into the pack. Returns (kept, left behind).
+    fn take_items(&mut self, found: Vec<ItemId>) -> (Vec<ItemId>, usize) {
         let mut kept = Vec::new();
         let mut left_behind = 0;
-        for _ in 0..drops {
-            let Some(item) = self.roll_item(Source::Loot) else { continue };
+        for item in found {
             if self.pack.len() < PACK_SIZE {
                 self.pack.push(item);
                 kept.push(item);
@@ -586,24 +752,31 @@ impl Game {
         (kept, left_behind)
     }
 
+    /// Every shop: its fixed goods plus random market items (within its price range).
     fn restock_markets(&mut self) {
         for l in 0..self.world.locations.len() {
-            if !matches!(self.world.locations[l].kind, LocationKind::Castle { .. }) {
-                continue;
+            let Some(shop) = &self.world.locations[l].shop else { continue };
+            let (random, (lo, hi)) = (shop.random, shop.price);
+            let pool: Vec<ItemId> = self
+                .content
+                .items_from(Source::Market)
+                .into_iter()
+                .filter(|&i| hi <= 0 || (lo..=hi).contains(&self.content.item(i).cost))
+                .collect();
+            let mut stock = shop.fixed.clone();
+            if !pool.is_empty() {
+                stock.extend((0..random).map(|_| pool[self.rng.range(0, pool.len() as i32 - 1) as usize]));
             }
-            let stock: Vec<ItemId> = (0..MARKET_STOCK).filter_map(|_| self.roll_item(Source::Market)).collect();
-            if let LocationKind::Castle { market, .. } = &mut self.world.locations[l].kind {
-                *market = stock;
+            if let Some(shop) = &mut self.world.locations[l].shop {
+                shop.stock = stock;
             }
         }
     }
 
     /// Items for sale where the party stands, if there is a market.
     pub fn market_here(&self) -> Option<&[ItemId]> {
-        match &self.world.locations[self.location?].kind {
-            LocationKind::Castle { market, .. } => Some(market),
-            _ => None,
-        }
+        let loc = &self.world.locations[self.location?];
+        loc.shop.as_ref().filter(|_| !loc.hostile()).map(|s| s.stock.as_slice())
     }
 
     pub fn buy(&mut self, stock_index: usize) -> Result<ItemId, TradeError> {
@@ -615,8 +788,8 @@ impl Game {
         if self.pack.len() >= PACK_SIZE {
             return Err(TradeError::PackFull);
         }
-        if let Some(LocationKind::Castle { market, .. }) = self.location.map(|l| &mut self.world.locations[l].kind) {
-            market.remove(stock_index);
+        if let Some(shop) = self.location.and_then(|l| self.world.locations[l].shop.as_mut()) {
+            shop.stock.remove(stock_index);
         }
         self.gold -= price;
         self.pack.push(item);
@@ -669,10 +842,23 @@ impl Game {
     }
 }
 
+
+/// A fresh unit for an army or garrison troop, at its level and full health.
+fn troop_unit(content: &Content, t: &Troop) -> Unit {
+    let mut u = Unit::new(content, t.unit, t.slot);
+    u.level = t.level.max(1);
+    u.heal_full(content);
+    u
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::world::demo_unit;
+    use crate::rules::world::{demo_unit, GANG_REWARD};
+
+    fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
+        ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+    }
 
     fn content() -> Arc<Content> {
         Arc::new(Content::builtin())
@@ -685,7 +871,7 @@ mod tests {
     /// A game with no gangs on the map, for tests about travel and time.
     fn quiet_game(hero: HeroClass) -> Game {
         let mut g = new_game(hero, 1);
-        g.world.parties.clear();
+        g.world.armies.clear();
         g
     }
 
@@ -723,7 +909,7 @@ mod tests {
     fn starts_at_home_castle_in_the_morning() {
         let g = new_game(HeroClass::Knight, 1);
         assert_eq!(g.location, Some(0));
-        assert_eq!(g.clock.label(), "Day 1, Monday 08:00");
+        assert_eq!(g.clock, Clock::demo_start());
         assert_eq!((g.hero().def, g.gold), (HeroClass::Knight.unit(), 100));
         assert_eq!(g.max_squad(), 12);
     }
@@ -731,10 +917,10 @@ mod tests {
     #[test]
     fn time_is_frozen_while_standing_still() {
         let mut g = new_game(HeroClass::Knight, 1);
-        let parties: Vec<_> = g.world.parties.iter().map(|p| p.pos).collect();
+        let parties: Vec<_> = g.world.armies.iter().map(|p| p.pos).collect();
         assert!(g.tick(5.0).is_empty());
-        assert_eq!(g.clock, Clock::start());
-        assert_eq!(parties, g.world.parties.iter().map(|p| p.pos).collect::<Vec<_>>());
+        assert_eq!(g.clock, Clock::demo_start());
+        assert_eq!(parties, g.world.armies.iter().map(|p| p.pos).collect::<Vec<_>>());
     }
 
     #[test]
@@ -746,7 +932,7 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(millbrook)));
         assert_eq!(g.location, Some(millbrook));
-        assert!(g.clock.total_minutes() > Clock::start().total_minutes() + 60.0);
+        assert!(g.clock.total_minutes() > Clock::demo_start().total_minutes() + 60.0);
     }
 
     #[test]
@@ -756,23 +942,55 @@ mod tests {
     }
 
     #[test]
-    fn midnight_pays_income_and_wages_and_marks_unpaid() {
+    fn noon_pays_income_and_wages_and_marks_unpaid() {
         let mut g = quiet_game(HeroClass::Knight);
         g.hire(unit(&g, "spearman")).unwrap();
         g.hire(unit(&g, "archer")).unwrap();
         g.gold = 0;
         g.squad[1].hp = 1;
+        let day = g.clock.day_index();
         let mut events = Vec::new();
-        g.pass_time(16.0 * 60.0, &mut events); // 08:00 -> 00:00
+        g.pass_time(3.0 * 60.0, &mut events); // 08:00 -> 11:00
+        assert!(events.is_empty());
+        g.pass_time(60.0, &mut events); // 12:00
         // Income 20; wages from cost: spearman 40/2×¼ = 5, archer 45/2×¼ = 5.6 → 6.
-        assert_eq!(events, vec![Event::NewDay(DayReport { day: 2, income: 20, wages: 11, unpaid: 0 })]);
+        assert_eq!(events, vec![Event::NewDay(DayReport { day, income: 20, mana: 0, wages: 11, unpaid: 0 })]);
         assert_eq!(g.gold, 9);
 
         g.gold = -20; // broke: 0 after income
         events.clear();
         g.pass_time(24.0 * 60.0, &mut events);
-        assert_eq!(events, vec![Event::NewDay(DayReport { day: 3, income: 20, wages: 0, unpaid: 2 })]);
+        assert_eq!(events, vec![Event::NewDay(DayReport { day: day + 1, income: 20, mana: 0, wages: 0, unpaid: 2 })]);
         assert!(g.squad[1].unpaid && g.squad[2].unpaid);
+    }
+
+    #[test]
+    fn villages_refill_at_midnight() {
+        let mut g = quiet_game(HeroClass::Knight);
+        g.location = Some(g.world.index_of("Millbrook"));
+        assert_eq!(g.tribute_available(), Some(10));
+        assert!(g.priest_heal());
+        assert_eq!(g.tribute_available(), None);
+        let mut events = Vec::new();
+        g.pass_time(15.0 * 60.0, &mut events); // 08:00 -> 23:00: the noon report only
+        assert_eq!(events.len(), 1);
+        assert_eq!(g.tribute_available(), None);
+        g.pass_time(60.0, &mut events); // 00:00
+        assert_eq!(g.tribute_available(), Some(10));
+    }
+
+    #[test]
+    fn waiting_passes_time_and_moves_the_world() {
+        let mut g = new_game(HeroClass::Knight, 3);
+        let start = g.clock.total_minutes();
+        let before: Vec<_> = g.world.armies.iter().map(|p| p.pos).collect();
+        let events = g.wait(4);
+        assert_eq!(g.clock.total_minutes(), start + 240.0);
+        assert!(events.iter().any(|e| matches!(e, Event::NewDay(_))), "08:00 + 4 h crosses noon");
+        assert_ne!(before, g.world.armies.iter().map(|p| p.pos).collect::<Vec<_>>(), "gangs patrol meanwhile");
+        g.wait(1);
+        assert_eq!(g.clock.total_minutes(), start + 300.0);
+        assert!(!g.moving());
     }
 
     #[test]
@@ -780,7 +998,7 @@ mod tests {
         let mut g = quiet_game(HeroClass::Ranger);
         g.squad[0].hp = 10;
         let mut events = Vec::new();
-        g.pass_time(16.0 * 60.0, &mut events);
+        g.pass_time(4.0 * 60.0, &mut events); // noon
         assert_eq!(g.hero().hp, 10 + 55 * 20 / 100);
         let k = quiet_game(HeroClass::Knight);
         assert_eq!(k.daily_heal_percent(), 0);
@@ -792,7 +1010,7 @@ mod tests {
         let spear = unit(&g, "spearman");
         g.hire(spear).unwrap();
         g.squad[1].unpaid = true;
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let b = g.start_battle();
         assert!(b.fighters.iter().all(|f| f.unit != spear));
         assert_eq!(b.attacker, Team::Player, "walking into a camp is an attack");
@@ -835,10 +1053,10 @@ mod tests {
         // Two tiles ahead: inside the chase radius, so it closes in.
         let ahead = g.path[1];
         let camp = g.world.index_of("Bandit camp");
-        g.world.spawn_party(camp, ahead);
+        g.world.spawn_gang(camp, ahead);
         let events = walk_until_stopped(&mut g);
         assert!(matches!(events.last(), Some(Event::Encounter(0))), "{events:?}");
-        assert_eq!(g.foe, Some(Foe::Party(0)));
+        assert_eq!(g.foe, Some(Foe::Army(0)));
         assert!(!g.moving());
         assert_eq!(g.start_battle().attacker, Team::Enemy, "the gang attacks");
     }
@@ -850,28 +1068,28 @@ mod tests {
         let camp = g.world.index_of("Bandit camp");
         let start = (g.tile().0 + 3, g.tile().1 + 2);
         assert!(g.world.map.passable(start));
-        g.world.spawn_party(camp, start);
-        let before = distance(g.world.parties[0].pos, g.pos);
+        g.world.spawn_gang(camp, start);
+        let before = distance(g.world.armies[0].pos, g.pos);
         for _ in 0..3 {
             g.tick(0.05);
         }
-        assert!(g.world.parties[0].chasing);
-        assert!(distance(g.world.parties[0].pos, g.pos) < before + 0.5, "it keeps up");
+        assert!(g.world.armies[0].chasing);
+        assert!(distance(g.world.armies[0].pos, g.pos) < before + 0.5, "it keeps up");
     }
 
     #[test]
     fn beating_a_gang_removes_it_pays_and_gives_xp() {
         let mut g = quiet_game(HeroClass::Knight);
         let camp = g.world.index_of("Bandit camp");
-        g.world.spawn_party(camp, (30, 20));
-        g.foe = Some(Foe::Party(0));
+        g.world.spawn_gang(camp, (30, 20));
+        g.foe = Some(Foe::Army(0));
         let mut b = g.start_battle();
         b.begin();
         wipe_all_but_hero(&mut b);
         let gold = g.gold;
-        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { reward: GANG_REWARD, lost: 0, .. }));
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { reward: GANG_REWARD, lost: 0, captured: None, .. }));
         assert_eq!(g.gold, gold + GANG_REWARD);
-        assert!(g.world.parties.is_empty());
+        assert!(g.world.armies.is_empty());
         assert_eq!(g.foe, None);
         assert!(g.hero().xp > 0 || g.hero().level > 1, "XP after the battle");
     }
@@ -880,23 +1098,25 @@ mod tests {
     fn stalemate_with_a_gang_buys_time_to_escape() {
         let mut g = quiet_game(HeroClass::Knight);
         let camp = g.world.index_of("Bandit camp");
-        g.world.spawn_party(camp, (30, 20));
-        g.foe = Some(Foe::Party(0));
+        g.world.spawn_gang(camp, (30, 20));
+        g.foe = Some(Foe::Army(0));
         let mut b = g.start_battle();
         b.begin();
         while b.outcome() == Outcome::Ongoing {
             b.skip();
         }
         assert!(matches!(g.resolve_battle(&b), BattleResult::Withdrew { lost: 0, .. }));
-        assert!(g.world.parties[0].ignore_until > g.clock.total_minutes());
+        assert!(g.world.armies[0].ignore_until > g.clock.total_minutes());
     }
 
     #[test]
     fn camps_send_out_new_gangs_every_few_days() {
         let mut g = quiet_game(HeroClass::Knight);
         let mut events = Vec::new();
-        g.pass_time((16 + 24 * 2) as f32 * 60.0, &mut events); // to day 4 00:00: day 3 midnight passed
-        assert_eq!(g.world.parties.len(), 2, "one gang from each camp");
+        g.pass_time((4 + 24) as f32 * 60.0, &mut events); // two noons
+        assert!(g.world.armies.is_empty());
+        g.pass_time(24.0 * 60.0, &mut events); // the third noon
+        assert_eq!(g.world.armies.len(), 2, "one gang from each camp");
     }
 
     #[test]
@@ -921,12 +1141,12 @@ mod tests {
         let mut g = quiet_game(HeroClass::Knight);
         g.hire(unit(&g, "spearman")).unwrap();
         let camp = g.world.index_of("Bandit camp");
-        g.foe = Some(Foe::Camp(camp));
+        g.foe = Some(Foe::Garrison(camp));
         let mut b = g.start_battle();
         b.begin();
         wipe_all_but_hero(&mut b);
         let result = g.resolve_battle(&b);
-        assert!(matches!(&result, BattleResult::Victory { reward: 100, lost: 1, loot, left_behind: 0, .. } if loot.len() == 1));
+        assert!(matches!(&result, BattleResult::Victory { reward: 100, lost: 1, loot, left_behind: 0, captured: None, .. } if loot.len() == 1));
         assert_eq!(g.pack.len(), 1);
         assert!(g.world.locations[camp].cleared);
         assert!(!g.won());
@@ -936,7 +1156,7 @@ mod tests {
     fn a_fallen_hero_survives_if_his_army_does() {
         let mut g = quiet_game(HeroClass::Knight);
         g.hire(unit(&g, "spearman")).unwrap();
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let mut b = g.start_battle();
         b.begin();
         for f in b.fighters.iter_mut().filter(|f| f.is_hero || f.team == Team::Enemy) {
@@ -949,7 +1169,7 @@ mod tests {
     #[test]
     fn losing_the_whole_army_is_defeat() {
         let mut g = quiet_game(HeroClass::Knight);
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let mut b = g.start_battle();
         b.begin();
         b.fighters[0].hp = 0;
@@ -961,9 +1181,9 @@ mod tests {
         for seed in 0..10 {
             for hero in HeroClass::ALL {
                 let mut g = new_game(hero, seed);
-                g.world.parties.clear();
+                g.world.armies.clear();
                 g.hire(unit(&g, "spearman")).unwrap();
-                g.foe = Some(Foe::Camp(g.world.index_of(if seed % 2 == 0 { "Bandit camp" } else { "Bandit lair" })));
+                g.foe = Some(Foe::Garrison(g.world.index_of(if seed % 2 == 0 { "Bandit camp" } else { "Bandit lair" })));
                 let mut b = g.start_battle();
                 b.begin();
                 let mut steps = 0;
@@ -980,7 +1200,7 @@ mod tests {
     #[test]
     fn level_ups_are_reported() {
         let mut g = quiet_game(HeroClass::Knight);
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit lair")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit lair")));
         g.squad[0].xp = g.squad[0].xp_to_next(&g.content) - 1;
         let mut b = g.start_battle();
         b.begin();
@@ -1006,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn markets_stock_market_items_and_restock_on_monday() {
+    fn markets_stock_market_items_and_restock_weekly() {
         let mut g = quiet_game(HeroClass::Knight);
         at_oakford(&mut g);
         let stock = g.market_here().unwrap().to_vec();
@@ -1016,10 +1236,9 @@ mod tests {
         g.buy(0).unwrap();
         assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1);
         let mut events = Vec::new();
-        g.pass_time((16 + 24 * 5) as f32 * 60.0, &mut events); // to Sunday 00:00
-        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not Monday yet");
+        g.pass_time((4 + 24 * 6) as f32 * 60.0, &mut events); // the 7th noon
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not a week yet");
         g.pass_time(24.0 * 60.0, &mut events);
-        assert_eq!(g.clock.weekday(), "Monday");
         assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK);
     }
 
@@ -1075,7 +1294,7 @@ mod tests {
         assert_eq!(g.drink(0, 0), Ok(0), "might: no healing, lasts until the battle ends");
         g.squad[0].hp = 30;
         assert_eq!(g.drink(0, 0), Ok(20));
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let mut b = g.start_battle();
         b.begin();
         use crate::rules::content::Stat;
@@ -1094,7 +1313,7 @@ mod tests {
         g.hire(unit(&g, "spearman")).unwrap();
         let mail = item(&g, "chainmail");
         g.squad[1].items[0] = Some(mail);
-        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let mut b = g.start_battle();
         b.begin();
         wipe_all_but_hero(&mut b);
@@ -1108,7 +1327,7 @@ mod tests {
         let mut g = quiet_game(HeroClass::Knight);
         g.pack = vec![item(&g, "heal_potion"); PACK_SIZE];
         let lair = g.world.index_of("Bandit lair");
-        g.foe = Some(Foe::Camp(lair));
+        g.foe = Some(Foe::Garrison(lair));
         let mut b = g.start_battle();
         b.begin();
         wipe_all_but_hero(&mut b);
@@ -1129,4 +1348,168 @@ mod tests {
         }
         assert!((25..=80).contains(&items), "about 25%: {items}/200");
     }
+
+    // --- Scenario worlds (hand-built; see `world::testkit`) ---
+
+    use crate::dt::dtm::{BuildingType, Scenario};
+    use crate::rules::world::testkit::{self as tk, army, building, hero, scenario, troop};
+
+    /// A 24×6 grass strip; the knight starts at (2, 2) with two warriors and 200 gold.
+    fn strip() -> Scenario {
+        let mut s = scenario(24, 6);
+        s.header.heroes[0] = hero(2, 2, 200, &[troop(4, 0, 2)]);
+        s.header.heroes[0].artifacts = [7, 0, 0];
+        s
+    }
+
+    fn start(s: &Scenario) -> Game {
+        Game::from_scenario(Arc::new(tk::content()), s, HeroClass::Knight, 5)
+    }
+
+    fn wipe_enemies(b: &mut Battle) {
+        for f in b.fighters.iter_mut().filter(|f| f.team == Team::Enemy) {
+            f.hp = 0;
+        }
+    }
+
+    #[test]
+    fn scenario_game_starts_from_the_preset() {
+        let g = start(&strip());
+        assert_eq!((g.tile(), g.gold, g.mana, g.squad.len()), ((2, 2), 200, 0, 3));
+        assert_eq!(g.hero().def, HeroClass::Knight.unit());
+        assert_eq!(g.pack, vec![ItemId(7)]);
+        assert_eq!(g.clock.label(), "1204, month 5, day 19, 9 h");
+        assert!(!g.won(), "no camps: not won by clearing them");
+    }
+
+    #[test]
+    fn hostile_armies_attack_on_contact_and_leave_loot() {
+        let mut s = strip();
+        let mut foe = army(1, 12, 2, -2, &[troop(4, 0, 2), troop(5, 0, 1)]);
+        foe.gold_income = 120;
+        foe.artifacts = [9, 0, 0];
+        s.armies = vec![foe];
+        let mut g = start(&s);
+        assert!(g.set_destination((22, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Encounter(0)));
+        assert_eq!(g.foe, Some(Foe::Army(0)));
+        assert!(g.world.map.distance(g.tile(), g.world.armies[0].tile(&g.world.map)) <= 1);
+        let mut b = g.start_battle();
+        assert_eq!(b.attacker, Team::Enemy, "the army attacks");
+        assert_eq!(b.fighters.iter().filter(|f| f.team == Team::Enemy).count(), 3);
+        b.begin();
+        wipe_enemies(&mut b);
+        let gold = g.gold;
+        let r = g.resolve_battle(&b);
+        assert!(matches!(&r, BattleResult::Victory { reward: 60, captured: None, loot, .. } if loot == &vec![ItemId(9)]), "{r:?}");
+        assert_eq!(g.gold, gold + 60, "half its gold");
+        assert!(g.world.armies.is_empty());
+    }
+
+    #[test]
+    fn friendly_armies_greet_once_and_do_not_fight() {
+        let mut s = strip();
+        s.armies = vec![army(1, 10, 2, 1, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.set_destination((22, 2));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Met(0)));
+        assert_eq!(g.foe, None);
+        g.set_destination((22, 2));
+        let events = walk_until_stopped(&mut g);
+        assert!(!events.iter().any(|e| matches!(e, Event::Met(_) | Event::Encounter(_))), "{events:?}");
+        assert_eq!(g.tile(), (22, 2));
+    }
+
+    #[test]
+    fn hostile_armies_chase_a_nearby_hero() {
+        let mut s = strip();
+        let mut foe = army(1, 7, 4, -2, &[troop(4, 0, 1)]);
+        foe.patrols = 0;
+        s.armies = vec![foe];
+        let mut g = start(&s);
+        let events = g.wait(4);
+        assert!(g.world.armies[0].chasing);
+        assert!(matches!(events.last(), Some(Event::Encounter(0))), "it comes for the waiting hero: {events:?}");
+        assert!(g.clock.total_minutes() < g.world.start.total_minutes() + 240.0, "the fight cuts the wait short");
+    }
+
+    #[test]
+    fn a_hostile_fort_is_taken_by_beating_its_garrison() {
+        let mut s = strip();
+        let mut fort = building(BuildingType::Fort, 16, 3, (2, 2));
+        fort.faction = 4;
+        fort.relations = [-2, 0, 0, 0];
+        fort.gold_per_day = 40;
+        fort.mana_per_day = 5;
+        fort.garrison[0] = troop(4, 0, 2);
+        fort.garrison_extra_defence = 12;
+        s.buildings = vec![fort];
+        let mut g = start(&s);
+        let entry = g.world.locations[0].tile;
+        assert!(g.set_destination((15, 2)), "clicking the walls means the entry");
+        assert_eq!(g.path.last(), Some(&entry));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Arrived(0)));
+        assert_eq!(g.foe, Some(Foe::Garrison(0)));
+        assert_eq!(g.daily_income(), 0);
+        let mut b = g.start_battle();
+        assert_eq!(b.attacker, Team::Player);
+        b.begin();
+        wipe_enemies(&mut b);
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { captured: Some(0), .. }));
+        let fort = &g.world.locations[0];
+        assert!(fort.owned() && !fort.defended() && fort.garrison.is_empty());
+        assert_eq!((g.daily_income(), g.daily_mana()), (40, 5));
+        let (gold, mana) = (g.gold, g.mana);
+        let mut events = Vec::new();
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 40, mana: 5, .. })]), "{events:?}");
+        assert_eq!(g.mana, mana + 5);
+        assert!(g.gold >= gold + 40 - g.daily_wages());
+    }
+
+    #[test]
+    fn passing_through_a_hostile_gate_stops_the_hero() {
+        let mut s = strip();
+        let mut fort = building(BuildingType::Fort, 10, 2, (1, 1));
+        fort.relations = [-2, 0, 0, 0];
+        fort.garrison[0] = troop(4, 0, 1);
+        s.buildings = vec![fort];
+        // Water above and below the gate: the only way east is through it.
+        for x in [10u32] {
+            for y in [0u32, 1, 3, 4, 5] {
+                tk::set(&mut s, x, y, crate::dt::dtm::Surface::DeepSea);
+            }
+        }
+        let mut g = start(&s);
+        assert!(g.set_destination((20, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Arrived(0)));
+        assert_eq!((g.tile(), g.foe), ((10, 2), Some(Foe::Garrison(0))));
+    }
+
+    #[test]
+    fn scenario_villages_pay_gold_and_mana_tribute() {
+        let mut s = strip();
+        let mut v = building(BuildingType::Village, 6, 2, (1, 1));
+        v.gold_per_day = 25;
+        v.gold_max = 60;
+        v.mana_per_day = 4;
+        v.mana_max = 10;
+        v.relations = [1, 0, 0, 0];
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.set_destination((6, 2));
+        assert_eq!(walk_until_stopped(&mut g).last(), Some(&Event::Arrived(0)));
+        assert_eq!(g.tribute_available(), Some(25));
+        let gold = g.gold;
+        assert_eq!(g.collect_tribute(), Some(Tribute::Gold(25)));
+        assert_eq!((g.gold, g.mana), (gold + 25, 4));
+        assert_eq!(g.tribute_available(), None);
+        g.wait(24);
+        assert_eq!(g.tribute_available(), Some(25), "refilled at midnight");
+    }
 }
+

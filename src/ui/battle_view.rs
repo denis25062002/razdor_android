@@ -135,7 +135,7 @@ fn pieces(parts: &[(String, Color)], x: f32, y: f32, size: f32) {
     let mut x = x;
     for (s, c) in parts {
         text(s, x, y, size, *c);
-        x += measure_text(s, None, size as u16, 1.0).width;
+        x += measure(s, size).width;
     }
 }
 
@@ -366,7 +366,12 @@ impl BattleView {
         draw_rectangle(p.x, p.y, w, 4.0, team_color(f.team));
         assets.draw_unit(f.unit, f.team, p.x + w / 2.0, p.y + h * 0.26, h * 0.4);
         hp_bar(p.x + 6.0, p.y + h * 0.48, w - 12.0, f.hp, s.max_hp());
-        text_centered(&f.name, p.x + w / 2.0, p.y + h * 0.6, fs + 1.0, INK);
+        // Long names shrink to fit the card.
+        let mut name_fs = fs + 1.0;
+        while name_fs > 8.0 && measure(&f.name, name_fs).width > w - 6.0 {
+            name_fs -= 1.0;
+        }
+        text_centered(&f.name, p.x + w / 2.0, p.y + h * 0.6, name_fs, INK);
         let (dx, x) = (fs * 0.3, p.x + 5.0);
         let def = |st: Stat| (format!("{}", s[st]), stat_color(s[st], base[st]));
         let (db, ds) = (def(Stat::DefenceBlow), def(Stat::DefenceShot));
@@ -443,7 +448,7 @@ impl BattleView {
             lines.push(if n == 0 { s } else { format!("right click: {s}") });
         }
         let (mx, my) = mouse_position();
-        let w = lines.iter().map(|s| measure_text(s, None, 18, 1.0).width).fold(0.0, f32::max) + 16.0;
+        let w = lines.iter().map(|s| measure(s, 18.0).width).fold(0.0, f32::max) + 16.0;
         let h = lines.len() as f32 * 20.0 + 10.0;
         let x = (mx + 14.0).min(screen_width() - w - 4.0);
         draw_rectangle(x, my + 14.0, w, h, Color::new(0.08, 0.07, 0.06, 0.95));
@@ -620,8 +625,11 @@ impl BattleView {
         match result {
             BattleResult::Defeat => Some(Screen::GameOver),
             BattleResult::Victory { .. } if game.won() => Some(Screen::Victory),
-            BattleResult::Victory { reward, lost, loot, left_behind, level_ups } => {
+            BattleResult::Victory { reward, lost, loot, left_behind, level_ups, captured } => {
                 let mut m = format!("Victory! +{reward} gold{}{}", losses(lost), levels(&level_ups));
+                if let Some(l) = captured {
+                    m += &format!(", {} is yours", game.world.locations[l].name);
+                }
                 for item in &loot {
                     m += &format!(", found {}", game.content.item(*item).name);
                 }

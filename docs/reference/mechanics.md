@@ -358,7 +358,9 @@ Rules [doc]:
 - AI armies share the same clock and move at the same time as you.
 - The clock uses minutes (events store absolute minutes since year 0) and shows day, month and year.
 - Wait buttons: 1 hour, or 4 hours (the 4-hour wait cannot be cut short).
-- Villages refill **at 00:00**. The daily cycle (income, wages) is also at midnight [inf].
+- Villages refill **at 00:00**. The daily report (income, wages, unpaid units) and the autosave come at **12:00**, as
+  the gameplay footage shows (video notes, §1).
+- The calendar shows year, month (1–12) and day (**0–29**) and whole hours: `1204 год, 5 месяц, 19 день, 9 час`.
 - The path preview shows the travel time.
 - Community keys: F1/F2 quick load, F3 save, F4/F5 endless time skip.
 
@@ -375,6 +377,7 @@ Rules [doc]:
   Scripted "lanterns" reveal areas (radius up to 24, at most 5 events per point). [doc]
 - Army speed: Ranger +20%. The editor sets a per-army "speed correction" (about −3..+5).
   Community events can change speeds.
+- Grid: plain 32×22 px cells, 8 neighbours (evidence in `dtm-format.md` §4) [inf].
 - Contact: you meet another army when it is on an adjacent cell. Click it to talk or fight.
   Hostile armies attack you as you pass by. [doc]
 - Ships: rented at a **shipyard for `ShipCost`=250 gold**. The ship takes you anywhere on the
@@ -526,7 +529,7 @@ see section 8 for the choices Razdor makes where the original is unknown.
 | Market restock | weekly Monday | Fixed stock plus random items in a price range. The restock rule is [unk]. |
 | Loot | random items | The loser's gold ÷2 (min 25), all its items, mana from surrendered units. Ruins: an editor treasure. |
 | Time | moves only when walking | Also passes when **waiting** (1 or 4 h) and when **casting global spells**. |
-| Day tick | midnight | Midnight confirmed for villages. |
+| Day tick | midnight | Villages refill at midnight; the daily report (income, wages) is at noon (footage). |
 | Terrain cost | road 30 min … swamp 3 h | Not in the data [unk]. 16 textures plus hills and trees (which slow), mountains and thickets (which block). |
 | Ships | out of scope | Shipyard rent 250 gold, any coast. |
 | Fog of war | out of scope | Unexplored ground is impassable until seen. |
@@ -581,6 +584,35 @@ Each is marked *(guess)* in the code.
   FasterAttack, NoHeal, PreventiveStrike, Neutralize, KillingStrike, BloodThrist, Assault,
   EternalGift, FateGift. `PoisonArmorIgnore` counts as piercing; `Evasion`,
   `MinMagicPower` and `ManaDrain` are implemented.
+- **World grid** (Stage 3): scenarios use 8-neighbour rectangular cells (32×22 px, a
+  vertical step is 22/32 of a horizontal one, a diagonal step √(32²+22²)/32); travel time is
+  the cell's cost times the length of the step. The built-in demo keeps its own hex grid
+  (odd rows shifted right).
+- **Terrain costs** (minutes per cell, on foot): road 30; grass lowland, grass plain, dry
+  plain 60; clay, stony soil, scorched land 75; sand 90; marsh, shallows/fords, lava fields,
+  snowy ground 120; coastal water, deep sea, impassable swamp, impassable snowdrifts block.
+- **Objects**: mountains (classes 5, 6), dense thickets (11) and rocks (8) block; hills (1–4)
+  and trees (9, 10) add 50%. A massif (hills, mountains, rocks) of sprite family `f` (tens
+  digit of the sprite id) covers a square of radius `(f − 1) / 2` whose bottom row is its own
+  cell. Road cells are never blocked by objects (a few dozen thickets stand on roads).
+- **Buildings**: the footprint (`size_x × size_y`, up and left of the anchor) blocks, except
+  the **entry cell**: the footprint cell next to the largest open region (judged with all
+  walls up), then one a road arrives at, then the nearest to the bottom-row middle. Stepping
+  onto the entry enters the building; a hostile castle, fort or ruins with a garrison stops
+  the hero there and the garrison fights (its extra defence counts). Winning takes a castle
+  or fort (owner = player, faction 1, its income and mana count from the next noon) and
+  gives ruins' treasure gold and items. Bridge footprints are road.
+- **Villages** start with one day's tribute; at midnight it grows by `gold/mana per day` up to
+  the maximum. Collecting takes all of it.
+- **Armies**: model 7 / byte 63 = off the map at start; ships are not simulated yet. Hostile =
+  the army's own attitude towards the player < 0. Hostile armies chase the hero within 6
+  cells and fight on contact (neighbouring cell); others greet once and let him pass.
+  Patrolling armies wander within their patrol radius, resting 30–180 min between legs.
+  Speed correction: ±10% per point. Troops: the middle byte of each triple is levels above
+  the first; the leader is a troop of its own. Loot: `gold income / VictoryGoldDiv`, at least
+  `MinVictoryGold`, plus the army's artifacts.
+- **Hero start**: the preset's cell (moved to its building's entry if it lies in the walls),
+  gold, combat experience, troops and artifacts. Mana starts at 0.
 - **Not used yet**: `Surrender`, `CostGoldDiv`, the Archmage's world-spell bonus, "dark
   forces only" items, paying `Nature=Elemental` units in mana.
 

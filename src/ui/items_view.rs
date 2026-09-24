@@ -200,9 +200,9 @@ pub fn market(game: &mut Game, assets: &Assets, message: &mut Option<String>) ->
     clear_background(Color::from_rgba(40, 32, 26, 255));
     top_bar(game);
     let c = game.content.clone();
-    let name = game.location.map_or("Castle", |l| game.world.locations[l].name);
+    let name = game.location.map_or("Castle", |l| game.world.locations[l].name.as_str());
     text(&format!("{name}: market"), 30.0, 88.0, 34.0, INK);
-    text("New stock arrives every Monday. Items sell for a quarter of their price.", 30.0, 114.0, 19.0, DIM);
+    text("New stock arrives every 7 days. Items sell for a quarter of their price.", 30.0, 114.0, 19.0, DIM);
 
     let stock = game.market_here().unwrap_or(&[]).to_vec();
     if stock.is_empty() {

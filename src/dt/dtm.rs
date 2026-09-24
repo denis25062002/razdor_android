@@ -248,7 +248,7 @@ pub enum ScenarioKind {
 
 /// The fixed 303-byte header, minus the section sizes and text offset, which are derived
 /// from the content (and validated when parsing).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Header {
     /// 0x0C, 0x10: grid size in cells.
     pub width: u32,
@@ -529,6 +529,13 @@ pub struct Building {
     pub description: String,
 }
 
+impl Default for Building {
+    /// An all-zero record with the neutral owner, for building scenarios in code.
+    fn default() -> Building {
+        Building { owner_army: 0xFF, ..Building::read(&Rec(&[0; BUILDING_SIZE])) }
+    }
+}
+
 impl Building {
     fn read(r: &Rec) -> Building {
         Building {
@@ -727,8 +734,9 @@ pub struct Army {
     pub patrol_radius: u8,
     /// 62: units carry no money.
     pub no_money: u8,
-    /// 63: active at start.
-    pub active: u8,
+    /// 63: inactive at start: 1 exactly for the armies whose model is 7 ("inactive") in every
+    /// shipped map (L). Events activate such armies later.
+    pub inactive: u8,
     /// 64: faction: 1 player, 2 ally, 3 neighbour, 4 enemy.
     pub faction: u8,
     /// 65: attitude towards the four factions.
@@ -801,7 +809,7 @@ impl Army {
             patrols: r.u8(60),
             patrol_radius: r.u8(61),
             no_money: r.u8(62),
-            active: r.u8(63),
+            inactive: r.u8(63),
             faction: r.u8(64),
             relations: r.i8s(65),
             aggression: r.i8(69),
@@ -851,7 +859,7 @@ impl Army {
         p.u8(60, self.patrols);
         p.u8(61, self.patrol_radius);
         p.u8(62, self.no_money);
-        p.u8(63, self.active);
+        p.u8(63, self.inactive);
         p.u8(64, self.faction);
         p.i8s(65, &self.relations);
         p.i8(69, self.aggression);
@@ -877,8 +885,9 @@ impl Army {
         ArmyModel::from_code(self.model)
     }
 
+    /// On the map at start: not the "inactive" model and not flagged inactive.
     pub fn is_active(&self) -> bool {
-        self.active != 0
+        self.inactive == 0 && self.model() != Some(ArmyModel::Inactive)
     }
 
     /// Occupied troop slots.
@@ -1382,7 +1391,7 @@ pub struct NamedCharacter {
 }
 
 /// A whole `.DTm` scenario.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scenario {
     pub header: Header,
     /// `width*height` terrain codes, index `y*width + x`, row 0 at the top (see [`Surface`]).
@@ -1750,7 +1759,6 @@ mod tests {
         army[5] = 5; // bandits
         army[13] = (-3i8) as u8;
         army[28..31].copy_from_slice(&[42, 0, 2]);
-        army[63] = 1;
         army[69] = (-20i8) as u8;
         army[80] = 44; // unknown byte, must survive
         let mut point = [0u8; POINT_SIZE];

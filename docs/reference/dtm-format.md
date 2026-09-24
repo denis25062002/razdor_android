@@ -105,8 +105,9 @@ The following invariants hold for all 15 maps (C):
 Time values count minutes from year 0, month 1, day 1, 00:00. A day is 1440 minutes, a month is 30 days and a year is
 12 months (360 days). Durations and repeat intervals in events use the same unit. For example, 1440 means one day.
 
-This was checked against gameplay footage: the header of РК3 decodes to 1204-05-20 09:00, which matches the game clock
-shown on screen when that map starts.
+This was checked against gameplay footage: the header of РК3 decodes to year 1204, month 5, day index 19, 09:00. The
+game shows days 0-based (`5 месяц, 29 день` is followed by `6 месяц, 0 день`), so the screen reads `1204 год, 5 месяц,
+19 день, 9 час` at the start, and the footage shows day 19 in its first minute.
 
 ## 4. Terrain grid (C)
 
@@ -136,8 +137,15 @@ plausible, rivers and lakes come out as codes 1 and 2, sand lines the banks as 1
 | 14 | snowy ground (Заснеженная почва) | not in shipped maps |
 | 15 | impassable snowdrifts (Непроходимые сугробы) | not in shipped maps |
 
-The game draws the map as hexes. The file stores a plain W×H array. **Hex row parity (odd-r or even-r) is not
-determined** by the file (U). Road-connectivity statistics do not separate the candidate layouts.
+The file stores a plain W×H array; the topology is not stated (U). The evidence points to **plain rectangular
+32×22 px cells with 8 neighbours**, not a staggered (hex) layout (L):
+- the editor's grid masks (`Graphics/Editor/Grid*.tga`) are unstaggered 32×22 rectangles, and the terrain textures are
+  256×242 px = 8×11 such cells;
+- the path arrows (`Windows/Way_Arrows.ugs`) and the map figures have 8 directions;
+- roads are thin 4-connected strokes (76% of road cells have exactly 2 road neighbours among the 4 orthogonal ones,
+  against 45% for 6 hex neighbours) with diagonal steps between them;
+- 1×1 bridge pieces cross rivers diagonally, one column per row. No hex parity connects such a chain; in РК3 it is the
+  only link to the capital. With 8 neighbours every building of РК1 and РК3 is reachable from every hero start.
 
 The x/y orientation is confirmed: with `(x, y)` = (column, row), trees almost never stand on water (5 of 54,773). With
 the axes swapped, about 7% would.
@@ -251,7 +259,7 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 60 | u8 | patrols | C |
 | 61 | u8 | patrol radius | C |
 | 62 | u8 | units carry no money | C |
-| 63 | u8 | active at start | C |
+| 63 | u8 | inactive at start: 1 exactly for the model-7 ("inactive") armies in every shipped map, 0 for all others | L |
 | 64 | u8 | faction: 1 player, 2 ally, 3 neighbour, 4 enemy | C |
 | 65 | i8[4] | attitude towards the four factions | C |
 | 69 | i8 | aggression | C |
@@ -448,7 +456,7 @@ codec itself is out of scope here (U).
 - Cells: `terrain[y][x]`, plus zero or more objects per cell. Building footprints extend up and to the left of `(x, y)`
   by `size_x × size_y`.
 - **Buildings.** Use type, owner, faction, garrison, barracks, market or treasure contents, income, and local events.
-- **Armies.** Each is placed at `(x, y)`, and `active` decides whether it is on the map at start. `home_building` ties
+- **Armies.** Each is placed at `(x, y)`; model 7 (with byte 63 set) keeps it off the map until an event activates it. `home_building` ties
   it to a building, and `named_character` indexes the named-character table.
 - **Hero.** Pick one of the three presets by archetype. It gives the start position, gold, experience, troops,
   artifacts and spells.
@@ -459,7 +467,7 @@ codec itself is out of scope here (U).
 ## 13. Open questions
 
 - Exact passability and speed factor for each terrain code and object class.
-- Hex row parity.
+- The grid topology (see section 4; 8-neighbour squares is the working assumption).
 - Army bytes 8, 59 and 80. Hero preset bytes 0–7 and 17–18. Header 0x120.
 - Event bytes 150–162.
 - Point priorities and duration (always 0 in shipped maps).

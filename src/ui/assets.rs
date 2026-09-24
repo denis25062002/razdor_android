@@ -10,13 +10,17 @@ use razdor::rules::items::heal_amount;
 use razdor::rules::units::Stats;
 
 use super::dt_art::DtArt;
+use super::widgets::{measure, text};
 
 /// Every unit and item picture goes through here. Defaults to coloured tokens; PNGs named
 /// `<key>.png` (the unit's or item's `Key=`) in the `RAZDOR_ASSETS` directory override them.
 /// With a Discord Times install (`RAZDOR_DT_DIR`), the original portraits and item icons are
 /// drawn instead of tokens.
 pub struct Assets {
+    /// Content the pictures are for (the demo or the install's).
     content: Arc<Content>,
+    /// The demo content the `RAZDOR_ASSETS` sprites were loaded for.
+    demo: Arc<Content>,
     sprites: HashMap<UnitId, Texture2D>,
     item_sprites: HashMap<ItemId, Texture2D>,
     /// Original art from the player's install, if present.
@@ -129,12 +133,26 @@ impl Assets {
                 }
             }
         }
-        Assets { content, sprites, item_sprites, dt: DtArt::from_env() }
+        Assets { demo: content.clone(), content, sprites, item_sprites, dt: DtArt::from_env() }
+    }
+
+    /// Draw pictures for `content` from now on (a new game on other content).
+    pub fn set_content(&mut self, content: Arc<Content>) {
+        self.content = content;
+    }
+
+    pub fn content(&self) -> &Arc<Content> {
+        &self.content
+    }
+
+    fn custom_sprites(&self) -> bool {
+        Arc::ptr_eq(&self.content, &self.demo)
     }
 
     /// Draw an item icon filling the square at (x, y).
     pub fn draw_item(&self, item: ItemId, x: f32, y: f32, size: f32) {
-        if let Some(tex) = self.item_sprites.get(&item).cloned().or_else(|| self.dt_item_icon(item)) {
+        let custom = self.custom_sprites().then(|| self.item_sprites.get(&item).cloned()).flatten();
+        if let Some(tex) = custom.or_else(|| self.dt_item_icon(item)) {
             let params = DrawTextureParams { dest_size: Some(vec2(size, size)), ..Default::default() };
             draw_texture_ex(&tex, x, y, WHITE, params);
             return;
@@ -144,15 +162,16 @@ impl Assets {
         draw_rectangle(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, fill);
         draw_rectangle_lines(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, 2.0, BLACK);
         let fs = (size * 0.5) as u16;
-        let dim = measure_text(letter, None, fs, 1.0);
-        draw_text(letter, x + (size - dim.width) / 2.0, y + (size + dim.offset_y) / 2.0, fs as f32, BLACK);
+        let dim = measure(letter, fs as f32);
+        text(letter, x + (size - dim.width) / 2.0, y + (size + dim.offset_y) / 2.0, fs as f32, BLACK);
     }
 
     /// Draw a unit centred on (cx, cy) inside a square of `size`.
     pub fn draw_unit(&self, kind: UnitId, team: Team, cx: f32, cy: f32, size: f32) {
         let ring = team_color(team);
         let dt_portrait = || self.dt_portrait(kind);
-        if let Some(tex) = self.sprites.get(&kind).cloned().or_else(dt_portrait) {
+        let custom = self.custom_sprites().then(|| self.sprites.get(&kind).cloned()).flatten();
+        if let Some(tex) = custom.or_else(dt_portrait) {
             draw_circle(cx, cy + size * 0.38, size * 0.4, Color { a: 0.5, ..ring });
             draw_texture_ex(
                 &tex,
@@ -168,7 +187,7 @@ impl Assets {
         draw_circle(cx, cy, r + 3.0, ring);
         draw_circle(cx, cy, r, fill);
         let fs = (size * 0.5) as u16;
-        let dim = measure_text(&letter, None, fs, 1.0);
-        draw_text(&letter, cx - dim.width / 2.0, cy + dim.offset_y / 2.0, fs as f32, BLACK);
+        let dim = measure(&letter, fs as f32);
+        text(&letter, cx - dim.width / 2.0, cy + dim.offset_y / 2.0, fs as f32, BLACK);
     }
 }

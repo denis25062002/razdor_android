@@ -1,9 +1,87 @@
+use std::cell::RefCell;
+
 use macroquad::prelude::*;
 
 pub const INK: Color = Color::new(0.93, 0.90, 0.82, 1.0);
 pub const DIM: Color = Color::new(0.65, 0.62, 0.55, 1.0);
 pub const ACCENT: Color = Color::new(0.95, 0.78, 0.30, 1.0);
 pub const PANEL: Color = Color::new(0.12, 0.11, 0.10, 0.92);
+
+thread_local! {
+    /// A TrueType font with Cyrillic, for text the built-in pixel font cannot draw (the
+    /// original's names and descriptions).
+    static FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
+}
+
+/// Font files tried for non-ASCII text: `RAZDOR_FONT`, then common system fonts. Nothing is
+/// bundled; without one, non-ASCII text is transliterated.
+const SYSTEM_FONTS: &[&str] = &[
+    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "C:\\Windows\\Fonts\\arial.ttf",
+];
+
+pub async fn load_font() {
+    let candidates = std::env::var("RAZDOR_FONT").into_iter().chain(SYSTEM_FONTS.iter().map(|s| s.to_string()));
+    for path in candidates {
+        if !std::path::Path::new(&path).exists() {
+            continue;
+        }
+        if let Ok(font) = load_ttf_font(&path).await {
+            FONT.with(|f| *f.borrow_mut() = Some(font));
+            return;
+        }
+    }
+    eprintln!("no TrueType font with Cyrillic found (set RAZDOR_FONT); transliterating");
+}
+
+/// Latin stand-ins for Russian letters, used when no TrueType font is available.
+fn transliterate(s: &str) -> String {
+    const RU: &str = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя";
+    const LAT: [&str; 33] = [
+        "a", "b", "v", "g", "d", "e", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u", "f",
+        "kh", "ts", "ch", "sh", "sch", "", "y", "", "e", "yu", "ya",
+    ];
+    s.chars()
+        .map(|c| {
+            let lower = c.to_lowercase().next().unwrap_or(c);
+            match RU.chars().position(|r| r == lower) {
+                Some(i) if c != lower => {
+                    let mut t = LAT[i].to_string();
+                    if let Some(f) = t.get_mut(0..1) {
+                        f.make_ascii_uppercase();
+                    }
+                    t
+                }
+                Some(i) => LAT[i].to_string(),
+                None if c.is_ascii() => c.to_string(),
+                None => "?".to_string(),
+            }
+        })
+        .collect()
+}
+
+/// Runs `f` with the font to use for `s` (`None` = the built-in one) and the text to draw.
+fn with_font<R>(s: &str, f: impl FnOnce(Option<&Font>, &str) -> R) -> R {
+    if s.is_ascii() {
+        return f(None, s);
+    }
+    FONT.with(|font| match font.borrow().as_ref() {
+        Some(font) => f(Some(font), s),
+        None => f(None, &transliterate(s)),
+    })
+}
+
+pub fn measure(s: &str, size: f32) -> TextDimensions {
+    with_font(s, |font, s| measure_text(s, font, size as u16, 1.0))
+}
 
 pub fn mouse_in(x: f32, y: f32, w: f32, h: f32) -> bool {
     let (mx, my) = mouse_position();
@@ -24,18 +102,40 @@ pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> boo
     };
     draw_rectangle(x, y, w, h, bg);
     draw_rectangle_lines(x, y, w, h, 2.0, if enabled { ACCENT } else { DIM });
-    let dim = measure_text(label, None, 22, 1.0);
-    draw_text(label, x + (w - dim.width) / 2.0, y + (h + dim.offset_y) / 2.0 - 2.0, 22.0, if enabled { INK } else { DIM });
+    let dim = measure(label, 22.0);
+    text(label, x + (w - dim.width) / 2.0, y + (h + dim.offset_y) / 2.0 - 2.0, 22.0, if enabled { INK } else { DIM });
     hover && clicked()
 }
 
 pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
-    draw_text(s, x, y, size, color);
+    with_font(s, |font, s| {
+        draw_text_ex(s, x, y, TextParams { font, font_size: size as u16, color, ..Default::default() });
+    });
 }
 
 pub fn text_centered(s: &str, cx: f32, y: f32, size: f32, color: Color) {
-    let dim = measure_text(s, None, size as u16, 1.0);
-    draw_text(s, cx - dim.width / 2.0, y, size, color);
+    let dim = measure(s, size);
+    text(s, cx - dim.width / 2.0, y, size, color);
+}
+
+/// Splits `s` into lines no wider than `width` at `size`.
+pub fn wrap(s: &str, width: f32, size: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for para in s.split('\n') {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if !line.is_empty() && measure(&candidate, size).width > width {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            } else {
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
 }
 
 pub fn hp_bar(x: f32, y: f32, w: f32, hp: i32, max: i32) {
@@ -43,4 +143,15 @@ pub fn hp_bar(x: f32, y: f32, w: f32, hp: i32, max: i32) {
     draw_rectangle(x, y, w, 5.0, Color::new(0.25, 0.05, 0.05, 1.0));
     let c = if frac > 0.5 { GREEN } else if frac > 0.25 { YELLOW } else { RED };
     draw_rectangle(x, y, w * frac, 5.0, c);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transliterates_russian() {
+        assert_eq!(transliterate("Привет, Мир"), "Privet, Mir");
+        assert_eq!(transliterate("ok 12"), "ok 12");
+    }
 }

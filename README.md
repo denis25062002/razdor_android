@@ -11,12 +11,13 @@ cargo test          # game rules
 ## How to play
 - Pick a hero: Knight (melee; his army takes 10% less physical damage), Archmage
   (Elemental magic: slows or burns the enemy), Ranger (long bow; the army heals 20% a day).
-- The kingdom is a hex map, as in the original (`data/kingdom.txt`, one character per hex,
+- The demo kingdom is a hex map (`data/kingdom.txt`, one character per hex,
   odd rows shifted half a hex): click anywhere to walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
   impassable. Right click or Space stops.
-- Time runs only while you travel, as in the original. At midnight your castle pays income
-  and every recruit takes a daily wage; units you can't pay refuse to fight.
-- Villages give tribute once a day, or their priest heals you instead. Castles and the
+- Time runs only while you travel or wait (**Wait 1 h / 4 h**, keys 1 and 4), as in the
+  original. At noon your buildings pay income and every recruit takes a daily wage; units
+  you can't pay refuse to fight. Villages refill their tribute at midnight.
+- Villages give their waiting tribute, or their priest heals you instead. Castles and the
   church heal the squad; castles recruit.
 - Bandit gangs roam the map, chase you when you're close ("!") and attack on contact.
   Surviving camps send out new gangs every few days.
@@ -63,8 +64,22 @@ What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 `Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
 `src/dt/` (`dt::install::DtInstall::from_env()`); the formats are described in
 `docs/reference/`. `rules::content::Content::from_dt` turns them into the definitions the
-rules use (the battle rules already run on the original's units; playing its maps comes next). Without the variable everything still works, and the tests that need the
+rules use. Without the variable everything still works, and the tests that need the
 real files are skipped.
+
+With the variable set, the first screen lists every map of your `Maps_Rus` with its title
+and description (read from your files at runtime), after the built-in demo. Pick one, then
+a hero class from the map's three presets. The world map uses the original's terrain
+textures, objects, buildings and map figures; hover an army or a building for its tooltip
+(formation, leader, owner, tribute), hover the ground for the route and its travel time,
+mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, friendly ones
+greet you; hostile castles, forts and ruins with a garrison fight when you step into their
+gate, and a won castle or fort is yours with its income. Building screens, economy, fog of
+war, events and quests come in the next stages (see
+`docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not in yet, so maps with
+islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
+system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
+names are transliterated).
 
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after the units' and items'
