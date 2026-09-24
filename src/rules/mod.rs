@@ -8,6 +8,7 @@ pub mod game;
 pub mod items;
 pub mod map;
 pub mod rng;
+pub mod script;
 pub mod town;
 pub mod units;
 pub mod world;

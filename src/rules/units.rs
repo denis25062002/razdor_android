@@ -172,6 +172,10 @@ pub struct Unit {
     pub items: [Option<ItemId>; SLOTS],
     /// Drunk potions whose effect lasts until the end of the next battle.
     pub potions: Vec<ItemId>,
+    /// A named character of the scenario (1-based); 0 for an ordinary unit.
+    pub named: u8,
+    /// Joined through a scenario event (events can take such units away again).
+    pub from_event: bool,
 }
 
 impl Unit {
@@ -190,6 +194,8 @@ impl Unit {
             died_at: None,
             items: [None; SLOTS],
             potions: Vec::new(),
+            named: 0,
+            from_event: false,
         }
     }
 

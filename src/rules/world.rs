@@ -210,6 +210,18 @@ pub struct EventInfo {
     pub title: String,
 }
 
+/// A lantern or event point of the scenario (`docs/reference/dtm-format.md` §8). Events
+/// refer to it by `id`; the hero standing on `tile` is "at the point".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapPoint {
+    pub id: u8,
+    pub tile: Tile,
+    /// Radius a lit lantern reveals.
+    pub radius: i32,
+    /// Model 8: a lantern lit from the start.
+    pub lit: bool,
+}
+
 /// Items for sale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shop {
@@ -409,6 +421,8 @@ pub struct Army {
     pub met: bool,
     /// Game minute until which it stands still between patrol legs.
     pub rest_until: f64,
+    /// Named character (1-based, the scenario's list) leading it; 0 none.
+    pub named: u8,
 }
 
 impl Army {
@@ -470,6 +484,10 @@ pub struct World {
     pub dropped_units: usize,
     /// The scenario's events by id − 1 (titles and kinds only).
     pub events: Vec<EventInfo>,
+    /// Lanterns and event points.
+    pub points: Vec<MapPoint>,
+    /// Names of the scenario's named characters, by id − 1.
+    pub named_characters: Vec<String>,
     entries: HashMap<Tile, usize>,
     footprints: HashMap<Tile, usize>,
 }
@@ -533,6 +551,8 @@ impl World {
             demo: false,
             dropped_units: 0,
             events: Vec::new(),
+            points: Vec::new(),
+            named_characters: Vec::new(),
             entries: HashMap::new(),
             footprints: HashMap::new(),
         }
@@ -583,6 +603,12 @@ impl World {
         let mut world = World::empty(&s.title, map, start);
         world.relations = s.header.relations;
         world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.title_text().trim().to_string() }).collect();
+        world.points = s
+            .points
+            .iter()
+            .map(|p| MapPoint { id: p.id, tile: (p.x as i32, p.y as i32), radius: p.radius as i32, lit: p.model == 8 && p.active != 0 })
+            .collect();
+        world.named_characters = s.named_characters.iter().map(|n| n.name.clone()).collect();
 
         for (i, b) in s.buildings.iter().enumerate() {
             let kind = b.building_type().map_or(LocationKind::Smithy, LocationKind::from_building);
@@ -693,6 +719,7 @@ impl World {
                 ignore_until: 0.0,
                 met: false,
                 rest_until: 0.0,
+                named: a.named_character,
             };
             // Ships (pirates, merchants) are not simulated yet: they wait with the inactive, as
             // does an army placed far out on the water.
@@ -877,6 +904,7 @@ impl World {
             ignore_until: 0.0,
             met: false,
             rest_until: 0.0,
+            named: 0,
         });
     }
 
@@ -1249,8 +1277,11 @@ mod real_maps {
                 totals.0 += ok;
                 totals.1 += n;
                 let g = Game::from_scenario(c.clone(), &s, class, 1);
-                assert_eq!(g.squad.len(), 1 + h.troops.len());
-                assert_eq!(g.gold, h.gold);
+                // Opening events may change the preset (a companion joins, gold is given).
+                if g.script().is_some_and(|e| e.total_fired() == 0) {
+                    assert_eq!(g.squad.len(), 1 + h.troops.len());
+                    assert_eq!(g.gold, h.gold);
+                }
             }
         }
         // Maps with islands need ships (not in yet); the rest is walkable.

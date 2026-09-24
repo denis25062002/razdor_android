@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::dt::dtm::Scenario;
@@ -5,6 +6,7 @@ use crate::dt::dtm::Scenario;
 use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick, MINUTES_PER_DAY};
 use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId};
+use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::formation::Slot;
 use super::items::{self, EquipError};
 use super::map::{Tile, TileMap};
@@ -143,6 +145,9 @@ pub enum Event {
     /// The party walked into a hostile castle or fort that had no garrison: it is his.
     Captured(usize),
     NewDay(DayReport),
+    /// Something the scenario's event engine did: a message, a question, a quest, the end.
+    /// World effects are already applied.
+    Script(EventOutcome),
 }
 
 /// Who the next battle is against.
@@ -175,6 +180,23 @@ pub struct Game {
     start_day: u64,
     pub(crate) rng: Rng,
     battles: u64,
+    /// The scenario's event engine (`None` in the demo). Taken out while it runs.
+    pub(crate) script: Option<Box<EventEngine>>,
+    /// Events produced outside [`Game::tick`] and [`Game::wait`] (at the start, after a
+    /// battle, an answer, a rumour); the UI drains them with [`Game::drain_events`].
+    pub(crate) pending: Vec<Event>,
+    /// Events the engine's effects produced during a run (delays, battles).
+    pub(crate) effect_events: Vec<Event>,
+    /// Areas revealed by events (lanterns, shown armies): (x, y, radius) in cells, for the
+    /// fog of war to take.
+    pub pending_reveals: Vec<(i32, i32, i32)>,
+    /// Scenario armies (ids) the player has met / beaten.
+    pub(crate) met_armies: BTreeSet<ArmyId>,
+    pub(crate) beaten_armies: BTreeSet<ArmyId>,
+    /// 1 knight, 2 archmage, 3 ranger: the class the game started with (events check it).
+    pub(crate) archetype: u8,
+    /// Spells events cast on the army; world spells come in Stage 7.
+    pub cast_on_army: Vec<u8>,
 }
 
 /// Moves `pos` along `path` for up to `minutes` of game time; cell costs are multiplied by
@@ -225,6 +247,14 @@ impl Game {
             start_day: clock.day_index(),
             rng: Rng::new(seed ^ 0x9e37_79b9),
             battles: 0,
+            script: None,
+            pending: Vec::new(),
+            effect_events: Vec::new(),
+            pending_reveals: Vec::new(),
+            met_armies: BTreeSet::new(),
+            beaten_armies: BTreeSet::new(),
+            archetype: 1,
+            cast_on_army: Vec::new(),
         };
         // The scenario garrisons of the player's own buildings are his troops there, already
         // past their paid first day.
@@ -248,6 +278,7 @@ impl Game {
         let gold = content.start_gold(hero);
         let mut g = Game::with_world(content, world, squad, home, seed);
         g.gold = gold;
+        g.archetype = archetype_of(hero);
         g
     }
 
@@ -264,6 +295,11 @@ impl Game {
         g.gold = start.gold;
         g.pack = start.items;
         g.spells = start.spells;
+        g.archetype = archetype_of(hero);
+        g.script = Some(Box::new(EventEngine::new(scenario)));
+        // The scenario's opening events.
+        let opening = g.run_script();
+        g.pending.extend(opening);
         g
     }
 
@@ -466,7 +502,7 @@ impl Game {
             budget -= slice;
             self.pass_time(used, &mut events);
             if let Some(e) = self.contact() {
-                events.push(e);
+                self.meet(e, &mut events);
                 return events;
             }
             if !self.moving() {
@@ -476,7 +512,14 @@ impl Game {
                     if taken {
                         events.push(Event::Captured(l));
                     }
+                    // Local events of the building.
+                    events.extend(self.run_script());
                 }
+            }
+            if events.iter().any(Event::needs_reading) {
+                // Stop and read: time stands still while a message is open.
+                self.path.clear();
+                break;
             }
         }
         events
@@ -496,7 +539,10 @@ impl Game {
             left -= slice;
             self.pass_time(slice, &mut events);
             if let Some(e) = self.contact() {
-                events.push(e);
+                self.meet(e, &mut events);
+                break;
+            }
+            if events.iter().any(Event::needs_reading) {
                 break;
             }
         }
@@ -568,6 +614,8 @@ impl Game {
         }
         self.bury_old_corpses();
         self.move_armies(minutes);
+        // Time passed: the scenario's events run.
+        events.extend(self.run_script());
     }
 
     /// Corpses past `MaxTimeResurection` can no longer be raised and are buried.
@@ -872,7 +920,16 @@ impl Game {
     /// at once, and one day of it is paid as the prize, as in the footage) and gives ruins'
     /// treasure; a beaten army leaves the map and pays [`Game::victory_gold`] and its items.
     /// Surrendered enemies give mana.
+    /// Then the scenario's events run (an army beaten); what they do waits in
+    /// [`Game::drain_events`].
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
+        let result = self.settle_battle(battle);
+        let after = self.run_script();
+        self.pending.extend(after);
+        result
+    }
+
+    fn settle_battle(&mut self, battle: &Battle) -> BattleResult {
         for r in battle.player_results() {
             let u = &mut self.squad[r.squad_index];
             u.hp = r.hp;
@@ -933,6 +990,9 @@ impl Game {
             }
             (Outcome::Victory, Some(Foe::Army(i))) => {
                 let army = self.world.armies.remove(i);
+                if army.id != 0 {
+                    self.beaten_armies.insert(army.id);
+                }
                 let reward = self.victory_gold(army.gold);
                 self.gold += reward;
                 let mut found = army.items;
@@ -1087,8 +1147,17 @@ impl Game {
 }
 
 
+/// The event engine's archetype code of a hero class.
+fn archetype_of(hero: HeroClass) -> u8 {
+    match hero {
+        HeroClass::Knight => 1,
+        HeroClass::Archmage => 2,
+        HeroClass::Ranger => 3,
+    }
+}
+
 /// A fresh unit for an army or garrison troop, at its level and full health.
-fn troop_unit(content: &Content, t: &Troop) -> Unit {
+pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     let mut u = Unit::new(content, t.unit, t.slot);
     u.level = t.level.max(1);
     u.heal_full(content);

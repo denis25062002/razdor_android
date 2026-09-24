@@ -10,8 +10,9 @@ use razdor::rules::battle::Team;
 use razdor::rules::clock::{duration_label, MINUTES_PER_DAY};
 use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
-use razdor::rules::game::{Currency, Event, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
+use razdor::rules::game::{Currency, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
 use razdor::rules::items::describe;
+use razdor::rules::script::{HallEntry, RUMOUR_PRICE};
 use razdor::rules::town::{ServiceError, Tab};
 use razdor::rules::units::Unit;
 
@@ -19,6 +20,7 @@ use super::assets::Assets;
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
 use super::items_view::unit_stat_lines;
 use super::screens::stat_lines;
+use super::story;
 use super::widgets::*;
 use super::world_view;
 use super::Screen;
@@ -98,15 +100,6 @@ pub fn trade_error(e: TradeError) -> String {
         TradeError::PackFull => "The pack is full.".into(),
         TradeError::NoSuchItem => "Nothing there.".into(),
         TradeError::NotForSale => "A personal item: it cannot be sold.".into(),
-    }
-}
-
-/// Noon reports that happened while a service took time.
-fn queue_reports(game: &Game, events: Vec<Event>, dialogs: &mut VecDeque<Dialog>) {
-    for e in events {
-        if let Event::NewDay(r) = e {
-            dialogs.push_back(Dialog::day_report(game, &r));
-        }
     }
 }
 
@@ -210,50 +203,95 @@ fn empty_cells(game: &Game, x: f32, y: f32, cw: f32, ch: f32, gap: f32) {
     }
 }
 
-/// Main hall: the building's picture, the quests and rumours offered, the description.
-fn main_hall(game: &Game, assets: &Assets, f: &Frame, message: &mut Option<String>) {
-    let Some(l) = game.location else { return };
-    let loc = &game.world.locations[l];
+/// Main hall: the building's picture, the rumours on offer (heard for a price) and this
+/// building's quests, the description.
+fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+    let l = game.location?;
     let (x, y, w) = (f.cx, f.cy, f.cw);
     let pic_h = 250.0;
-    draw_rectangle(x, y, w, pic_h, Color::new(0.35, 0.5, 0.65, 1.0));
-    draw_rectangle(x, y + pic_h * 0.62, w, pic_h * 0.38, Color::new(0.35, 0.5, 0.3, 1.0));
-    if let Some(tex) = assets.dt.as_ref().and_then(|a| a.building(loc.picture.0, loc.picture.1)) {
-        let k = ((pic_h - 20.0) / tex.height()).min((w - 20.0) / tex.width()).min(2.5);
-        let (tw, th) = (tex.width() * k, tex.height() * k);
-        draw_texture_ex(&tex, x + (w - tw) / 2.0, y + pic_h - th - 6.0, WHITE, DrawTextureParams { dest_size: Some(vec2(tw, th)), ..Default::default() });
-    } else {
-        text_centered(loc.kind.label(), x + w / 2.0, y + pic_h / 2.0, 40.0, INK);
+    {
+        let loc = &game.world.locations[l];
+        draw_rectangle(x, y, w, pic_h, Color::new(0.35, 0.5, 0.65, 1.0));
+        draw_rectangle(x, y + pic_h * 0.62, w, pic_h * 0.38, Color::new(0.35, 0.5, 0.3, 1.0));
+        if let Some(tex) = assets.dt.as_ref().and_then(|a| a.building(loc.picture.0, loc.picture.1)) {
+            let k = ((pic_h - 20.0) / tex.height()).min((w - 20.0) / tex.width()).min(2.5);
+            let (tw, th) = (tex.width() * k, tex.height() * k);
+            draw_texture_ex(&tex, x + (w - tw) / 2.0, y + pic_h - th - 6.0, WHITE, DrawTextureParams { dest_size: Some(vec2(tw, th)), ..Default::default() });
+        } else {
+            text_centered(loc.kind.label(), x + w / 2.0, y + pic_h / 2.0, 40.0, INK);
+        }
+        draw_rectangle_lines(x, y, w, pic_h, 2.0, MARBLE_EDGE);
     }
-    draw_rectangle_lines(x, y, w, pic_h, 2.0, MARBLE_EDGE);
+    let entries = game.hall_entries();
+    if view.pick.is_some_and(|k| k >= entries.len()) {
+        view.pick = None;
+    }
+    let rumour = view.pick.and_then(|k| match entries.get(k) {
+        Some(HallEntry::Rumour(id)) => Some(*id),
+        _ => None,
+    });
     let ly = y + pic_h + 12.0;
     draw_rectangle(x, ly, w, 36.0, Color::new(0.14, 0.24, 0.2, 1.0));
-    text("Quests and rumours on offer:", x + 14.0, ly + 25.0, 20.0, ACCENT);
-    if button(x + w - 170.0, ly + 3.0, 160.0, 30.0, "Take quest", false) {
-        *message = Some("Quests come with the event engine.".into());
+    text("Quests and rumours:", x + 14.0, ly + 25.0, 20.0, ACCENT);
+    let label = format!("Hear rumour ({RUMOUR_PRICE} gold)");
+    let mut next = None;
+    if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, &label, rumour.is_some() && game.gold >= RUMOUR_PRICE) {
+        if let Some(id) = rumour {
+            match game.hear_rumour(id) {
+                Ok(events) => {
+                    *message = None;
+                    view.pick = None;
+                    next = world_view::handle_events(game, events, message, dialogs);
+                }
+                Err(e) => *message = Some(service_error(e)),
+            }
+        }
     }
     let list_y = ly + 42.0;
-    let list_h = 120.0;
+    let (row_h, rows) = (24.0, 5);
+    let list_h = rows as f32 * row_h + 12.0;
     draw_rectangle(x, list_y, w, list_h, PARCHMENT);
-    let events = game.local_events();
-    let titles: Vec<String> = events.iter().filter_map(|&id| game.world.event_title(id).map(str::to_string)).collect();
-    if titles.is_empty() {
-        text_centered("Nothing is on offer here.", x + w / 2.0, list_y + 64.0, 19.0, PARCHMENT_INK);
+    if entries.is_empty() {
+        let none = if game.script().is_some() { "Nothing is on offer here." } else { "No quests in the demo." };
+        text_centered(none, x + w / 2.0, list_y + list_h / 2.0 + 6.0, 19.0, PARCHMENT_INK);
     }
-    for (i, t) in titles.iter().take(5).enumerate() {
-        text_centered(t, x + w / 2.0, list_y + 26.0 + i as f32 * 23.0, 19.0, Color::new(0.55, 0.1, 0.1, 1.0));
+    let max_scroll = entries.len().saturating_sub(rows);
+    if mouse_in(x, list_y, w, list_h) {
+        let wh = wheel();
+        if wh < 0.0 {
+            view.scroll = (view.scroll + 1).min(max_scroll);
+        } else if wh > 0.0 {
+            view.scroll = view.scroll.saturating_sub(1);
+        }
     }
-    if !titles.is_empty() {
-        text("(the event engine will run them)", x + 10.0, list_y + list_h - 6.0, 14.0, PARCHMENT_INK);
+    view.scroll = view.scroll.min(max_scroll);
+    for (k, entry) in entries.iter().enumerate().skip(view.scroll).take(rows) {
+        let ry = list_y + 6.0 + (k - view.scroll) as f32 * row_h;
+        let (id, note, color) = match *entry {
+            HallEntry::Rumour(id) => (id, "rumour", Color::new(0.55, 0.1, 0.1, 1.0)),
+            HallEntry::Quest(id) => (id, "in your journal", Color::new(0.1, 0.3, 0.55, 1.0)),
+            HallEntry::Done(id) => (id, "done", PARCHMENT_INK),
+        };
+        if view.pick == Some(k) {
+            draw_rectangle(x + 4.0, ry, w - 8.0, row_h - 2.0, Color::new(0.72, 0.6, 0.4, 1.0));
+        }
+        let title: String = story::event_title(game, id).chars().take(60).collect();
+        text(&title, x + 16.0, ry + 18.0, 19.0, color);
+        text(note, x + w - 16.0 - measure(note, 16.0).width, ry + 17.0, 16.0, PARCHMENT_INK);
+        if mouse_in(x, ry, w, row_h) && clicked() {
+            view.pick = Some(k);
+        }
     }
     let dy = list_y + list_h + 10.0;
-    description_box(&loc.description, x, dy, w, f.y + f.h - dy - 10.0);
+    let desc = game.world.locations[l].description.clone();
+    description_box(&desc, x, dy, w, f.y + f.h - dy - 10.0);
+    next
 }
 
 /// Barracks: recruits for hire along the top, the counters, the army with heal and
 /// resurrect buttons below.
-fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) {
-    let Some(l) = game.location else { return };
+fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+    let l = game.location?;
     let (x, y, w) = (f.cx, f.cy, f.cw);
     let c = game.content.clone();
     let recruits = game.world.locations[l].recruits.clone();
@@ -330,13 +368,15 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
             text_centered(&left, ux + cw / 2.0, by + 16.0, 14.0, DIM);
         }
     }
+    let mut next = None;
     if let Some((i, raise)) = action {
         let name = game.squad[i].name(&c).to_string();
         let r = if raise { game.resurrect(i) } else { game.heal(i) };
         match r {
             Ok(events) => {
                 *message = Some(if raise { format!("{name} rises again.") } else { format!("{name} is healed.") });
-                queue_reports(game, events, dialogs);
+                // What happened meanwhile: a noon report, the scenario's events.
+                next = world_view::handle_events(game, events, message, dialogs);
             }
             Err(e) => *message = Some(service_error(e)),
         }
@@ -348,6 +388,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     };
     text(&note, x, f.y + f.h - 6.0, 15.0, DIM);
     tooltip(&hover_lines);
+    next
 }
 
 /// Garrison: the player's troops left here (top) and his army (bottom); click to move.
@@ -663,6 +704,9 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
 /// The building window. `Exit` (or Escape) returns to the map.
 pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     world_view::backdrop(game, assets);
+    // Events that happened meanwhile (an answer's follow-ups …).
+    let pending = game.drain_events();
+    let early = world_view::handle_events(game, pending, message, dialogs);
     let tabs = game.tabs_here();
     if tabs.is_empty() {
         return Some(Screen::WorldMap);
@@ -689,10 +733,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     }
     let exit = tab_button("Exit", tx + 10.0, f.y + f.h - th - 20.0, tw - 20.0, th, false);
 
-    let mut next = None;
+    let mut next = early;
     match view.tab {
-        Tab::MainHall => main_hall(game, assets, &f, message),
-        Tab::Barracks => barracks(game, assets, &f, message, dialogs),
+        Tab::MainHall => next = next.or(main_hall(game, assets, &f, view, message, dialogs)),
+        Tab::Barracks => next = next.or(barracks(game, assets, &f, message, dialogs)),
         Tab::Garrison => garrison(game, assets, &f, message),
         Tab::Market => next = market(game, assets, &f, view, message),
         Tab::Sanctuary => sanctuary(game, &f, view, message),

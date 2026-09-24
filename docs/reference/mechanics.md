@@ -702,6 +702,47 @@ events only; texts are read from the scenario at runtime.
   detected and listed by `extensions()` but not run; such an event fires without its spell,
   resource, patrol and stat fields (they are arguments). None of the 15 shipped maps uses them.
 
+**In the game** (`src/rules/script.rs`: `Game` is the `EventWorld`; UI in `src/ui/story.rs`):
+
+- **When it runs**: at the scenario's start; after every slice of game time (each 5-minute
+  step of a walk, of a wait, a heal or resurrection, an event's delay); when the hero steps
+  into a building or onto an event point; after a battle; after an answer; after a rumour.
+  A message, question, quest notice or the end stops the walk (and a wait) so it is read;
+  time does not pass while a dialog is open.
+- **Place**: the building the hero stands in (its 1-based scenario id), else the event point
+  on his cell.
+- **Meetings**: meeting an army on the road (friendly greeting, or a hostile army's attack)
+  records "met" for its id, then the events run before the battle; the battle happens only
+  if the army is still on the map and hostile. "No meeting" clears it.
+- **Queries** *(guesses)*: squad count = living units, the hero included; army strength =
+  sum of the living units' tactical cost (the XP strength); owners are side codes, the
+  player 1 and factions 1–4 → 2–5 (green, blue, yellow, red); a neutral building has no
+  owner; an army's named character is its `named_character`; "beaten by anyone" = beaten by
+  the player (no AI battles yet); an army waiting off the map is "at home", one on the map
+  is at home within a cell of its home building's entry.
+- **Effects**: gold and mana never go below 0 *(guess)*; XP goes to the hero; an added unit
+  takes a free cell of its row (none if the army is full) and, taken from an army, keeps its
+  level there; "unit added by an event" and "any unit" remove the last such one to join,
+  its items going to the pack; a unit sent to an army joins that army's troops; items go to
+  the pack (from the pack, else from whoever wears it, when taken); spells go into the book
+  (15 at most); activating brings a waiting army onto the map at its post (ships stay off);
+  "move to hero" also activates it, next to the hero *(guess)*; the hero's new class keeps
+  level, XP and items and loses the class bonuses; a battle an event starts is against the
+  army as it stands after all the event's effects; a delay passes time (armies move, the
+  noon report comes) with the hero standing still. Spells cast on the army are recorded for
+  Stage 7. Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
+  without a radius reveals 5 cells, an army 3 *(guess)*) for the fog of war.
+- **Rumours** cost 10 gold (the footage) and are listed in the main hall with the building's
+  quests in the journal and those done.
+- **Texts** are read from the scenario at runtime: the title without its flag script, the
+  question (or the message when the question text is empty), the message. `#HERONAME` is
+  the hero's class name (there is no name entry) *(guess)*; `#N`, `#G`, `#Ok` seen in some
+  titles look like editor notes and are shown as they are. The picture byte shows that unit's
+  portrait; an event's own picture is decoded as RGB565 *(guess)*. Rewards shown with the
+  message are the event's gold, mana, XP, items and units.
+- **The end**: once the victory or defeat event's window is closed, the victory or defeat
+  screen follows, with that event's title.
+
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 
 | Key | Value | Use |

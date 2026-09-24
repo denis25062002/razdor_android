@@ -6,6 +6,7 @@ pub mod dialog;
 pub mod dt_art;
 pub mod items_view;
 pub mod screens;
+pub mod story;
 pub mod widgets;
 pub mod world_view;
 
@@ -15,11 +16,12 @@ use std::sync::Arc;
 use razdor::dt::dtm::Scenario;
 use razdor::rules::content::Content;
 use razdor::rules::game::Game;
+use razdor::rules::script::ScriptEnd;
 
 use assets::Assets;
 use battle_view::BattleView;
 use building_view::BuildingView;
-use dialog::Dialog;
+use dialog::{Close, Dialog};
 use world_view::MapView;
 
 pub enum Screen {
@@ -34,6 +36,8 @@ pub enum Screen {
     /// "Back" returns to (the map if none).
     Squad { selected: usize, scroll: usize, back: Option<BuildingView> },
     Battle(Box<BattleView>),
+    /// The quest journal, with the selected line.
+    Journal { selected: usize },
     GameOver,
     Victory,
 }
@@ -93,7 +97,7 @@ impl App {
     pub fn frame(&mut self) {
         // A dialog on top: the screen below is drawn but takes no input.
         widgets::set_input_blocked(!self.dialogs.is_empty());
-        let next = match (&mut self.screen, &mut self.game) {
+        let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::ScenarioSelect, _) => screens::scenario_select(&self.scenarios, self.dt_content.is_some()),
             (Screen::ClassSelect { scenario }, game) => {
                 let pick = scenario.and_then(|i| Some((self.scenarios.get(i)?, self.dt_content.clone()?)));
@@ -109,14 +113,30 @@ impl App {
                 items_view::squad(game, &self.assets, selected, scroll, back, &mut self.message)
             }
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message, &mut self.dialogs),
+            (Screen::Journal { selected }, Some(game)) => story::journal(game, &self.assets, selected),
             (Screen::GameOver, game) => screens::game_over(game),
             (Screen::Victory, game) => screens::victory(game),
             (_, None) => Some(Screen::ScenarioSelect),
         };
         widgets::set_input_blocked(false);
         if let Some(d) = self.dialogs.front() {
-            if dialog::draw(d, &self.assets) {
-                self.dialogs.pop_front();
+            if let Some(close) = dialog::draw(d, &self.assets) {
+                let asked = self.dialogs.pop_front().is_some_and(|d| d.question);
+                // A scenario question: the answer goes to the event engine.
+                if let (true, Some(game)) = (asked, self.game.as_mut()) {
+                    let events = game.answer_question(close == Close::Yes);
+                    let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                    next = next.or(after);
+                }
+            }
+        }
+        // A victory or defeat event ends the game once its window is read.
+        if next.is_none() && self.dialogs.is_empty() {
+            let end = self.game.as_ref().and_then(Game::script_end);
+            match end {
+                Some(ScriptEnd::Victory(_)) if !matches!(self.screen, Screen::Victory) => next = Some(Screen::Victory),
+                Some(ScriptEnd::Defeat(_)) if !matches!(self.screen, Screen::GameOver) => next = Some(Screen::GameOver),
+                _ => {}
             }
         }
         if let Some(next) = next {

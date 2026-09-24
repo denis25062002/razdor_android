@@ -23,6 +23,7 @@ use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
 use super::screens::squad_panel;
+use super::story;
 use super::widgets::*;
 use super::Screen;
 
@@ -578,7 +579,7 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
 
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
-        Event::NewDay(_) | Event::Captured(_) => None,
+        Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
         Event::Arrived(l) => {
             let loc = &game.world.locations[*l];
             game.foe.is_some().then(|| format!("{}: the garrison bars your way!", loc.name))
@@ -596,8 +597,9 @@ fn describe(event: &Event, game: &Game) -> Option<String> {
 }
 
 /// Applies the events of a tick or a wait: noon reports open the report window, stepping
-/// into a building opens its window. Returns the next screen, if any.
-fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+/// into a building opens its window, the scenario's events open their dialogs. Returns the
+/// next screen, if any.
+pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let mut next = None;
     for event in events {
         if let Some(m) = describe(&event, game) {
@@ -616,6 +618,7 @@ fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<Strin
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
             Event::Met(_) => {}
+            Event::Script(o) => story::show(game, &o, message, dialogs),
         }
     }
     next
@@ -678,6 +681,12 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDe
     } else {
         text_centered("time stands still", w / 2.0, y + 45.0, 16.0, DIM);
     }
+    let quests = game.script().map(|s| s.journal().len());
+    let label = quests.map_or("Journal".to_string(), |n| format!("Journal ({n})"));
+    if (button(w - 402.0, y + 8.0, 144.0, 40.0, &label, quests.is_some()) || (quests.is_some() && key(KeyCode::J))) && next.is_none() {
+        game.stop();
+        next = Some(Screen::Journal { selected: 0 });
+    }
     if button(w - 250.0, y + 8.0, 120.0, 40.0, "Squad", true) && next.is_none() {
         game.stop();
         *message = None;
@@ -722,7 +731,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
 
     // Time stands still while a window is open.
-    let events = if input_blocked() { Vec::new() } else { game.tick(get_frame_time().min(0.1)) };
+    let mut events = game.drain_events();
+    if !input_blocked() && events.is_empty() {
+        events = game.tick(get_frame_time().min(0.1));
+    }
     let mut next = handle_events(game, events, message, dialogs);
 
     let cam = Camera::follow(game, view.zoom);

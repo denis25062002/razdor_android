@@ -1,9 +1,11 @@
 //! Modal message windows in the original's style: a title bar, a parchment text box, a row
-//! of resource icons and an OK button (video notes §5: the noon report, the victory window).
+//! of resource icons and an OK button (video notes §5: the noon report, the victory window,
+//! story and quest dialogs). A scenario question has Yes and No instead of OK.
 
 use macroquad::prelude::*;
 
-use razdor::rules::content::ItemId;
+use razdor::rules::battle::Team;
+use razdor::rules::content::{ItemId, UnitId};
 use razdor::rules::game::{BattleResult, DayReport, Game};
 
 use super::assets::Assets;
@@ -21,6 +23,22 @@ pub enum Resource {
     Mana,
     Income,
     Wages,
+    Experience,
+}
+
+/// A picture over the text: a unit's portrait, or an event's own image.
+#[derive(Clone, Debug)]
+pub enum Picture {
+    Unit(UnitId),
+    Image(Texture2D),
+}
+
+/// How the player closed a dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Close {
+    Ok,
+    Yes,
+    No,
 }
 
 #[derive(Clone, Debug)]
@@ -32,11 +50,38 @@ pub struct Dialog {
     pub items: Vec<ItemId>,
     /// An extra line in blue (system notices).
     pub notice: Option<String>,
+    /// The scenario event this dialog shows, if any.
+    pub event: Option<u16>,
+    /// The event's yes/no question: the dialog has Yes and No buttons.
+    pub question: bool,
+    pub picture: Option<Picture>,
+    /// Units that joined / left the army.
+    pub joined: Vec<UnitId>,
+    pub left: Vec<UnitId>,
 }
 
 impl Dialog {
     pub fn new(title: impl Into<String>) -> Dialog {
-        Dialog { title: title.into(), text: Vec::new(), resources: Vec::new(), items: Vec::new(), notice: None }
+        Dialog {
+            title: title.into(),
+            text: Vec::new(),
+            resources: Vec::new(),
+            items: Vec::new(),
+            notice: None,
+            event: None,
+            question: false,
+            picture: None,
+            joined: Vec::new(),
+            left: Vec::new(),
+        }
+    }
+
+    /// Adds a line to the blue notice.
+    pub fn add_notice(&mut self, line: &str) {
+        self.notice = Some(match self.notice.take() {
+            Some(n) => format!("{n}   {line}"),
+            None => line.to_string(),
+        });
     }
 
     /// The 12:00 report: gold, mana, income and wages (video notes §5).
@@ -135,26 +180,76 @@ pub fn resource_icon(r: Resource, cx: f32, cy: f32, s: f32) {
             draw_circle(cx, cy - s * 0.2, s * 0.16, Color::new(0.75, 0.75, 0.8, 1.0));
             draw_rectangle(cx - s * 0.22, cy - s * 0.04, s * 0.44, s * 0.46, Color::new(0.6, 0.62, 0.7, 1.0));
         }
+        Resource::Experience => {
+            let star = Color::new(0.95, 0.85, 0.35, 1.0);
+            let (r, k) = (s * 0.42, s * 0.18);
+            for i in 0..5 {
+                let a = std::f32::consts::TAU * i as f32 / 5.0 - std::f32::consts::FRAC_PI_2;
+                let (b, c) = (a - 0.63, a + 0.63);
+                draw_triangle(
+                    vec2(cx + r * a.cos(), cy + r * a.sin()),
+                    vec2(cx + k * b.cos(), cy + k * b.sin()),
+                    vec2(cx + k * c.cos(), cy + k * c.sin()),
+                    star,
+                );
+            }
+            draw_circle(cx, cy, k, star);
+        }
     }
 }
 
-/// Draws `d` centred on the screen; returns true when it is closed (OK, Enter or Escape).
-pub fn draw(d: &Dialog, assets: &Assets) -> bool {
+/// A row of unit portraits with a caption. Returns its height.
+fn unit_row(assets: &Assets, label: &str, units: &[UnitId], x: f32, y: f32) -> f32 {
+    if units.is_empty() {
+        return 0.0;
+    }
+    text(label, x + 30.0, y + 30.0, 18.0, INK);
+    let lx = x + 40.0 + measure(label, 18.0).width;
+    for (k, &u) in units.iter().enumerate().take(8) {
+        assets.draw_unit(u, Team::Player, lx + 26.0 + k as f32 * 56.0, y + 26.0, 50.0);
+    }
+    60.0
+}
+
+/// Draws `d` centred on the screen; returns how it was closed: OK (or Enter, Escape), or for
+/// a question Yes (Enter) or No (Escape).
+pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     let (sw, sh) = (screen_width(), screen_height());
     draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.35));
-    let w = 620.0f32.min(sw - 20.0);
-    let lines: Vec<String> = d.text.iter().flat_map(|t| wrap(t, w - 80.0, 19.0)).collect();
+    // A long story text widens the window rather than running off the screen.
+    let fit = |w: f32| -> (f32, Vec<String>) { (w, d.text.iter().flat_map(|t| wrap(t, w - 80.0, 19.0)).collect()) };
+    let (mut w, mut lines) = fit(620.0f32.min(sw - 20.0));
+    if lines.len() as f32 * 23.0 > sh * 0.45 {
+        (w, lines) = fit(980.0f32.min(sw - 20.0));
+    }
     let text_h = lines.len() as f32 * 23.0 + 24.0;
     let res_h = if d.resources.is_empty() { 0.0 } else { 86.0 };
     let items_h = if d.items.is_empty() { 0.0 } else { 60.0 };
     let notice_h = if d.notice.is_some() { 26.0 } else { 0.0 };
-    let h = 34.0 + 16.0 + text_h + res_h + items_h + notice_h + 64.0;
+    let pic_h = if d.picture.is_some() { 140.0 } else { 0.0 };
+    let units_h = [&d.joined, &d.left].iter().filter(|u| !u.is_empty()).count() as f32 * 60.0;
+    let h = 34.0 + 16.0 + pic_h + text_h + res_h + items_h + units_h + notice_h + 64.0;
     let (x, y) = ((sw - w) / 2.0, ((sh - h) / 2.0).max(10.0));
     draw_rectangle(x, y, w, h, MARBLE);
     draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
     draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
     text_centered(&d.title, x + w / 2.0, y + 22.0, 20.0, INK);
     let mut cy = y + 44.0;
+    match &d.picture {
+        Some(Picture::Unit(u)) => {
+            draw_rectangle(x + w / 2.0 - 64.0, cy, 128.0, 128.0, Color::new(0.35, 0.5, 0.65, 1.0));
+            assets.draw_unit(*u, Team::Player, x + w / 2.0, cy + 64.0, 124.0);
+            draw_rectangle_lines(x + w / 2.0 - 64.0, cy, 128.0, 128.0, 2.0, MARBLE_EDGE);
+        }
+        Some(Picture::Image(tex)) => {
+            let k = (128.0 / tex.height()).min((w - 60.0) / tex.width());
+            let (tw, th) = (tex.width() * k, tex.height() * k);
+            draw_texture_ex(tex, x + (w - tw) / 2.0, cy, WHITE, DrawTextureParams { dest_size: Some(vec2(tw, th)), ..Default::default() });
+            draw_rectangle_lines(x + (w - tw) / 2.0, cy, tw, th, 2.0, MARBLE_EDGE);
+        }
+        None => {}
+    }
+    cy += pic_h;
     draw_rectangle(x + 24.0, cy, w - 48.0, text_h, PARCHMENT_DARK);
     draw_rectangle_lines(x + 24.0, cy, w - 48.0, text_h, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
     for (i, line) in lines.iter().enumerate() {
@@ -178,9 +273,23 @@ pub fn draw(d: &Dialog, assets: &Assets) -> bool {
         }
         cy += items_h;
     }
+    cy += unit_row(assets, "Joined the army:", &d.joined, x, cy);
+    cy += unit_row(assets, "Left the army:", &d.left, x, cy);
     if let Some(n) = &d.notice {
         text_centered(n, x + w / 2.0, cy + 18.0, 18.0, MANA);
     }
-    let ok = button(x + w / 2.0 - 60.0, y + h - 52.0, 120.0, 38.0, "OK", true);
-    ok || key(KeyCode::Enter) || key(KeyCode::Escape)
+    let by = y + h - 52.0;
+    if d.question {
+        let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, "Yes", true) || key(KeyCode::Enter) || key(KeyCode::Y);
+        let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, "No", true) || key(KeyCode::Escape) || key(KeyCode::N);
+        return if yes {
+            Some(Close::Yes)
+        } else if no {
+            Some(Close::No)
+        } else {
+            None
+        };
+    }
+    let ok = button(x + w / 2.0 - 60.0, by, 120.0, 38.0, "OK", true);
+    (ok || key(KeyCode::Enter) || key(KeyCode::Escape)).then_some(Close::Ok)
 }

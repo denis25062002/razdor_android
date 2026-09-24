@@ -86,10 +86,17 @@ mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, frien
 greet you; hostile castles, forts and ruins with a garrison fight when you step into their
 gate, and a won castle or fort is yours with its income (an empty hostile one is taken by
 walking in). Towns, castles, forts, churches, villages, markets and taverns open their
-building windows with the stock, prices and spells of the map. Fog of war, events and
-quests come in the next stages (see
-`docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not in yet, so maps with
-islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
+building windows with the stock, prices and spells of the map.
+
+The map's events and quests run as in the original's editor manual: story windows (title,
+text, picture, what you got, OK) open as time passes, when you step into a building or onto
+an event point, after a battle, or when you meet an army on the road; the walk stops so you
+can read them, and time stands still while one is open. Questions have **Yes** / **No**.
+Accepted quests go into the **Journal** (bottom bar, key J) with their texts, and finished
+ones are marked there; the main hall lists the building's quests and the rumours on offer
+(10 gold each). The scenario's victory or defeat event ends the game. Fog of war comes in
+the next stage (see `docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not
+in yet, so maps with islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 

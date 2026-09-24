@@ -130,7 +130,12 @@ files with `RAZDOR_DT_DIR`, and ends in its own commit.
    noon report and victory windows, loot and surrender mana, relation prices fitted to the
    footage, the building window and hero/army screen in `ui/`.
 5. **Fog of war, minimap, army hover preview, waiting.**
-6. **Event and quest engine**, dialogs, journal, victory/defeat.
+6. **Event and quest engine**, dialogs, journal, victory/defeat. *Done:* the engine
+   (`rules::events`) runs in the game (`rules::script`: `Game` as its world; ticks at the
+   start, after every slice of time, on entering a building or point, after battles,
+   answers and rumours), story and question dialogs with rewards and pictures, quest notices,
+   the journal screen, rumours for 10 gold in main halls, victory/defeat end screens. Lantern
+   reveals are recorded in `Game::pending_reveals` for the fog of war.
 7. **Spells on the world map; save/load.**
 
 ## Out of scope for now

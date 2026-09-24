@@ -6,6 +6,7 @@ use razdor::rules::battle::Team;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
 use razdor::rules::formation::Slot;
 use razdor::rules::game::Game;
+use razdor::rules::script::ScriptEnd;
 use razdor::rules::units::Stats;
 
 use super::assets::Assets;
@@ -233,12 +234,27 @@ fn days_played(game: &Option<Game>) -> u64 {
     game.as_ref().map_or(0, |g| g.clock.day_index().saturating_sub(g.world.start.day_index()))
 }
 
+/// The scenario's victory or defeat event, if it ended the game: its title.
+fn end_event(game: &Option<Game>) -> Option<String> {
+    let g = game.as_ref()?;
+    let id = match g.script_end()? {
+        ScriptEnd::Victory(id) | ScriptEnd::Defeat(id) => id,
+    };
+    Some(super::story::event_title(g, id))
+}
+
 pub fn game_over(game: &mut Option<Game>) -> Option<Screen> {
     let days = days_played(game);
-    end_screen("Your hero has fallen", &format!("The discord goes on. You lasted {days} days."), RED, game)
+    match end_event(game) {
+        Some(title) => end_screen("Defeat", &format!("{title}. You lasted {days} days."), RED, game),
+        None => end_screen("Your hero has fallen", &format!("The discord goes on. You lasted {days} days."), RED, game),
+    }
 }
 
 pub fn victory(game: &mut Option<Game>) -> Option<Screen> {
     let days = days_played(game);
-    end_screen("The bandits are broken", &format!("Peace returns to the land after {days} days."), ACCENT, game)
+    match end_event(game) {
+        Some(title) => end_screen("Victory!", &format!("{title}, after {days} days."), ACCENT, game),
+        None => end_screen("The bandits are broken", &format!("Peace returns to the land after {days} days."), ACCENT, game),
+    }
 }
