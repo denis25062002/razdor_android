@@ -248,10 +248,12 @@ impl Game {
         }
     }
 
-    /// Reveals the cells within `radius` of `at` (lanterns, a shown army): recorded in
-    /// [`Game::pending_reveals`] for the fog of war.
-    pub fn reveal(&mut self, at: (i32, i32), radius: i32) {
-        self.pending_reveals.push((at.0, at.1, radius.max(1)));
+    /// Reveals the cells within `radius` of `at` (lanterns, a shown army) in the fog of war,
+    /// and records it in [`Game::pending_reveals`].
+    pub fn reveal_area(&mut self, at: (i32, i32), radius: i32) {
+        let r = radius.max(1);
+        self.pending_reveals.push((at.0, at.1, r));
+        self.reveal(at.0, at.1, r);
     }
 }
 
@@ -474,7 +476,7 @@ impl EventWorld for Game {
     fn show_army(&mut self, army: ArmyId) {
         if let Some(i) = self.army_index(army) {
             let t = self.world.armies[i].tile(&self.world.map);
-            self.reveal(t, SHOW_ARMY_RADIUS);
+            self.reveal_area(t, SHOW_ARMY_RADIUS);
         }
     }
 
@@ -500,7 +502,7 @@ impl EventWorld for Game {
 
     fn light_lantern(&mut self, point: u16) {
         if let Some(p) = self.world.points.iter().find(|p| p.id as u16 == point).copied() {
-            self.reveal(p.tile, if p.radius > 0 { p.radius } else { LANTERN_RADIUS });
+            self.reveal_area(p.tile, if p.radius > 0 { p.radius } else { LANTERN_RADIUS });
         }
     }
 
@@ -808,6 +810,7 @@ mod tests {
         s.points = vec![point(7, 10, 4, 6)];
         let g = start(&s);
         assert_eq!(g.pending_reveals, vec![(10, 4, 6)]);
+        assert!(!g.fog.enabled || g.fog.explored((10, 4)), "the lantern lights the fog");
     }
 
     #[test]

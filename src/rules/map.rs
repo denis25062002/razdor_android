@@ -411,8 +411,14 @@ impl TileMap {
 
     /// [`TileMap::path`] giving up after expanding `max_nodes` cells (for AI armies).
     pub fn path_limited(&self, from: Tile, to: Tile, max_nodes: usize) -> Vec<Tile> {
+        self.path_where(from, to, max_nodes, &|_| true)
+    }
+
+    /// [`TileMap::path_limited`] stepping only onto cells `allowed` accepts (the fog of war:
+    /// explored cells, `rules::fog`).
+    pub fn path_where(&self, from: Tile, to: Tile, max_nodes: usize, allowed: &dyn Fn(Tile) -> bool) -> Vec<Tile> {
         let (Some(start), Some(goal)) = (self.index(from), self.index(to)) else { return Vec::new() };
-        if from == to || !self.passable(to) {
+        if from == to || !self.passable(to) || !allowed(to) {
             return Vec::new();
         }
         let g = self.grid;
@@ -447,7 +453,7 @@ impl TileMap {
             for nb in self.grid.neighbours(here) {
                 let Some(j) = self.index(nb) else { continue };
                 let c = self.cost[j];
-                if c == 0 {
+                if c == 0 || !allowed(nb) {
                     continue;
                 }
                 let ng = gc + (c as f32 * self.grid.step_length(here, nb)).round() as u32;

@@ -532,7 +532,7 @@ see section 8 for the choices Razdor makes where the original is unknown.
 | Day tick | midnight | Villages refill at midnight; the daily report (income, wages) is at noon (footage). |
 | Terrain cost | road 30 min … swamp 3 h | Not in the data [unk]. 16 textures plus hills and trees (which slow), mountains and thickets (which block). |
 | Ships | out of scope | Shipyard rent 250 gold, any coast. |
-| Fog of war | out of scope | Unexplored ground is impassable until seen. |
+| Fog of war | out of scope | Unexplored ground is impassable until seen (in since Stage 5, see §8.2). |
 | Global magic | none | Spell book: learn for gold, cast for mana and time, on a whole army, before battles. |
 
 ---
@@ -742,6 +742,42 @@ events only; texts are read from the scenario at runtime.
   message are the event's gold, mana, XP, items and units.
 - **The end**: once the victory or defeat event's window is closed, the victory or defeat
   screen follows, with that event's title.
+
+### 8.2 Fog of war and minimap (Stage 5, `src/rules/fog.rs`, `src/ui/minimap.rs`)
+
+`Fog` is a plain explored bitset (`w`, `h`, `enabled`, `bits: Vec<u64>`) kept in `Game::fog`.
+Explored cells stay explored; there is no "seen before" state (the video).
+
+- **Sight** *(guess)*: the hero explores every cell whose centre lies within 7.5 cell widths of
+  him, measured on screen (world units). On the 32×22 px cells that is a circle of about 240 px
+  radius, as in the video, and an ellipse in cells (7 columns, 10 rows each way).
+  No class, unit ability or item changes it (nothing in the data says one does). The hero looks
+  around at the start and after every step of a walk.
+- **Lanterns**: points with model 8 and the "active at start" flag light their radius when the
+  game starts (9 on the 15 shipped maps). A radius `r` explores the same kind of on-screen
+  circle, `r` cell widths wide *(guess: the unit of the radius is not stated)*, capped at 24.
+  `Game::reveal(x, y, r)` lights one later; `fog::lantern(scenario, point_id)` gives an
+  event's lantern cell and radius.
+- **Movement** *(guess)*: unexplored cells are impassable to the hero's pathfinder. A click on
+  an explored cell walks there over explored ground. A click into the dark (or on an explored
+  cell cut off by dark) walks to the explored cell reachable over explored ground whose centre
+  is nearest the target; the target is kept (`Game::goal`) and whenever the walk reveals new
+  ground, or the route runs out, the route is planned again. So the hero feels his way through
+  the fog and stops when no explored way gets closer. The step under way is always finished
+  first, so a hostile gate still stops him.
+- **Armies** move in the dark as before (the original AI ignores the fog; chases are not
+  changed); they are only hidden, and so are their tooltips. Map objects and buildings whose
+  cells are all dark are not drawn.
+- **Look**: unexplored cells are black; the edge is a feathered band about two cells wide on
+  each side of the border (a box blur of the explored mask, eased), so a sliver of the dark
+  side shows through as the original's soft ellipse.
+- **Minimap**: toggled with the bottom-bar "Map (M)" button or M, in the top-right corner of the
+  map view. The whole map scaled to at most 360 px, only explored cells in their terrain colour
+  (blocked land darker), buildings as small icons coloured by side (player green, ally blue,
+  neighbour yellow, enemy red, neutral grey, `fog::Side`), the hero as a blinking white dot and
+  the view as a light rectangle. A click on it moves the camera there (as in the video); a click
+  on the map to walk returns the camera to the hero.
+- **Demo**: the built-in demo plays without fog.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

@@ -94,9 +94,11 @@ an event point, after a battle, or when you meet an army on the road; the walk s
 can read them, and time stands still while one is open. Questions have **Yes** / **No**.
 Accepted quests go into the **Journal** (bottom bar, key J) with their texts, and finished
 ones are marked there; the main hall lists the building's quests and the rumours on offer
-(10 gold each). The scenario's victory or defeat event ends the game. Fog of war comes in
-the next stage (see `docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not
-in yet, so maps with islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
+(10 gold each). The scenario's victory or defeat event ends the game. The fog of war hides what the hero
+has not seen yet (unexplored ground is black and cannot be walked; a click into the dark
+makes the hero feel his way towards it); M or the "Map (M)" button opens the minimap of the
+explored land, and a click on it moves the camera. Ships are not in yet, so maps with
+islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 

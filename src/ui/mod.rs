@@ -5,6 +5,7 @@ pub mod building_view;
 pub mod dialog;
 pub mod dt_art;
 pub mod items_view;
+pub mod minimap;
 pub mod screens;
 pub mod story;
 pub mod widgets;

@@ -7,6 +7,7 @@ use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick, MINUTES_PER_DAY};
 use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId};
 use super::events::{ArmyId, EventEngine, EventOutcome};
+use super::fog::{self, Fog};
 use super::formation::Slot;
 use super::items::{self, EquipError};
 use super::map::{Tile, TileMap};
@@ -177,6 +178,10 @@ pub struct Game {
     pub pack: Vec<ItemId>,
     /// The hero's spell book (1-based spell indices; casting comes in Stage 7).
     pub spells: Vec<u8>,
+    /// Explored cells (`rules::fog`): off in the demo, on for scenarios.
+    pub fog: Fog,
+    /// Where the player clicked: the walk is planned again towards it as the fog lifts.
+    pub goal: Option<Tile>,
     start_day: u64,
     pub(crate) rng: Rng,
     battles: u64,
@@ -244,6 +249,8 @@ impl Game {
             foe: None,
             pack: Vec::new(),
             spells: Vec::new(),
+            fog: Fog::disabled(0, 0),
+            goal: None,
             start_day: clock.day_index(),
             rng: Rng::new(seed ^ 0x9e37_79b9),
             battles: 0,
@@ -265,6 +272,7 @@ impl Game {
             l.stationed.extend(troops.iter().map(|t| Stationed { unit: troop_unit(&c, t), since }));
         }
         g.restock_markets();
+        g.fog = Fog::disabled(g.world.map.w, g.world.map.h);
         g
     }
 
@@ -292,6 +300,8 @@ impl Game {
         let mut squad = vec![leader];
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
         let mut g = Game::with_world(content, world, squad, start.tile, seed);
+        g.fog = fog::for_scenario(&g.world.map, Some(scenario), true);
+        g.look_around();
         g.gold = start.gold;
         g.pack = start.items;
         g.spells = start.spells;
@@ -472,17 +482,62 @@ impl Game {
     /// Returns false if it can't be reached.
     pub fn set_destination(&mut self, to: Tile) -> bool {
         let to = self.world.location_covering(to).map(|l| &self.world.locations[l]).filter(|l| !l.kind.is_bridge()).map_or(to, |l| l.tile);
-        let path = self.world.map.path(self.tile(), to);
+        let path = self.plan(to);
         if path.is_empty() {
             return false;
         }
         self.path = path;
+        self.goal = Some(to);
         self.location = None;
         true
     }
 
+    /// The route a click on `to` walks now: over explored ground only, towards the nearest
+    /// explored cell if `to` is in the dark ([`fog::plan`]).
+    pub fn plan(&self, to: Tile) -> Vec<Tile> {
+        fog::plan(&self.world.map, &self.fog, self.tile(), to)
+    }
+
+    /// Reveals the hero's surroundings. Returns true if new ground came into view.
+    pub fn look_around(&mut self) -> bool {
+        self.fog.reveal_around(self.world.map.grid, self.pos, fog::SIGHT_RADIUS)
+    }
+
+    /// Lights a lantern: reveals radius `r` (cell widths) around cell `(x, y)`.
+    pub fn reveal(&mut self, x: i32, y: i32, r: i32) {
+        self.fog.reveal(self.world.map.grid, x, y, r);
+    }
+
+    /// After a step: plan the walk to the clicked spot again if new ground came into view
+    /// or the route ran out short of it; give up when no explored way gets closer.
+    fn feel_the_way(&mut self, revealed: bool, stopped: bool) {
+        let Some(goal) = self.goal else { return };
+        let here = self.tile();
+        if stopped || here == goal || self.foe.is_some() {
+            self.goal = None;
+            return;
+        }
+        if self.path.last() == Some(&goal) || !(revealed || self.path.is_empty()) {
+            return;
+        }
+        // Finish the step under way (it may be a gate), then follow the new route.
+        let path = match self.path.first() {
+            Some(&next) => {
+                let rest = fog::plan(&self.world.map, &self.fog, next, goal);
+                std::iter::once(next).chain(rest).collect()
+            }
+            None => self.plan(goal),
+        };
+        if path.is_empty() {
+            self.goal = None;
+        } else {
+            self.path = path;
+        }
+    }
+
     pub fn stop(&mut self) {
         self.path.clear();
+        self.goal = None;
     }
 
     /// Advance the world by `real_dt` seconds. Time only flows while the party walks.
@@ -498,10 +553,15 @@ impl Game {
             let Game { world, pos, path, .. } = self;
             // A hostile garrison stops the party at its gate.
             let at_gate = |t: Tile| world.location_at(t).is_some_and(|l| world.locations[l].defended());
+            let before = path.len();
             let used = walk(&world.map, pos, path, slice, slowness, &at_gate);
+            let stopped = path.is_empty() && before > 0 && at_gate(world.map.tile_at(*pos));
             budget -= slice;
+            let revealed = self.look_around();
+            self.feel_the_way(revealed, stopped);
             self.pass_time(used, &mut events);
             if let Some(e) = self.contact() {
+                self.goal = None;
                 self.meet(e, &mut events);
                 return events;
             }
@@ -1778,7 +1838,8 @@ mod tests {
         let mut g = start(&s);
         let entry = g.world.locations[0].tile;
         assert!(g.set_destination((15, 2)), "clicking the walls means the entry");
-        assert_eq!(g.path.last(), Some(&entry));
+        // The fort is still in the dark: the walk heads for its entry as the fog lifts.
+        assert_eq!(g.goal, Some(entry));
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
         assert_eq!(g.foe, Some(Foe::Garrison(0)));
@@ -1797,6 +1858,34 @@ mod tests {
         assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 40, mana: 5, .. })]), "{events:?}");
         assert_eq!(g.mana, mana + 5);
         assert!(g.gold >= gold + 40 - g.daily_wages());
+    }
+
+    #[test]
+    fn the_fog_lifts_around_the_walking_hero() {
+        let mut g = start(&strip());
+        g.world.armies.clear();
+        assert!(g.fog.enabled && g.fog.explored((2, 2)) && g.fog.explored((9, 2)) && !g.fog.explored((10, 2)));
+        assert!(!Game::new(content(), HeroClass::Knight, 1).fog.enabled, "the demo has no fog");
+        assert!(g.set_destination((22, 3)), "a click into the dark walks towards it");
+        assert!(g.path.iter().all(|&t| g.fog.explored(t)), "over explored ground only");
+        for _ in 0..10_000 {
+            if !g.moving() {
+                break;
+            }
+            if let Some(&next) = g.path.first() {
+                assert!(g.fog.explored(next), "never steps into the dark");
+            }
+            g.tick(0.05);
+        }
+        assert_eq!(g.tile(), (22, 3), "feels its way there");
+        assert!(g.fog.explored((20, 0)) && g.goal.is_none());
+        g.set_destination((2, 2));
+        g.stop();
+        assert!(g.goal.is_none() && !g.moving());
+        let mut g = start(&strip());
+        assert!(!g.fog.explored((21, 5)));
+        g.reveal(20, 5, 2);
+        assert!(g.fog.explored((21, 5)) && g.fog.explored((22, 5)) && !g.fog.explored((23, 5)));
     }
 
     #[test]
