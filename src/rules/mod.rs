@@ -1,5 +1,6 @@
 //! Pure game rules. Must not depend on macroquad.
 pub mod battle;
+pub mod formation;
 pub mod game;
 pub mod rng;
 pub mod units;

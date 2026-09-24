@@ -1,8 +1,15 @@
+use super::formation::{Row, Slot};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttackKind {
+    /// Warrior: reaches only the enemy front row while it stands.
     Melee,
-    Ranged { range: i32, magic: bool },
-    Heal { amount: i32, range: i32 },
+    /// Shooter: any enemy.
+    Ranged,
+    /// Mage: any enemy, ignores armor.
+    Magic,
+    /// Mage: restores HP to any wounded ally.
+    Heal { amount: i32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,18 +32,25 @@ pub struct Stats {
     pub dmg_min: i32,
     pub dmg_max: i32,
     pub armor: i32,
-    pub moves: i32,
     pub initiative: i32,
+    pub attacks: i32,
     pub attack: AttackKind,
 }
 
 impl AttackKind {
-    pub fn describe(self) -> String {
+    pub fn role(self) -> &'static str {
         match self {
-            AttackKind::Melee => "melee".into(),
-            AttackKind::Ranged { range, magic: false } => format!("ranged {range}"),
-            AttackKind::Ranged { range, magic: true } => format!("magic {range}"),
-            AttackKind::Heal { amount, range } => format!("heal {amount}, range {range}"),
+            AttackKind::Melee => "warrior",
+            AttackKind::Ranged => "shooter",
+            AttackKind::Magic | AttackKind::Heal { .. } => "mage",
+        }
+    }
+
+    /// Row a newly hired unit of this kind is placed in.
+    pub fn preferred_row(self) -> Row {
+        match self {
+            AttackKind::Melee => Row::Front,
+            _ => Row::Back,
         }
     }
 }
@@ -89,26 +103,36 @@ impl UnitKind {
 
     pub fn stats(self) -> Stats {
         use AttackKind::*;
-        let s = |max_hp, dmg_min, dmg_max, armor, moves, initiative, attack| Stats {
+        let s = |max_hp, dmg_min, dmg_max, armor, initiative, attacks, attack| Stats {
             max_hp,
             dmg_min,
             dmg_max,
             armor,
-            moves,
             initiative,
+            attacks,
             attack,
         };
         match self {
-            UnitKind::Knight => s(60, 10, 14, 4, 3, 5, Melee),
-            UnitKind::Archmage => s(32, 9, 13, 0, 3, 6, Ranged { range: 6, magic: true }),
-            UnitKind::Ranger => s(40, 8, 11, 1, 4, 7, Ranged { range: 7, magic: false }),
-            UnitKind::Spearman => s(30, 5, 8, 2, 3, 4, Melee),
-            UnitKind::Archer => s(22, 5, 8, 0, 3, 5, Ranged { range: 6, magic: false }),
-            UnitKind::Swordsman => s(38, 7, 10, 3, 3, 5, Melee),
-            UnitKind::Healer => s(20, 0, 0, 0, 3, 3, Heal { amount: 10, range: 4 }),
-            UnitKind::Bandit => s(26, 5, 8, 1, 3, 4, Melee),
-            UnitKind::BanditArcher => s(18, 4, 7, 0, 3, 5, Ranged { range: 6, magic: false }),
-            UnitKind::BanditChief => s(55, 9, 13, 3, 3, 6, Melee),
+            UnitKind::Knight => s(60, 10, 14, 4, 5, 1, Melee),
+            UnitKind::Archmage => s(32, 9, 13, 0, 6, 1, Magic),
+            UnitKind::Ranger => s(40, 5, 7, 1, 7, 2, Ranged),
+            UnitKind::Spearman => s(30, 5, 8, 2, 4, 1, Melee),
+            UnitKind::Archer => s(22, 5, 8, 0, 5, 1, Ranged),
+            UnitKind::Swordsman => s(38, 7, 10, 3, 5, 1, Melee),
+            UnitKind::Healer => s(20, 0, 0, 0, 3, 1, Heal { amount: 10 }),
+            UnitKind::Bandit => s(28, 6, 9, 1, 4, 1, Melee),
+            UnitKind::BanditArcher => s(20, 5, 8, 0, 5, 1, Ranged),
+            UnitKind::BanditChief => s(65, 11, 15, 3, 6, 1, Melee),
+        }
+    }
+
+    /// One-line summary of how the unit fights, for cards and tooltips.
+    pub fn describe_attack(self) -> String {
+        let s = self.stats();
+        let times = if s.attacks > 1 { format!(" x{}", s.attacks) } else { String::new() };
+        match s.attack {
+            AttackKind::Heal { amount } => format!("mage, heals {amount}"),
+            a => format!("{}, dmg {}-{}{times}", a.role(), s.dmg_min, s.dmg_max),
         }
     }
 
@@ -137,11 +161,13 @@ impl UnitKind {
 pub struct Unit {
     pub kind: UnitKind,
     pub hp: i32,
+    /// Cell in the squad's battle formation.
+    pub slot: Slot,
 }
 
 impl Unit {
-    pub fn new(kind: UnitKind) -> Self {
-        Unit { kind, hp: kind.stats().max_hp }
+    pub fn new(kind: UnitKind, slot: Slot) -> Self {
+        Unit { kind, hp: kind.stats().max_hp, slot }
     }
 
     pub fn heal_full(&mut self) {

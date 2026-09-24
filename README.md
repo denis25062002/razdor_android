@@ -12,9 +12,15 @@ cargo test          # game rules
 - Pick a hero: Knight (melee tank), Archmage (magic ignores armor), Ranger (long bow).
 - On the map, click a highlighted neighbouring location to travel (1 day).
   Towns heal your squad and sell recruits; red triangles are bandit camps.
-- In battle, the unit with the gold ring acts. Click a lit cell to move, a red-framed
-  enemy to attack (green frame = heal an ally), Space to end the turn.
-- Ranged units deal half damage while an enemy stands next to them.
+- Battles are fought card-style, as in the original: each side stands in a 2×6
+  formation (front row + back row). Before the fight, click a card and then a cell to
+  move or swap it, then press **Fight!** (or Enter). The formation is kept.
+- Units act in initiative order. The gold-framed card acts: click a red-framed enemy to
+  attack (green frame = heal an ally), Space to wait.
+- Warriors hit the enemy front row, and the back row only once the front is empty.
+  A warrior in your back row can't act while your front row stands.
+  Shooters and mages hit anyone; magic ignores armor. Heavy armor can block a hit.
+- After 20 rounds an undecided battle ends and you withdraw. Squad cap: 12.
 - Clear both bandit camps to win. If your hero dies, it's over.
 
 ## Custom sprites

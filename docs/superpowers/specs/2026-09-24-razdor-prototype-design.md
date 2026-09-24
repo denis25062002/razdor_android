@@ -43,24 +43,39 @@ Clearing both camps = victory.
 | Swordsman | 50   | 38 | 7–10 | 3     | 3    | 5    | Melee     |
 | Healer    | 45   | 20 | —    | 0     | 3    | 3    | Heal 10, range 4 |
 
-Squad cap: hero + 4. Recruits that die in battle are gone.
+Recruits that die in battle are gone.
 
 Enemies: Bandit (26 HP, 5–8, armor 1, melee), Bandit archer (18 HP, 4–7, ranged 6),
 Bandit chief (55 HP, 9–13, armor 3, melee).
 
-### Battle
-- 10×8 square grid. Player deploys in the left two columns, enemies in the right two.
-- Turn order each round: all living units sorted by initiative (desc), ties → player first.
-- A unit's turn: optionally move (BFS through free cells, up to Move steps),
-  then optionally act. Acting ends the turn. Skipping (Space) ends the turn.
-- Melee: target an orthogonally/diagonally adjacent enemy (Chebyshev distance 1).
-- Ranged: target an enemy within range (Chebyshev). Damage halved if the
-  shooter has an adjacent enemy.
-- Damage = roll(min..=max) − target armor (magic ignores armor), minimum 1.
-- Heal: restore HP to an ally in range, capped at max HP.
-- Enemy AI: attack the lowest-HP target reachable this turn; otherwise move
-  along the shortest path toward the nearest enemy.
-- Win: all enemies dead. Lose: hero dies → game over → back to class select.
+### Battle (v2 — card formation, as in the original)
+Replaces the v1 10×8 movement grid.
+
+- Each side has a **2×6 formation**: a front row and a back row of 6 cells. Cards never
+  move during the fight. Before it starts there is a **deploy phase** where the player
+  moves/swaps their own cards; the formation is kept for the next battle.
+- Every unit is a **warrior** (melee), **shooter** (ranged) or **mage** (magic / heal).
+- **Warrior:** may act only from the front row, or from the back row if its own front
+  row is empty. Targets the enemy front row; the back row only once the front is empty.
+- **Shooter / mage:** may target any enemy. Magic ignores armor.
+- **Healer:** restores HP to any wounded ally, capped at max HP.
+- Damage per attack = roll(min..=max) − armor (magic ignores armor), **minimum 0** —
+  heavy armor can block a blow completely. A unit makes `attacks` strikes per turn on
+  the same target (stops if it dies).
+- Turn order each round: living units by initiative (desc), ties → player first.
+  A turn is one action or a skip (Space). A unit with no legal action can only skip.
+- Enemy AI: act on the lowest-HP legal target; heal the most wounded ally.
+- End: all enemies dead = victory; hero dead = defeat. After **20 rounds** the battle
+  stops undecided: the squad withdraws, the camp stays, no reward.
+- Squad cap: 12 including the hero. Hiring drops a unit into the first free cell of
+  its preferred row (warriors front, others back), centre columns first.
+
+Unit changes vs v1: `moves` and ranges removed; `attacks` added (Ranger: 2 × 5–7).
+Camp formations — Bandit camp: 3 bandits front, 2 archers back, reward 100.
+Bandit lair: chief + 2 bandits front, 2 archers back, reward 150.
+Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
+Balance (AI vs AI, 200 seeds): hero alone loses the camp; hero + 3 spearmen wins it;
+the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 
 ### Out of scope (YAGNI)
 XP/levels, quests, dialogue, equipment, save/load, sound, morale, fog of war, hex grid.
@@ -75,7 +90,8 @@ src/
     rng.rs         small seeded xorshift RNG (deterministic tests)
     units.rs       UnitKind, Stats, AttackKind, Unit
     world.rs       World map: locations, roads, travel
-    battle.rs      Battle: grid, turn order, move/attack/heal, win/lose, AI
+    formation.rs   Row, Slot, 2×6 formation helpers
+    battle.rs      Battle: deploy, turn order, attack/heal, win/lose/stalemate, AI
     game.rs        Game: hero, gold, squad, day, location; hire; battle setup/resolve
   ui/              macroquad presentation only
     mod.rs
@@ -90,10 +106,10 @@ src/
 - **Assets layer:** every unit/tile is drawn through `Assets`. Default is
   coloured shapes + a letter. If env var `RAZDOR_ASSETS` points to a directory,
   `<unit_name>.png` files there override the shapes. That directory is never committed.
-- Enemy turns are played with a short delay (~0.35 s) so they are readable.
+- Enemy turns are played with a short delay and a strike/hit animation so they are readable.
 
 ## Testing
-Unit tests in `rules`: turn order, movement range/blocking, damage/armor/magic,
-ranged adjacency penalty, heal cap, win/lose detection, AI picks a target and
-approaches, travel adjacency, hiring cost/cap, battle result updates the squad.
+Unit tests in `rules`: turn order, warrior reach and back-row blocking, damage/armor
+block/magic, multiple attacks, heal cap, deploy swaps, win/lose/stalemate, AI target
+choice, travel adjacency, hiring cost/cap/slotting, battle result updates the squad.
 UI is verified by running the game.

@@ -1,8 +1,9 @@
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
-use razdor::rules::game::{Arrival, Game, HireError, MAX_RECRUITS};
-use razdor::rules::units::{AttackKind, UnitKind};
+use razdor::rules::formation::{Row, Slot, COLS};
+use razdor::rules::game::{Arrival, Game, HireError, MAX_SQUAD};
+use razdor::rules::units::UnitKind;
 use razdor::rules::world::LocationKind;
 
 use super::assets::Assets;
@@ -21,11 +22,8 @@ fn stat_lines(kind: UnitKind) -> [String; 3] {
     let s = kind.stats();
     [
         format!("HP {}   Armor {}", s.max_hp, s.armor),
-        match s.attack {
-            AttackKind::Heal { .. } => s.attack.describe(),
-            _ => format!("Dmg {}-{}   {}", s.dmg_min, s.dmg_max, s.attack.describe()),
-        },
-        format!("Move {}   Initiative {}", s.moves, s.initiative),
+        kind.describe_attack(),
+        format!("Initiative {}", s.initiative),
     ]
 }
 
@@ -64,17 +62,31 @@ fn top_bar(game: &Game) {
     text(loc.name, 270.0, 29.0, 26.0, INK);
 }
 
-fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) {
-    draw_rectangle(x, y, 240.0, 40.0 + 56.0 * (MAX_RECRUITS + 1) as f32, PANEL);
-    text(&format!("Squad {}/{}", game.squad.len(), MAX_RECRUITS + 1), x + 12.0, y + 28.0, 24.0, INK);
-    for (i, u) in game.squad.iter().enumerate() {
-        let uy = y + 44.0 + i as f32 * 56.0;
-        assets.draw_unit(u.kind, Team::Player, x + 32.0, uy + 24.0, 44.0);
-        let max = u.kind.stats().max_hp;
-        text(u.kind.name(), x + 64.0, uy + 20.0, 22.0, INK);
-        text(&format!("{}/{}", u.hp, max), x + 64.0, uy + 40.0, 18.0, DIM);
-        hp_bar(x + 130.0, uy + 34.0, 96.0, u.hp, max);
+/// Squad shown as its 2×6 battle formation (front row on top). Returns the panel height.
+fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
+    const CELL: f32 = 36.0;
+    let h = 40.0 + 2.0 * (CELL + 14.0) + 30.0;
+    draw_rectangle(x, y, 240.0, h, PANEL);
+    text(&format!("Squad {}/{}", game.squad.len(), MAX_SQUAD), x + 12.0, y + 28.0, 24.0, INK);
+    let mut hovered = None;
+    for (r, row) in [Row::Front, Row::Back].into_iter().enumerate() {
+        for col in 0..COLS {
+            let (cx, cy) = (x + 6.0 + col as f32 * (CELL + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
+            draw_rectangle_lines(cx, cy, CELL, CELL, 1.0, DIM);
+            let Some(u) = game.squad.iter().find(|u| u.slot == Slot::new(row, col)) else { continue };
+            assets.draw_unit(u.kind, Team::Player, cx + CELL / 2.0, cy + CELL / 2.0, CELL);
+            hp_bar(cx + 2.0, cy + CELL + 3.0, CELL - 4.0, u.hp, u.kind.stats().max_hp);
+            if mouse_in(cx, cy, CELL, CELL) {
+                hovered = Some(u);
+            }
+        }
     }
+    let info = match hovered {
+        Some(u) => format!("{} {}/{}", u.kind.name(), u.hp, u.kind.stats().max_hp),
+        None => "front row / back row".to_string(),
+    };
+    text(&info, x + 12.0, y + h - 10.0, 18.0, DIM);
+    h
 }
 
 fn message_line(message: &Option<String>) {
@@ -127,14 +139,14 @@ pub fn world_map(game: &mut Game, assets: &Assets, message: &mut Option<String>)
     assets.draw_unit(game.hero().kind, Team::Player, hx + 30.0, hy - 30.0, 40.0);
 
     top_bar(game);
-    squad_panel(game, assets, screen_width() - 260.0, 60.0);
+    let by = 60.0 + squad_panel(game, assets, screen_width() - 260.0, 60.0) + 16.0;
     let in_town = matches!(game.world.locations[game.location].kind, LocationKind::Town { .. });
-    if button(screen_width() - 260.0, 400.0, 240.0, 44.0, "Enter town", in_town) {
+    if button(screen_width() - 260.0, by, 240.0, 44.0, "Enter town", in_town) {
         *message = None;
         return Some(Screen::Town);
     }
-    text("Click a highlighted", screen_width() - 260.0, 480.0, 18.0, DIM);
-    text("location to travel.", screen_width() - 260.0, 500.0, 18.0, DIM);
+    text("Click a highlighted", screen_width() - 260.0, by + 70.0, 18.0, DIM);
+    text("location to travel.", screen_width() - 260.0, by + 90.0, 18.0, DIM);
     message_line(message);
 
     let dest = next?;
@@ -177,9 +189,9 @@ pub fn town(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> O
         }
     }
 
-    squad_panel(game, assets, screen_width() - 260.0, 60.0);
+    let by = 60.0 + squad_panel(game, assets, screen_width() - 260.0, 60.0) + 16.0;
     message_line(message);
-    if button(screen_width() - 260.0, 400.0, 240.0, 44.0, "Leave town", true) {
+    if button(screen_width() - 260.0, by, 240.0, 44.0, "Leave town", true) {
         *message = None;
         return Some(Screen::WorldMap);
     }
