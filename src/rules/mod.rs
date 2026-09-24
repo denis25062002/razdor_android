@@ -2,6 +2,7 @@
 pub mod battle;
 pub mod clock;
 pub mod content;
+pub mod events;
 pub mod formation;
 pub mod game;
 pub mod items;
