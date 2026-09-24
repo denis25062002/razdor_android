@@ -616,6 +616,41 @@ Each is marked *(guess)* in the code.
 - **Not used yet**: `Surrender`, `CostGoldDiv`, the Archmage's world-spell bonus, "dark
   forces only" items, paying `Nature=Elemental` units in mana.
 
+### 8.1 Event engine (Stage 6, `src/rules/events.rs`)
+
+`EventEngine` keeps the script state (answers, firings, relative start times, flags, journal,
+a pending question); the game implements `EventWorld` (queries and effects). Outcomes name
+events only; texts are read from the scenario at runtime.
+
+- **Scope**: global events are checked anywhere; local events and quests only while the player
+  stands at a building or point that lists them; rumours only when the player picks one from
+  `rumours()`; subordinate events only through a chain. An unlisted local event never fires on
+  its own *(guess)*.
+- **Window**: open when `now ≥ start` and `(now − start) mod repeat < duration` (no repeat: one
+  window); duration 0 means no end *(guess)*. Relative events are ordinary events whose start
+  (a far-future "never" in the files) is moved to `now + delay hours`.
+- **Repeats** *(guess)*: a many-event fires again only after it is re-armed: by a new window
+  occurrence, by a check where its conditions fail, or (local events) by a new visit to its
+  place. A once-event is done once it took effect. A chained event ignores window and place
+  but not its conditions or "once".
+- **Loop**: fire the first eligible event (file order), start over, until none fires; at most
+  256 firings per run (then `LoopGuard`). Chains are cut at depth 32.
+- **Questions**: the engine stops with `Question(id)` until `answer(yes)`. No records "happened,
+  answer No", applies nothing, and the event may be asked again later (a once-event too, until
+  a Yes) *(guess)*. After a Yes the question is asked again only with "repeat after Yes"
+  *(guess)*. Events without a question count as answered Yes. The "happened" conditions use the
+  last answer.
+- **Conditions**: signed thresholds mean `≥ n` (positive) or `≤ |n|` (negative); squad count
+  and army strength are checked when non-zero, level/gold/mana only with the "current stats"
+  box. Owner code 6 is "not the player" (includes nobody), 0 is read as the player *(guess)*.
+  Id lists behind a check box are ignored when the box is off. All listed ids must match.
+- **Results order**: flags (`+X`/`-X`), world effects, quest to journal, quest completed,
+  relative event, victory/defeat (ends the engine), then the chained event. "Move to hero"
+  moves the army the removed units go to (else the one added units come from) *(guess)*.
+- **Community extensions** ("no meeting" + patrol value 1–20, + a spell, + named squads) are
+  detected and listed by `extensions()` but not run; such an event fires without its spell,
+  resource, patrol and stat fields (they are arguments). None of the 15 shipped maps uses them.
+
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 
 | Key | Value | Use |
