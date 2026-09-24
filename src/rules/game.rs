@@ -193,6 +193,24 @@ mod tests {
     }
 
     #[test]
+    fn auto_played_battles_always_finish() {
+        for seed in 0..50 {
+            let mut g = Game::new(Knight, seed);
+            g.hire(Spearman).unwrap();
+            g.hire(Spearman).unwrap();
+            g.travel(1).unwrap();
+            let mut b = g.start_battle();
+            let mut steps = 0;
+            while b.outcome() == Outcome::Ongoing {
+                b.ai_turn();
+                steps += 1;
+                assert!(steps < 2000, "seed {seed}: battle never ended");
+            }
+            g.resolve_battle(&b);
+        }
+    }
+
+    #[test]
     fn clearing_both_camps_wins() {
         let mut g = Game::new(Knight, 1);
         assert!(!g.won());

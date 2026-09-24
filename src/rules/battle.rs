@@ -113,7 +113,7 @@ impl Battle {
         self.order = order;
         self.turn = 0;
         self.moved = false;
-        self.log.push(format!("— Round {} —", self.round));
+        self.log.push(format!("-- Round {} --", self.round));
     }
 
     /// Id of the fighter whose turn it is.

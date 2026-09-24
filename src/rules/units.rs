@@ -30,8 +30,31 @@ pub struct Stats {
     pub attack: AttackKind,
 }
 
+impl AttackKind {
+    pub fn describe(self) -> String {
+        match self {
+            AttackKind::Melee => "melee".into(),
+            AttackKind::Ranged { range, magic: false } => format!("ranged {range}"),
+            AttackKind::Ranged { range, magic: true } => format!("magic {range}"),
+            AttackKind::Heal { amount, range } => format!("heal {amount}, range {range}"),
+        }
+    }
+}
+
 impl UnitKind {
     pub const HEROES: [UnitKind; 3] = [UnitKind::Knight, UnitKind::Archmage, UnitKind::Ranger];
+    pub const ALL: [UnitKind; 10] = [
+        UnitKind::Knight,
+        UnitKind::Archmage,
+        UnitKind::Ranger,
+        UnitKind::Spearman,
+        UnitKind::Archer,
+        UnitKind::Swordsman,
+        UnitKind::Healer,
+        UnitKind::Bandit,
+        UnitKind::BanditArcher,
+        UnitKind::BanditChief,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
