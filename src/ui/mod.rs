@@ -1,6 +1,7 @@
 //! macroquad presentation layer. Reads rules state and calls rules methods.
 pub mod assets;
 pub mod battle_view;
+pub mod dt_art;
 pub mod items_view;
 pub mod screens;
 pub mod widgets;
