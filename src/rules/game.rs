@@ -1,6 +1,7 @@
 use super::battle::{Battle, Outcome};
 use super::clock::Clock;
 use super::formation::{free_slot, Slot};
+use super::items::{catalog, free_slot_for, EquipError, ItemId, Source};
 use super::map::{center, tile_at, Tile, TileMap};
 use super::rng::Rng;
 use super::units::{Unit, UnitKind};
@@ -21,6 +22,14 @@ const STEP_MINUTES: f32 = 5.0;
 const WANDER_RADIUS: i32 = 8;
 const SPAWN_EVERY_DAYS: u32 = 3;
 const MAX_GANGS_PER_CAMP: usize = 2;
+/// Unworn items the party can carry.
+pub const PACK_SIZE: usize = 16;
+/// Items on sale in each market after a restock.
+pub const MARKET_STOCK: usize = 6;
+/// Percent chance that a beaten gang drops an item.
+const GANG_LOOT_CHANCE: i32 = 30;
+/// Percent chance that a village pays tribute with an item instead of gold.
+const TRIBUTE_ITEM_CHANCE: i32 = 25;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HireError {
@@ -30,8 +39,24 @@ pub enum HireError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum TradeError {
+    NoMarket,
+    NotEnoughGold,
+    PackFull,
+    NoSuchItem,
+}
+
+/// What a village paid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tribute {
+    Gold(i32),
+    Item(ItemId),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum BattleResult {
-    Victory { reward: i32, lost: usize },
+    /// `loot` went into the pack; `left_behind` items did not fit.
+    Victory { reward: i32, lost: usize, loot: Vec<ItemId>, left_behind: usize },
     Withdrew { lost: usize },
     Defeat,
 }
@@ -73,6 +98,8 @@ pub struct Game {
     /// Location the party is standing on, if any.
     pub location: Option<usize>,
     pub foe: Option<Foe>,
+    /// Shared bag of unworn items.
+    pub pack: Vec<ItemId>,
     rng: Rng,
     battles: u64,
     seed: u64,
@@ -109,7 +136,7 @@ impl Game {
     pub fn new(hero: UnitKind, seed: u64) -> Self {
         let world = World::standard();
         let home = world.locations[0].tile;
-        Game {
+        let mut g = Game {
             squad: vec![Unit::new(hero, free_slot(&[], hero.stats().attack.preferred_row()).unwrap())],
             gold: hero.starting_gold(),
             clock: Clock::start(),
@@ -118,10 +145,13 @@ impl Game {
             world,
             location: Some(0),
             foe: None,
+            pack: Vec::new(),
             rng: Rng::new(seed ^ 0x9e37_79b9),
             battles: 0,
             seed,
-        }
+        };
+        g.restock_markets();
+        g
     }
 
     pub fn hero(&self) -> &Unit {
@@ -245,6 +275,9 @@ impl Game {
                 unpaid += 1;
             }
         }
+        if (day - 1) % 7 == 0 {
+            self.restock_markets(); // Monday
+        }
         if day % SPAWN_EVERY_DAYS == 0 {
             let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
             for (camp, tile) in camps {
@@ -336,10 +369,17 @@ impl Game {
         }
     }
 
-    pub fn collect_tribute(&mut self) -> Option<i32> {
-        let t = self.use_village()?;
-        self.gold += t;
-        Some(t)
+    /// Collects today's tribute: usually gold, sometimes an item (gold if the pack is full).
+    pub fn collect_tribute(&mut self) -> Option<Tribute> {
+        let gold = self.use_village()?;
+        if self.pack.len() < PACK_SIZE && self.rng.range(1, 100) <= TRIBUTE_ITEM_CHANCE {
+            if let Some(item) = self.roll_item(Source::Tribute) {
+                self.pack.push(item);
+                return Some(Tribute::Item(item));
+            }
+        }
+        self.gold += gold;
+        Some(Tribute::Gold(gold))
     }
 
     /// The village priest heals the squad instead of tribute being collected.
@@ -361,21 +401,17 @@ impl Game {
             Some(Foe::Party(i)) => self.world.parties[i].enemies.clone(),
             None => Vec::new(),
         };
-        let player: Vec<_> = self
-            .squad
-            .iter()
-            .enumerate()
-            .filter(|(_, u)| !u.unpaid)
-            .map(|(i, u)| (u.kind, u.hp, u.slot, i))
-            .collect();
+        let player: Vec<_> = self.squad.iter().enumerate().filter(|(_, u)| !u.unpaid).collect();
         self.battles += 1;
         Battle::new(&player, &enemies, self.seed.wrapping_add(self.battles * 7919))
     }
 
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
-        for (i, hp, slot) in battle.player_results() {
-            self.squad[i].hp = hp;
-            self.squad[i].slot = slot;
+        for (i, hp, slot, items) in battle.player_results() {
+            let u = &mut self.squad[i];
+            u.hp = hp;
+            u.slot = slot;
+            u.items = items;
         }
         let before = self.squad.len();
         let hero = self.squad.remove(0);
@@ -388,19 +424,22 @@ impl Game {
             (Outcome::Victory, Some(Foe::Camp(l))) => {
                 let loc = &mut self.world.locations[l];
                 loc.cleared = true;
-                let reward = match loc.kind {
-                    LocationKind::Camp { reward, .. } => reward,
-                    _ => 0,
+                let (reward, drops) = match loc.kind {
+                    LocationKind::Camp { reward, loot, .. } => (reward, loot),
+                    _ => (0, 0),
                 };
                 self.gold += reward;
-                BattleResult::Victory { reward, lost }
+                let (loot, left_behind) = self.take_loot(drops);
+                BattleResult::Victory { reward, lost, loot, left_behind }
             }
             (Outcome::Victory, Some(Foe::Party(i))) => {
                 self.world.parties.remove(i);
                 self.gold += GANG_REWARD;
-                BattleResult::Victory { reward: GANG_REWARD, lost }
+                let drops = u32::from(self.rng.range(1, 100) <= GANG_LOOT_CHANCE);
+                let (loot, left_behind) = self.take_loot(drops);
+                BattleResult::Victory { reward: GANG_REWARD, lost, loot, left_behind }
             }
-            (Outcome::Victory, None) => BattleResult::Victory { reward: 0, lost },
+            (Outcome::Victory, None) => BattleResult::Victory { reward: 0, lost, loot: Vec::new(), left_behind: 0 },
             (Outcome::Defeat, _) => BattleResult::Defeat,
             (_, foe) => {
                 if let Some(Foe::Party(i)) = foe {
@@ -413,6 +452,100 @@ impl Game {
 
     pub fn won(&self) -> bool {
         self.world.all_camps_cleared()
+    }
+
+    /// A random item of the given source, if the table has any.
+    fn roll_item(&mut self, source: Source) -> Option<ItemId> {
+        let pool = catalog().from_source(source);
+        if pool.is_empty() {
+            return None;
+        }
+        Some(pool[self.rng.range(0, pool.len() as i32 - 1) as usize])
+    }
+
+    /// Rolls `drops` loot items into the pack. Returns (kept, left behind).
+    fn take_loot(&mut self, drops: u32) -> (Vec<ItemId>, usize) {
+        let mut kept = Vec::new();
+        let mut left_behind = 0;
+        for _ in 0..drops {
+            let Some(item) = self.roll_item(Source::Loot) else { continue };
+            if self.pack.len() < PACK_SIZE {
+                self.pack.push(item);
+                kept.push(item);
+            } else {
+                left_behind += 1;
+            }
+        }
+        (kept, left_behind)
+    }
+
+    fn restock_markets(&mut self) {
+        for l in 0..self.world.locations.len() {
+            if !matches!(self.world.locations[l].kind, LocationKind::Castle { .. }) {
+                continue;
+            }
+            let stock: Vec<ItemId> = (0..MARKET_STOCK).filter_map(|_| self.roll_item(Source::Market)).collect();
+            if let LocationKind::Castle { market, .. } = &mut self.world.locations[l].kind {
+                *market = stock;
+            }
+        }
+    }
+
+    /// Items for sale where the party stands, if there is a market.
+    pub fn market_here(&self) -> Option<&[ItemId]> {
+        match &self.world.locations[self.location?].kind {
+            LocationKind::Castle { market, .. } => Some(market),
+            _ => None,
+        }
+    }
+
+    pub fn buy(&mut self, stock_index: usize) -> Result<ItemId, TradeError> {
+        let item = *self.market_here().ok_or(TradeError::NoMarket)?.get(stock_index).ok_or(TradeError::NoSuchItem)?;
+        if self.gold < item.def().price {
+            return Err(TradeError::NotEnoughGold);
+        }
+        if self.pack.len() >= PACK_SIZE {
+            return Err(TradeError::PackFull);
+        }
+        if let Some(LocationKind::Castle { market, .. }) = self.location.map(|l| &mut self.world.locations[l].kind) {
+            market.remove(stock_index);
+        }
+        self.gold -= item.def().price;
+        self.pack.push(item);
+        Ok(item)
+    }
+
+    /// Sells a pack item for half its price. Returns the gold gained.
+    pub fn sell(&mut self, pack_index: usize) -> Result<i32, TradeError> {
+        self.market_here().ok_or(TradeError::NoMarket)?;
+        if pack_index >= self.pack.len() {
+            return Err(TradeError::NoSuchItem);
+        }
+        let price = self.pack.remove(pack_index).def().sell_price();
+        self.gold += price;
+        Ok(price)
+    }
+
+    /// Moves a pack item onto squad member `unit`.
+    pub fn equip(&mut self, unit: usize, pack_index: usize) -> Result<(), EquipError> {
+        let item = *self.pack.get(pack_index).ok_or(EquipError::NoSuchItem)?;
+        let u = self.squad.get_mut(unit).ok_or(EquipError::NoSuchItem)?;
+        let slot = free_slot_for(&u.items, item)?;
+        u.items[slot] = Some(item);
+        self.pack.remove(pack_index);
+        Ok(())
+    }
+
+    /// Moves item slot `slot` of squad member `unit` back into the pack.
+    pub fn unequip(&mut self, unit: usize, slot: usize) -> Result<(), EquipError> {
+        if self.pack.len() >= PACK_SIZE {
+            return Err(EquipError::PackFull);
+        }
+        let u = self.squad.get_mut(unit).ok_or(EquipError::NoSuchItem)?;
+        let item = u.items.get_mut(slot).and_then(Option::take).ok_or(EquipError::NoSuchItem)?;
+        u.hp = u.hp.min(u.stats().max_hp);
+        self.pack.push(item);
+        Ok(())
     }
 }
 
@@ -513,8 +646,11 @@ mod tests {
         g.set_destination(tile_of_location(&g, "Millbrook"));
         walk_until_stopped(&mut g);
         let gold = g.gold;
-        assert_eq!(g.collect_tribute(), Some(10));
-        assert_eq!(g.gold, gold + 10);
+        match g.collect_tribute() {
+            Some(Tribute::Gold(10)) => assert_eq!(g.gold, gold + 10),
+            Some(Tribute::Item(item)) => assert_eq!(g.pack, vec![item]),
+            other => panic!("{other:?}"),
+        }
         assert_eq!(g.collect_tribute(), None);
         assert!(!g.priest_heal(), "already used today");
         let mut events = Vec::new();
@@ -575,7 +711,7 @@ mod tests {
             f.hp = 0;
         }
         let gold = g.gold;
-        assert_eq!(g.resolve_battle(&b), BattleResult::Victory { reward: GANG_REWARD, lost: 0 });
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { reward: GANG_REWARD, lost: 0, .. }));
         assert_eq!(g.gold, gold + GANG_REWARD);
         assert!(g.world.parties.is_empty());
         assert_eq!(g.foe, None);
@@ -629,7 +765,9 @@ mod tests {
         for f in b.fighters.iter_mut().filter(|f| f.kind != Knight) {
             f.hp = 0;
         }
-        assert_eq!(g.resolve_battle(&b), BattleResult::Victory { reward: 100, lost: 1 });
+        let result = g.resolve_battle(&b);
+        assert!(matches!(&result, BattleResult::Victory { reward: 100, lost: 1, loot, left_behind: 0 } if loot.len() == 1));
+        assert_eq!(g.pack.len(), 1);
         assert!(g.world.locations[camp].cleared);
         assert!(!g.won());
     }
@@ -651,5 +789,132 @@ mod tests {
             }
             g.resolve_battle(&b);
         }
+    }
+
+    fn at_oakford(g: &mut Game) {
+        g.location = Some(g.world.index_of("Oakford"));
+    }
+
+    #[test]
+    fn markets_stock_market_items_and_restock_on_monday() {
+        let mut g = quiet_game(Knight);
+        at_oakford(&mut g);
+        let stock = g.market_here().unwrap().to_vec();
+        assert_eq!(stock.len(), MARKET_STOCK);
+        assert!(stock.iter().all(|i| i.def().sources.contains(&Source::Market)));
+        g.gold = 10_000;
+        g.buy(0).unwrap();
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1);
+        let mut events = Vec::new();
+        g.pass_time((16 + 24 * 5) as f32 * 60.0, &mut events); // to Sunday 00:00
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not Monday yet");
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert_eq!(g.clock.weekday(), "Monday");
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK);
+    }
+
+    #[test]
+    fn buying_and_selling() {
+        let mut g = quiet_game(Knight);
+        g.location = None;
+        assert_eq!(g.buy(0), Err(TradeError::NoMarket), "on the road");
+        at_oakford(&mut g);
+        let item = g.market_here().unwrap()[0];
+        g.gold = item.def().price - 1;
+        assert_eq!(g.buy(0), Err(TradeError::NotEnoughGold));
+        g.gold = item.def().price;
+        assert_eq!(g.buy(0), Ok(item));
+        assert_eq!((g.gold, g.pack.clone()), (0, vec![item]));
+        assert_eq!(g.sell(0), Ok(item.def().price / 2));
+        assert!(g.pack.is_empty());
+        assert_eq!(g.sell(0), Err(TradeError::NoSuchItem));
+        g.pack = vec![item; PACK_SIZE];
+        g.gold = 10_000;
+        assert_eq!(g.buy(0), Err(TradeError::PackFull));
+        g.location = Some(g.world.index_of("Millbrook"));
+        assert_eq!(g.sell(0), Err(TradeError::NoMarket));
+    }
+
+    #[test]
+    fn equip_and_unequip_through_the_pack() {
+        let mut g = quiet_game(Knight);
+        let (sword, axe, shield) = (ItemId::named("short_sword"), ItemId::named("war_axe"), ItemId::named("oak_shield"));
+        g.pack = vec![sword, axe, shield];
+        g.equip(0, 0).unwrap();
+        assert_eq!(g.equip(0, 0), Err(EquipError::SameType), "axe is a second weapon");
+        g.equip(0, 1).unwrap();
+        assert_eq!(g.pack, vec![axe]);
+        assert_eq!(g.hero().stats().max_hp, 65);
+        g.squad[0].heal_full();
+        let shield_slot = g.hero().items.iter().position(|i| *i == Some(shield)).unwrap();
+        g.unequip(0, shield_slot).unwrap();
+        assert_eq!(g.hero().hp, 60, "HP capped to the new max");
+        assert_eq!(g.pack, vec![axe, shield]);
+        assert_eq!(g.unequip(0, shield_slot), Err(EquipError::NoSuchItem));
+        g.pack = vec![axe; PACK_SIZE];
+        assert_eq!(g.unequip(0, 0), Err(EquipError::PackFull));
+    }
+
+    #[test]
+    fn gear_goes_into_battle_and_potions_are_spent() {
+        let mut g = quiet_game(Knight);
+        g.squad[0].items[0] = Some(ItemId::named("might_potion"));
+        g.squad[0].items[1] = Some(ItemId::named("chainmail"));
+        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        let mut b = g.start_battle();
+        b.begin();
+        assert_eq!(b.fighters[0].stats.armor, 7);
+        while b.active() != Some(0) {
+            b.skip();
+        }
+        b.drink(0).unwrap();
+        for f in b.fighters.iter_mut().filter(|f| f.team == crate::rules::battle::Team::Enemy) {
+            f.hp = 0;
+        }
+        g.resolve_battle(&b);
+        assert_eq!(g.hero().items, [None, Some(ItemId::named("chainmail")), None, None]);
+    }
+
+    #[test]
+    fn dead_recruits_take_their_gear_with_them() {
+        let mut g = quiet_game(Knight);
+        g.hire(Spearman).unwrap();
+        g.squad[1].items[0] = Some(ItemId::named("chainmail"));
+        g.foe = Some(Foe::Camp(g.world.index_of("Bandit camp")));
+        let mut b = g.start_battle();
+        for f in b.fighters.iter_mut().filter(|f| f.kind != Knight) {
+            f.hp = 0;
+        }
+        g.resolve_battle(&b);
+        assert_eq!(g.squad.len(), 1);
+        assert!(!g.pack.contains(&ItemId::named("chainmail")));
+    }
+
+    #[test]
+    fn loot_that_does_not_fit_is_left_behind() {
+        let mut g = quiet_game(Knight);
+        g.pack = vec![ItemId::named("heal_potion"); PACK_SIZE];
+        let lair = g.world.index_of("Bandit lair");
+        g.foe = Some(Foe::Camp(lair));
+        let mut b = g.start_battle();
+        for f in b.fighters.iter_mut().filter(|f| f.kind != Knight) {
+            f.hp = 0;
+        }
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { left_behind: 2, .. }));
+    }
+
+    #[test]
+    fn villages_sometimes_pay_in_items() {
+        let mut items = 0;
+        for seed in 0..200 {
+            let mut g = quiet_game(Knight);
+            g.rng = Rng::new(seed);
+            g.location = Some(g.world.index_of("Millbrook"));
+            if let Some(Tribute::Item(item)) = g.collect_tribute() {
+                assert!(item.def().sources.contains(&Source::Tribute));
+                items += 1;
+            }
+        }
+        assert!((25..=80).contains(&items), "about 25%: {items}/200");
     }
 }

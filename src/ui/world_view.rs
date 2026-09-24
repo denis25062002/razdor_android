@@ -3,7 +3,7 @@
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
-use razdor::rules::game::{Event, Game};
+use razdor::rules::game::{Event, Game, Tribute};
 use razdor::rules::map::{center, hex_distance, hex_neighbours, tile_at, Terrain, Tile, ROW_HEIGHT};
 use razdor::rules::units::UnitKind;
 use razdor::rules::world::LocationKind;
@@ -269,8 +269,10 @@ fn location_panel(game: &mut Game, message: &mut Option<String>, x: f32, mut y: 
                 None => "Tribute collected today".to_string(),
             };
             if button(x, y, 240.0, 40.0, &label, tribute.is_some()) {
-                let got = game.collect_tribute().unwrap_or(0);
-                *message = Some(format!("The village pays {got} gold."));
+                *message = game.collect_tribute().map(|t| match t {
+                    Tribute::Gold(g) => format!("The village pays {g} gold."),
+                    Tribute::Item(item) => format!("The village pays with a {}.", item.def().name),
+                });
             }
             if button(x, y + 48.0, 240.0, 40.0, "Ask the priest to heal", tribute.is_some()) {
                 game.priest_heal();
@@ -362,6 +364,11 @@ pub fn frame(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> 
     text(&format!("Wages  -{}/day", game.daily_wages()), x + 20.0, y + 24.0, 18.0, DIM);
     if next.is_none() {
         next = location_panel(game, message, x + 20.0, y + 40.0);
+    }
+    if next.is_none() && button(x + 20.0, screen_height() - 186.0, 240.0, 40.0, "Squad & gear", true) {
+        game.stop();
+        *message = None;
+        next = Some(Screen::Squad { selected: 0, from_town: false });
     }
     let help = [
         "Click the map to travel.",

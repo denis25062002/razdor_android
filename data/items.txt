@@ -1,0 +1,20 @@
+# Razdor item table. One item per line, columns separated by '|':
+#   id | name | type | price | bonuses | effect | sources
+# type:    weapon armor helmet shield ring amulet boots cloak potion
+# bonuses: space-separated hp dmg armor init actions with a sign, e.g. dmg+4 init-1
+# effect:  regen N, extra_action, no_flank, magic_strike; potions: heal N, might N
+# sources: any of market loot tribute
+#
+# id          | name             | type    | price | bonuses          | effect        | sources
+short_sword   | Short sword      | weapon  | 60    | dmg+2            |               | market loot
+war_axe       | War axe          | weapon  | 120   | dmg+4 init-1     |               | market
+chainmail     | Chainmail        | armor   | 90    | armor+2          |               | market loot
+leather_cap   | Leather cap      | helmet  | 35    | armor+1          |               | market tribute
+oak_shield    | Oak shield       | shield  | 50    | armor+1 hp+5     |               | market loot
+ring_might    | Ring of might    | ring    | 150   | dmg+2            |               | loot
+amulet_life   | Amulet of life   | amulet  | 140   | hp+15            | regen 3       | loot
+boots_haste   | Boots of haste   | boots   | 200   | init+2           | extra_action  | loot
+cloak_guard   | Guardian cloak   | cloak   | 180   | armor+1          | no_flank      | loot
+rune_blade    | Rune blade       | weapon  | 250   | dmg+1            | magic_strike  | loot
+heal_potion   | Healing potion   | potion  | 25    |                  | heal 15       | market loot tribute
+might_potion  | Potion of might  | potion  | 40    |                  | might 3       | market tribute

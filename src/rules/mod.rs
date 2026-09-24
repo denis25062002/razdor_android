@@ -3,6 +3,7 @@ pub mod battle;
 pub mod clock;
 pub mod formation;
 pub mod game;
+pub mod items;
 pub mod map;
 pub mod rng;
 pub mod units;

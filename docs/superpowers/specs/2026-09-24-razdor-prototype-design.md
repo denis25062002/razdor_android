@@ -99,9 +99,10 @@ Replaces the v1 10×8 movement grid. Rules follow the fan wiki
   heal or move costs 1. Space ends the turn early.
 - **Move:** step to an orthogonally adjacent empty cell of your own formation *(guess:
   orthogonal only)*.
-- **Warrior reach:** only from the front row (back-row warriors are helpless). Hits the
-  enemy front-row card in the same column. If that opposite cell is empty it may instead
-  hit a card in a neighbouring column: a **flank strike**, attack ×2.
+- **Warrior reach:** only from the front row (back-row warriors are helpless). Hits any
+  enemy front-row card in the same column or a neighbouring one (front, front-left,
+  front-right). A diagonal hit while the cell straight ahead is empty is a **flank
+  strike**, attack ×2 *(guess: diagonals with the opposite cell occupied deal normal damage)*.
 - **Collapse:** when a side's front row is empty, its back row steps forward (same columns).
   So melee never reaches the back row directly.
 - **Shooter / mage:** may target any enemy. Magic ignores armor.
@@ -124,8 +125,48 @@ Knight armor 5. Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5�
 Balance (AI vs AI, 200 seeds): hero alone loses the camp; hero + 3 spearmen wins it;
 the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 
+### Items and market (v4, as in the original)
+Sources: ru.wikipedia (item kinds: armor, weapons, potions, artifacts; villages may hand out
+items), the fan wiki (4 inventory slots, no two items of the same type). Gaps are *(guess)*.
+
+**Item table.** All items live in `data/items.txt` (embedded with `include_str!`, like the
+map), one per line, `|`-separated columns:
+`id | name | type | price | bonuses | effect | sources`.
+- *type*: `weapon armor helmet shield ring amulet boots cloak potion`.
+- *bonuses*: space-separated `hp dmg armor init actions` with a sign, e.g. `dmg+4 init-1`.
+  `dmg` adds to both ends of the damage roll; for a healer it adds to the heal *(guess)*.
+- *effect* (at most one): `regen N` (heals N at the start of each round), `extra_action`
+  (+1 action per turn), `no_flank` (flank strikes on the wearer are not doubled),
+  `magic_strike` (the wearer's attacks ignore armor). Potions only: `heal N` (restores HP,
+  capped), `might N` (+N damage for the rest of the battle).
+- *sources*: any of `market loot tribute`.
+- A malformed file fails at startup with the line number; a test checks the shipped file.
+
+**Slots.** Every unit (hero and recruits) has 4 slots. At most one item of each type per
+unit, except potions: several potions may be carried. Any unit may wear any item. Gear
+bonuses and effects apply everywhere (max HP on the map, all stats in battle). Enemies
+carry no items.
+
+**Pack.** The party shares a pack of up to 16 unworn items *(guess)*. Loot, tribute and
+purchases go there; what does not fit is left behind. A **Squad** screen (from the world map
+or a castle, never mid-battle) moves items between the pack and units. Taking off an item
+that raised max HP caps current HP to the new max. A recruit who dies loses its gear.
+
+**Market.** Both castles have one (foreign Greywall trades too *(guess)*): 6 items drawn at
+random from `market` items, restocked every Monday 00:00. Buy at the price, sell anything
+from the pack for half its price, rounded down *(guess)*.
+
+**Loot.** Bandit camp victory: 1 item; lair: 2; a beaten gang drops one 30% of the time.
+Drawn from `loot` items. **Tribute:** a village pays a `tribute` item instead of gold 25% of
+the time (gold if the pack is full).
+
+**Potions in battle.** On its turn a unit may drink one of its own potions for 1 action.
+A heal potion needs the drinker to be wounded. The potion is used up. The AI does not
+drink. Unused potions stay with the survivor.
+
 ### Out of scope (YAGNI)
-XP/levels, quests, dialogue, equipment, save/load, sound, morale, fog of war, hex grid.
+XP/levels, quests, dialogue, save/load, sound, morale, fog of war.
+Items leave out: role restrictions, item durability, enemy gear, the AI using potions.
 Map v2 leaves out: ships (half-speed time), resurrecting the dead within 7 days, leaving
 garrisons, capturing castles, taverns, non-bandit parties (peasants, undead, feudal lords).
 
@@ -137,19 +178,24 @@ src/
   rules/           pure game logic, no macroquad dependency, unit-tested
     mod.rs
     rng.rs         small seeded xorshift RNG (deterministic tests)
-    units.rs       UnitKind, Stats, AttackKind, Unit
+    units.rs       UnitKind, Stats, AttackKind, Unit (with gear and effective stats)
+    items.rs       item table parsed from data/items.txt: types, bonuses, effects, sources
     map.rs         TileMap: hex terrain grid parsed from data/kingdom.txt, hex math, A*
     clock.rs       Clock: game minutes → day / weekday / HH:MM, midnight rollover
     world.rs       Locations and roaming parties on the tile map
     formation.rs   Row, Slot, 2×6 formation helpers
-    battle.rs      Battle: deploy, turn order, attack/heal, win/lose/stalemate, AI
+    battle.rs      Battle: deploy, turn order, attack/heal/drink, effects, win/lose/stalemate, AI
     game.rs        Game: hero, gold, squad, clock, travel tick (movement, time, parties,
-                   encounters, paydays), hiring, tribute, battle setup/resolve
+                   encounters, paydays), hiring, tribute, pack, equip, market, loot,
+                   battle setup/resolve
   ui/              macroquad presentation only
     mod.rs
     assets.rs      Assets: draws units/tiles; optional PNG override dir
     widgets.rs     button + text helpers
-    screens.rs     class select, world map, town, battle, end screens
+    screens.rs     class select, town, end screens
+    world_view.rs  hex world map
+    battle_view.rs card battle
+    items_view.rs  squad/gear and market screens
 ```
 
 - `rules` never imports macroquad; the UI reads rules state and calls rules methods.
@@ -166,4 +212,6 @@ warriors, collapse, movement and action points, armor minimum 1, magic, heal cap
 swaps, win/lose/stalemate, AI targeting and approach, hiring, battle results.
 Map parsing and A* (costs, impassable terrain), clock rollover, wages and unpaid units,
 daily tribute, time frozen while standing still, party chase and encounter, arrival.
+Item table parsing and errors, equip rules, gear stats, buy/sell, weekly restock, loot and
+tribute items, potions, regen / no_flank / magic_strike / extra_action.
 UI is verified by running the game.

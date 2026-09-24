@@ -4,12 +4,50 @@ use std::path::Path;
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
+use razdor::rules::items::{catalog, Effect, ItemId, ItemType};
 use razdor::rules::units::UnitKind;
 
-/// Every unit picture goes through here. Defaults to coloured tokens; PNGs named
-/// `<asset_key>.png` in the `RAZDOR_ASSETS` directory override them.
+/// Every unit and item picture goes through here. Defaults to coloured tokens; PNGs named
+/// `<asset_key>.png` (units) or `<item id>.png` (items) in the `RAZDOR_ASSETS` directory
+/// override them.
 pub struct Assets {
     sprites: HashMap<UnitKind, Texture2D>,
+    item_sprites: HashMap<ItemId, Texture2D>,
+}
+
+fn item_token(item: ItemId) -> (Color, &'static str) {
+    use ItemType::*;
+    let def = item.def();
+    match def.ty {
+        Weapon => (Color::from_rgba(190, 190, 200, 255), "W"),
+        Armor => (Color::from_rgba(140, 140, 150, 255), "A"),
+        Helmet => (Color::from_rgba(160, 130, 90, 255), "H"),
+        Shield => (Color::from_rgba(150, 100, 60, 255), "S"),
+        Ring => (Color::from_rgba(230, 200, 80, 255), "R"),
+        Amulet => (Color::from_rgba(90, 200, 190, 255), "M"),
+        Boots => (Color::from_rgba(120, 90, 60, 255), "B"),
+        Cloak => (Color::from_rgba(90, 110, 170, 255), "C"),
+        Potion => match def.effect {
+            Some(Effect::Heal(_)) => (Color::from_rgba(220, 70, 70, 255), "P"),
+            _ => (Color::from_rgba(200, 120, 230, 255), "P"),
+        },
+    }
+}
+
+async fn load_png(path: &str) -> Option<Texture2D> {
+    if !Path::new(path).exists() {
+        return None;
+    }
+    match load_texture(path).await {
+        Ok(tex) => {
+            tex.set_filter(FilterMode::Nearest);
+            Some(tex)
+        }
+        Err(e) => {
+            eprintln!("could not load {path}: {e}");
+            None
+        }
+    }
 }
 
 fn token(kind: UnitKind) -> (Color, &'static str) {
@@ -38,21 +76,36 @@ pub fn team_color(team: Team) -> Color {
 impl Assets {
     pub async fn load() -> Self {
         let mut sprites = HashMap::new();
+        let mut item_sprites = HashMap::new();
         if let Ok(dir) = std::env::var("RAZDOR_ASSETS") {
             for kind in UnitKind::ALL {
-                let path = format!("{dir}/{}.png", kind.asset_key());
-                if Path::new(&path).exists() {
-                    match load_texture(&path).await {
-                        Ok(tex) => {
-                            tex.set_filter(FilterMode::Nearest);
-                            sprites.insert(kind, tex);
-                        }
-                        Err(e) => eprintln!("could not load {path}: {e}"),
-                    }
+                if let Some(tex) = load_png(&format!("{dir}/{}.png", kind.asset_key())).await {
+                    sprites.insert(kind, tex);
+                }
+            }
+            for item in catalog().ids() {
+                if let Some(tex) = load_png(&format!("{dir}/{}.png", item.def().id)).await {
+                    item_sprites.insert(item, tex);
                 }
             }
         }
-        Assets { sprites }
+        Assets { sprites, item_sprites }
+    }
+
+    /// Draw an item icon filling the square at (x, y).
+    pub fn draw_item(&self, item: ItemId, x: f32, y: f32, size: f32) {
+        if let Some(tex) = self.item_sprites.get(&item) {
+            let params = DrawTextureParams { dest_size: Some(vec2(size, size)), ..Default::default() };
+            draw_texture_ex(tex, x, y, WHITE, params);
+            return;
+        }
+        let (fill, letter) = item_token(item);
+        let pad = size * 0.12;
+        draw_rectangle(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, fill);
+        draw_rectangle_lines(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, 2.0, BLACK);
+        let fs = (size * 0.5) as u16;
+        let dim = measure_text(letter, None, fs, 1.0);
+        draw_text(letter, x + (size - dim.width) / 2.0, y + (size + dim.offset_y) / 2.0, fs as f32, BLACK);
     }
 
     /// Draw a unit centred on (cx, cy) inside a square of `size`.

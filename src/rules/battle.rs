@@ -1,6 +1,7 @@
 use super::formation::{Row, Slot, COLS};
 use super::rng::Rng;
-use super::units::{AttackKind, UnitKind};
+use super::items::{Effect, ItemId, Passives, SLOTS};
+use super::units::{AttackKind, Stats, Unit, UnitKind};
 
 /// After this many rounds the battle ends undecided.
 pub const MAX_ROUNDS: u32 = 20;
@@ -37,11 +38,41 @@ pub struct Fighter {
     pub is_hero: bool,
     /// Index into the player's squad, for writing HP/slot back after the battle.
     pub squad_index: Option<usize>,
+    /// Stats with gear and drunk potions applied.
+    pub stats: Stats,
+    pub passives: Passives,
+    /// Gear and potions; potions vanish once drunk.
+    pub items: [Option<ItemId>; SLOTS],
 }
 
 impl Fighter {
+    fn new(unit: &Unit, team: Team, squad_index: Option<usize>) -> Self {
+        Fighter {
+            kind: unit.kind,
+            team,
+            hp: unit.hp,
+            slot: unit.slot,
+            is_hero: squad_index == Some(0),
+            squad_index,
+            stats: unit.stats(),
+            passives: unit.passives(),
+            items: unit.items,
+        }
+    }
+
     pub fn alive(&self) -> bool {
         self.hp > 0
+    }
+
+    /// Item slots holding a potion this fighter could drink right now.
+    pub fn drinkable(&self) -> Vec<usize> {
+        (0..SLOTS)
+            .filter(|&i| match self.items[i].and_then(|it| it.def().effect) {
+                Some(Effect::Heal(_)) => self.hp < self.stats.max_hp,
+                Some(Effect::Might(_)) => true,
+                _ => false,
+            })
+            .collect()
     }
 }
 
@@ -54,6 +85,8 @@ pub struct Hit {
     pub heal: bool,
     pub flank: bool,
     pub killed: bool,
+    /// A potion of might: `amount` is the damage gained.
+    pub boost: bool,
 }
 
 /// One AI action, for the UI to animate.
@@ -91,28 +124,12 @@ fn neighbours(s: Slot) -> impl Iterator<Item = Slot> {
 }
 
 impl Battle {
-    /// `player` entries are (kind, current hp, slot, squad index); squad index 0 is the hero.
+    /// `player` entries are (squad index, unit); squad index 0 is the hero.
     /// Starts in the deploy phase; call [`Battle::begin`] to fight.
-    pub fn new(player: &[(UnitKind, i32, Slot, usize)], enemies: &[(UnitKind, Slot)], seed: u64) -> Self {
-        let mut fighters: Vec<Fighter> = player
-            .iter()
-            .map(|&(kind, hp, slot, idx)| Fighter {
-                kind,
-                team: Team::Player,
-                hp,
-                slot,
-                is_hero: idx == 0,
-                squad_index: Some(idx),
-            })
-            .collect();
-        fighters.extend(enemies.iter().map(|&(kind, slot)| Fighter {
-            kind,
-            team: Team::Enemy,
-            hp: kind.stats().max_hp,
-            slot,
-            is_hero: false,
-            squad_index: None,
-        }));
+    pub fn new(player: &[(usize, &Unit)], enemies: &[(UnitKind, Slot)], seed: u64) -> Self {
+        let mut fighters: Vec<Fighter> =
+            player.iter().map(|&(idx, unit)| Fighter::new(unit, Team::Player, Some(idx))).collect();
+        fighters.extend(enemies.iter().map(|&(kind, slot)| Fighter::new(&Unit::new(kind, slot), Team::Enemy, None)));
         Battle {
             fighters,
             round: 0,
@@ -168,17 +185,24 @@ impl Battle {
         let mut order: Vec<usize> = (0..self.fighters.len()).filter(|&i| self.fighters[i].alive()).collect();
         order.sort_by_key(|&i| {
             let f = &self.fighters[i];
-            (-f.kind.stats().initiative, f.team == Team::Enemy, i)
+            (-f.stats.initiative, f.team == Team::Enemy, i)
         });
         self.order = order;
         self.turn = 0;
         self.log.push(format!("-- Round {} --", self.round));
+        for f in self.fighters.iter_mut().filter(|f| f.alive() && f.passives.regen > 0) {
+            let healed = (f.hp + f.passives.regen).min(f.stats.max_hp) - f.hp;
+            if healed > 0 {
+                f.hp += healed;
+                self.log.push(format!("{} regenerates +{healed}", f.kind.name()));
+            }
+        }
         self.begin_turn();
     }
 
     fn begin_turn(&mut self) {
         if let Some(&id) = self.order.get(self.turn) {
-            self.actions_left = self.fighters[id].kind.stats().actions;
+            self.actions_left = self.fighters[id].stats.actions;
         }
     }
 
@@ -232,7 +256,7 @@ impl Battle {
     /// A warrior in the back row cannot strike at all.
     pub fn helpless(&self, id: usize) -> bool {
         let f = &self.fighters[id];
-        f.kind.stats().attack == AttackKind::Melee && f.slot.row == Row::Back
+        f.stats.attack == AttackKind::Melee && f.slot.row == Row::Back
     }
 
     /// Whether `id`, standing on `from`, may act on `target`; `Some(true)` for a flank strike.
@@ -242,17 +266,20 @@ impl Battle {
         if !f.alive() || !t.alive() {
             return None;
         }
-        match f.kind.stats().attack {
-            AttackKind::Heal { .. } => (t.team == f.team && t.hp < t.kind.stats().max_hp).then_some(false),
+        match f.stats.attack {
+            AttackKind::Heal { .. } => (t.team == f.team && t.hp < t.stats.max_hp).then_some(false),
             AttackKind::Ranged | AttackKind::Magic => (t.team != f.team).then_some(false),
             AttackKind::Melee => {
                 if t.team == f.team || from.row != Row::Front || t.slot.row != Row::Front {
                     return None;
                 }
+                // Front, front-left and front-right are all in reach; a diagonal hit is a flank
+                // strike only while the cell straight ahead is empty (and the target has no
+                // guard against flanking).
                 let opposite_empty = self.at(t.team, Slot::new(Row::Front, from.col)).is_none();
                 match t.slot.col.abs_diff(from.col) {
                     0 => Some(false),
-                    1 if opposite_empty => Some(true),
+                    1 => Some(opposite_empty && !t.passives.no_flank),
                     _ => None,
                 }
             }
@@ -306,19 +333,20 @@ impl Battle {
     pub fn act(&mut self, target: usize) -> Result<Hit, ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
         let flank = self.reach_from(id, self.fighters[id].slot, target).ok_or(ActionError::InvalidTarget)?;
-        let stats = self.fighters[id].kind.stats();
+        let stats = self.fighters[id].stats;
         let name = self.fighters[id].kind.name();
         let tname = self.fighters[target].kind.name();
 
         let hit = if let AttackKind::Heal { amount } = stats.attack {
             let t = &mut self.fighters[target];
             let before = t.hp;
-            t.hp = (t.hp + amount).min(t.kind.stats().max_hp);
+            t.hp = (t.hp + amount).min(t.stats.max_hp);
             let healed = t.hp - before;
             self.log.push(format!("{name} heals {tname} +{healed}"));
-            Hit { target, amount: healed, heal: true, flank: false, killed: false }
+            Hit { target, amount: healed, heal: true, flank: false, killed: false, boost: false }
         } else {
-            let armor = if stats.attack == AttackKind::Magic { 0 } else { self.fighters[target].kind.stats().armor };
+            let ignores_armor = stats.attack == AttackKind::Magic || self.fighters[id].passives.magic_strike;
+            let armor = if ignores_armor { 0 } else { self.fighters[target].stats.armor };
             let roll = self.rng.range(stats.dmg_min, stats.dmg_max) * if flank { 2 } else { 1 };
             let dmg = (roll - armor).max(1);
             let t = &mut self.fighters[target];
@@ -332,7 +360,34 @@ impl Battle {
             });
             let team = self.fighters[target].team;
             self.collapse(team);
-            Hit { target, amount: dmg, heal: false, flank, killed }
+            Hit { target, amount: dmg, heal: false, flank, killed, boost: false }
+        };
+        self.spend_action();
+        Ok(hit)
+    }
+
+    /// Drink the potion in item slot `slot` of the active fighter; costs one action.
+    pub fn drink(&mut self, slot: usize) -> Result<Hit, ActionError> {
+        let id = self.active().ok_or(ActionError::NotYourTurn)?;
+        if !self.fighters[id].drinkable().contains(&slot) {
+            return Err(ActionError::InvalidTarget);
+        }
+        let f = &mut self.fighters[id];
+        let item = f.items[slot].take().expect("drinkable slot holds a potion").def();
+        let (name, potion) = (f.kind.name(), &item.name);
+        let hit = match item.effect {
+            Some(Effect::Heal(n)) => {
+                let healed = (f.hp + n).min(f.stats.max_hp) - f.hp;
+                f.hp += healed;
+                self.log.push(format!("{name} drinks {potion} +{healed}"));
+                Hit { target: id, amount: healed, heal: true, flank: false, killed: false, boost: false }
+            }
+            Some(Effect::Might(n)) => {
+                f.stats.add_damage(n);
+                self.log.push(format!("{name} drinks {potion}: +{n} dmg"));
+                Hit { target: id, amount: n, heal: false, flank: false, killed: false, boost: true }
+            }
+            _ => unreachable!("drinkable() only allows potions"),
         };
         self.spend_action();
         Ok(hit)
@@ -366,11 +421,11 @@ impl Battle {
     /// Target the AI would pick for the active fighter.
     pub fn ai_choice(&self) -> Option<usize> {
         let id = self.active()?;
-        let heals = matches!(self.fighters[id].kind.stats().attack, AttackKind::Heal { .. });
+        let heals = matches!(self.fighters[id].stats.attack, AttackKind::Heal { .. });
         let key = |t: usize| {
             let f = &self.fighters[t];
             // Healers pick the lowest HP fraction (permille); attackers the lowest HP, flanks first.
-            let hp = if heals { f.hp * 1000 / f.kind.stats().max_hp } else { f.hp };
+            let hp = if heals { f.hp * 1000 / f.stats.max_hp } else { f.hp };
             (hp, !self.is_flank(id, t), t)
         };
         self.targets(id).into_iter().min_by_key(|&t| key(t))
@@ -393,7 +448,7 @@ impl Battle {
     /// Cell the AI would step to, if stepping strictly improves its position.
     fn ai_move(&self) -> Option<Slot> {
         let id = self.active()?;
-        if self.fighters[id].kind.stats().attack != AttackKind::Melee {
+        if self.fighters[id].stats.attack != AttackKind::Melee {
             return None;
         }
         let here = self.approach_score(id, self.fighters[id].slot);
@@ -421,9 +476,9 @@ impl Battle {
         Some(Step::Wait { actor })
     }
 
-    /// Final (squad index, hp, slot) of the player's fighters; dead ones have hp <= 0.
-    pub fn player_results(&self) -> Vec<(usize, i32, Slot)> {
-        self.fighters.iter().filter_map(|f| f.squad_index.map(|i| (i, f.hp, f.slot))).collect()
+    /// Final (squad index, hp, slot, items left) of the player's fighters; dead ones have hp <= 0.
+    pub fn player_results(&self) -> Vec<(usize, i32, Slot, [Option<ItemId>; SLOTS])> {
+        self.fighters.iter().filter_map(|f| f.squad_index.map(|i| (i, f.hp, f.slot, f.items))).collect()
     }
 }
 
@@ -440,11 +495,19 @@ mod tests {
         Slot::new(Back, col)
     }
 
-    fn battle(player: &[(UnitKind, Slot)], enemies: &[(UnitKind, Slot)]) -> Battle {
-        let p: Vec<_> = player.iter().enumerate().map(|(i, &(k, s))| (k, k.stats().max_hp, s, i)).collect();
-        let mut bt = Battle::new(&p, enemies, 7);
+    fn units(player: &[(UnitKind, Slot)]) -> Vec<Unit> {
+        player.iter().map(|&(k, s)| Unit::new(k, s)).collect()
+    }
+
+    fn battle_of(units: &[Unit], enemies: &[(UnitKind, Slot)], seed: u64) -> Battle {
+        let p: Vec<_> = units.iter().enumerate().collect();
+        let mut bt = Battle::new(&p, enemies, seed);
         bt.begin();
         bt
+    }
+
+    fn battle(player: &[(UnitKind, Slot)], enemies: &[(UnitKind, Slot)]) -> Battle {
+        battle_of(&units(player), enemies, 7)
     }
 
     fn kinds(bt: &Battle) -> Vec<UnitKind> {
@@ -459,18 +522,19 @@ mod tests {
     }
 
     #[test]
-    fn warrior_hits_opposite_card_only_while_it_stands() {
+    fn warrior_hits_front_and_both_diagonals() {
         let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(1)), (Bandit, f(2)), (Bandit, f(3))]);
         let knight = bt.active().unwrap();
-        assert_eq!(bt.targets(knight), vec![2], "opposite occupied: no diagonals");
+        assert_eq!(bt.targets(knight), vec![1, 2, 3]);
+        assert!(!bt.is_flank(knight, 1), "opposite occupied: diagonal is a plain hit");
         bt.fighters[2].hp = 0;
-        assert_eq!(bt.targets(knight), vec![1, 3], "opposite empty: both flanks open");
-        assert!(bt.is_flank(knight, 1));
+        assert_eq!(bt.targets(knight), vec![1, 3]);
+        assert!(bt.is_flank(knight, 1), "opposite empty: diagonal is a flank strike");
     }
 
     #[test]
     fn warrior_cannot_reach_two_columns_away() {
-        let bt = battle(&[(Knight, f(0))], &[(Bandit, f(2))]);
+        let bt = battle(&[(Knight, f(0))], &[(Bandit, f(2)), (BanditArcher, b(1))]);
         assert!(bt.targets(0).is_empty());
     }
 
@@ -503,9 +567,7 @@ mod tests {
     #[test]
     fn armor_always_lets_one_through_and_magic_ignores_it() {
         for seed in 0..30 {
-            let p = [(Knight, 60, f(2), 0)];
-            let mut bt = Battle::new(&p, &[(BanditArcher, b(2))], seed);
-            bt.begin();
+            let mut bt = battle_of(&units(&[(Knight, f(2))]), &[(BanditArcher, b(2))], seed);
             bt.skip(); // knight and archer both init 5: knight first
             let hit = bt.act(0).unwrap();
             assert!((1..=3).contains(&hit.amount), "{hit:?}");
@@ -550,7 +612,8 @@ mod tests {
 
     #[test]
     fn deploy_moves_and_swaps_only_before_the_fight() {
-        let p = [(Knight, 60, f(2), 0), (Archer, 22, b(2), 1)];
+        let squad = units(&[(Knight, f(2)), (Archer, b(2))]);
+        let p: Vec<_> = squad.iter().enumerate().collect();
         let mut bt = Battle::new(&p, &[(Bandit, f(2))], 1);
         assert_eq!(bt.active(), None);
         bt.move_card(f(2), b(2)).unwrap(); // swap
@@ -603,11 +666,11 @@ mod tests {
 
     #[test]
     fn ai_warrior_steps_toward_a_target() {
-        // Chief at f(5), the only player card at f(1): nothing in reach, so it walks left.
-        let mut bt = battle(&[(Knight, f(1))], &[(BanditChief, f(5))]);
+        // Chief at f(4), the only player card at f(2): nothing in reach, so it walks left.
+        let mut bt = battle(&[(Knight, f(2))], &[(BanditChief, f(4))]);
         assert_eq!(bt.fighters[bt.active().unwrap()].kind, BanditChief);
         let step = bt.ai_step().unwrap();
-        assert_eq!(step, Step::Move { actor: 1, from: f(5), to: f(4) });
+        assert_eq!(step, Step::Move { actor: 1, from: f(4), to: f(3) });
     }
 
     #[test]
@@ -616,5 +679,78 @@ mod tests {
         assert_eq!(bt.fighters[bt.active().unwrap()].kind, BanditChief);
         let step = bt.ai_step().unwrap();
         assert_eq!(step, Step::Move { actor: 2, from: b(3), to: f(3) });
+    }
+
+    fn geared(kind: UnitKind, slot: Slot, items: &[&str]) -> Unit {
+        let mut u = Unit::new(kind, slot);
+        for (i, id) in items.iter().enumerate() {
+            u.items[i] = Some(ItemId::named(id));
+        }
+        u
+    }
+
+    #[test]
+    fn gear_counts_in_battle() {
+        let squad = [geared(Spearman, f(2), &["boots_haste", "chainmail"])];
+        let bt = battle_of(&squad, &[(Bandit, f(2))], 1);
+        assert_eq!(bt.fighters[0].stats.armor, 4);
+        assert_eq!(bt.actions_left(), 2, "boots: init 6 goes first, +1 action");
+    }
+
+    #[test]
+    fn guardian_cloak_stops_flank_doubling() {
+        let squad = [geared(Knight, f(3), &["cloak_guard"])];
+        let mut bt = battle_of(&squad, &[(BanditChief, f(2))], 1);
+        assert_eq!(bt.fighters[bt.active().unwrap()].kind, BanditChief);
+        assert!(bt.can_target(1, 0));
+        assert!(!bt.is_flank(1, 0));
+        let hit = bt.act(0).unwrap();
+        // Chief 11-15 minus knight armor 5 + cloak 1.
+        assert!(!hit.flank && (5..=9).contains(&hit.amount), "{hit:?}");
+    }
+
+    #[test]
+    fn rune_blade_ignores_armor() {
+        for seed in 0..20 {
+            let squad = [geared(Spearman, f(2), &["rune_blade"])];
+            let mut bt = battle_of(&squad, &[(BanditChief, f(2))], seed);
+            bt.skip(); // chief (6) acts first
+            let hit = bt.act(1).unwrap();
+            assert!((6..=9).contains(&hit.amount), "spearman 5-8 +1, armor ignored: {hit:?}");
+        }
+    }
+
+    #[test]
+    fn regen_heals_each_round_up_to_max() {
+        let mut squad = [geared(Knight, f(2), &["amulet_life"])];
+        squad[0].hp = 70;
+        let mut bt = battle_of(&squad, &[(Bandit, f(2))], 1);
+        assert_eq!(bt.fighters[0].hp, 73, "round 1 start");
+        bt.fighters[0].hp = 74;
+        bt.skip();
+        bt.skip();
+        assert_eq!(bt.round, 2);
+        assert_eq!(bt.fighters[0].hp, 75, "capped at 60 + 15");
+    }
+
+    #[test]
+    fn potions_cost_an_action_and_are_used_up() {
+        let mut squad = [geared(Knight, f(2), &["heal_potion", "might_potion"])];
+        let mut bt = battle_of(&squad, &[(Bandit, f(2))], 1);
+        assert_eq!(bt.fighters[0].drinkable(), vec![1], "full HP: no point healing");
+        assert_eq!(bt.drink(0), Err(ActionError::InvalidTarget));
+        let hit = bt.drink(1).unwrap();
+        assert!(hit.boost && hit.amount == 3);
+        assert_eq!((bt.fighters[0].stats.dmg_min, bt.fighters[0].stats.dmg_max), (13, 17));
+        assert_eq!(bt.fighters[0].items[1], None);
+        assert_ne!(bt.active(), Some(0), "the drink used the knight's only action");
+
+        squad[0].hp = 30;
+        let mut bt = battle_of(&squad, &[(Bandit, f(2))], 1);
+        let hit = bt.drink(0).unwrap();
+        assert!(hit.heal && hit.amount == 15 && bt.fighters[0].hp == 45);
+        let results = bt.player_results();
+        assert_eq!(results[0].3[0], None, "drunk potion is gone after the battle");
+        assert_eq!(results[0].3[1], Some(ItemId::named("might_potion")));
     }
 }

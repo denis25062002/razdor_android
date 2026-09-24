@@ -77,7 +77,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
                 draw_rectangle(cx, cy, CELL, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
                 text_centered("$", cx + CELL / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
             }
-            hp_bar(cx + 2.0, cy + CELL + 3.0, CELL - 4.0, u.hp, u.kind.stats().max_hp);
+            hp_bar(cx + 2.0, cy + CELL + 3.0, CELL - 4.0, u.hp, u.stats().max_hp);
             if mouse_in(cx, cy, CELL, CELL) {
                 hovered = Some(u);
             }
@@ -85,7 +85,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     }
     let info = match hovered {
         Some(u) if u.unpaid => format!("{} unpaid!", u.kind.name()),
-        Some(u) => format!("{} {}/{}  {}g/day", u.kind.name(), u.hp, u.kind.stats().max_hp, u.kind.wage()),
+        Some(u) => format!("{} {}/{}  {}g/day", u.kind.name(), u.hp, u.stats().max_hp, u.kind.wage()),
         None => "front row / back row".to_string(),
     };
     text(&info, x + 12.0, y + h - 10.0, 18.0, DIM);
@@ -131,7 +131,15 @@ pub fn town(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> O
 
     let by = 60.0 + squad_panel(game, assets, screen_width() - 260.0, 60.0) + 16.0;
     message_line(message);
-    if button(screen_width() - 260.0, by, 240.0, 44.0, "Leave castle", true) {
+    if button(screen_width() - 260.0, by, 240.0, 44.0, "Market", game.market_here().is_some()) {
+        *message = None;
+        return Some(Screen::Market);
+    }
+    if button(screen_width() - 260.0, by + 52.0, 240.0, 44.0, "Squad & gear", true) {
+        *message = None;
+        return Some(Screen::Squad { selected: 0, from_town: true });
+    }
+    if button(screen_width() - 260.0, by + 104.0, 240.0, 44.0, "Leave castle", true) {
         *message = None;
         return Some(Screen::WorldMap);
     }

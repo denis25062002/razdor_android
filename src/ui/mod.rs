@@ -1,6 +1,7 @@
 //! macroquad presentation layer. Reads rules state and calls rules methods.
 pub mod assets;
 pub mod battle_view;
+pub mod items_view;
 pub mod screens;
 pub mod widgets;
 pub mod world_view;
@@ -14,6 +15,9 @@ pub enum Screen {
     ClassSelect,
     WorldMap,
     Town,
+    Market,
+    /// Gear screen: selected squad member, and whether "Back" returns to the castle.
+    Squad { selected: usize, from_town: bool },
     Battle(Box<BattleView>),
     GameOver,
     Victory,
@@ -37,6 +41,10 @@ impl App {
             (Screen::ClassSelect, game) => screens::class_select(game, &self.assets),
             (Screen::WorldMap, Some(game)) => world_view::frame(game, &self.assets, &mut self.message),
             (Screen::Town, Some(game)) => screens::town(game, &self.assets, &mut self.message),
+            (Screen::Market, Some(game)) => items_view::market(game, &self.assets, &mut self.message),
+            (Screen::Squad { selected, from_town }, Some(game)) => {
+                items_view::squad(game, &self.assets, selected, *from_town, &mut self.message)
+            }
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message),
             (Screen::GameOver, game) => screens::game_over(game),
             (Screen::Victory, game) => screens::victory(game),

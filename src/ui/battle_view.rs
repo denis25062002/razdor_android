@@ -5,6 +5,7 @@ use macroquad::prelude::*;
 use razdor::rules::battle::{Battle, Hit, Outcome, Step, Team, MAX_ROUNDS};
 use razdor::rules::formation::{Row, Slot, COLS};
 use razdor::rules::game::{BattleResult, Game};
+use razdor::rules::items::{Effect, ItemId, ItemType};
 
 use super::assets::{team_color, Assets};
 use super::widgets::*;
@@ -127,12 +128,51 @@ impl BattleView {
             self.selected = None;
             self.battle.begin();
         }
+        self.potion_buttons(assets);
 
         let outcome = self.battle.outcome();
         if !self.battle.is_deploying() && outcome != Outcome::Ongoing && self.fx.is_none() {
             return self.result_overlay(game, message, outcome);
         }
         None
+    }
+
+    /// Drink buttons for the active player unit's potions.
+    fn potion_buttons(&mut self, assets: &Assets) {
+        let Some(active) = self.battle.active().filter(|&a| self.battle.fighters[a].team == Team::Player) else {
+            return;
+        };
+        if self.fx.is_some() {
+            return;
+        }
+        let f = &self.battle.fighters[active];
+        let drinkable = f.drinkable();
+        let potions: Vec<(usize, ItemId)> = f
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| it.filter(|it| it.def().ty == ItemType::Potion).map(|it| (i, it)))
+            .collect();
+        let w = (screen_width() - PANEL_X - 16.0 - 36.0) / 2.0;
+        let mut drink = None;
+        for (n, &(slot, item)) in potions.iter().enumerate() {
+            let x = PANEL_X + 12.0 + (n % 2) as f32 * (w + 12.0);
+            let y = OY + PANEL_H - 104.0 + (n / 2) as f32 * 36.0;
+            let label = match item.def().effect {
+                Some(Effect::Heal(n)) => format!("  heal {n}"),
+                Some(Effect::Might(n)) => format!("  might +{n}"),
+                _ => String::new(),
+            };
+            if button(x, y, w, 30.0, &label, drinkable.contains(&slot)) {
+                drink = Some(slot);
+            }
+            assets.draw_item(item, x + 2.0, y + 1.0, 28.0);
+        }
+        if let Some(slot) = drink {
+            if let Ok(hit) = self.battle.drink(slot) {
+                self.fx = Some(Fx { actor: active, kind: FxKind::Strike { hit }, t: 0.0 });
+            }
+        }
     }
 
     fn deploy_input(&mut self) {
@@ -244,7 +284,7 @@ impl BattleView {
 
     fn draw_card(&self, assets: &Assets, id: usize, p: Vec2, border: Option<Color>) {
         let f = &self.battle.fighters[id];
-        let s = f.kind.stats();
+        let s = f.stats;
         draw_rectangle(p.x, p.y, CARD_W, CARD_H, Color::new(0.14, 0.13, 0.12, 1.0));
         draw_rectangle(p.x, p.y, CARD_W, 4.0, team_color(f.team));
         assets.draw_unit(f.kind, f.team, p.x + CARD_W / 2.0, p.y + 46.0, 72.0);
@@ -270,13 +310,14 @@ impl BattleView {
         let k = fx.t / STRIKE_TIME;
         let f = &self.battle.fighters[hit.target];
         let p = cell_pos(f.team, f.slot);
-        let flash = if hit.heal {
+        let flash = if hit.heal || hit.boost {
             Color::new(0.2, 1.0, 0.3, 0.45 * (1.0 - k))
         } else {
             Color::new(1.0, 0.1, 0.1, 0.5 * (1.0 - k))
         };
         draw_rectangle(p.x, p.y, CARD_W, CARD_H, flash);
         let label = match (hit.heal, hit.flank) {
+            _ if hit.boost => format!("+{} dmg", hit.amount),
             (true, _) => format!("+{}", hit.amount),
             (false, true) => format!("-{} flank!", hit.amount),
             (false, false) => format!("-{}", hit.amount),
@@ -284,7 +325,8 @@ impl BattleView {
         let y = p.y + 50.0 - 30.0 * k;
         let size = if hit.flank { 22.0 } else { 28.0 };
         text_centered(&label, p.x + CARD_W / 2.0 + 1.0, y + 1.0, size, BLACK);
-        text_centered(&label, p.x + CARD_W / 2.0, y, size, if hit.heal { GREEN } else { WHITE });
+        let color = if hit.boost { ACCENT } else if hit.heal { GREEN } else { WHITE };
+        text_centered(&label, p.x + CARD_W / 2.0, y, size, color);
     }
 
     fn draw_panel(&self, player_turn: bool, targets: &[usize], moves: &[Slot]) {
@@ -303,14 +345,14 @@ impl BattleView {
             text(&format!("Round {}/{}", self.battle.round, MAX_ROUNDS), x + w - 130.0, OY + 30.0, 20.0, DIM);
         }
         if let Some(a) = self.battle.active() {
-            let total = self.battle.fighters[a].kind.stats().actions;
+            let total = self.battle.fighters[a].stats.actions;
             text(&format!("Actions {}/{total}", self.battle.actions_left()), x + w - 130.0, OY + 52.0, 18.0, DIM);
         }
 
         // Hovered unit (or the active one) details.
         if let Some(id) = self.fighter_under_mouse().or(self.battle.active()) {
             let f = &self.battle.fighters[id];
-            let s = f.kind.stats();
+            let s = f.stats;
             text(f.kind.name(), x + 12.0, OY + 64.0, 24.0, INK);
             text(
                 &format!("HP {}/{}  Armor {}  Init {}", f.hp.max(0), s.max_hp, s.armor, s.initiative),
@@ -319,10 +361,19 @@ impl BattleView {
                 18.0,
                 DIM,
             );
-            text(&f.kind.describe_attack(), x + 12.0, OY + 106.0, 18.0, DIM);
+            let attack = match s.attack {
+                razdor::rules::units::AttackKind::Heal { amount } => format!("mage, heals {amount}"),
+                a => format!("{}, dmg {}-{}", a.role(), s.dmg_min, s.dmg_max),
+            };
+            let actions = if s.actions > 1 { format!(", {} actions", s.actions) } else { String::new() };
+            text(&format!("{attack}{actions}"), x + 12.0, OY + 106.0, 18.0, DIM);
+            let gear: Vec<&str> = f.items.iter().flatten().map(|i| i.def().name.as_str()).collect();
+            if !gear.is_empty() {
+                text(&gear.join(", "), x + 12.0, OY + 126.0, 16.0, DIM);
+            }
         }
 
-        let mut y = OY + 140.0;
+        let mut y = OY + 150.0;
         if self.battle.is_deploying() {
             for line in [
                 "Click a card, then a cell to move or",
@@ -347,7 +398,7 @@ impl BattleView {
         }
         y += 160.0;
         text("Log (newest first)", x + 12.0, y, 20.0, INK);
-        for (n, line) in self.battle.log.iter().rev().take(10).enumerate() {
+        for (n, line) in self.battle.log.iter().rev().take(8).enumerate() {
             text(line, x + 12.0, y + 22.0 + n as f32 * 20.0, 17.0, DIM);
         }
 
@@ -381,8 +432,15 @@ impl BattleView {
         match game.resolve_battle(&self.battle) {
             BattleResult::Defeat => Some(Screen::GameOver),
             BattleResult::Victory { .. } if game.won() => Some(Screen::Victory),
-            BattleResult::Victory { reward, lost } => {
-                *message = Some(format!("Victory! +{reward} gold{}.", losses(lost)));
+            BattleResult::Victory { reward, lost, loot, left_behind } => {
+                let mut m = format!("Victory! +{reward} gold{}", losses(lost));
+                for item in &loot {
+                    m += &format!(", found {}", item.def().name);
+                }
+                if left_behind > 0 {
+                    m += &format!(", {left_behind} left behind (pack full)");
+                }
+                *message = Some(m + ".");
                 Some(Screen::WorldMap)
             }
             BattleResult::Withdrew { lost } => {

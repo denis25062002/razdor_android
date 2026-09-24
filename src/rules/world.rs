@@ -1,4 +1,5 @@
 use super::formation::{Row, Slot};
+use super::items::ItemId;
 use super::map::{center, tile_at, Tile, TileMap};
 use super::units::UnitKind;
 
@@ -6,12 +7,13 @@ const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 
 #[derive(Clone, Debug)]
 pub enum LocationKind {
-    /// `owned` castles pay `income` every midnight.
-    Castle { recruits: Vec<UnitKind>, income: i32, owned: bool },
+    /// `owned` castles pay `income` every midnight. `market` is the stock for sale.
+    Castle { recruits: Vec<UnitKind>, income: i32, owned: bool, market: Vec<ItemId> },
     /// Once per day: tribute, or the priest heals the squad instead.
     Village { tribute: i32, used_on_day: Option<u32> },
     Church,
-    Camp { enemies: Vec<(UnitKind, Slot)>, reward: i32 },
+    /// `loot`: items dropped when cleared.
+    Camp { enemies: Vec<(UnitKind, Slot)>, reward: i32, loot: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -71,7 +73,12 @@ impl World {
             loc(
                 "Oakford",
                 'C',
-                LocationKind::Castle { recruits: vec![Spearman, Archer, Healer], income: 20, owned: true },
+                LocationKind::Castle {
+                    recruits: vec![Spearman, Archer, Healer],
+                    income: 20,
+                    owned: true,
+                    market: Vec::new(),
+                },
             ),
             loc("Millbrook", 'M', village()),
             loc("Ashford", 'A', village()),
@@ -80,7 +87,12 @@ impl World {
             loc(
                 "Greywall",
                 'G',
-                LocationKind::Castle { recruits: vec![Swordsman, Archer, Healer], income: 0, owned: false },
+                LocationKind::Castle {
+                    recruits: vec![Swordsman, Archer, Healer],
+                    income: 0,
+                    owned: false,
+                    market: Vec::new(),
+                },
             ),
             loc(
                 "Bandit camp",
@@ -88,6 +100,7 @@ impl World {
                 LocationKind::Camp {
                     enemies: vec![(Bandit, f(1)), (Bandit, f(2)), (Bandit, f(3)), (BanditArcher, b(2)), (BanditArcher, b(3))],
                     reward: 100,
+                    loot: 1,
                 },
             ),
             loc(
@@ -102,6 +115,7 @@ impl World {
                         (BanditArcher, b(3)),
                     ],
                     reward: 150,
+                    loot: 2,
                 },
             ),
         ];

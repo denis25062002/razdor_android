@@ -1,4 +1,5 @@
 use super::formation::{Row, Slot};
+use super::items::{gear, passives, Effect, ItemId, Passives, SLOTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttackKind {
@@ -36,6 +37,19 @@ pub struct Stats {
     /// Action points per turn: each attack, heal or move costs one.
     pub actions: i32,
     pub attack: AttackKind,
+}
+
+impl Stats {
+    /// Adds to both ends of the damage roll; for healers it adds to the heal instead.
+    pub fn add_damage(&mut self, n: i32) {
+        match &mut self.attack {
+            AttackKind::Heal { amount } => *amount = (*amount + n).max(0),
+            _ => {
+                self.dmg_min = (self.dmg_min + n).max(0);
+                self.dmg_max = (self.dmg_max + n).max(0);
+            }
+        }
+    }
 }
 
 impl AttackKind {
@@ -177,14 +191,63 @@ pub struct Unit {
     pub slot: Slot,
     /// Missed the last payday: refuses to fight until paid.
     pub unpaid: bool,
+    /// Worn gear and carried potions.
+    pub items: [Option<ItemId>; SLOTS],
 }
 
 impl Unit {
     pub fn new(kind: UnitKind, slot: Slot) -> Self {
-        Unit { kind, hp: kind.stats().max_hp, slot, unpaid: false }
+        Unit { kind, hp: kind.stats().max_hp, slot, unpaid: false, items: [None; SLOTS] }
+    }
+
+    /// Base stats plus worn gear (potions only count once drunk).
+    pub fn stats(&self) -> Stats {
+        let mut s = self.kind.stats();
+        for d in gear(&self.items) {
+            let b = d.bonus;
+            s.max_hp += b.hp;
+            s.add_damage(b.dmg);
+            s.armor += b.armor;
+            s.initiative += b.init;
+            s.actions += b.actions + i32::from(d.effect == Some(Effect::ExtraAction));
+        }
+        s.max_hp = s.max_hp.max(1);
+        s.armor = s.armor.max(0);
+        s.actions = s.actions.max(1);
+        s
+    }
+
+    pub fn passives(&self) -> Passives {
+        passives(&self.items)
     }
 
     pub fn heal_full(&mut self) {
-        self.hp = self.kind.stats().max_hp;
+        self.hp = self.stats().max_hp;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gear_adds_to_stats_and_potions_do_not() {
+        let mut u = Unit::new(UnitKind::Spearman, Slot::new(Row::Front, 2));
+        u.items = [
+            Some(ItemId::named("war_axe")),
+            Some(ItemId::named("oak_shield")),
+            Some(ItemId::named("boots_haste")),
+            Some(ItemId::named("might_potion")),
+        ];
+        let s = u.stats();
+        // Spearman 30 HP, 5-8, armor 2, init 4, 1 action.
+        assert_eq!((s.max_hp, s.dmg_min, s.dmg_max, s.armor, s.initiative, s.actions), (35, 9, 12, 3, 5, 2));
+    }
+
+    #[test]
+    fn healer_damage_bonus_adds_to_the_heal() {
+        let mut u = Unit::new(UnitKind::Healer, Slot::new(Row::Back, 2));
+        u.items[0] = Some(ItemId::named("ring_might"));
+        assert_eq!(u.stats().attack, AttackKind::Heal { amount: 12 });
     }
 }
