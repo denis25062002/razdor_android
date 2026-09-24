@@ -1,0 +1,186 @@
+//! Modal message windows in the original's style: a title bar, a parchment text box, a row
+//! of resource icons and an OK button (video notes §5: the noon report, the victory window).
+
+use macroquad::prelude::*;
+
+use razdor::rules::content::ItemId;
+use razdor::rules::game::{BattleResult, DayReport, Game};
+
+use super::assets::Assets;
+use super::widgets::*;
+
+const MARBLE: Color = Color::new(0.10, 0.20, 0.16, 0.98);
+const MARBLE_EDGE: Color = Color::new(0.38, 0.58, 0.46, 1.0);
+const PARCHMENT_DARK: Color = Color::new(0.36, 0.16, 0.10, 1.0);
+pub const MANA: Color = Color::new(0.55, 0.72, 1.0, 1.0);
+
+/// A resource icon with its label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resource {
+    Gold,
+    Mana,
+    Income,
+    Wages,
+}
+
+#[derive(Clone, Debug)]
+pub struct Dialog {
+    pub title: String,
+    pub text: Vec<String>,
+    /// Resource icons with a caption such as "Gold + 30".
+    pub resources: Vec<(Resource, String)>,
+    pub items: Vec<ItemId>,
+    /// An extra line in blue (system notices).
+    pub notice: Option<String>,
+}
+
+impl Dialog {
+    pub fn new(title: impl Into<String>) -> Dialog {
+        Dialog { title: title.into(), text: Vec::new(), resources: Vec::new(), items: Vec::new(), notice: None }
+    }
+
+    /// The 12:00 report: gold, mana, income and wages (video notes §5).
+    pub fn day_report(game: &Game, r: &DayReport) -> Dialog {
+        let mut d = Dialog::new("Report on resources, income and expenses");
+        d.text.push("The report shows your gold, the daily income of your castles and the wages paid to your army.".into());
+        d.resources = vec![
+            (Resource::Gold, format!("Gold = {}", r.gold)),
+            (Resource::Mana, format!("Mana = {}", r.mana_total)),
+            (Resource::Income, format!("Income + {}", r.income)),
+            (Resource::Wages, format!("Wages - {}", r.wages)),
+        ];
+        if r.mana > 0 || r.mana_wages > 0 {
+            d.text.push(format!("Mana today: + {} from your lands, - {} paid to elementals.", r.mana, r.mana_wages));
+        }
+        if r.unpaid > 0 {
+            d.notice = Some(format!("{} unpaid units refuse to fight until they are paid.", r.unpaid));
+        }
+        if !r.deserted.is_empty() {
+            let names: Vec<&str> = r.deserted.iter().map(|&u| game.content.unit(u).name.as_str()).collect();
+            d.text.push(format!("Left the army unpaid: {}.", names.join(", ")));
+        }
+        d
+    }
+
+    /// A castle or fort taken without a fight.
+    pub fn captured(game: &Game, l: usize) -> Dialog {
+        let loc = &game.world.locations[l];
+        let mut d = Dialog::new("A new stronghold");
+        d.text.push(format!("Nobody defends {}. You take it: it pays you {} gold a day from now on.", loc.name, loc.gold_income));
+        d.resources.push((Resource::Income, format!("Income + {}", game.daily_income())));
+        d
+    }
+
+    /// The window after a won battle: gold and mana taken, a captured building, the loot.
+    pub fn victory(game: &Game, result: &BattleResult) -> Option<Dialog> {
+        let BattleResult::Victory { reward, mana, lost, loot, left_behind, level_ups, captured } = result else {
+            return None;
+        };
+        let mut d = Dialog::new("Victory over the enemy!");
+        if let Some(l) = captured {
+            let loc = &game.world.locations[*l];
+            d.text.push(format!("You have taken {}. It pays you {} gold a day from now on.", loc.name, loc.gold_income));
+        }
+        if *reward > 0 {
+            d.text.push("In this battle you won gold from the enemy.".into());
+        }
+        if *mana > 0 {
+            d.text.push("Grateful for your mercy, the surrendered troops pray for you.".into());
+        }
+        if *lost > 0 {
+            d.text.push(format!("{lost} of your units fell. Their bodies can be raised in a town or church within a week."));
+        }
+        for &(i, level) in level_ups {
+            d.text.push(format!("{} reaches level {level}.", game.squad[i].name(&game.content)));
+        }
+        if d.text.is_empty() {
+            d.text.push("The enemy is beaten.".into());
+        }
+        d.resources.push((Resource::Gold, format!("Gold + {reward}")));
+        if *mana > 0 {
+            d.resources.push((Resource::Mana, format!("Mana + {mana}")));
+        }
+        if captured.is_some() {
+            d.resources.push((Resource::Income, format!("Income + {}", game.daily_income())));
+        }
+        d.items = loot.clone();
+        if *left_behind > 0 {
+            d.notice = Some(format!("{left_behind} items were left behind: the pack is full."));
+        }
+        Some(d)
+    }
+}
+
+/// Small drawn icons for the resources (our own shapes).
+pub fn resource_icon(r: Resource, cx: f32, cy: f32, s: f32) {
+    match r {
+        Resource::Gold => {
+            for k in 0..3 {
+                let y = cy + s * 0.25 - k as f32 * s * 0.18;
+                draw_ellipse(cx, y, s * 0.36, s * 0.14, 0.0, Color::new(0.85, 0.66, 0.2, 1.0));
+                draw_ellipse_lines(cx, y, s * 0.36, s * 0.14, 0.0, 1.5, Color::new(0.5, 0.35, 0.1, 1.0));
+            }
+        }
+        Resource::Mana => {
+            let (t, b) = (vec2(cx, cy - s * 0.45), vec2(cx, cy + s * 0.45));
+            let (l, r) = (vec2(cx - s * 0.28, cy), vec2(cx + s * 0.28, cy));
+            draw_triangle(t, l, r, MANA);
+            draw_triangle(b, l, r, Color::new(0.3, 0.5, 0.9, 1.0));
+        }
+        Resource::Income => {
+            draw_rectangle(cx - s * 0.3, cy - s * 0.05, s * 0.6, s * 0.4, Color::new(0.8, 0.7, 0.55, 1.0));
+            draw_triangle(vec2(cx, cy - s * 0.42), vec2(cx - s * 0.4, cy - s * 0.05), vec2(cx + s * 0.4, cy - s * 0.05), Color::new(0.75, 0.3, 0.2, 1.0));
+        }
+        Resource::Wages => {
+            draw_circle(cx, cy - s * 0.2, s * 0.16, Color::new(0.75, 0.75, 0.8, 1.0));
+            draw_rectangle(cx - s * 0.22, cy - s * 0.04, s * 0.44, s * 0.46, Color::new(0.6, 0.62, 0.7, 1.0));
+        }
+    }
+}
+
+/// Draws `d` centred on the screen; returns true when it is closed (OK, Enter or Escape).
+pub fn draw(d: &Dialog, assets: &Assets) -> bool {
+    let (sw, sh) = (screen_width(), screen_height());
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.35));
+    let w = 620.0f32.min(sw - 20.0);
+    let lines: Vec<String> = d.text.iter().flat_map(|t| wrap(t, w - 80.0, 19.0)).collect();
+    let text_h = lines.len() as f32 * 23.0 + 24.0;
+    let res_h = if d.resources.is_empty() { 0.0 } else { 86.0 };
+    let items_h = if d.items.is_empty() { 0.0 } else { 60.0 };
+    let notice_h = if d.notice.is_some() { 26.0 } else { 0.0 };
+    let h = 34.0 + 16.0 + text_h + res_h + items_h + notice_h + 64.0;
+    let (x, y) = ((sw - w) / 2.0, ((sh - h) / 2.0).max(10.0));
+    draw_rectangle(x, y, w, h, MARBLE);
+    draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
+    draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
+    text_centered(&d.title, x + w / 2.0, y + 22.0, 20.0, INK);
+    let mut cy = y + 44.0;
+    draw_rectangle(x + 24.0, cy, w - 48.0, text_h, PARCHMENT_DARK);
+    draw_rectangle_lines(x + 24.0, cy, w - 48.0, text_h, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
+    for (i, line) in lines.iter().enumerate() {
+        text_centered(line, x + w / 2.0, cy + 30.0 + i as f32 * 23.0, 19.0, Color::new(1.0, 0.85, 0.55, 1.0));
+    }
+    cy += text_h + 10.0;
+    if !d.resources.is_empty() {
+        let n = d.resources.len() as f32;
+        let step = (w - 60.0) / n;
+        for (k, (r, label)) in d.resources.iter().enumerate() {
+            let cx = x + 30.0 + step * (k as f32 + 0.5);
+            text_centered(label, cx, cy + 18.0, 18.0, if *r == Resource::Mana { MANA } else { ACCENT });
+            resource_icon(*r, cx, cy + 52.0, 44.0);
+        }
+        cy += res_h;
+    }
+    if !d.items.is_empty() {
+        text("Items found:", x + 30.0, cy + 30.0, 18.0, INK);
+        for (k, &item) in d.items.iter().enumerate().take(8) {
+            assets.draw_item(item, x + 150.0 + k as f32 * 54.0, cy + 4.0, 48.0);
+        }
+        cy += items_h;
+    }
+    if let Some(n) = &d.notice {
+        text_centered(n, x + w / 2.0, cy + 18.0, 18.0, MANA);
+    }
+    let ok = button(x + w / 2.0 - 60.0, y + h - 52.0, 120.0, 38.0, "OK", true);
+    ok || key(KeyCode::Enter) || key(KeyCode::Escape)
+}

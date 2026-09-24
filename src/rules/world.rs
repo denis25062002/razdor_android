@@ -6,13 +6,13 @@
 
 use std::collections::HashMap;
 
-use crate::dt::dtm::{self, Archetype, BuildingType, Scenario};
+use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 
 use super::clock::Clock;
 use super::content::{Content, HeroClass, ItemId, UnitId};
 use super::formation::{Row, Slot};
 use super::map::{Decoration, Grid, Tile, TileMap, MIN_MINUTES};
-use super::units::Stats;
+use super::units::{Stats, Unit};
 
 const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 
@@ -160,7 +160,54 @@ pub enum Owner {
 pub struct Recruit {
     pub unit: UnitId,
     pub stock: Option<i32>,
+    /// The editor's maximum (at least the start count).
     pub max: i32,
+    /// Regrowth progress, in units × days (see [`Recruit::regrow`]).
+    pub progress: i32,
+}
+
+impl Recruit {
+    pub fn new(unit: UnitId, start: i32, max: i32) -> Recruit {
+        Recruit { unit, stock: Some(start.max(0)), max: max.max(start).max(0), progress: 0 }
+    }
+
+    /// One day passes: the stock grows back towards its maximum so that an empty barracks is
+    /// full again after `days_to_refill` days (`MaxDayCountForNewUnit`), one whole unit at a
+    /// time *(guess: the original's regrowth rule is not decoded)*.
+    pub fn regrow(&mut self, days_to_refill: i32) {
+        let Some(stock) = self.stock.as_mut() else { return };
+        if *stock >= self.max {
+            self.progress = 0;
+            return;
+        }
+        let days = days_to_refill.max(1);
+        self.progress += self.max;
+        while self.progress >= days && *stock < self.max {
+            *stock += 1;
+            self.progress -= days;
+        }
+        if *stock >= self.max {
+            self.progress = 0;
+        }
+    }
+}
+
+/// A player's unit left in a garrison, and the game minute it was left there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stationed {
+    pub unit: Unit,
+    pub since: u64,
+}
+
+/// A scenario event id (1-based, file order), as buildings list them.
+pub type EventId = u16;
+
+/// What the building screens show of a scenario event (the event engine is separate).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventInfo {
+    pub kind: Option<EventKind>,
+    /// The title without its flag script.
+    pub title: String,
 }
 
 /// Items for sale.
@@ -208,8 +255,11 @@ pub struct Location {
     /// Village tribute waiting to be collected.
     pub tribute_gold: i32,
     pub tribute_mana: i32,
+    /// The scenario's garrison (the owner's troops).
     pub garrison: Vec<Troop>,
     pub garrison_defence: i32,
+    /// The player's units left here (his castles and forts).
+    pub stationed: Vec<Stationed>,
     pub recruits: Vec<Recruit>,
     /// Recruiting any listed type is allowed (the "all types" flag).
     pub recruit_all_types: bool,
@@ -251,6 +301,7 @@ impl Location {
             tribute_mana: 0,
             garrison: Vec::new(),
             garrison_defence: 0,
+            stationed: Vec::new(),
             recruits: Vec::new(),
             recruit_all_types: false,
             shop: None,
@@ -282,6 +333,30 @@ impl Location {
     /// A garrison that fights the player when he steps in.
     pub fn defended(&self) -> bool {
         self.kind.defends() && self.hostile() && !self.cleared && !self.garrison.is_empty()
+    }
+
+    /// Paid healing (mechanics.md 1.6): towns, castles, forts and churches.
+    pub fn heals(&self) -> bool {
+        use LocationKind::*;
+        matches!(self.kind, Palace | Town | Castle | Fort | Church)
+    }
+
+    /// Resurrection: only towns and churches.
+    pub fn resurrects(&self) -> bool {
+        use LocationKind::*;
+        matches!(self.kind, Palace | Town | Church)
+    }
+
+    /// The player may leave troops here: his own castles and forts.
+    pub fn takes_garrison(&self) -> bool {
+        self.owned() && self.kind.capturable()
+    }
+
+    /// Hiring for the player: towns, castles, forts and churches; villages and altars hire
+    /// for the AI only (mechanics.md 5.3).
+    pub fn hires(&self) -> bool {
+        use LocationKind::*;
+        matches!(self.kind, Palace | Town | Castle | Fort | Church)
     }
 
     /// Income the owner receives each day (villages pay tribute instead).
@@ -393,6 +468,8 @@ pub struct World {
     pub demo: bool,
     /// Units of the scenario that the content does not know or that did not fit.
     pub dropped_units: usize,
+    /// The scenario's events by id − 1 (titles and kinds only).
+    pub events: Vec<EventInfo>,
     entries: HashMap<Tile, usize>,
     footprints: HashMap<Tile, usize>,
 }
@@ -455,6 +532,7 @@ impl World {
             relations: [[3, 2, 1, -2], [2, 3, 1, -2], [1, 1, 3, 1], [-2, -2, 1, 3]],
             demo: false,
             dropped_units: 0,
+            events: Vec::new(),
             entries: HashMap::new(),
             footprints: HashMap::new(),
         }
@@ -504,6 +582,7 @@ impl World {
         let start = if s.header.start_time > 0 { Clock::at_minutes(s.header.start_time as u64) } else { Clock::demo_start() };
         let mut world = World::empty(&s.title, map, start);
         world.relations = s.header.relations;
+        world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.title_text().trim().to_string() }).collect();
 
         for (i, b) in s.buildings.iter().enumerate() {
             let kind = b.building_type().map_or(LocationKind::Smithy, LocationKind::from_building);
@@ -538,7 +617,7 @@ impl World {
                     .barracks
                     .iter()
                     .filter(|r| r.unit != 0 && content.try_unit(UnitId(r.unit as u32)).is_some())
-                    .map(|r| Recruit { unit: UnitId(r.unit as u32), stock: Some(r.start_count as i32), max: r.max_count as i32 })
+                    .map(|r| Recruit::new(UnitId(r.unit as u32), r.start_count as i32, r.max_count as i32))
                     .collect();
             }
             l.recruit_all_types = b.recruit_all_types != 0;
@@ -672,7 +751,7 @@ impl World {
         };
         let t = |unit, row, col| Troop { unit, level: 1, slot: Slot::new(row, col) };
         let (f, b) = (Row::Front, Row::Back);
-        let recruits = |units: Vec<UnitId>| units.into_iter().map(|unit| Recruit { unit, stock: None, max: 0 }).collect();
+        let recruits = |units: Vec<UnitId>| units.into_iter().map(|unit| Recruit { unit, stock: None, max: 0, progress: 0 }).collect();
         let shop = || Some(Shop { fixed: Vec::new(), random: 6, price: (0, 0), stock: Vec::new() });
 
         let mut oakford = Location::new(LocationKind::Castle, "Oakford", tile('C'));
@@ -742,6 +821,26 @@ impl World {
 
     pub fn index_of(&self, name: &str) -> usize {
         self.locations.iter().position(|l| l.name == name).unwrap_or_else(|| panic!("no location {name}"))
+    }
+
+    /// Quests and rumours offered in the main hall of location `l`: its event slots that
+    /// hold quest or rumour events. The event engine (`rules::events`) decides which of them
+    /// are available; this is only the building's list.
+    pub fn local_events(&self, l: usize) -> Vec<EventId> {
+        self.locations[l]
+            .events
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let e = (id as usize).checked_sub(1).and_then(|i| self.events.get(i));
+                e.is_some_and(|e| matches!(e.kind, Some(EventKind::Quest | EventKind::Rumour)))
+            })
+            .collect()
+    }
+
+    /// An event's title, if the scenario has it.
+    pub fn event_title(&self, id: EventId) -> Option<&str> {
+        (id as usize).checked_sub(1).and_then(|i| self.events.get(i)).map(|e| e.title.as_str()).filter(|t| !t.is_empty())
     }
 
     /// Location whose entry is `t`.
@@ -978,7 +1077,7 @@ mod tests {
         assert!(c.hostile() && c.defended());
         assert_eq!(c.garrison.iter().map(|t| (t.unit.0, t.level)).collect::<Vec<_>>(), [(4, 1), (4, 1), (5, 2)]);
         assert_eq!(c.garrison[2].slot.row, Row::Back, "the shooter stands behind");
-        assert_eq!(c.recruits, vec![Recruit { unit: UnitId(4), stock: Some(3), max: 9 }]);
+        assert_eq!(c.recruits, vec![Recruit { unit: UnitId(4), stock: Some(3), max: 9, progress: 0 }]);
         assert_eq!(c.shop.as_ref().map(|s| (s.fixed.clone(), s.random)), Some((vec![ItemId(7)], 2)));
 
         let r = &w.locations[1];
@@ -1013,6 +1112,41 @@ mod tests {
         v.refill();
         v.refill();
         assert_eq!((v.tribute_gold, v.tribute_mana), (50, 8));
+    }
+
+    #[test]
+    fn barracks_refill_over_max_day_count_days() {
+        let mut r = Recruit::new(UnitId(4), 0, 3);
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            r.regrow(10);
+            seen.push(r.stock.unwrap());
+        }
+        // 3 units over 10 days: one on days 4, 7 and 10.
+        assert_eq!(seen, [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+        let mut full = Recruit::new(UnitId(4), 5, 2);
+        assert_eq!(full.max, 5, "the maximum is at least the start count");
+        full.regrow(10);
+        assert_eq!((full.stock, full.progress), (Some(5), 0));
+        let mut demo = Recruit { unit: UnitId(4), stock: None, max: 0, progress: 0 };
+        demo.regrow(10);
+        assert_eq!(demo.stock, None, "unlimited stays unlimited");
+    }
+
+    #[test]
+    fn main_halls_list_their_quests_and_rumours() {
+        use crate::dt::dtm::Event as DtEvent;
+        let mut s = scenario(6, 6);
+        let ev = |kind, title: &str| DtEvent { kind, title: title.into(), ..DtEvent::default() };
+        s.events = vec![ev(3, "A quest%+flag"), ev(2, "Local"), ev(4, "Rumour"), ev(1, "Global")];
+        let mut t = building(BuildingType::Town, 2, 2, (1, 1));
+        t.event_slots[..4].copy_from_slice(&[1, 2, 3, 9]);
+        t.event_count = 4;
+        s.buildings = vec![t];
+        let w = World::from_scenario(&s, &content());
+        assert_eq!(w.local_events(0), vec![1, 3], "quests and rumours; local events fire by themselves");
+        assert_eq!(w.event_title(1), Some("A quest"), "without the flag script");
+        assert_eq!(w.event_title(9), None);
     }
 
     #[test]

@@ -4,18 +4,23 @@
 //! map figures are drawn (decoded at runtime by [`DtArt`]); otherwise coloured cells and
 //! simple shapes. Only the visible cells are drawn, so 200×200 maps stay fast.
 
+use std::collections::VecDeque;
+
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
 use razdor::rules::formation::Row;
-use razdor::rules::game::{Event, Foe, Game, Tribute};
+use razdor::rules::game::{Event, Foe, Game};
+use razdor::rules::town::first_tab;
 use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
 use razdor::rules::world::{Army, Location, LocationKind, Troop};
 
 use super::assets::Assets;
 use super::battle_view::BattleView;
+use super::building_view::BuildingView;
+use super::dialog::Dialog;
 use super::dt_art::DtArt;
 use super::screens::squad_panel;
 use super::widgets::*;
@@ -25,7 +30,7 @@ use super::Screen;
 const PX: f32 = 32.0;
 const PANEL_W: f32 = 270.0;
 const BAR_H: f32 = 84.0;
-const MANA: Color = Color::new(0.55, 0.72, 1.0, 1.0);
+use super::dialog::MANA;
 
 /// World-map view state kept between frames.
 pub struct MapView {
@@ -538,8 +543,8 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
     Some(location_tooltip(game, &game.world.locations[l]))
 }
 
-/// Buttons for the location the party stands on. Returns the next screen, if any.
-fn location_panel(game: &mut Game, message: &mut Option<String>, x: f32, mut y: f32) -> Option<Screen> {
+/// The location the party stands on: enter it, or attack its garrison.
+fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     let Some(l) = game.location else {
         text("On the road.", x, y + 20.0, 20.0, DIM);
         return None;
@@ -552,52 +557,20 @@ fn location_panel(game: &mut Game, message: &mut Option<String>, x: f32, mut y: 
     }
     text(loc.kind.label(), x, y + 14.0, 16.0, DIM);
     y += 26.0;
-    let enterable = matches!(loc.kind, LocationKind::Castle | LocationKind::Town | LocationKind::Fort);
-    match loc.kind {
-        LocationKind::Village => {
-            let tribute = game.tribute_available();
-            let label = match tribute {
-                Some(t) => format!("Collect tribute (+{t})"),
-                None => "Tribute collected".to_string(),
-            };
-            if button(x, y, 240.0, 40.0, &label, tribute.is_some()) {
-                let mana = game.world.locations[l].tribute_mana;
-                *message = game.collect_tribute().map(|t| match t {
-                    Tribute::Gold(g) if mana > 0 => format!("The village pays {g} gold and {mana} mana."),
-                    Tribute::Gold(g) => format!("The village pays {g} gold."),
-                    Tribute::Item(item) => format!("The village pays with a {}.", game.content.item(item).name),
-                });
-            }
-            if button(x, y + 48.0, 240.0, 40.0, "Ask the priest to heal", tribute.is_some()) {
-                game.priest_heal();
-                *message = Some("The priest tends to your wounded.".into());
-            }
-            text("Tribute or healing; it refills at midnight.", x, y + 108.0, 15.0, DIM);
+    if loc.kind == LocationKind::Camp && loc.cleared {
+        text("Only ashes remain.", x, y + 14.0, 17.0, DIM);
+    } else if loc.defended() {
+        if button(x, y, 240.0, 44.0, "Attack the garrison", true) {
+            game.foe = Some(Foe::Garrison(l));
+            return Some(Screen::Battle(Box::new(BattleView::new(game.start_battle()))));
         }
-        _ if enterable && !loc.hostile() && (!loc.recruits.is_empty() || loc.shop.is_some()) => {
-            let what = if loc.owned() { "Yours. Squad healed." } else { "Friendly. Squad healed." };
-            text(what, x, y + 14.0, 17.0, DIM);
-            if button(x, y + 26.0, 240.0, 44.0, "Enter", true) {
-                *message = None;
-                return Some(Screen::Town);
-            }
+    } else if let Some(first) = first_tab(loc) {
+        if button(x, y, 240.0, 44.0, "Enter", true) {
+            return Some(Screen::Building(BuildingView::new(first)));
         }
-        LocationKind::Camp if loc.cleared => text("Only ashes remain.", x, y + 14.0, 17.0, DIM),
-        _ if loc.defended() => {
-            if button(x, y, 240.0, 44.0, "Attack the garrison", true) {
-                game.foe = Some(Foe::Garrison(l));
-                return Some(Screen::Battle(Box::new(BattleView::new(game.start_battle()))));
-            }
-        }
-        _ => {
-            if loc.shop.is_some() && game.market_here().is_some() && button(x, y, 240.0, 40.0, "Market", true) {
-                *message = None;
-                return Some(Screen::Market);
-            }
-            let y = if loc.shop.is_some() { y + 50.0 } else { y };
-            for (i, line) in wrap(&loc.description, PANEL_W - 30.0, 15.0).iter().take(6).enumerate() {
-                text(line, x, y + 14.0 + i as f32 * 18.0, 15.0, DIM);
-            }
+        if loc.kind == LocationKind::Village {
+            let status = if game.tribute_available().is_some() { "Tribute is waiting." } else { "Tribute already collected." };
+            text(status, x, y + 64.0, 16.0, DIM);
         }
     }
     None
@@ -605,23 +578,10 @@ fn location_panel(game: &mut Game, message: &mut Option<String>, x: f32, mut y: 
 
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
-        Event::NewDay(r) => {
-            let mut s = format!("Noon: +{} gold income, -{} wages", r.income, r.wages);
-            if r.mana > 0 {
-                s += &format!(", +{} mana", r.mana);
-            }
-            if r.unpaid > 0 {
-                s += &format!(", {} unpaid refuse to fight!", r.unpaid);
-            }
-            Some(s)
-        }
+        Event::NewDay(_) | Event::Captured(_) => None,
         Event::Arrived(l) => {
             let loc = &game.world.locations[*l];
-            match loc.kind {
-                LocationKind::Church if !loc.hostile() => Some(format!("{}: the squad is healed.", loc.name)),
-                _ if game.foe.is_some() => Some(format!("{}: the garrison bars your way!", loc.name)),
-                _ => None,
-            }
+            game.foe.is_some().then(|| format!("{}: the garrison bars your way!", loc.name))
         }
         Event::Encounter(i) => {
             let a = &game.world.armies[*i];
@@ -635,8 +595,9 @@ fn describe(event: &Event, game: &Game) -> Option<String> {
     }
 }
 
-/// Applies the events of a tick or a wait. Returns the next screen, if any.
-fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>) -> Option<Screen> {
+/// Applies the events of a tick or a wait: noon reports open the report window, stepping
+/// into a building opens its window. Returns the next screen, if any.
+fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let mut next = None;
     for event in events {
         if let Some(m) = describe(&event, game) {
@@ -645,36 +606,66 @@ fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<Strin
         match event {
             Event::Encounter(_) => next = Some(Screen::Battle(Box::new(BattleView::new(game.start_battle())))),
             Event::Arrived(l) => {
-                let loc = &game.world.locations[l];
                 if game.foe.is_some() {
                     next = Some(Screen::Battle(Box::new(BattleView::new(game.start_battle()))));
-                } else if matches!(loc.kind, LocationKind::Castle | LocationKind::Town)
-                    && !loc.hostile()
-                    && (!loc.recruits.is_empty() || loc.shop.is_some())
-                {
-                    next = Some(Screen::Town);
+                } else if let Some(first) = first_tab(&game.world.locations[l]) {
+                    *message = None;
+                    next = Some(Screen::Building(BuildingView::new(first)));
                 }
             }
-            Event::NewDay(_) | Event::Met(_) => {}
+            Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
+            Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
+            Event::Met(_) => {}
         }
     }
     next
 }
 
-fn bottom_bar(game: &mut Game, message: &mut Option<String>) -> Option<Screen> {
+/// Gold, mana, income and wages along the bottom edge.
+fn resource_strip(game: &Game) {
+    let (w, h) = (screen_width(), screen_height());
+    let sy = h - 10.0;
+    let mut wages = format!("wages -{}", game.daily_wages());
+    if game.daily_mana_wages() > 0 {
+        wages += &format!(" / -{} mana", game.daily_mana_wages());
+    }
+    let items: [(String, Color); 4] = [
+        (format!("mana {}", game.mana), MANA),
+        (format!("gold {}", game.gold), ACCENT),
+        (format!("income +{}", game.daily_income()), INK),
+        (wages, rgb(240, 150, 60)),
+    ];
+    for (i, (s, c)) in items.iter().enumerate() {
+        text(s, 20.0 + i as f32 * (w - 40.0) / 4.0, sy, 20.0, *c);
+    }
+}
+
+/// The map under a building window or a dialog: drawn, not interactive.
+pub fn backdrop(game: &Game, assets: &Assets) {
+    clear_background(rgb(10, 12, 10));
+    let cam = Camera::follow(game, 1.0);
+    draw_world(game, assets, &cam);
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.3));
+    let (w, h) = (screen_width(), screen_height());
+    draw_rectangle(0.0, h - BAR_H, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
+    text_centered(&format!("Time: {}", game.clock.label()), w / 2.0, h - BAR_H + 30.0, 20.0, INK);
+    resource_strip(game);
+}
+
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let (w, h) = (screen_width(), screen_height());
     let y = h - BAR_H;
     draw_rectangle(0.0, y, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
     draw_line(0.0, y, w, y, 2.0, Color::new(0.35, 0.45, 0.4, 1.0));
     let mut next = None;
     let idle = game.foe.is_none();
-    if button(10.0, y + 8.0, 110.0, 40.0, "Wait 1 h", idle) || (idle && is_key_pressed(KeyCode::Key1)) {
+    if button(10.0, y + 8.0, 110.0, 40.0, "Wait 1 h", idle) || (idle && key(KeyCode::Key1)) {
         let events = game.wait(1);
-        next = handle_events(game, events, message);
+        next = handle_events(game, events, message, dialogs);
     }
-    if button(128.0, y + 8.0, 110.0, 40.0, "Wait 4 h", idle) || (idle && is_key_pressed(KeyCode::Key4)) {
+    if button(128.0, y + 8.0, 110.0, 40.0, "Wait 4 h", idle) || (idle && key(KeyCode::Key4)) {
         let events = game.wait(4);
-        next = handle_events(game, events, message);
+        next = handle_events(game, events, message, dialogs);
     }
     // Time panel.
     let (pw, px) = (380.0, (w - 380.0) / 2.0);
@@ -690,44 +681,34 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>) -> Option<Screen> {
     if button(w - 250.0, y + 8.0, 120.0, 40.0, "Squad", true) && next.is_none() {
         game.stop();
         *message = None;
-        next = Some(Screen::Squad { selected: 0, from_town: false });
+        next = Some(Screen::Squad { selected: 0, scroll: 0, back: None });
     }
     if button(w - 122.0, y + 8.0, 112.0, 40.0, "Menu", true) && next.is_none() {
         next = Some(Screen::ScenarioSelect);
     }
-    // Resource strip.
-    let sy = y + BAR_H - 10.0;
-    let items: [(String, Color); 4] = [
-        (format!("mana {}", game.mana), MANA),
-        (format!("gold {}", game.gold), ACCENT),
-        (format!("income +{}", game.daily_income()), INK),
-        (format!("wages -{}", game.daily_wages()), rgb(240, 150, 60)),
-    ];
-    for (i, (s, c)) in items.iter().enumerate() {
-        text(s, 20.0 + i as f32 * (w - 40.0) / 4.0, sy, 20.0, *c);
-    }
+    resource_strip(game);
     next
 }
 
-pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut Option<String>) -> Option<Screen> {
+pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     clear_background(rgb(10, 12, 10));
 
     // Zoom: mouse wheel or +/-.
-    let wheel = mouse_wheel().1;
+    let wheel = wheel();
     if wheel != 0.0 {
         view.zoom = (view.zoom * if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.4, 2.0);
     }
-    if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
+    if key(KeyCode::Equal) || key(KeyCode::KpAdd) {
         view.zoom = (view.zoom * 1.2).min(2.0);
     }
-    if is_key_pressed(KeyCode::Minus) || is_key_pressed(KeyCode::KpSubtract) {
+    if key(KeyCode::Minus) || key(KeyCode::KpSubtract) {
         view.zoom = (view.zoom / 1.2).max(0.4);
     }
 
     // Input: click to walk, right click or Space to stop.
     let cam = Camera::follow(game, view.zoom);
     let hovered = cam.tile_under_mouse();
-    if is_mouse_button_pressed(MouseButton::Left) {
+    if clicked() {
         if let Some(t) = hovered {
             let target = game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t);
             if target != game.tile() && !game.set_destination(target) {
@@ -736,12 +717,13 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             view.preview = None;
         }
     }
-    if is_mouse_button_pressed(MouseButton::Right) || is_key_pressed(KeyCode::Space) {
+    if right_clicked() || key(KeyCode::Space) {
         game.stop();
     }
 
-    let events = game.tick(get_frame_time().min(0.1));
-    let mut next = handle_events(game, events, message);
+    // Time stands still while a window is open.
+    let events = if input_blocked() { Vec::new() } else { game.tick(get_frame_time().min(0.1)) };
+    let mut next = handle_events(game, events, message, dialogs);
 
     let cam = Camera::follow(game, view.zoom);
     draw_world(game, assets, &cam);
@@ -773,14 +755,14 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     draw_rectangle(x, 0.0, PANEL_W, panel_h, rgb(28, 26, 24));
     let y = 12.0 + squad_panel(game, assets, x + 15.0, 12.0) + 12.0;
     if next.is_none() {
-        next = location_panel(game, message, x + 15.0, y);
+        next = location_panel(game, x + 15.0, y);
     }
     let help = ["Click the map to travel; time passes", "only while you move or wait.", "Right click / Space: stop.", "Wheel or +/-: zoom. 1 / 4: wait."];
     for (i, line) in help.iter().enumerate() {
         text(line, x + 15.0, panel_h - 80.0 + i as f32 * 18.0, 15.0, DIM);
     }
 
-    let bar = bottom_bar(game, message);
+    let bar = bottom_bar(game, message, dialogs);
     next = next.or(bar);
     if let Some(t) = hover_tooltip(game, &cam) {
         draw_tooltip(game, assets, &t);

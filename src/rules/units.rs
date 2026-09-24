@@ -6,7 +6,7 @@
 
 use std::ops::{Index, IndexMut};
 
-use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, MAX_XP_GAIN};
+use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, WageKind, MAX_XP_GAIN};
 use super::formation::{Row, Slot};
 use super::items::{self, SLOTS};
 
@@ -161,6 +161,13 @@ pub struct Unit {
     pub slot: Slot,
     /// Missed the last payday: refuses to fight until paid.
     pub unpaid: bool,
+    /// Paydays missed in a row.
+    pub unpaid_days: i32,
+    /// Hiring kind for the wage formula.
+    pub wage_kind: WageKind,
+    /// Game minute of death; a corpse (HP 0) stays in the army until it is resurrected or
+    /// buried (mechanics.md 2.5).
+    pub died_at: Option<u64>,
     /// Worn items.
     pub items: [Option<ItemId>; SLOTS],
     /// Drunk potions whose effect lasts until the end of the next battle.
@@ -170,7 +177,20 @@ pub struct Unit {
 impl Unit {
     pub fn new(content: &Content, def: UnitId, slot: Slot) -> Unit {
         let hp = content.unit(def).hits.max(1);
-        Unit { def, level: 1, xp: 0, hp, slot, unpaid: false, items: [None; SLOTS], potions: Vec::new() }
+        let wage_kind = WageKind::of(content.unit(def));
+        Unit {
+            def,
+            level: 1,
+            xp: 0,
+            hp,
+            slot,
+            unpaid: false,
+            unpaid_days: 0,
+            wage_kind,
+            died_at: None,
+            items: [None; SLOTS],
+            potions: Vec::new(),
+        }
     }
 
     pub fn name<'a>(&self, content: &'a Content) -> &'a str {

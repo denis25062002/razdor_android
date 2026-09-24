@@ -132,7 +132,7 @@ Hero class bonuses [doc; knight part also exe]:
 ### 1.5 Wages (daily upkeep) [exe + doc]
 
 Let `C = Cost`. The code has two branches, chosen by a per-unit hiring kind (1 or 2). Which
-units fall in which kind is **[unk]**. Our guess: kind 1 for ordinary recruits, kind 2 for mercenaries.
+units fall in which kind is **[unk]**. Razdor's guess: kind 2 (mercenaries) for `Nature=Rogue` units, kind 1 for the rest (section 8).
 - Kind 1: `wage = round(C / CostRecrutDiv × f)`, where `f = 0.25` if C≤50, `0.5` if C≤100, `0.75` if C≤150, and `1` otherwise. `CostRecrutDiv=2`, so a Militia unit (C=50) costs 6 gold/day.
 - Kind 2: `wage = C / CostMercenaryDiv` (=2).
 - The hero is free. A unit left in a garrison stops asking for pay from its second day there. [doc]
@@ -551,8 +551,8 @@ Each is marked *(guess)* in the code.
 - **Tactical cost** (for XP): `Cost × CostMultipler/100`, +10% per level above 1.
 - **XP pool**: as in 1.4 without the damage-exchange term; weight per survivor
   `(4 − row)·10 + damage dealt + HP healed`; at least 1 each.
-- **Wages**: every recruit uses hiring kind 1. Medic 15% and Ranger 20% daily healing do
-  not add up (the larger applies).
+- **Wages**: see the Stage 4 notes below for the two hiring kinds. Medic 15% and Ranger
+  20% daily healing do not add up (the larger applies).
 - **Battle turn limit**: `BattleEndTurn` full turns are played, then a stalemate; nobody
   wins, the player withdraws.
 - **Hero**: at 0 HP he leaves the field like any unit; if anyone of his army survives he
@@ -613,8 +613,59 @@ Each is marked *(guess)* in the code.
   `MinVictoryGold`, plus the army's artifacts.
 - **Hero start**: the preset's cell (moved to its building's entry if it lies in the walls),
   gold, combat experience, troops and artifacts. Mana starts at 0.
-- **Not used yet**: `Surrender`, `CostGoldDiv`, the Archmage's world-spell bonus, "dark
-  forces only" items, paying `Nature=Elemental` units in mana.
+
+Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
+
+- **Building tabs**: every building has a main hall; towns, castles, forts and churches a
+  barracks (villages and altars hire for the AI only); the player's castles and forts a
+  garrison; a building with goods a market, with spells a sanctuary; villages a tribute
+  tab. A building of attitude below 0 still trades and heals (the footage shows trading at
+  a market of attitude −2) but does not hire or pay tribute. A garrison still to be beaten
+  opens no window. An ill-disposed castle or fort with no garrison is taken by walking in.
+- **Main hall**: lists the building's quest and rumour events (`World::local_events`);
+  local events fire by themselves and are not listed. Running them is the event engine's.
+- **Wage kinds**: `Nature=Rogue` units are kind 2 (mercenary: `Cost / CostMercenaryDiv`),
+  everyone else kind 1. The kind is kept per unit. Elementals are hired, healed, raised and
+  paid in mana (Community). Corpses are not paid. When gold runs short the squad is paid in
+  order and the rest are unpaid; paid again at the next noon with enough gold.
+- **Desertion**: a unit unpaid at `MaxTimeNotUpkeep / 1440` noons in a row (7) leaves; its
+  items go to the pack. The village innkeeper option clears the unpaid state.
+- **Garrison**: a unit left there is paid at the first noon after it was left, then never;
+  it heals `GarrisonAutoHeal`% of max HP at every noon. Scenario garrisons of buildings the
+  player owns at the start become his (already past their paid day). Capacity: the
+  formation's.
+- **Barracks regrowth**: at every midnight a type below its maximum gains `max` progress;
+  every `MaxDayCountForNewUnit` progress is one unit, so an empty barracks is full again
+  after `MaxDayCountForNewUnit` days (5 militia: one every 2 days). The editor's
+  "all types" flag is read but has no effect.
+- **Healing**: `ceil(Cost × HealingConst% × missing / max)` for a full heal of one unit,
+  `HealingTime` minutes of game time per unit. No free healing on arrival.
+- **Corpses and resurrection**: the dead stay in the army (HP 0, still in their cell) and
+  drop their items into the pack (what does not fit is lost). Raising costs
+  `Cost × ResurectConst%`, takes `HealingTime`, restores full HP, and is possible until
+  `MaxTimeResurection` minutes after death; later the body is buried automatically. The
+  army screen can bury (dismiss) a corpse.
+- **Market prices**: markup `max(0, 1 − attitude) × 15%` on the base price, then the
+  Merchant's −30%. Fitted to the footage: with a trader hero, two markets of attitude 1
+  sell at exactly 70% of the base price, one of attitude −2 at 70% × 1.45 (120 → 122,
+  200 → 203, 210 → 213). Selling pays `ItemSaleCost`% (+50% with a Merchant), whatever the
+  relation. The footage's spell prices do not match `CostGold` of the Community data (some
+  are twice it), probably a data difference between versions; Razdor charges `CostGold`.
+- **Market stock**: the fixed goods plus `random` different market items whose base price
+  lies in `[min, max]`. Fixed goods once bought are gone for good; every 7 days the random
+  part is drawn anew (demo and scenarios alike).
+- **Backpack**: 40 items (the original's inventory is a scrolling 5-wide grid with more
+  than 25 items in the footage). **Spell book**: 15 spells (its window has 3 × 5 cells).
+- **Victory loot**: an army pays `gold / VictoryGoldDiv`, at least `MinVictoryGold`, or all
+  of it when it has less, plus its items. A captured castle or fort pays one day of its
+  gold income (the footage: +30 for a fort of income 30, +125 for a castle of income 125).
+  Every beaten enemy unit gives its `Surrender` value in mana (the footage: +20 mana from a
+  fort garrison with one unit of `Surrender=20`).
+- **Village alternatives**: collect the tribute, or instead the priest heals the army, or
+  the innkeeper pays off the unpaid. The long blessing, furs and magic ritual are not in
+  yet (TODO, with spells).
+- **Not used yet**: `CostGoldDiv`, the Archmage's world-spell bonus, "dark forces only"
+  items, ships at shipyards, named units that cannot be left in a garrison.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

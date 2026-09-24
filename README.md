@@ -15,10 +15,18 @@ cargo test          # game rules
   odd rows shifted half a hex): click anywhere to walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
   impassable. Right click or Space stops.
 - Time runs only while you travel or wait (**Wait 1 h / 4 h**, keys 1 and 4), as in the
-  original. At noon your buildings pay income and every recruit takes a daily wage; units
-  you can't pay refuse to fight. Villages refill their tribute at midnight.
-- Villages give their waiting tribute, or their priest heals you instead. Castles and the
-  church heal the squad; castles recruit.
+  original. At noon the report window shows your gold and mana, the income of your
+  buildings and the wages paid (from each unit's cost); units you can't pay refuse to fight
+  and leave after a week unpaid. Villages refill their tribute at midnight.
+- Stepping into a building opens its window, with the original's tabs: **Main hall**
+  (description, quests and rumours), **Barracks** (hire from the building's stock, which
+  regrows over the days; heal a wounded unit for part of its cost and an hour; raise the
+  dead in towns and churches within a week, for three times its cost), **Garrison** (your
+  castles and forts: leave units there, they are paid for their first day only and heal
+  10% a day), **Market** (goods and a sell shop; prices rise when the building dislikes
+  you), **Sanctuary** (learn spells into the hero's book of 15), and a village's
+  **Tribute** (gold and mana, or the priest's healing, or the innkeeper paying off your
+  unpaid men).
 - Bandit gangs roam the map, chase you when you're close ("!") and attack on contact.
   Surviving camps send out new gangs every few days.
 - Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
@@ -39,13 +47,15 @@ cargo test          # game rules
   undecided battle ends and both sides pull back. Your hero survives with 1 HP as long as
   anyone in his army does; you lose when the whole army is dead. Army cap: 12.
 - Survivors gain XP ("XP +N" on the cards). Levels add stats; some units can be promoted
-  from **Squad & gear** (the spearman becomes a swordsman at level 2).
+  from the **Squad** (hero and army) screen (the spearman becomes a swordsman at level 2).
+  The fallen stay in the army as bodies until raised or buried; their items go to the
+  backpack. A victory window shows the gold, mana and items taken, and any castle captured.
 - Items, as in the original: every unit has 4 slots, one weapon, never two of the same
-  type; melee weapons for warriors, bows for shooters, staffs for mages. Buy them at castle
-  markets (new stock every Monday, sell for a quarter of the price), loot them from camps
-  and gangs, or get them as village tribute. Manage gear from **Squad & gear** on the map or
-  in a castle; potions are drunk there (healing at once, other effects last until the end of
-  the next battle).
+  type; melee weapons for warriors, bows for shooters, staffs for mages. Buy them at
+  markets (new random goods every 7 days, sell for a quarter of the price), loot them from
+  camps and gangs, or get them as village tribute. Manage gear from the **Squad** screen (4
+  slots per unit, a scrolling backpack of 40); potions are drunk there (healing at once,
+  other effects last until the end of the next battle). Units can be dismissed there.
 - Units and items of the demo are our own content in `data/units.ini` and `data/items.ini`,
   written in the same format the engine reads from a Discord Times install.
 - Clear both bandit camps to win. If your whole army falls, it's over.
@@ -74,8 +84,10 @@ textures, objects, buildings and map figures; hover an army or a building for it
 (formation, leader, owner, tribute), hover the ground for the route and its travel time,
 mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, friendly ones
 greet you; hostile castles, forts and ruins with a garrison fight when you step into their
-gate, and a won castle or fort is yours with its income. Building screens, economy, fog of
-war, events and quests come in the next stages (see
+gate, and a won castle or fort is yours with its income (an empty hostile one is taken by
+walking in). Towns, castles, forts, churches, villages, markets and taverns open their
+building windows with the stock, prices and spells of the map. Fog of war, events and
+quests come in the next stages (see
 `docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not in yet, so maps with
 islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,

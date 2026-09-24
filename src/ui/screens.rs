@@ -5,7 +5,7 @@ use std::sync::Arc;
 use razdor::rules::battle::Team;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
 use razdor::rules::formation::Slot;
-use razdor::rules::game::{Game, HireError};
+use razdor::rules::game::Game;
 use razdor::rules::units::Stats;
 
 use super::assets::Assets;
@@ -38,7 +38,7 @@ pub(super) fn attack_line(s: &Stats) -> String {
     parts.join(", ")
 }
 
-fn stat_lines(content: &Content, kind: UnitId) -> [String; 3] {
+pub(super) fn stat_lines(content: &Content, kind: UnitId) -> [String; 3] {
     let s = Stats::of_level(content, kind, 1);
     [
         format!("Hits {}   Defence {}/{}", s.max_hp(), s[Stat::DefenceBlow], s[Stat::DefenceShot]),
@@ -183,7 +183,10 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
             let Some(i) = game.squad.iter().position(|u| u.slot == Slot::new(row, col)) else { continue };
             let u = &game.squad[i];
             assets.draw_unit(u.def, Team::Player, cx + cell / 2.0, cy + CELL / 2.0, CELL);
-            if u.unpaid {
+            if !u.alive() {
+                draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
+                text_centered("+", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 26.0, RED);
+            } else if u.unpaid {
                 draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
                 text_centered("$", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
             }
@@ -195,6 +198,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     }
     let c = &game.content;
     let info = match hovered.map(|i| (i, &game.squad[i])) {
+        Some((_, u)) if !u.alive() => format!("{} (dead)", u.name(c)),
         Some((_, u)) if u.unpaid => format!("{} unpaid!", u.name(c)),
         Some((i, u)) => format!("{} L{} {}/{}  {}g/day", u.name(c), u.level, u.hp, u.max_hp(c), game.wage(i)),
         None if formation.reserve => "front / back / reserve".to_string(),
@@ -211,53 +215,6 @@ pub(super) fn message_line(message: &Option<String>) {
         draw_rectangle(x, screen_height() - 60.0, w, 40.0, PANEL);
         text_centered(m, screen_width() / 2.0, screen_height() - 33.0, 24.0, ACCENT);
     }
-}
-
-pub fn town(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> Option<Screen> {
-    clear_background(Color::from_rgba(40, 32, 26, 255));
-    top_bar(game);
-    let name = game.location.map_or("Castle", |l| game.world.locations[l].name.as_str());
-    text(&format!("{name}: recruits"), 30.0, 90.0, 34.0, INK);
-    text("Your squad rests here and is fully healed. Recruits need daily pay.", 30.0, 118.0, 20.0, DIM);
-
-    let recruits = game.recruits_here().to_vec();
-    for (i, kind) in recruits.into_iter().enumerate() {
-        let (x, y) = (30.0, 140.0 + i as f32 * 130.0);
-        let c = game.content.clone();
-        let name = &c.unit(kind).name;
-        draw_rectangle(x, y, 660.0, 116.0, PANEL);
-        assets.draw_unit(kind, Team::Player, x + 58.0, y + 58.0, 80.0);
-        text(name, x + 115.0, y + 34.0, 28.0, INK);
-        for (j, line) in stat_lines(&c, kind).iter().enumerate() {
-            text(line, x + 115.0, y + 60.0 + j as f32 * 22.0, 19.0, DIM);
-        }
-        text(&format!("Wage {} gold/day", c.wage(kind)), x + 330.0, y + 34.0, 20.0, ACCENT);
-        let label = format!("Hire {}g", c.unit(kind).cost);
-        if button(x + 510.0, y + 36.0, 130.0, 44.0, &label, true) {
-            *message = Some(match game.hire(kind) {
-                Ok(()) => format!("{name} joins your squad."),
-                Err(HireError::NotEnoughGold) => "Not enough gold.".into(),
-                Err(HireError::SquadFull) => "Your squad is full.".into(),
-                Err(HireError::NotOffered) => "Not offered here.".into(),
-            });
-        }
-    }
-
-    let by = 60.0 + squad_panel(game, assets, screen_width() - 260.0, 60.0) + 16.0;
-    message_line(message);
-    if button(screen_width() - 260.0, by, 240.0, 44.0, "Market", game.market_here().is_some()) {
-        *message = None;
-        return Some(Screen::Market);
-    }
-    if button(screen_width() - 260.0, by + 52.0, 240.0, 44.0, "Squad & gear", true) {
-        *message = None;
-        return Some(Screen::Squad { selected: 0, from_town: true });
-    }
-    if button(screen_width() - 260.0, by + 104.0, 240.0, 44.0, "Leave castle", true) {
-        *message = None;
-        return Some(Screen::WorldMap);
-    }
-    None
 }
 
 fn end_screen(title: &str, subtitle: &str, color: Color, game: &mut Option<Game>) -> Option<Screen> {

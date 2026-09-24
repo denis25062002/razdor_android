@@ -58,6 +58,28 @@ impl HeroClass {
     }
 }
 
+/// The two hiring kinds of the wage code (mechanics.md 1.5). Which units the original puts
+/// in which kind is unknown; Razdor's guess: `Nature=Rogue` units are mercenaries, everyone
+/// else a recruit ([`WageKind::of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WageKind {
+    /// Kind 1: `round(Cost / CostRecrutDiv × f)` with the cost brackets.
+    Recruit,
+    /// Kind 2: `Cost / CostMercenaryDiv`.
+    Mercenary,
+}
+
+impl WageKind {
+    /// Razdor's guess for a unit type's hiring kind: rogues are mercenaries.
+    pub fn of(def: &UnitDef) -> WageKind {
+        if def.nature == Nature::Rogue {
+            WageKind::Mercenary
+        } else {
+            WageKind::Recruit
+        }
+    }
+}
+
 /// Where an item can turn up in the demo world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -205,6 +227,21 @@ impl Content {
         base * (9 + level.max(1)) / 10
     }
 
+    /// Daily wage of a unit type hired as `kind` (mechanics.md 1.5). The hero is free; the
+    /// caller handles that and `AddPayment`.
+    pub fn wage_for(&self, id: UnitId, kind: WageKind) -> i32 {
+        match kind {
+            WageKind::Recruit => self.wage(id),
+            WageKind::Mercenary => self.unit(id).cost.max(0) / self.options.cost_mercenary_div.max(1),
+        }
+    }
+
+    /// Community Update: `Nature=Elemental` units are hired, healed, resurrected and paid in
+    /// mana instead of gold.
+    pub fn paid_in_mana(&self, id: UnitId) -> bool {
+        self.unit(id).nature == Nature::Elemental
+    }
+
     /// Daily wage of a unit type (mechanics.md 1.5, hiring kind 1):
     /// `round(Cost / CostRecrutDiv × f)`, f = 0.25 / 0.5 / 0.75 / 1 for cost ≤50 / ≤100 / ≤150 / more.
     /// The hero is free; the caller handles that and `AddPayment`.
@@ -295,6 +332,28 @@ pub(crate) mod testkit {
         }
     }
 
+    /// A spell with id `id` that costs `gold` to learn.
+    pub fn spell(id: u32, gold: i32) -> SpellDef {
+        SpellDef {
+            id,
+            name: format!("spell{id}"),
+            cost_gold: gold,
+            cost_mana: 50,
+            school: Some(MagicSchool::Life),
+            time_work: None,
+            time_cast: Some(1),
+            target: None,
+            icons: Default::default(),
+            effects: Default::default(),
+            delta_fixed_hits: Some(10),
+            delta_percent_hits: None,
+            add: StatMods::new(),
+            percent: StatMods::new(),
+            life_lose_percent: None,
+            extra: BTreeMap::new(),
+        }
+    }
+
     pub fn content(units: Vec<UnitDef>, items: Vec<ArtefactDef>) -> Content {
         Content::new(units, items, Vec::new(), GlobalOptions::default(), Formation::WIDE)
     }
@@ -344,6 +403,20 @@ mod tests {
         // 50/2×0.25 = 6.25, 100/2×0.5 = 25, 150/2×0.75 = 56.25, 280/2 = 140.
         let wages: Vec<i32> = (1..=5).map(|i| c.wage(UnitId(i))).collect();
         assert_eq!(wages, vec![6, 25, 56, 140, 0]);
+        // Kind 2 (mercenary): Cost / CostMercenaryDiv, no brackets.
+        let merc: Vec<i32> = (1..=5).map(|i| c.wage_for(UnitId(i), WageKind::Mercenary)).collect();
+        assert_eq!(merc, vec![25, 50, 75, 140, 0]);
+        assert_eq!(c.wage_for(UnitId(1), WageKind::Recruit), 6);
+    }
+
+    #[test]
+    fn rogues_are_mercenaries_and_elementals_are_paid_in_mana() {
+        let rogue = UnitDef { nature: Nature::Rogue, ..unit(1, "rogue") };
+        let elemental = UnitDef { nature: Nature::Elemental, ..unit(2, "golem") };
+        let c = content(vec![rogue, elemental, unit(3, "militia")], vec![]);
+        assert_eq!(WageKind::of(c.unit(UnitId(1))), WageKind::Mercenary);
+        assert_eq!(WageKind::of(c.unit(UnitId(3))), WageKind::Recruit);
+        assert!(c.paid_in_mana(UnitId(2)) && !c.paid_in_mana(UnitId(1)));
     }
 
     #[test]

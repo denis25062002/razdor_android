@@ -4,6 +4,7 @@
 //! effects); left click does the default action, right click the alternative (e.g. a mage's
 //! strike instead of its curse).
 
+use std::collections::VecDeque;
 use std::f32::consts::PI;
 
 use macroquad::prelude::*;
@@ -15,6 +16,7 @@ use razdor::rules::game::{BattleResult, Game};
 use razdor::rules::units::Stats;
 
 use super::assets::{team_color, Assets};
+use super::dialog::Dialog;
 use super::widgets::*;
 use super::Screen;
 
@@ -177,7 +179,7 @@ impl BattleView {
         self.battle.at(team, slot)
     }
 
-    pub fn frame(&mut self, game: &mut Game, assets: &Assets, message: &mut Option<String>) -> Option<Screen> {
+    pub fn frame(&mut self, game: &mut Game, assets: &Assets, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
         let l = Layout::new(&self.battle);
         let dt = get_frame_time();
         if let Some(fx) = &mut self.fx {
@@ -225,7 +227,7 @@ impl BattleView {
         }
 
         if over {
-            return self.result_overlay(&l, game, message, outcome);
+            return self.result_overlay(&l, game, message, dialogs, outcome);
         }
         None
     }
@@ -597,7 +599,7 @@ impl BattleView {
     }
 
     /// Result box over the side panel, so the XP badges on the cards stay visible.
-    fn result_overlay(&self, l: &Layout, game: &mut Game, message: &mut Option<String>, outcome: Outcome) -> Option<Screen> {
+    fn result_overlay(&self, l: &Layout, game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>, outcome: Outcome) -> Option<Screen> {
         let (w, h) = (360.0, 200.0);
         let panel_w = screen_width() - l.panel_x - 16.0;
         let (x, y) = (l.panel_x + (panel_w - w).max(0.0) / 2.0, OY + 120.0);
@@ -625,18 +627,9 @@ impl BattleView {
         match result {
             BattleResult::Defeat => Some(Screen::GameOver),
             BattleResult::Victory { .. } if game.won() => Some(Screen::Victory),
-            BattleResult::Victory { reward, lost, loot, left_behind, level_ups, captured } => {
-                let mut m = format!("Victory! +{reward} gold{}{}", losses(lost), levels(&level_ups));
-                if let Some(l) = captured {
-                    m += &format!(", {} is yours", game.world.locations[l].name);
-                }
-                for item in &loot {
-                    m += &format!(", found {}", game.content.item(*item).name);
-                }
-                if left_behind > 0 {
-                    m += &format!(", {left_behind} left behind (pack full)");
-                }
-                *message = Some(m + ".");
+            victory @ BattleResult::Victory { .. } => {
+                dialogs.extend(Dialog::victory(game, &victory));
+                *message = None;
                 Some(Screen::WorldMap)
             }
             BattleResult::Withdrew { lost, level_ups } => {

@@ -124,7 +124,11 @@ files with `RAZDOR_DT_DIR`, and ends in its own commit.
    building of РК1 and РК3 is reachable; maps with islands (ДС1, ДС2, РК7, some of the
    tutorials) need ships.
 4. **Buildings and economy**: building screens, capture, garrisons, income, wages, healing,
-   resurrection, loot, markets, barracks restock.
+   resurrection, loot, markets, barracks restock. *Done:* `rules::town` (tabs per building
+   type, hire with stock and regrowth, paid heal and resurrection, corpses, garrisons,
+   sanctuary, village alternatives, dismiss), wages of both kinds and in mana, desertion,
+   noon report and victory windows, loot and surrender mana, relation prices fitted to the
+   footage, the building window and hero/army screen in `ui/`.
 5. **Fog of war, minimap, army hover preview, waiting.**
 6. **Event and quest engine**, dialogs, journal, victory/defeat.
 7. **Spells on the world map; save/load.**

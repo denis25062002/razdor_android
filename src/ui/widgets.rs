@@ -83,13 +83,60 @@ pub fn measure(s: &str, size: f32) -> TextDimensions {
     with_font(s, |font, s| measure_text(s, font, size as u16, 1.0))
 }
 
+thread_local! {
+    /// A modal dialog is open: the screen below draws but takes no input.
+    static BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_input_blocked(blocked: bool) {
+    BLOCKED.with(|b| b.set(blocked));
+}
+
+pub fn input_blocked() -> bool {
+    BLOCKED.with(|b| b.get())
+}
+
 pub fn mouse_in(x: f32, y: f32, w: f32, h: f32) -> bool {
     let (mx, my) = mouse_position();
-    mx >= x && mx < x + w && my >= y && my < y + h
+    !input_blocked() && mx >= x && mx < x + w && my >= y && my < y + h
 }
 
 pub fn clicked() -> bool {
-    is_mouse_button_pressed(MouseButton::Left)
+    !input_blocked() && is_mouse_button_pressed(MouseButton::Left)
+}
+
+pub fn right_clicked() -> bool {
+    !input_blocked() && is_mouse_button_pressed(MouseButton::Right)
+}
+
+pub fn key(k: KeyCode) -> bool {
+    !input_blocked() && is_key_pressed(k)
+}
+
+/// Mouse wheel steps this frame (up is positive), 0 while input is blocked.
+pub fn wheel() -> f32 {
+    if input_blocked() {
+        0.0
+    } else {
+        mouse_wheel().1
+    }
+}
+
+/// A translucent panel of lines next to the mouse.
+pub fn tooltip(lines: &[(String, Color)]) {
+    if lines.is_empty() {
+        return;
+    }
+    let w = lines.iter().map(|(s, _)| measure(s, 17.0).width).fold(0.0, f32::max) + 24.0;
+    let h = lines.len() as f32 * 21.0 + 14.0;
+    let (mx, my) = mouse_position();
+    let x = (mx + 18.0).min(screen_width() - w - 4.0);
+    let y = (my + 18.0).min(screen_height() - h - 4.0);
+    draw_rectangle(x, y, w, h, Color::new(0.06, 0.12, 0.09, 0.95));
+    draw_rectangle_lines(x, y, w, h, 2.0, Color::new(0.35, 0.55, 0.4, 1.0));
+    for (i, (s, c)) in lines.iter().enumerate() {
+        text(s, x + 12.0, y + 24.0 + i as f32 * 21.0, 17.0, *c);
+    }
 }
 
 /// Draws a button and returns true when it was clicked this frame.
