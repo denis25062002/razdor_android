@@ -1,9 +1,55 @@
-//! Terrain grid and pathfinding for the world map.
+//! Hex terrain grid and pathfinding for the world map.
+//!
+//! Pointy-top hexes in "odd-r" offset coordinates: tile `(col, row)`, odd rows shifted
+//! half a hex to the right. World positions are in units where neighbouring hex centres
+//! are exactly 1 apart.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 
 pub type Tile = (i32, i32);
+
+/// Vertical distance between hex rows, in world units.
+pub const ROW_HEIGHT: f32 = 0.866_025_4; // √3 / 2
+
+/// Centre of a hex in world units.
+pub fn center((c, r): Tile) -> (f32, f32) {
+    (c as f32 + 0.5 * r.rem_euclid(2) as f32, r as f32 * ROW_HEIGHT)
+}
+
+fn to_cube((c, r): Tile) -> (i32, i32, i32) {
+    let x = c - (r - r.rem_euclid(2)) / 2;
+    (x, -x - r, r)
+}
+
+/// Steps between two hexes.
+pub fn hex_distance(a: Tile, b: Tile) -> i32 {
+    let (a, b) = (to_cube(a), to_cube(b));
+    (a.0 - b.0).abs().max((a.1 - b.1).abs()).max((a.2 - b.2).abs())
+}
+
+/// The six neighbours of a hex (in bounds or not).
+pub fn hex_neighbours((c, r): Tile) -> [Tile; 6] {
+    let o = r.rem_euclid(2); // odd rows are shifted right
+    [(c - 1, r), (c + 1, r), (c - 1 + o, r - 1), (c + o, r - 1), (c - 1 + o, r + 1), (c + o, r + 1)]
+}
+
+/// Hex containing a world position.
+pub fn tile_at(p: (f32, f32)) -> Tile {
+    let r = (p.1 / ROW_HEIGHT).round() as i32;
+    let c = (p.0 - 0.5 * r.rem_euclid(2) as f32).round() as i32;
+    // The rounded guess is right or off by one neighbour: pick the nearest centre.
+    std::iter::once((c, r))
+        .chain(hex_neighbours((c, r)))
+        .min_by(|&a, &b| {
+            let d = |t| {
+                let (x, y) = center(t);
+                (x - p.0).powi(2) + (y - p.1).powi(2)
+            };
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Terrain {
@@ -87,22 +133,8 @@ impl TileMap {
         self.terrain(t).minutes().is_some()
     }
 
-    /// Minutes to step from `a` onto neighbouring tile `b` (diagonals cost √2 more).
-    pub fn step_minutes(&self, a: Tile, b: Tile) -> Option<f32> {
-        let base = self.terrain(b).minutes()?;
-        let diagonal = a.0 != b.0 && a.1 != b.1;
-        Some(if diagonal { base * std::f32::consts::SQRT_2 } else { base })
-    }
-
     fn neighbours(&self, t: Tile) -> impl Iterator<Item = Tile> + '_ {
-        (-1..=1).flat_map(move |dy| (-1..=1).map(move |dx| (dx, dy))).filter_map(move |(dx, dy)| {
-            let n = (t.0 + dx, t.1 + dy);
-            // No corner cutting past impassable tiles.
-            let ok = (dx, dy) != (0, 0)
-                && self.passable(n)
-                && (dx == 0 || dy == 0 || (self.passable((t.0 + dx, t.1)) && self.passable((t.0, t.1 + dy))));
-            ok.then_some(n)
-        })
+        hex_neighbours(t).into_iter().filter(|&n| self.passable(n))
     }
 
     /// Cheapest path from `from` to `to` (A*), excluding `from`. Empty if unreachable or equal.
@@ -111,10 +143,7 @@ impl TileMap {
             return Vec::new();
         }
         // Road is the cheapest terrain, so it gives an admissible heuristic.
-        let h = |t: Tile| {
-            let (dx, dy) = ((t.0 - to.0).abs() as f32, (t.1 - to.1).abs() as f32);
-            30.0 * (dx.max(dy) + (std::f32::consts::SQRT_2 - 1.0) * dx.min(dy))
-        };
+        let h = |t: Tile| 30.0 * hex_distance(t, to) as f32;
         // Costs in whole minutes keep the heap ordering exact.
         let mut open = BinaryHeap::from([Reverse(((h(from)) as u32, 0u32, from))]);
         let mut best: HashMap<Tile, u32> = HashMap::from([(from, 0)]);
@@ -137,7 +166,7 @@ impl TileMap {
                 continue;
             }
             for n in self.neighbours(t) {
-                let ng = g + self.step_minutes(t, n).unwrap_or(0.0).round() as u32;
+                let ng = g + self.terrain(n).minutes().unwrap_or(0.0) as u32;
                 if best.get(&n).is_none_or(|&old| ng < old) {
                     best.insert(n, ng);
                     parent.insert(n, t);
@@ -153,6 +182,12 @@ impl TileMap {
 mod tests {
     use super::*;
 
+    // Odd rows are drawn shifted right:
+    //   . . . . .
+    //    . ~ ~ ~ .
+    //   . ~ X ~ .
+    //    . = = = =
+    //   T T T T T
     const MAP: &str = "\
 .....
 .~~~.
@@ -173,13 +208,41 @@ TTTTT
     }
 
     #[test]
+    fn hex_neighbours_depend_on_row_parity() {
+        // Even row: the row above/below sits half a hex to the left.
+        assert_eq!(hex_neighbours((2, 2)), [(1, 2), (3, 2), (1, 1), (2, 1), (1, 3), (2, 3)]);
+        // Odd row: shifted right.
+        assert_eq!(hex_neighbours((2, 1)), [(1, 1), (3, 1), (2, 0), (3, 0), (2, 2), (3, 2)]);
+        for n in hex_neighbours((2, 1)) {
+            assert_eq!(hex_distance((2, 1), n), 1);
+            let (a, b) = (center((2, 1)), center(n));
+            assert!(((a.0 - b.0).hypot(a.1 - b.1) - 1.0).abs() < 1e-4, "neighbour centres are 1 apart");
+        }
+        assert_eq!(hex_distance((0, 0), (4, 0)), 4);
+        assert_eq!(hex_distance((0, 0), (0, 4)), 4);
+    }
+
+    #[test]
+    fn tile_at_inverts_center() {
+        for r in 0..6 {
+            for c in 0..6 {
+                assert_eq!(tile_at(center((c, r))), (c, r));
+                let (x, y) = center((c, r));
+                assert_eq!(tile_at((x + 0.3, y - 0.3)), (c, r), "near the centre stays inside");
+            }
+        }
+    }
+
+    #[test]
     fn path_avoids_water_and_prefers_road() {
         let m = TileMap::parse(MAP);
         let p = m.path((0, 3), (4, 3));
-        assert_eq!(p.last(), Some(&(4, 3)));
+        assert_eq!(p, vec![(1, 3), (2, 3), (3, 3), (4, 3)], "straight along the road");
+        let p = m.path((0, 0), (4, 4));
         assert!(p.iter().all(|&t| m.passable(t)));
-        // Along the road (4 steps), not through the forest below.
-        assert_eq!(p, vec![(1, 3), (2, 3), (3, 3), (4, 3)]);
+        for w in p.windows(2) {
+            assert_eq!(hex_distance(w[0], w[1]), 1, "every step is to a neighbouring hex");
+        }
     }
 
     #[test]
@@ -187,13 +250,5 @@ TTTTT
         let m = TileMap::parse(MAP);
         assert!(m.path((0, 0), (1, 1)).is_empty());
         assert!(m.path((0, 0), (0, 0)).is_empty());
-    }
-
-    #[test]
-    fn no_corner_cutting_past_water() {
-        let m = TileMap::parse(MAP);
-        // (4,2) -> (3,3) is diagonal; the corner (3,2) is water, so the step is not allowed.
-        assert!(m.neighbours((4, 2)).all(|n| n != (3, 3)));
-        assert!(m.neighbours((4, 2)).any(|n| n == (4, 3)));
     }
 }

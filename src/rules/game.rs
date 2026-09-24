@@ -1,7 +1,7 @@
 use super::battle::{Battle, Outcome};
 use super::clock::Clock;
 use super::formation::{free_slot, Slot};
-use super::map::{Tile, TileMap};
+use super::map::{center, tile_at, Tile, TileMap};
 use super::rng::Rng;
 use super::units::{Unit, UnitKind};
 use super::world::{LocationKind, World, GANG_REWARD};
@@ -65,7 +65,7 @@ pub struct Game {
     pub squad: Vec<Unit>,
     pub gold: i32,
     pub clock: Clock,
-    /// Party position in tile units.
+    /// Party position in world units (see `map::center`).
     pub pos: (f32, f32),
     /// Remaining route, next tile first.
     pub path: Vec<Tile>,
@@ -84,10 +84,11 @@ fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32,
     while left > 0.0 {
         let Some(&next) = path.first() else { break };
         let per_tile = map.terrain(next).minutes().unwrap_or(60.0) * slowness;
-        let (dx, dy) = (next.0 as f32 - pos.0, next.1 as f32 - pos.1);
+        let goal = center(next);
+        let (dx, dy) = (goal.0 - pos.0, goal.1 - pos.1);
         let need = (dx * dx + dy * dy).sqrt() * per_tile;
         if need <= left {
-            *pos = (next.0 as f32, next.1 as f32);
+            *pos = goal;
             path.remove(0);
             left -= need;
         } else {
@@ -104,10 +105,6 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
 
-fn tile_of(p: (f32, f32)) -> Tile {
-    (p.0.round() as i32, p.1.round() as i32)
-}
-
 impl Game {
     pub fn new(hero: UnitKind, seed: u64) -> Self {
         let world = World::standard();
@@ -116,7 +113,7 @@ impl Game {
             squad: vec![Unit::new(hero, free_slot(&[], hero.stats().attack.preferred_row()).unwrap())],
             gold: hero.starting_gold(),
             clock: Clock::start(),
-            pos: (home.0 as f32, home.1 as f32),
+            pos: center(home),
             path: Vec::new(),
             world,
             location: Some(0),
@@ -132,7 +129,7 @@ impl Game {
     }
 
     pub fn tile(&self) -> Tile {
-        tile_of(self.pos)
+        tile_at(self.pos)
     }
 
     pub fn moving(&self) -> bool {
@@ -267,7 +264,7 @@ impl Game {
             let near = now >= p.ignore_until && distance(p.pos, hero_pos) <= CHASE_RADIUS;
             if near {
                 if !p.chasing || p.path.last() != Some(&hero_tile) {
-                    p.path = map.path(p.tile(), hero_tile);
+                    p.path = map.path(tile_at(p.pos), hero_tile);
                     p.chasing = true;
                 }
             } else if p.chasing {
@@ -282,7 +279,7 @@ impl Game {
                         home.1 + self.rng.range(-WANDER_RADIUS, WANDER_RADIUS),
                     );
                     if map.passable(t) && locations.iter().all(|l| l.tile != t) {
-                        p.path = map.path(p.tile(), t);
+                        p.path = map.path(tile_at(p.pos), t);
                         if !p.path.is_empty() {
                             break;
                         }
@@ -477,7 +474,7 @@ mod tests {
     #[test]
     fn cannot_walk_into_the_sea() {
         let mut g = quiet_game(Knight);
-        assert!(!g.set_destination((10, 39)));
+        assert!(!g.set_destination((30, 40)), "open sea");
     }
 
     #[test]
@@ -556,7 +553,7 @@ mod tests {
         let mut g = quiet_game(Knight);
         g.set_destination(tile_of_location(&g, "Millbrook"));
         let camp = g.world.index_of("Bandit camp");
-        let start = (g.tile().0 + 4, g.tile().1 + 2);
+        let start = (g.tile().0 + 3, g.tile().1 + 2);
         assert!(g.world.map.passable(start));
         g.world.spawn_party(camp, start);
         let before = distance(g.world.parties[0].pos, g.pos);

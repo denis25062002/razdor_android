@@ -10,8 +10,8 @@ cargo test          # game rules
 
 ## How to play
 - Pick a hero: Knight (melee tank), Archmage (magic ignores armor), Ranger (long bow).
-- The kingdom is a free-roaming tile map (`data/kingdom.txt`, editable): click anywhere to
-  walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
+- The kingdom is a hex map, as in the original (`data/kingdom.txt`, one character per hex,
+  odd rows shifted half a hex): click anywhere to walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
   impassable. Right click or Space stops.
 - Time runs only while you travel, as in the original. At midnight your castle pays income
   and every recruit takes a daily wage; units you can't pay refuse to fight.

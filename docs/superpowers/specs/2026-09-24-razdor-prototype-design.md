@@ -25,12 +25,13 @@ Pick a hero class:
 Replaces the v1 four-node graph. Sources: overview image of the first official map on the
 Discord Times wiki, mygames.org.ru, pooha.net tips, discordtimes.ucoz.ru walkthrough.
 
-**Map.** A hand-made 64×40 tile map stored as text in `data/kingdom.txt`, laid out like the
+**Map.** A hand-made 64×44 **hex** map (pointy-top hexes, odd rows shifted half a hex right,
+one character per hex) stored as text in `data/kingdom.txt`, laid out like the
 original's first scenario: castle in the north-west, villages, forests crossed by dirt roads,
 a ruined fortress, a church, a fishing village by a lake, swamp in the south-west, sea along
 the south and a second castle with a bridge in the south-east.
 
-| Terrain  | Char | Game time per tile | Passable |
+| Terrain  | Char | Game time per hex  | Passable |
 |----------|------|--------------------|----------|
 | Road     | `=`  | 30 min             | yes      |
 | Grass    | `.`  | 1 h                | yes      |
@@ -39,11 +40,12 @@ the south and a second castle with a bridge in the south-east.
 | Water    | `~`  | —                  | no       |
 | Mountain | `^`  | —                  | no       |
 
-Location letters sit on road/grass tiles (listed in `World::standard`).
-Click a tile and the party walks the cheapest path (A*, 8-directional). The camera follows.
+Location letters sit on road hexes (listed in `World::standard`).
+Click a hex and the party walks the cheapest path (A* over the 6 hex neighbours). The camera
+follows. Positions use world units where neighbouring hex centres are 1 apart.
 
 **Time.** A clock (day, weekday, HH:MM), starting day 1 (Monday) 08:00. **Time passes only
-while the party moves** (as in the original): walking a tile costs its terrain time; real
+while the party moves** (as in the original): walking a hex costs its terrain time; real
 speed is 1 game hour ≈ 0.2 s. At **00:00** a new day starts *(sources disagree between noon
 and midnight; midnight chosen, it matches the "wait for 24:00 to collect tribute" tip)*:
 - castle income is added (Oakford: 20 gold);
@@ -60,7 +62,7 @@ and midnight; midnight chosen, it matches the "wait for 24:00 to collect tribute
 
 **Roaming parties.** Bandit gangs move on the map in the same game time as the player
 (0.8× player speed on equal terrain). They wander around their home camp, and chase the
-player when within 5 tiles. Touching a gang starts a battle against its formation (reward
+player when within 5 hexes. Touching a gang starts a battle against its formation (reward
 30 gold). After a stalemate the gang ignores the player for 2 game hours. Each uncleared camp
 spawns a gang every 3 days while it has fewer than 2 out. Two gangs roam from the start.
 
@@ -136,7 +138,7 @@ src/
     mod.rs
     rng.rs         small seeded xorshift RNG (deterministic tests)
     units.rs       UnitKind, Stats, AttackKind, Unit
-    map.rs         TileMap: terrain grid parsed from data/kingdom.txt, A* pathfinding
+    map.rs         TileMap: hex terrain grid parsed from data/kingdom.txt, hex math, A*
     clock.rs       Clock: game minutes → day / weekday / HH:MM, midnight rollover
     world.rs       Locations and roaming parties on the tile map
     formation.rs   Row, Slot, 2×6 formation helpers

@@ -1,5 +1,5 @@
 use super::formation::{Row, Slot};
-use super::map::{Tile, TileMap};
+use super::map::{center, tile_at, Tile, TileMap};
 use super::units::UnitKind;
 
 const KINGDOM: &str = include_str!("../../data/kingdom.txt");
@@ -25,7 +25,7 @@ pub struct Location {
 /// A bandit gang roaming the map.
 #[derive(Clone, Debug)]
 pub struct Party {
-    /// Position in tile units; tile (x, y) has its centre at (x, y).
+    /// Position in world units (see `map::center`).
     pub pos: (f32, f32),
     /// Camp it belongs to (index into `locations`).
     pub home: usize,
@@ -38,7 +38,7 @@ pub struct Party {
 
 impl Party {
     pub fn tile(&self) -> Tile {
-        (self.pos.0.round() as i32, self.pos.1.round() as i32)
+        tile_at(self.pos)
     }
 }
 
@@ -109,8 +109,8 @@ impl World {
         // Two gangs already on the roads, one from each camp.
         let camp = w.index_of("Bandit camp");
         let lair = w.index_of("Bandit lair");
-        w.spawn_party(camp, (40, 14));
-        w.spawn_party(lair, (14, 21));
+        w.spawn_party(camp, (39, 16));
+        w.spawn_party(lair, (14, 24));
         w
     }
 
@@ -124,7 +124,7 @@ impl World {
 
     pub fn spawn_party(&mut self, home: usize, at: Tile) {
         self.parties.push(Party {
-            pos: (at.0 as f32, at.1 as f32),
+            pos: center(at),
             home,
             enemies: gang(),
             path: Vec::new(),

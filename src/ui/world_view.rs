@@ -4,7 +4,7 @@ use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
 use razdor::rules::game::{Event, Game};
-use razdor::rules::map::{Terrain, Tile};
+use razdor::rules::map::{center, hex_distance, hex_neighbours, tile_at, Terrain, Tile, ROW_HEIGHT};
 use razdor::rules::units::UnitKind;
 use razdor::rules::world::LocationKind;
 
@@ -14,7 +14,10 @@ use super::screens::{message_line, squad_panel, top_bar};
 use super::widgets::*;
 use super::Screen;
 
-const TILE: f32 = 28.0;
+/// Hex circumradius in pixels (pointy-top).
+const HEX_R: f32 = 16.0;
+/// Pixels per world unit: the distance between neighbouring hex centres.
+const UNIT: f32 = HEX_R * 1.732_050_8;
 const PANEL_W: f32 = 280.0;
 const TOP: f32 = 44.0;
 
@@ -44,17 +47,23 @@ struct Camera {
 impl Camera {
     fn follow(game: &Game) -> Camera {
         let view = Rect::new(0.0, TOP, screen_width() - PANEL_W, screen_height() - TOP);
-        let world = vec2(game.world.map.w as f32 * TILE, game.world.map.h as f32 * TILE);
-        let centre = vec2(game.pos.0 + 0.5, game.pos.1 + 0.5) * TILE;
+        let map = &game.world.map;
+        let world = vec2((map.w as f32 + 0.5) * UNIT, (map.h - 1) as f32 * ROW_HEIGHT * UNIT + 2.0 * HEX_R);
+        let pad = vec2(UNIT / 2.0, HEX_R);
+        let centre = Vec2::from(game.pos) * UNIT + pad;
         let mut origin = centre - vec2(view.w, view.h) / 2.0;
         origin.x = origin.x.clamp(0.0, (world.x - view.w).max(0.0));
         origin.y = origin.y.clamp(0.0, (world.y - view.h).max(0.0));
-        Camera { origin, view }
+        Camera { origin: origin - pad, view }
     }
 
-    /// Screen position of the top-left corner of a tile-space point.
-    fn to_screen(&self, p: Vec2) -> Vec2 {
-        p * TILE - self.origin + vec2(self.view.x, self.view.y)
+    /// Screen position of a world-space point.
+    fn to_screen(&self, p: (f32, f32)) -> Vec2 {
+        Vec2::from(p) * UNIT - self.origin + vec2(self.view.x, self.view.y)
+    }
+
+    fn hex_screen(&self, t: Tile) -> Vec2 {
+        self.to_screen(center(t))
     }
 
     fn tile_under_mouse(&self) -> Option<Tile> {
@@ -62,82 +71,87 @@ impl Camera {
         if !self.view.contains(m) {
             return None;
         }
-        let w = (m - vec2(self.view.x, self.view.y) + self.origin) / TILE;
-        Some((w.x.floor() as i32, w.y.floor() as i32))
+        let w = (m - vec2(self.view.x, self.view.y) + self.origin) / UNIT;
+        Some(tile_at((w.x, w.y)))
     }
+}
+
+fn hex(c: Vec2, color: Color) {
+    // A hair larger than the circumradius so neighbours overlap without gaps.
+    draw_poly(c.x, c.y, 6, HEX_R + 0.6, 30.0, color);
 }
 
 fn draw_terrain(game: &Game, cam: &Camera) {
     let map = &game.world.map;
-    let (x0, y0) = ((cam.origin.x / TILE) as i32, (cam.origin.y / TILE) as i32);
-    let (x1, y1) = (x0 + (cam.view.w / TILE) as i32 + 2, y0 + (cam.view.h / TILE) as i32 + 2);
+    let top_left = cam.origin / UNIT;
+    let (c0, r0) = ((top_left.x - 1.0) as i32, (top_left.y / ROW_HEIGHT - 1.0) as i32);
+    let (c1, r1) = (c0 + (cam.view.w / UNIT) as i32 + 3, r0 + (cam.view.h / (UNIT * ROW_HEIGHT)) as i32 + 3);
     let is_road = |t: Tile| map.in_bounds(t) && map.terrain(t) == Terrain::Road;
+    let visible = || (r0.max(0)..r1.min(map.h)).flat_map(move |y| (c0.max(0)..c1.min(map.w)).map(move |x| (x, y)));
 
-    for y in y0..y1.min(map.h) {
-        for x in x0..x1.min(map.w) {
-            let p = cam.to_screen(vec2(x as f32, y as f32));
-            let v = 0.93 + 0.14 * hash(x, y, 1);
-            let grass = shade(rgb(64, 116, 50), v);
-            match map.terrain((x, y)) {
-                Terrain::Grass => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, grass);
-                    if hash(x, y, 2) < 0.3 {
-                        draw_circle(p.x + TILE * hash(x, y, 3), p.y + TILE * hash(x, y, 4), 2.0, shade(grass, 1.25));
+    for (x, y) in visible() {
+        let c = cam.hex_screen((x, y));
+        let v = 0.93 + 0.14 * hash(x, y, 1);
+        let grass = shade(rgb(64, 116, 50), v);
+        let jitter = |salt| vec2(hash(x, y, salt) - 0.5, hash(x, y, salt + 50) - 0.5) * HEX_R * 1.1;
+        match map.terrain((x, y)) {
+            Terrain::Grass | Terrain::Road => {
+                hex(c, grass);
+                if hash(x, y, 2) < 0.3 {
+                    let d = c + jitter(3);
+                    draw_circle(d.x, d.y, 2.0, shade(grass, 1.25));
+                }
+            }
+            Terrain::Forest => {
+                hex(c, shade(rgb(40, 84, 38), v));
+                for k in 0..3u32 {
+                    let t = c + jitter(10 + k);
+                    if hash(x, y, 30 + k) < 0.45 {
+                        // Conifer.
+                        draw_triangle(vec2(t.x, t.y - 9.0), vec2(t.x - 6.0, t.y + 6.0), vec2(t.x + 6.0, t.y + 6.0), rgb(26, 70, 40));
+                    } else {
+                        draw_circle(t.x, t.y, 6.5, shade(rgb(46, 110, 42), 0.9 + 0.2 * hash(x, y, 40 + k)));
+                        draw_circle(t.x - 2.0, t.y - 2.0, 2.8, rgb(78, 140, 60));
                     }
                 }
-                Terrain::Road => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, grass);
+            }
+            Terrain::Swamp => {
+                hex(c, shade(rgb(84, 96, 58), v));
+                draw_ellipse(c.x, c.y + 2.0, 8.0, 4.0, 0.0, rgb(52, 80, 70));
+                draw_line(c.x - 7.0, c.y + 6.0, c.x - 7.0, c.y - 4.0, 1.5, rgb(120, 110, 60));
+            }
+            Terrain::Water => {
+                hex(c, shade(rgb(38, 82, 140), v));
+                if hash(x, y, 5) < 0.35 {
+                    let wy = c.y + (hash(x, y, 6) - 0.5) * HEX_R;
+                    draw_line(c.x - 5.0, wy, c.x + 5.0, wy, 1.5, rgb(90, 140, 190));
                 }
-                Terrain::Forest => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, shade(rgb(40, 84, 38), v));
-                    for k in 0..3u32 {
-                        let (tx, ty) = (p.x + 4.0 + (TILE - 8.0) * hash(x, y, 10 + k), p.y + 4.0 + (TILE - 8.0) * hash(x, y, 20 + k));
-                        if hash(x, y, 30 + k) < 0.45 {
-                            // Conifer.
-                            draw_triangle(vec2(tx, ty - 9.0), vec2(tx - 6.0, ty + 6.0), vec2(tx + 6.0, ty + 6.0), rgb(26, 70, 40));
-                        } else {
-                            draw_circle(tx, ty, 7.0, shade(rgb(46, 110, 42), 0.9 + 0.2 * hash(x, y, 40 + k)));
-                            draw_circle(tx - 2.0, ty - 2.0, 3.0, rgb(78, 140, 60));
-                        }
-                    }
-                }
-                Terrain::Swamp => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, shade(rgb(84, 96, 58), v));
-                    draw_ellipse(p.x + TILE * 0.5, p.y + TILE * 0.55, 8.0, 4.0, 0.0, rgb(52, 80, 70));
-                    draw_line(p.x + 6.0, p.y + 20.0, p.x + 6.0, p.y + 10.0, 1.5, rgb(120, 110, 60));
-                }
-                Terrain::Water => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, shade(rgb(38, 82, 140), v));
-                    if hash(x, y, 5) < 0.35 {
-                        let wy = p.y + TILE * hash(x, y, 6);
-                        draw_line(p.x + 6.0, wy, p.x + 16.0, wy, 1.5, rgb(90, 140, 190));
-                    }
-                }
-                Terrain::Mountain => {
-                    draw_rectangle(p.x, p.y, TILE, TILE, shade(grass, 0.85));
-                    let (cx, by) = (p.x + TILE / 2.0, p.y + TILE);
-                    draw_triangle(vec2(cx, p.y + 2.0), vec2(p.x - 2.0, by), vec2(p.x + TILE + 2.0, by), shade(rgb(130, 128, 125), v));
-                    draw_triangle(vec2(cx, p.y + 2.0), vec2(cx - 4.0, p.y + 9.0), vec2(cx + 4.0, p.y + 9.0), rgb(235, 235, 240));
-                }
+            }
+            Terrain::Mountain => {
+                hex(c, shade(grass, 0.85));
+                let top = c.y - HEX_R * 0.8;
+                draw_triangle(vec2(c.x, top), vec2(c.x - HEX_R, c.y + HEX_R * 0.6), vec2(c.x + HEX_R, c.y + HEX_R * 0.6), shade(rgb(130, 128, 125), v));
+                draw_triangle(vec2(c.x, top), vec2(c.x - 4.0, top + 7.0), vec2(c.x + 4.0, top + 7.0), rgb(235, 235, 240));
             }
         }
     }
-    // Roads on top, as strips joining neighbouring road tiles.
+    // Faint hex grid, as on the original's map.
+    for (x, y) in visible() {
+        let c = cam.hex_screen((x, y));
+        draw_poly_lines(c.x, c.y, 6, HEX_R, 30.0, 1.0, Color::new(0.0, 0.0, 0.0, 0.12));
+    }
+    // Roads on top, joining the centres of neighbouring road hexes.
     let road = rgb(160, 132, 88);
-    for y in y0..y1.min(map.h) {
-        for x in x0..x1.min(map.w) {
-            if !is_road((x, y)) {
-                continue;
-            }
-            let c = cam.to_screen(vec2(x as f32 + 0.5, y as f32 + 0.5));
-            draw_circle(c.x, c.y, TILE * 0.22, road);
-            for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
-                // Skip a diagonal when a straight pair of road tiles already joins the two.
-                let bridged = dx != 0 && dy != 0 && (is_road((x + dx, y)) || is_road((x, y + dy)));
-                if is_road((x + dx, y + dy)) && !bridged {
-                    let n = cam.to_screen(vec2((x + dx) as f32 + 0.5, (y + dy) as f32 + 0.5));
-                    draw_line(c.x, c.y, n.x, n.y, TILE * 0.44, road);
-                }
+    for (x, y) in visible() {
+        if !is_road((x, y)) {
+            continue;
+        }
+        let c = cam.hex_screen((x, y));
+        draw_circle(c.x, c.y, HEX_R * 0.34, road);
+        for n in hex_neighbours((x, y)) {
+            if is_road(n) {
+                let m = cam.hex_screen(n);
+                draw_line(c.x, c.y, (c.x + m.x) / 2.0, (c.y + m.y) / 2.0, HEX_R * 0.62, road);
             }
         }
     }
@@ -200,13 +214,13 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) -> Option<String> {
     draw_terrain(game, cam);
 
     // Route.
-    for t in &game.path {
-        let c = cam.to_screen(vec2(t.0 as f32 + 0.5, t.1 as f32 + 0.5));
+    for &t in &game.path {
+        let c = cam.hex_screen(t);
         draw_circle(c.x, c.y, 2.5, Color::new(1.0, 0.95, 0.6, 0.9));
     }
 
     for loc in &game.world.locations {
-        let c = cam.to_screen(vec2(loc.tile.0 as f32 + 0.5, loc.tile.1 as f32 + 0.5));
+        let c = cam.hex_screen(loc.tile);
         draw_location(&loc.kind, loc.cleared, c);
         label(loc.name, c.x, c.y + 34.0);
     }
@@ -214,7 +228,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) -> Option<String> {
     let mut hover = None;
     let mouse = Vec2::from(mouse_position());
     for p in &game.world.parties {
-        let c = cam.to_screen(vec2(p.pos.0 + 0.5, p.pos.1 + 0.5));
+        let c = cam.to_screen(p.pos);
         assets.draw_unit(UnitKind::Bandit, Team::Enemy, c.x, c.y, 26.0);
         if p.chasing {
             text_centered("!", c.x + 12.0, c.y - 10.0, 24.0, RED);
@@ -224,7 +238,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) -> Option<String> {
         }
     }
 
-    let h = cam.to_screen(vec2(game.pos.0 + 0.5, game.pos.1 + 0.5));
+    let h = cam.to_screen(game.pos);
     draw_circle(h.x, h.y + 10.0, 12.0, Color::new(0.0, 0.0, 0.0, 0.3));
     assets.draw_unit(game.hero().kind, Team::Player, h.x, h.y, 30.0);
     hover
@@ -308,7 +322,7 @@ pub fn frame(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> 
                 .world
                 .locations
                 .iter()
-                .find(|l| (l.tile.0 - t.0).abs() <= 1 && (l.tile.1 - t.1).abs() <= 1)
+                .find(|l| hex_distance(l.tile, t) <= 1)
                 .map_or(t, |l| l.tile);
             if target != game.tile() && !game.set_destination(target) {
                 *message = Some("No way through.".into());
