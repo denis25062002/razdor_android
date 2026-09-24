@@ -1,0 +1,1178 @@
+//! Unit, artefact and spell definitions and the global options, read from `Rus_Units.ini`,
+//! `Rus_Artefacts.ini`, `Rus_Spells.ini` and `_Global.ini`.
+//!
+//! Field meanings are documented in `docs/reference/mechanics.md` (sections 1.1, 3.2, 4 and
+//! the `_Global.ini` appendix). Keys this module does not know are kept in each definition's
+//! `extra` map, so community additions never make loading fail.
+
+use super::ini::{Ini, Section};
+use super::DtError;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
+// ------------------------------------------------------------------------------------------
+// Enums
+// ------------------------------------------------------------------------------------------
+
+/// A stat that levels, items and spells can modify (`d-`, `p-`, `f-` prefixes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Stat {
+    Hits,
+    AttackBlow,
+    DefenceBlow,
+    AttackShot,
+    DefenceShot,
+    MagicPower,
+    Initiative,
+    /// Actions per battle turn.
+    Manevres,
+    ProtectLife,
+    ProtectDeath,
+    ProtectElemental,
+    Regen,
+    Vampirizm,
+}
+
+impl Stat {
+    pub const ALL: [Stat; 13] = [
+        Stat::Hits,
+        Stat::AttackBlow,
+        Stat::DefenceBlow,
+        Stat::AttackShot,
+        Stat::DefenceShot,
+        Stat::MagicPower,
+        Stat::Initiative,
+        Stat::Manevres,
+        Stat::ProtectLife,
+        Stat::ProtectDeath,
+        Stat::ProtectElemental,
+        Stat::Regen,
+        Stat::Vampirizm,
+    ];
+
+    /// The ini spelling (`Hits`, `AttackBlow`, …).
+    pub fn key(self) -> &'static str {
+        match self {
+            Stat::Hits => "Hits",
+            Stat::AttackBlow => "AttackBlow",
+            Stat::DefenceBlow => "DefenceBlow",
+            Stat::AttackShot => "AttackShot",
+            Stat::DefenceShot => "DefenceShot",
+            Stat::MagicPower => "MagicPower",
+            Stat::Initiative => "Initiative",
+            Stat::Manevres => "Manevres",
+            Stat::ProtectLife => "ProtectLife",
+            Stat::ProtectDeath => "ProtectDeath",
+            Stat::ProtectElemental => "ProtectElemental",
+            Stat::Regen => "Regen",
+            Stat::Vampirizm => "Vampirizm",
+        }
+    }
+
+    /// Parse the ini spelling, ignoring ASCII case.
+    pub fn from_key(key: &str) -> Option<Stat> {
+        Stat::ALL.into_iter().find(|s| s.key().eq_ignore_ascii_case(key))
+    }
+}
+
+/// Stat modifiers keyed by stat: flat (`d-`), percent (`p-`) or fixed (`f-`) values.
+pub type StatMods = BTreeMap<Stat, i32>;
+
+/// Magic school. Units and artefacts write `LifeMagic`/`ElementalMagic`/`DeathMagic`;
+/// spells write `Life`/`Elemental`/`Death`. Both spellings are accepted everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MagicSchool {
+    Life,
+    Elemental,
+    Death,
+}
+
+impl MagicSchool {
+    pub fn parse(s: &str) -> Option<MagicSchool> {
+        let s = s.strip_suffix("Magic").unwrap_or(s);
+        [MagicSchool::Life, MagicSchool::Elemental, MagicSchool::Death]
+            .into_iter()
+            .find(|m| format!("{m:?}").eq_ignore_ascii_case(s))
+    }
+}
+
+/// Whom a caster's magic targets (editor: all / foreign / own).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MagicDirection {
+    ToAll,
+    ToEnemy,
+    ToAlly,
+}
+
+impl MagicDirection {
+    pub fn parse(s: &str) -> Option<MagicDirection> {
+        [MagicDirection::ToAll, MagicDirection::ToEnemy, MagicDirection::ToAlly]
+            .into_iter()
+            .find(|m| format!("{m:?}").eq_ignore_ascii_case(s))
+    }
+
+    /// The caster can use hostile magic.
+    pub fn hits_enemies(self) -> bool {
+        self != MagicDirection::ToAlly
+    }
+
+    /// The caster can use friendly magic.
+    pub fn helps_allies(self) -> bool {
+        self != MagicDirection::ToEnemy
+    }
+}
+
+/// Creature type, in editor order (`Normal` is the default when the key is absent).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Nature {
+    #[default]
+    Normal,
+    Undead,
+    Elemental,
+    Rogue,
+    Animal,
+    Hero,
+    People,
+}
+
+impl Nature {
+    pub const ALL: [Nature; 7] = [
+        Nature::Normal,
+        Nature::Undead,
+        Nature::Elemental,
+        Nature::Rogue,
+        Nature::Animal,
+        Nature::Hero,
+        Nature::People,
+    ];
+
+    pub fn parse(s: &str) -> Option<Nature> {
+        Nature::ALL.into_iter().find(|n| format!("{n:?}").eq_ignore_ascii_case(s))
+    }
+
+    /// Editor index (0 = Normal … 6 = People).
+    pub fn index(self) -> u8 {
+        Nature::ALL.iter().position(|n| *n == self).expect("in ALL") as u8
+    }
+}
+
+/// A unit's special ability. The 21 vanilla bonuses, in UI order (`BonusN` index 1..=21),
+/// then any other token (Community Update bonuses such as `Splash` or `Flying`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Bonus {
+    SpearDefense,
+    HorseAtack,
+    ArmorIgnore,
+    ArmyMedic,
+    Merchant,
+    DeathCurse,
+    /// UI "Кара": +10 damage ignoring defence.
+    GodAnger,
+    /// UI "Гнев": +20 damage ignoring defence.
+    GodStrike,
+    Unvulnerabe,
+    VampirsGist,
+    OldVampirsGist,
+    Evasive,
+    Ghost,
+    Artillery,
+    Garrison,
+    AddPayment,
+    Poison,
+    Dead,
+    FastDead,
+    Counterblow,
+    FlankStrike,
+    /// A token outside the vanilla 21, kept verbatim.
+    Other(String),
+}
+
+impl Bonus {
+    /// The vanilla bonuses in UI order; `VANILLA[i]` has index `i + 1`.
+    pub const VANILLA: [Bonus; 21] = [
+        Bonus::SpearDefense,
+        Bonus::HorseAtack,
+        Bonus::ArmorIgnore,
+        Bonus::ArmyMedic,
+        Bonus::Merchant,
+        Bonus::DeathCurse,
+        Bonus::GodAnger,
+        Bonus::GodStrike,
+        Bonus::Unvulnerabe,
+        Bonus::VampirsGist,
+        Bonus::OldVampirsGist,
+        Bonus::Evasive,
+        Bonus::Ghost,
+        Bonus::Artillery,
+        Bonus::Garrison,
+        Bonus::AddPayment,
+        Bonus::Poison,
+        Bonus::Dead,
+        Bonus::FastDead,
+        Bonus::Counterblow,
+        Bonus::FlankStrike,
+    ];
+
+    /// Parse an ini token; unknown tokens become [`Bonus::Other`].
+    pub fn parse(s: &str) -> Bonus {
+        Bonus::VANILLA
+            .iter()
+            .find(|b| b.token().eq_ignore_ascii_case(s))
+            .cloned()
+            .unwrap_or_else(|| Bonus::Other(s.to_string()))
+    }
+
+    /// The ini token.
+    pub fn token(&self) -> &str {
+        match self {
+            Bonus::SpearDefense => "SpearDefense",
+            Bonus::HorseAtack => "HorseAtack",
+            Bonus::ArmorIgnore => "ArmorIgnore",
+            Bonus::ArmyMedic => "ArmyMedic",
+            Bonus::Merchant => "Merchant",
+            Bonus::DeathCurse => "DeathCurse",
+            Bonus::GodAnger => "GodAnger",
+            Bonus::GodStrike => "GodStrike",
+            Bonus::Unvulnerabe => "Unvulnerabe",
+            Bonus::VampirsGist => "VampirsGist",
+            Bonus::OldVampirsGist => "OldVampirsGist",
+            Bonus::Evasive => "Evasive",
+            Bonus::Ghost => "Ghost",
+            Bonus::Artillery => "Artillery",
+            Bonus::Garrison => "Garrison",
+            Bonus::AddPayment => "AddPayment",
+            Bonus::Poison => "Poison",
+            Bonus::Dead => "Dead",
+            Bonus::FastDead => "FastDead",
+            Bonus::Counterblow => "Counterblow",
+            Bonus::FlankStrike => "FlankStrike",
+            Bonus::Other(s) => s,
+        }
+    }
+
+    /// UI index 1..=21 for vanilla bonuses, `None` for community tokens.
+    pub fn vanilla_index(&self) -> Option<u8> {
+        Bonus::VANILLA.iter().position(|b| b == self).map(|i| i as u8 + 1)
+    }
+}
+
+/// Artefact slot kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArtefactType {
+    /// Warriors only.
+    BlowWeapon,
+    /// Shooters only.
+    ShotWeapon,
+    /// Mages only.
+    Staff,
+    Armor,
+    Helm,
+    Shield,
+    Ring,
+    Amulet,
+    /// Used from the army screen, not kept in a slot.
+    Potion,
+    /// Trade goods; cannot be equipped.
+    Item,
+}
+
+impl ArtefactType {
+    pub const ALL: [ArtefactType; 10] = [
+        ArtefactType::BlowWeapon,
+        ArtefactType::ShotWeapon,
+        ArtefactType::Staff,
+        ArtefactType::Armor,
+        ArtefactType::Helm,
+        ArtefactType::Shield,
+        ArtefactType::Ring,
+        ArtefactType::Amulet,
+        ArtefactType::Potion,
+        ArtefactType::Item,
+    ];
+
+    pub fn parse(s: &str) -> Option<ArtefactType> {
+        ArtefactType::ALL.into_iter().find(|t| format!("{t:?}").eq_ignore_ascii_case(s))
+    }
+
+    /// Weapons and staffs: a unit holds only one of these.
+    pub fn is_weapon(self) -> bool {
+        matches!(self, ArtefactType::BlowWeapon | ArtefactType::ShotWeapon | ArtefactType::Staff)
+    }
+}
+
+/// Whom a world-map spell is cast on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpellTarget {
+    /// The hero's own army.
+    Hero,
+    /// A whole enemy army.
+    Enemy,
+    /// Known to the exe, unused in vanilla data.
+    OneEnemy,
+}
+
+impl SpellTarget {
+    pub fn parse(s: &str) -> Option<SpellTarget> {
+        [SpellTarget::Hero, SpellTarget::Enemy, SpellTarget::OneEnemy]
+            .into_iter()
+            .find(|t| format!("{t:?}").eq_ignore_ascii_case(s))
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Field reader: tracks which keys were consumed, the rest becomes `extra`.
+// ------------------------------------------------------------------------------------------
+
+struct Fields<'a> {
+    sec: &'a Section,
+    used: RefCell<Vec<String>>,
+}
+
+impl<'a> Fields<'a> {
+    fn new(sec: &'a Section) -> Self {
+        Fields { sec, used: RefCell::new(Vec::new()) }
+    }
+
+    fn mark(&self, key: &str) {
+        self.used.borrow_mut().push(key.to_ascii_lowercase());
+    }
+
+    fn str(&self, key: &str) -> Option<&'a str> {
+        self.mark(key);
+        self.sec.get_nonempty(key)
+    }
+
+    fn string(&self, key: &str) -> String {
+        self.str(key).unwrap_or_default().to_string()
+    }
+
+    fn opt_int(&self, key: &str) -> Result<Option<i32>, DtError> {
+        self.mark(key);
+        self.sec.get_int(key)
+    }
+
+    fn int(&self, key: &str) -> Result<i32, DtError> {
+        Ok(self.opt_int(key)?.unwrap_or(0))
+    }
+
+    fn required_int(&self, key: &str) -> Result<i32, DtError> {
+        self.opt_int(key)?
+            .ok_or_else(|| DtError::Missing { section: self.sec.name.clone(), key: key.to_string() })
+    }
+
+    fn enum_opt<T>(&self, key: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Option<T>, DtError> {
+        match self.str(key) {
+            None => Ok(None),
+            Some(v) => parse(v).map(Some).ok_or_else(|| self.sec.bad_value(key, v)),
+        }
+    }
+
+    /// All `<prefix><Stat>` keys with a non-empty value.
+    fn mods(&self, prefix: &str) -> Result<StatMods, DtError> {
+        let mut out = StatMods::new();
+        for stat in Stat::ALL {
+            let key = format!("{prefix}{}", stat.key());
+            if let Some(v) = self.opt_int(&key)? {
+                out.insert(stat, v);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Entries not consumed by the typed fields, empty values dropped.
+    fn extra(&self) -> BTreeMap<String, String> {
+        let used = self.used.borrow();
+        self.sec
+            .entries
+            .iter()
+            .filter(|(k, v)| !v.is_empty() && !used.contains(&k.to_ascii_lowercase()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Units
+// ------------------------------------------------------------------------------------------
+
+/// One entry of a unit's upgrade tree (`NextUnitN` / `NextUnitNLevel`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Upgrade {
+    /// The target class as written in the file: the `Name` of another unit.
+    pub target_name: String,
+    /// The target's `GlobalIndex`, resolved by name once all units are loaded.
+    pub target: Option<u32>,
+    /// Level the unit must reach (always 1 in vanilla).
+    pub level: i32,
+}
+
+/// A unit type from `Rus_Units.ini`. See mechanics.md 1.1 for every field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitDef {
+    /// `GlobalIndex`: 1..=102 in vanilla; 1–3 are the hero classes.
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    /// Portrait index.
+    pub icon_index: i32,
+    /// Hire price; base for wages, healing, resurrection and XP value.
+    pub cost: i32,
+    /// Percent correction of the tactical cost.
+    pub cost_multiplier: i32,
+    pub cost_gold_div: i32,
+    /// XP needed for the first level-up.
+    pub start_experience: i32,
+    /// Percent growth of the XP requirement per level.
+    pub level_multiplier: i32,
+    pub hits: i32,
+    pub attack_blow: i32,
+    pub attack_shot: i32,
+    pub magic_power: i32,
+    pub defence_blow: i32,
+    pub defence_shot: i32,
+    /// Percent resistances to hostile magic.
+    pub protect_life: i32,
+    pub protect_death: i32,
+    pub protect_elemental: i32,
+    pub initiative: i32,
+    /// Actions per battle turn.
+    pub manevres: i32,
+    /// Percent regeneration.
+    pub regen: i32,
+    /// Percent vampirism.
+    pub vampirism: i32,
+    pub magic: Option<MagicSchool>,
+    pub magic_direction: Option<MagicDirection>,
+    pub nature: Nature,
+    pub bonus: Option<Bonus>,
+    /// Editor "captivity" value.
+    pub surrender: i32,
+    pub upgrades: Vec<Upgrade>,
+    /// Per-level stat gains (`d-*`).
+    pub level_up: StatMods,
+    /// Community: percent of physical damage ignored.
+    pub evasion: Option<i32>,
+    /// Community: floor of magic power in battle.
+    pub min_magic_power: Option<i32>,
+    /// Community: magic power lost per battle turn.
+    pub mana_drain: Option<i32>,
+    /// Keys not listed above.
+    pub extra: BTreeMap<String, String>,
+}
+
+impl UnitDef {
+    fn from_section(sec: &Section) -> Result<UnitDef, DtError> {
+        let f = Fields::new(sec);
+        let mut upgrades = Vec::new();
+        for n in 1..=3 {
+            let name_key = format!("NextUnit{n}");
+            let level = f.int(&format!("NextUnit{n}Level"))?;
+            if let Some(target) = f.str(&name_key) {
+                upgrades.push(Upgrade { target_name: target.to_string(), target: None, level });
+            }
+        }
+        let id = f.required_int("GlobalIndex")?;
+        let unit = UnitDef {
+            id: u32::try_from(id).map_err(|_| sec.bad_value("GlobalIndex", &id.to_string()))?,
+            name: f.string("Name"),
+            description: f.string("Descript"),
+            icon_index: f.int("IconIndex")?,
+            cost: f.int("Cost")?,
+            cost_multiplier: f.int("CostMultipler")?,
+            cost_gold_div: f.int("CostGoldDiv")?,
+            start_experience: f.int("StartExpirience")?,
+            level_multiplier: f.int("LevelMultipler")?,
+            hits: f.int("Hits")?,
+            attack_blow: f.int("AttackBlow")?,
+            attack_shot: f.int("AttackShot")?,
+            magic_power: f.int("MagicPower")?,
+            defence_blow: f.int("DefenceBlow")?,
+            defence_shot: f.int("DefenceShot")?,
+            protect_life: f.int("ProtectLife")?,
+            protect_death: f.int("ProtectDeath")?,
+            protect_elemental: f.int("ProtectElemental")?,
+            initiative: f.int("Initiative")?,
+            manevres: f.int("Manevres")?,
+            regen: f.int("Regen")?,
+            vampirism: f.int("Vampirizm")?,
+            magic: f.enum_opt("Magic", MagicSchool::parse)?,
+            magic_direction: f.enum_opt("MagicDirection", MagicDirection::parse)?,
+            nature: f.enum_opt("Nature", Nature::parse)?.unwrap_or_default(),
+            bonus: f.str("Bonus").map(Bonus::parse),
+            surrender: f.int("Surrender")?,
+            upgrades,
+            level_up: f.mods("d-")?,
+            evasion: f.opt_int("Evasion")?,
+            min_magic_power: f.opt_int("MinMagicPower")?,
+            mana_drain: f.opt_int("ManaDrain")?,
+            extra: BTreeMap::new(),
+        };
+        Ok(UnitDef { extra: f.extra(), ..unit })
+    }
+
+    /// The unit's value of a base stat.
+    pub fn stat(&self, stat: Stat) -> i32 {
+        match stat {
+            Stat::Hits => self.hits,
+            Stat::AttackBlow => self.attack_blow,
+            Stat::DefenceBlow => self.defence_blow,
+            Stat::AttackShot => self.attack_shot,
+            Stat::DefenceShot => self.defence_shot,
+            Stat::MagicPower => self.magic_power,
+            Stat::Initiative => self.initiative,
+            Stat::Manevres => self.manevres,
+            Stat::ProtectLife => self.protect_life,
+            Stat::ProtectDeath => self.protect_death,
+            Stat::ProtectElemental => self.protect_elemental,
+            Stat::Regen => self.regen,
+            Stat::Vampirizm => self.vampirism,
+        }
+    }
+}
+
+/// All units of `Rus_Units.ini`, in file order, with upgrade targets resolved by name.
+pub fn parse_units(ini: &Ini) -> Result<Vec<UnitDef>, DtError> {
+    let mut units = ini
+        .sections
+        .iter()
+        .filter(|s| s.get("GlobalIndex").is_some())
+        .map(UnitDef::from_section)
+        .collect::<Result<Vec<_>, _>>()?;
+    let by_name: BTreeMap<String, u32> = units.iter().map(|u| (u.name.clone(), u.id)).collect();
+    for u in &mut units {
+        for up in &mut u.upgrades {
+            up.target = by_name.get(&up.target_name).copied();
+        }
+    }
+    Ok(units)
+}
+
+// ------------------------------------------------------------------------------------------
+// Artefacts
+// ------------------------------------------------------------------------------------------
+
+/// An artefact or item from `Rus_Artefacts.ini`. See mechanics.md 4.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtefactDef {
+    /// `GlobalIndex`.
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    /// Image file name.
+    pub icon: String,
+    /// Base price. Negative marks a personal item that cannot be taken away.
+    pub cost: i32,
+    pub kind: ArtefactType,
+    /// Bonus granted while worn.
+    pub bonus: Option<Bonus>,
+    /// Magic school granted or changed while worn.
+    pub magic: Option<MagicSchool>,
+    /// `d-*`: flat additions.
+    pub add: StatMods,
+    /// `p-*`: percent changes.
+    pub percent: StatMods,
+    /// `f-*`: fixed values (on potions: the healing amount).
+    pub fixed: StatMods,
+    pub extra: BTreeMap<String, String>,
+}
+
+impl ArtefactDef {
+    fn from_section(sec: &Section) -> Result<ArtefactDef, DtError> {
+        let f = Fields::new(sec);
+        let id = f.required_int("GlobalIndex")?;
+        let kind = f
+            .enum_opt("Type", ArtefactType::parse)?
+            .ok_or_else(|| DtError::Missing { section: sec.name.clone(), key: "Type".into() })?;
+        let def = ArtefactDef {
+            id: u32::try_from(id).map_err(|_| sec.bad_value("GlobalIndex", &id.to_string()))?,
+            name: f.string("Name"),
+            description: f.string("Descript"),
+            icon: f.string("Icon"),
+            cost: f.int("Cost")?,
+            kind,
+            bonus: f.str("Bonus").map(Bonus::parse),
+            magic: f.enum_opt("Magic", MagicSchool::parse)?,
+            add: f.mods("d-")?,
+            percent: f.mods("p-")?,
+            fixed: f.mods("f-")?,
+            extra: BTreeMap::new(),
+        };
+        Ok(ArtefactDef { extra: f.extra(), ..def })
+    }
+
+    /// A personal item (negative price): cannot be sold or taken away.
+    pub fn is_personal(&self) -> bool {
+        self.cost < 0
+    }
+}
+
+/// All artefacts of `Rus_Artefacts.ini`, in file order.
+pub fn parse_artefacts(ini: &Ini) -> Result<Vec<ArtefactDef>, DtError> {
+    ini.sections
+        .iter()
+        .filter(|s| s.get("GlobalIndex").is_some())
+        .map(ArtefactDef::from_section)
+        .collect()
+}
+
+// ------------------------------------------------------------------------------------------
+// Spells
+// ------------------------------------------------------------------------------------------
+
+/// One visual layer of a spell (`EffectN=file,r,g,b,duration_ms,y_offset,scale×1000,start_ms`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellEffect {
+    pub file: String,
+    pub rgb: [i32; 3],
+    pub duration_ms: i32,
+    pub y_offset: i32,
+    /// Scale × 1000.
+    pub scale_milli: i32,
+    pub start_ms: i32,
+}
+
+impl SpellEffect {
+    fn parse(s: &str) -> Option<SpellEffect> {
+        let parts: Vec<&str> = s.split(',').map(str::trim).collect();
+        let [file, rest @ ..] = parts.as_slice() else { return None };
+        let n: Vec<i32> = rest.iter().map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        let [r, g, b, duration_ms, y_offset, scale_milli, start_ms] = n.as_slice().try_into().ok()?;
+        Some(SpellEffect { file: file.to_string(), rgb: [r, g, b], duration_ms, y_offset, scale_milli, start_ms })
+    }
+}
+
+/// One icon layer: image name plus its colour tint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpellIcon {
+    pub image: Option<String>,
+    pub tint: Option<[i32; 3]>,
+}
+
+/// A world-map spell or prayer from `Rus_Spells.ini`. See mechanics.md 3.2.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpellDef {
+    /// 1-based position in the file; maps and events refer to spells by it.
+    pub id: u32,
+    pub name: String,
+    /// Price to learn.
+    pub cost_gold: i32,
+    /// Mana to cast.
+    pub cost_mana: i32,
+    pub school: Option<MagicSchool>,
+    /// Duration in game hours at caster level 0; `None` = instant. 9999 ≈ permanent.
+    pub time_work: Option<i32>,
+    /// Casting time in game hours at caster level 0.
+    pub time_cast: Option<i32>,
+    pub target: Option<SpellTarget>,
+    /// `Icon1..3` with `ColorC1..3`.
+    pub icons: [SpellIcon; 3],
+    /// `Effect1..3`: bottom, back, front.
+    pub effects: [Option<SpellEffect>; 3],
+    /// Instant HP change (+ heals, − damages).
+    pub delta_fixed_hits: Option<i32>,
+    /// Instant percent HP change.
+    pub delta_percent_hits: Option<i32>,
+    /// `d-*` for the duration.
+    pub add: StatMods,
+    /// `p-*` for the duration.
+    pub percent: StatMods,
+    /// `p-LifeLose`: percent life drain.
+    pub life_lose_percent: Option<i32>,
+    pub extra: BTreeMap<String, String>,
+}
+
+impl SpellDef {
+    fn from_section(sec: &Section, id: u32) -> Result<SpellDef, DtError> {
+        let f = Fields::new(sec);
+        let mut icons: [SpellIcon; 3] = Default::default();
+        let mut effects: [Option<SpellEffect>; 3] = Default::default();
+        for i in 0..3 {
+            let n = i + 1;
+            icons[i].image = f.str(&format!("Icon{n}")).map(str::to_string);
+            let color_key = format!("ColorC{n}");
+            if let Some(list) = sec.get_int_list(&color_key)? {
+                f.mark(&color_key);
+                let rgb: [i32; 3] = list.try_into().map_err(|_| sec.bad_value(&color_key, sec.get(&color_key).unwrap_or("")))?;
+                icons[i].tint = Some(rgb);
+            }
+            let effect_key = format!("Effect{n}");
+            if let Some(v) = f.str(&effect_key) {
+                effects[i] = Some(SpellEffect::parse(v).ok_or_else(|| sec.bad_value(&effect_key, v))?);
+            }
+        }
+        let spell = SpellDef {
+            id,
+            name: f.string("Name"),
+            cost_gold: f.int("CostGold")?,
+            cost_mana: f.int("CostMana")?,
+            school: f.enum_opt("Type", MagicSchool::parse)?,
+            time_work: f.opt_int("TimeWork")?,
+            time_cast: f.opt_int("TimeCast")?,
+            target: f.enum_opt("Target", SpellTarget::parse)?,
+            icons,
+            effects,
+            delta_fixed_hits: f.opt_int("DeltaFixedHits")?,
+            delta_percent_hits: f.opt_int("DeltaPercentHits")?,
+            add: f.mods("d-")?,
+            percent: f.mods("p-")?,
+            life_lose_percent: f.opt_int("p-LifeLose")?,
+            extra: BTreeMap::new(),
+        };
+        Ok(SpellDef { extra: f.extra(), ..spell })
+    }
+}
+
+/// Name of the editor bookkeeping section at the end of `Rus_Spells.ini`.
+pub const EDITOR_OPTIONS_SECTION: &str = "MapEditorSpecialOptions";
+
+/// A spell section left as an editor template: no cost, school, times or target.
+fn is_template(sec: &Section) -> bool {
+    ["CostGold", "CostMana", "Type", "TimeWork", "TimeCast", "Target"]
+        .iter()
+        .all(|k| sec.get_nonempty(k).is_none())
+}
+
+/// All spells of `Rus_Spells.ini`. The id is the 1-based position among spell sections;
+/// `[MapEditorSpecialOptions]` and the trailing empty template section are skipped.
+pub fn parse_spells(ini: &Ini) -> Result<Vec<SpellDef>, DtError> {
+    let mut secs: Vec<&Section> = ini
+        .sections
+        .iter()
+        .filter(|s| !s.name.eq_ignore_ascii_case(EDITOR_OPTIONS_SECTION) && !s.name.is_empty())
+        .collect();
+    while secs.last().is_some_and(|s| is_template(s)) {
+        secs.pop();
+    }
+    secs.iter().enumerate().map(|(i, s)| SpellDef::from_section(s, i as u32 + 1)).collect()
+}
+
+// ------------------------------------------------------------------------------------------
+// Global options
+// ------------------------------------------------------------------------------------------
+
+/// Number of AI target-selection models (standard, aggressive, passive, hoarding, trading).
+pub const AI_MODELS: usize = 5;
+
+/// One priority per AI target model.
+pub type ModelPriorities = [i32; AI_MODELS];
+
+/// AI target priorities from `[GlobalOptions]` (mechanics.md 5.6). `None` when absent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AiTargets {
+    pub min_attack_army: Option<ModelPriorities>,
+    pub min_attack_castle: Option<ModelPriorities>,
+    pub min_random: Option<ModelPriorities>,
+    pub min_talking: Option<ModelPriorities>,
+    /// Read from `MinHealingTarget`, as the exe does. The shipped file spells it
+    /// `MixHealingTarget`, which the exe ignores; that line lands in `extra`.
+    pub min_healing: Option<ModelPriorities>,
+    pub max_healing: Option<ModelPriorities>,
+    pub min_garrison: Option<ModelPriorities>,
+    pub max_garrison: Option<ModelPriorities>,
+    pub min_purchase: Option<ModelPriorities>,
+    pub max_purchase: Option<ModelPriorities>,
+    pub gold_purchase: Option<ModelPriorities>,
+    pub min_village: Option<ModelPriorities>,
+    pub max_village: Option<ModelPriorities>,
+    pub gold_village: Option<ModelPriorities>,
+}
+
+/// Gameplay constants from `_Global.ini` (mechanics.md appendix).
+/// [`Default`] gives the vanilla values, used for any key the file leaves out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GlobalOptions {
+    /// Elemental bless/curse initiative divisor.
+    pub wizard_main_spell: i32,
+    pub bless_main_spell: i32,
+    pub bless_next_spell: i32,
+    pub curse_main_spell: i32,
+    pub curse_next_spell: i32,
+    /// Per-turn magic power loss by school.
+    pub dec_spell_life: i32,
+    pub dec_spell_death: i32,
+    pub dec_spell_elemental: i32,
+    /// Magic power floor by school.
+    pub min_spell_life: i32,
+    pub min_spell_death: i32,
+    pub min_spell_elemental: i32,
+    /// Read but unused by the original.
+    pub crazy_ai: i32,
+    /// Back-row defence bonus against shots.
+    pub row2_def: i32,
+    /// Battle turn limit.
+    pub battle_end_turn: i32,
+    pub zero_density: i32,
+    /// Heal cost in percent of unit cost.
+    pub healing_const: i32,
+    /// Heal time in minutes.
+    pub healing_time: i32,
+    /// Resurrection cost in percent of unit cost.
+    pub resurect_const: i32,
+    /// Minutes after death within which resurrection is possible.
+    pub max_time_resurection: i32,
+    /// Days of wages the AI keeps in reserve.
+    pub need_upkeep_day: i32,
+    /// Minutes an army keeps going unpaid.
+    pub max_time_not_upkeep: i32,
+    pub victory_gold_div: i32,
+    pub min_victory_gold: i32,
+    pub cost_recrut_div: i32,
+    pub cost_mercenary_div: i32,
+    /// Barracks restock speed in days.
+    pub max_day_count_for_new_unit: i32,
+    /// Percent HP healed per day in a garrison.
+    pub garrison_auto_heal: i32,
+    /// Ranged attack from which a shooter counts as a cannon.
+    pub shot_weapon_range: i32,
+    /// AI view ranges.
+    pub ai_distance: [i32; 3],
+    pub ai_get_path_distance: i32,
+    /// XP pool percent of the enemy tactical cost.
+    pub main_exp_correction: i32,
+    /// XP skew by strength ratio.
+    pub exp_correction: i32,
+    pub ai_experience_percent: i32,
+    pub hero_experience_modificator: i32,
+    /// Item sell price in percent.
+    pub item_sale_cost: i32,
+    /// `[Costs] ShipCost`: ship rent.
+    pub ship_cost: i32,
+    pub ai_targets: AiTargets,
+    /// `[AIArmyGeneration]`: army theme → unit ids, in file order.
+    pub army_generation: Vec<(String, Vec<u32>)>,
+    /// Other `[GlobalOptions]` keys.
+    pub extra: BTreeMap<String, String>,
+}
+
+impl Default for GlobalOptions {
+    fn default() -> Self {
+        GlobalOptions {
+            wizard_main_spell: 7,
+            bless_main_spell: 6,
+            bless_next_spell: 12,
+            curse_main_spell: 5,
+            curse_next_spell: 10,
+            dec_spell_life: 2,
+            dec_spell_death: 2,
+            dec_spell_elemental: 5,
+            min_spell_life: 15,
+            min_spell_death: 0,
+            min_spell_elemental: 15,
+            crazy_ai: 0,
+            row2_def: 5,
+            battle_end_turn: 25,
+            zero_density: 5,
+            healing_const: 50,
+            healing_time: 60,
+            resurect_const: 300,
+            max_time_resurection: 10080,
+            need_upkeep_day: 5,
+            max_time_not_upkeep: 10080,
+            victory_gold_div: 2,
+            min_victory_gold: 25,
+            cost_recrut_div: 2,
+            cost_mercenary_div: 2,
+            max_day_count_for_new_unit: 10,
+            garrison_auto_heal: 10,
+            shot_weapon_range: 60,
+            ai_distance: [100, 50, 25],
+            ai_get_path_distance: 5,
+            main_exp_correction: 30,
+            exp_correction: 50,
+            ai_experience_percent: 100,
+            hero_experience_modificator: 50,
+            item_sale_cost: 25,
+            ship_cost: 250,
+            ai_targets: AiTargets::default(),
+            army_generation: Vec::new(),
+            extra: BTreeMap::new(),
+        }
+    }
+}
+
+impl GlobalOptions {
+    /// Read `_Global.ini`. Missing keys keep their vanilla defaults.
+    pub fn from_ini(ini: &Ini) -> Result<GlobalOptions, DtError> {
+        let mut o = GlobalOptions::default();
+        if let Some(sec) = ini.section("Costs") {
+            o.ship_cost = sec.int_or("ShipCost", o.ship_cost)?;
+        }
+        if let Some(sec) = ini.section("AIArmyGeneration") {
+            for (k, _) in &sec.entries {
+                let ids = sec.get_int_list(k)?.unwrap_or_default();
+                let ids = ids.into_iter().map(|i| u32::try_from(i).map_err(|_| sec.bad_value(k, &i.to_string())));
+                o.army_generation.push((k.clone(), ids.collect::<Result<_, _>>()?));
+            }
+        }
+        let Some(sec) = ini.section("GlobalOptions") else { return Ok(o) };
+        let f = Fields::new(sec);
+        let set = |v: &mut i32, key: &str| -> Result<(), DtError> {
+            if let Some(x) = f.opt_int(key)? {
+                *v = x;
+            }
+            Ok(())
+        };
+        set(&mut o.wizard_main_spell, "WizardMainSpell")?;
+        set(&mut o.bless_main_spell, "BlessMainSpell")?;
+        set(&mut o.bless_next_spell, "BlessNextSpell")?;
+        set(&mut o.curse_main_spell, "CurseMainSpell")?;
+        set(&mut o.curse_next_spell, "CurseNextSpell")?;
+        set(&mut o.dec_spell_life, "DecSpellLife")?;
+        set(&mut o.dec_spell_death, "DecSpellDeath")?;
+        set(&mut o.dec_spell_elemental, "DecSpellElemental")?;
+        set(&mut o.min_spell_life, "MinSpellLife")?;
+        set(&mut o.min_spell_death, "MinSpellDeath")?;
+        set(&mut o.min_spell_elemental, "MinSpellElemental")?;
+        set(&mut o.crazy_ai, "CrazyAI")?;
+        set(&mut o.row2_def, "Row2Def")?;
+        set(&mut o.battle_end_turn, "BattleEndTurn")?;
+        set(&mut o.zero_density, "ZeroDensity")?;
+        set(&mut o.healing_const, "HealingConst")?;
+        set(&mut o.healing_time, "HealingTime")?;
+        set(&mut o.resurect_const, "ResurectConst")?;
+        set(&mut o.max_time_resurection, "MaxTimeResurection")?;
+        set(&mut o.need_upkeep_day, "NeedUpkeepDay")?;
+        set(&mut o.max_time_not_upkeep, "MaxTimeNotUpkeep")?;
+        set(&mut o.victory_gold_div, "VictoryGoldDiv")?;
+        set(&mut o.min_victory_gold, "MinVictoryGold")?;
+        set(&mut o.cost_recrut_div, "CostRecrutDiv")?;
+        set(&mut o.cost_mercenary_div, "CostMercenaryDiv")?;
+        set(&mut o.max_day_count_for_new_unit, "MaxDayCountForNewUnit")?;
+        set(&mut o.garrison_auto_heal, "GarrisonAutoHeal")?;
+        set(&mut o.shot_weapon_range, "ShotWeaponRange")?;
+        for (i, d) in o.ai_distance.iter_mut().enumerate() {
+            set(d, &format!("AIDistance{i}"))?;
+        }
+        set(&mut o.ai_get_path_distance, "AIGetPathDistance")?;
+        set(&mut o.main_exp_correction, "MainExpCorrection")?;
+        set(&mut o.exp_correction, "ExpCorrection")?;
+        set(&mut o.ai_experience_percent, "AIExpiriencePercent")?;
+        set(&mut o.hero_experience_modificator, "HeroExpirienceModificator")?;
+        set(&mut o.item_sale_cost, "ItemSaleCost")?;
+        let prio = |key: &str| -> Result<Option<ModelPriorities>, DtError> {
+            f.mark(key);
+            match sec.get_int_list(key)? {
+                None => Ok(None),
+                Some(v) => v.try_into().map(Some).map_err(|_| sec.bad_value(key, sec.get(key).unwrap_or(""))),
+            }
+        };
+        o.ai_targets = AiTargets {
+            min_attack_army: prio("MinAtackArmyTarget")?,
+            min_attack_castle: prio("MinAtackCastleTarget")?,
+            min_random: prio("MinRandomTarget")?,
+            min_talking: prio("MinTalkingTarget")?,
+            min_healing: prio("MinHealingTarget")?,
+            max_healing: prio("MaxHealingTarget")?,
+            min_garrison: prio("MinGarrisonTarget")?,
+            max_garrison: prio("MaxGarrisonTarget")?,
+            min_purchase: prio("MinPurchaseTarget")?,
+            max_purchase: prio("MaxPurchaseTarget")?,
+            gold_purchase: prio("GoldPurchaseTarget")?,
+            min_village: prio("MinVillageTarget")?,
+            max_village: prio("MaxVillageTarget")?,
+            gold_village: prio("GoldVillageTarget")?,
+        };
+        o.extra = f.extra();
+        Ok(o)
+    }
+
+    /// Per-turn magic power loss for a school.
+    pub fn dec_spell(&self, school: MagicSchool) -> i32 {
+        match school {
+            MagicSchool::Life => self.dec_spell_life,
+            MagicSchool::Death => self.dec_spell_death,
+            MagicSchool::Elemental => self.dec_spell_elemental,
+        }
+    }
+
+    /// Magic power floor for a school.
+    pub fn min_spell(&self, school: MagicSchool) -> i32 {
+        match school {
+            MagicSchool::Life => self.min_spell_life,
+            MagicSchool::Death => self.min_spell_death,
+            MagicSchool::Elemental => self.min_spell_elemental,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UNITS: &str = "\
+[1 Hero]\r\n\
+GlobalIndex=1\r\n\
+Name=Hero\r\n\
+Cost=280\r\n\
+StartExpirience=100\r\n\
+LevelMultipler=150\r\n\
+Hits=80\r\n\
+AttackBlow=45\r\n\
+d-Hits=8\r\n\
+d-AttackBlow=3\r\n\
+d-Bogus=1\r\n\
+Bonus=SpearDefense\r\n\
+NextUnit1=Squire\r\n\
+NextUnit1Level=1\r\n\
+NextUnit2=Nobody\r\n\
+NextUnit2Level=2\r\n\
+Custom=yes\r\n\
+[2 Squire]\r\n\
+GlobalIndex=2\r\n\
+Name=Squire\r\n\
+MagicPower=20\r\n\
+Magic=DeathMagic\r\n\
+MagicDirection=ToAlly\r\n\
+Nature=Undead\r\n\
+Bonus=Splash\r\n\
+Evasion=15\r\n";
+
+    #[test]
+    fn units_parse_fields_mods_and_upgrades() {
+        let units = parse_units(&Ini::parse(UNITS)).unwrap();
+        assert_eq!(units.len(), 2);
+        let h = &units[0];
+        assert_eq!((h.id, h.cost, h.hits, h.attack_blow, h.start_experience, h.level_multiplier), (1, 280, 80, 45, 100, 150));
+        assert_eq!(h.stat(Stat::AttackBlow), 45);
+        assert_eq!(h.level_up, StatMods::from([(Stat::Hits, 8), (Stat::AttackBlow, 3)]));
+        assert_eq!(h.bonus, Some(Bonus::SpearDefense));
+        assert_eq!(h.nature, Nature::Normal);
+        assert_eq!(h.magic, None);
+        assert_eq!(h.upgrades.len(), 2);
+        assert_eq!((h.upgrades[0].target, h.upgrades[0].level), (Some(2), 1));
+        assert_eq!((h.upgrades[1].target, h.upgrades[1].level), (None, 2));
+        assert_eq!(h.extra.get("Custom").map(String::as_str), Some("yes"));
+        assert_eq!(h.extra.get("d-Bogus").map(String::as_str), Some("1"));
+        assert_eq!(h.extra.len(), 2);
+        let s = &units[1];
+        assert_eq!(s.magic, Some(MagicSchool::Death));
+        assert_eq!(s.magic_direction, Some(MagicDirection::ToAlly));
+        assert_eq!(s.nature, Nature::Undead);
+        assert_eq!(s.bonus, Some(Bonus::Other("Splash".into())));
+        assert_eq!(s.evasion, Some(15));
+        assert!(s.extra.is_empty());
+    }
+
+    #[test]
+    fn bad_enum_value_is_an_error() {
+        let ini = Ini::parse("[x]\nGlobalIndex=1\nNature=Martian\n");
+        assert!(matches!(parse_units(&ini), Err(DtError::BadValue { .. })));
+        let ini = Ini::parse("[x]\nGlobalIndex=abc\n");
+        assert!(matches!(parse_units(&ini), Err(DtError::BadValue { .. })));
+    }
+
+    #[test]
+    fn bonus_indices() {
+        assert_eq!(Bonus::VANILLA.len(), 21);
+        assert_eq!(Bonus::parse("SpearDefense").vanilla_index(), Some(1));
+        assert_eq!(Bonus::parse("FlankStrike").vanilla_index(), Some(21));
+        assert_eq!(Bonus::parse("GodStrike").vanilla_index(), Some(8));
+        assert_eq!(Bonus::parse("Berserk").vanilla_index(), None);
+        assert_eq!(Bonus::parse("Berserk").token(), "Berserk");
+        assert_eq!(Nature::People.index(), 6);
+    }
+
+    #[test]
+    fn artefacts_parse() {
+        let ini = Ini::parse(
+            "[5 Sword]\nGlobalIndex=5\nName=Sword\nIcon=A005.Tga\nCost=-1700\nType=BlowWeapon\n\
+             f-AttackBlow=55\nd-Initiative=-1\np-Hits=10\nMagic=LifeMagic\nBonus=ArmorIgnore\n",
+        );
+        let a = &parse_artefacts(&ini).unwrap()[0];
+        assert_eq!((a.id, a.cost, a.kind), (5, -1700, ArtefactType::BlowWeapon));
+        assert!(a.is_personal() && a.kind.is_weapon());
+        assert_eq!(a.fixed, StatMods::from([(Stat::AttackBlow, 55)]));
+        assert_eq!(a.add, StatMods::from([(Stat::Initiative, -1)]));
+        assert_eq!(a.percent, StatMods::from([(Stat::Hits, 10)]));
+        assert_eq!(a.magic, Some(MagicSchool::Life));
+        assert_eq!(a.bonus, Some(Bonus::ArmorIgnore));
+        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n");
+        assert!(matches!(parse_artefacts(&ini), Err(DtError::Missing { .. })));
+    }
+
+    const SPELLS: &str = "\
+[Spell]\r\n\
+Name=One\r\n\
+CostGold=150\r\n\
+CostMana=200\r\n\
+Type=Life\r\n\
+TimeWork=\r\n\
+TimeCast=4\r\n\
+Target=Hero\r\n\
+Icon1=Life-2\r\n\
+Icon2=\r\n\
+ColorC1=160,40,100\r\n\
+ColorC2=\r\n\
+Effect1=P-Flare,70,150,70,3000,65,1200,0\r\n\
+Effect2=\r\n\
+DeltaFixedHits=30\r\n\
+[Spell]\r\n\
+Name=Two\r\n\
+CostGold=1\r\n\
+Type=Death\r\n\
+TimeWork=10\r\n\
+Target=Enemy\r\n\
+p-AttackBlow=-20\r\n\
+d-Manevres=-1\r\n\
+p-LifeLose=5\r\n\
+----------\r\n\
+[Spell]\r\n\
+Name=Template\r\n\
+CostGold=\r\n\
+CostMana=\r\n\
+Type=\r\n\
+TimeWork=\r\n\
+TimeCast=\r\n\
+Target=\r\n\
+d-Hits=\r\n\
+[MapEditorSpecialOptions]\r\n\
+Generated=1\r\n";
+
+    #[test]
+    fn spells_by_order_skipping_template() {
+        let spells = parse_spells(&Ini::parse(SPELLS)).unwrap();
+        assert_eq!(spells.len(), 2);
+        let a = &spells[0];
+        assert_eq!((a.id, a.cost_gold, a.cost_mana, a.time_work, a.time_cast), (1, 150, 200, None, Some(4)));
+        assert_eq!((a.school, a.target), (Some(MagicSchool::Life), Some(SpellTarget::Hero)));
+        assert_eq!(a.icons[0], SpellIcon { image: Some("Life-2".into()), tint: Some([160, 40, 100]) });
+        assert_eq!(a.icons[1], SpellIcon::default());
+        let e = a.effects[0].as_ref().unwrap();
+        assert_eq!((e.file.as_str(), e.rgb, e.duration_ms, e.y_offset, e.scale_milli, e.start_ms), ("P-Flare", [70, 150, 70], 3000, 65, 1200, 0));
+        assert_eq!(a.effects[1], None);
+        assert_eq!(a.delta_fixed_hits, Some(30));
+        assert!(a.extra.is_empty(), "{:?}", a.extra);
+        let b = &spells[1];
+        assert_eq!((b.id, b.time_work, b.target), (2, Some(10), Some(SpellTarget::Enemy)));
+        assert_eq!(b.percent, StatMods::from([(Stat::AttackBlow, -20)]));
+        assert_eq!(b.add, StatMods::from([(Stat::Manevres, -1)]));
+        assert_eq!(b.life_lose_percent, Some(5));
+        assert!(b.extra.is_empty(), "{:?}", b.extra);
+    }
+
+    #[test]
+    fn bad_effect_is_an_error() {
+        let ini = Ini::parse("[S]\nName=x\nCostGold=1\nEffect1=file,1,2\n");
+        assert!(matches!(parse_spells(&ini), Err(DtError::BadValue { .. })));
+    }
+
+    #[test]
+    fn global_options_override_defaults() {
+        let ini = Ini::parse(
+            "[Costs]\nShipCost=300\n[GlobalOptions]\nRow2Def=7\nDecSpellelemental=9\n\
+             MinAtackArmyTarget=1,1,100,50,50\nMixHealingTarget=50,150,1,50,50\nNewKey=3\n\
+             [AIArmyGeneration]\nNormal=4,5,6\nUndead=43\n",
+        );
+        let o = GlobalOptions::from_ini(&ini).unwrap();
+        assert_eq!((o.ship_cost, o.row2_def, o.dec_spell_elemental), (300, 7, 9));
+        assert_eq!(o.dec_spell(MagicSchool::Elemental), 9);
+        assert_eq!(o.battle_end_turn, 25);
+        assert_eq!(o.ai_targets.min_attack_army, Some([1, 1, 100, 50, 50]));
+        assert_eq!(o.ai_targets.min_healing, None);
+        assert!(o.extra.contains_key("MixHealingTarget") && o.extra.contains_key("NewKey"));
+        assert_eq!(o.extra.len(), 2);
+        assert_eq!(o.army_generation, vec![("Normal".to_string(), vec![4, 5, 6]), ("Undead".to_string(), vec![43])]);
+        let bad = Ini::parse("[GlobalOptions]\nMinRandomTarget=1,2\n");
+        assert!(GlobalOptions::from_ini(&bad).is_err());
+    }
+}

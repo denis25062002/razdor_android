@@ -1,0 +1,1986 @@
+//! `.DTm` scenario maps: header, terrain, objects, buildings, armies, points, events,
+//! strings and embedded pictures.
+//!
+//! The byte layout is documented in `docs/reference/dtm-format.md`; offsets in the comments
+//! below are 0-based offsets inside each record, as there. Every byte of the payload is kept:
+//! fields whose meaning is unknown are stored as raw `unknown_*` arrays, so
+//! [`Scenario::to_payload`] rebuilds the original payload exactly.
+
+use super::{container, text, DtError};
+use std::path::Path;
+
+/// First bytes of the uncompressed payload.
+pub const PAYLOAD_MAGIC: &[u8; 12] = b"MapLDV V.4\r\n";
+/// Size of the fixed header.
+pub const HEADER_SIZE: usize = 0x12F;
+/// Marker between the binary sections and the strings.
+pub const TEXT_MARKER: &[u8; 8] = b"\x08>-Text-";
+/// Container version of all shipped maps.
+pub const CONTAINER_VERSION: u16 = 19;
+
+pub const OBJECT_SIZE: usize = 6;
+pub const BUILDING_SIZE: usize = 358;
+pub const ARMY_SIZE: usize = 89;
+pub const POINT_SIZE: usize = 99;
+pub const EVENT_SIZE: usize = 171;
+const HERO_PRESET_SIZE: usize = 50;
+const MINUTES_PER_DAY: u32 = 24 * 60;
+
+// ------------------------------------------------------------------------------------------
+// Byte helpers
+// ------------------------------------------------------------------------------------------
+
+/// Little-endian reads at fixed offsets of a record.
+struct Rec<'a>(&'a [u8]);
+
+impl Rec<'_> {
+    fn u8(&self, o: usize) -> u8 {
+        self.0[o]
+    }
+    fn i8(&self, o: usize) -> i8 {
+        self.0[o] as i8
+    }
+    fn u16(&self, o: usize) -> u16 {
+        u16::from_le_bytes([self.0[o], self.0[o + 1]])
+    }
+    fn i16(&self, o: usize) -> i16 {
+        self.u16(o) as i16
+    }
+    fn u32(&self, o: usize) -> u32 {
+        u32::from_le_bytes(self.arr(o))
+    }
+    fn arr<const N: usize>(&self, o: usize) -> [u8; N] {
+        self.0[o..o + N].try_into().expect("in bounds")
+    }
+    fn i8s<const N: usize>(&self, o: usize) -> [i8; N] {
+        self.arr::<N>(o).map(|b| b as i8)
+    }
+    fn u16s<const N: usize>(&self, o: usize) -> [u16; N] {
+        std::array::from_fn(|k| self.u16(o + 2 * k))
+    }
+    fn troops(&self, o: usize) -> [Troop; 6] {
+        std::array::from_fn(|k| {
+            let [unit, level, count] = self.arr(o + 3 * k);
+            Troop { unit, level, count }
+        })
+    }
+}
+
+/// Little-endian writes at fixed offsets of a record buffer.
+struct Put<'a>(&'a mut [u8]);
+
+impl Put<'_> {
+    fn u8(&mut self, o: usize, v: u8) {
+        self.0[o] = v;
+    }
+    fn i8(&mut self, o: usize, v: i8) {
+        self.0[o] = v as u8;
+    }
+    fn u16(&mut self, o: usize, v: u16) {
+        self.bytes(o, &v.to_le_bytes());
+    }
+    fn i16(&mut self, o: usize, v: i16) {
+        self.u16(o, v as u16);
+    }
+    fn u32(&mut self, o: usize, v: u32) {
+        self.bytes(o, &v.to_le_bytes());
+    }
+    fn bytes(&mut self, o: usize, v: &[u8]) {
+        self.0[o..o + v.len()].copy_from_slice(v);
+    }
+    fn i8s(&mut self, o: usize, v: &[i8]) {
+        for (k, x) in v.iter().enumerate() {
+            self.i8(o + k, *x);
+        }
+    }
+    fn u16s(&mut self, o: usize, v: &[u16]) {
+        for (k, x) in v.iter().enumerate() {
+            self.u16(o + 2 * k, *x);
+        }
+    }
+    fn troops(&mut self, o: usize, v: &[Troop; 6]) {
+        for (k, t) in v.iter().enumerate() {
+            self.bytes(o + 3 * k, &[t.unit, t.level, t.count]);
+        }
+    }
+}
+
+/// Non-zero ids of a slot list.
+fn nonzero<T: Copy + Default + PartialEq>(v: &[T]) -> impl Iterator<Item = T> + '_ {
+    v.iter().copied().filter(|x| *x != T::default())
+}
+
+// ------------------------------------------------------------------------------------------
+// Game clock
+// ------------------------------------------------------------------------------------------
+
+/// A calendar date of the game clock: minutes since year 0, month 1, day 1, 00:00, with
+/// 30-day months and 12-month years.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GameDate {
+    pub year: u32,
+    /// 1..=12
+    pub month: u32,
+    /// 1..=30
+    pub day: u32,
+    pub hour: u32,
+    pub minute: u32,
+}
+
+impl GameDate {
+    pub fn from_minutes(m: u32) -> GameDate {
+        let days = m / MINUTES_PER_DAY;
+        GameDate {
+            year: days / 360,
+            month: days / 30 % 12 + 1,
+            day: days % 30 + 1,
+            hour: m % MINUTES_PER_DAY / 60,
+            minute: m % 60,
+        }
+    }
+
+    pub fn to_minutes(self) -> u32 {
+        (((self.year * 12 + self.month - 1) * 30 + self.day - 1) * 24 + self.hour) * 60 + self.minute
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Header
+// ------------------------------------------------------------------------------------------
+
+/// A unit slot: type, level and number of units.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Troop {
+    pub unit: u8,
+    /// Level (L: the format doc is not sure which of level/count is which).
+    pub level: u8,
+    pub count: u8,
+}
+
+impl Troop {
+    pub fn is_empty(&self) -> bool {
+        self.unit == 0 && self.level == 0 && self.count == 0
+    }
+}
+
+/// A barracks slot: unit type, stock at start, maximum stock (stored like a [`Troop`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecruitSlot {
+    pub unit: u8,
+    pub start_count: u8,
+    pub max_count: u8,
+}
+
+/// Starting hero preset, one per hero class (knight, archmage, ranger). 50 bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeroPreset {
+    /// 0: always 0 in shipped maps (U).
+    pub unknown_0: u32,
+    /// 4: always 0 (U).
+    pub unknown_4: u32,
+    /// 8: starting combat experience (L).
+    pub experience: u32,
+    /// 12: starting gold (L).
+    pub gold: u32,
+    /// 16: starting building (1-based, 0 = none).
+    pub start_building: u8,
+    /// 17: always 0 (U).
+    pub unknown_17: [u8; 2],
+    /// 19: starting troops.
+    pub troops: [Troop; 6],
+    /// 37, 39: start cell.
+    pub x: u16,
+    pub y: u16,
+    /// 41: starting artifacts (GlobalIndex, 0 = none) (L).
+    pub artifacts: [u8; 3],
+    /// 44: starting spells (1-based spell index, 0 = none) (L).
+    pub spells: [u8; 6],
+}
+
+impl HeroPreset {
+    fn read(r: &Rec) -> HeroPreset {
+        HeroPreset {
+            unknown_0: r.u32(0),
+            unknown_4: r.u32(4),
+            experience: r.u32(8),
+            gold: r.u32(12),
+            start_building: r.u8(16),
+            unknown_17: r.arr(17),
+            troops: r.troops(19),
+            x: r.u16(37),
+            y: r.u16(39),
+            artifacts: r.arr(41),
+            spells: r.arr(44),
+        }
+    }
+
+    fn write(&self, p: &mut Put) {
+        p.u32(0, self.unknown_0);
+        p.u32(4, self.unknown_4);
+        p.u32(8, self.experience);
+        p.u32(12, self.gold);
+        p.u8(16, self.start_building);
+        p.bytes(17, &self.unknown_17);
+        p.troops(19, &self.troops);
+        p.u16(37, self.x);
+        p.u16(39, self.y);
+        p.bytes(41, &self.artifacts);
+        p.bytes(44, &self.spells);
+    }
+}
+
+/// Hero class index into [`Header::heroes`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Archetype {
+    Knight = 0,
+    Archmage = 1,
+    Ranger = 2,
+}
+
+/// Header byte 0x10F.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenarioKind {
+    Standalone,
+    CampaignStart,
+    CampaignContinuation,
+    Other(u8),
+}
+
+/// The fixed 303-byte header, minus the section sizes and text offset, which are derived
+/// from the content (and validated when parsing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    /// 0x0C, 0x10: grid size in cells.
+    pub width: u32,
+    pub height: u32,
+    /// 0x14: seed of the editor's map generator (L).
+    pub generator_seed: u32,
+    /// 0x34: always 0 (U).
+    pub unknown_0x34: u32,
+    /// 0x38: start time in minutes (see [`GameDate`]); 0 = unset.
+    pub start_time: u32,
+    /// 0x3C: knight, archmage, ranger presets.
+    pub heroes: [HeroPreset; 3],
+    /// 0xD2: victory event (1-based, 0 = none).
+    pub victory_event: u16,
+    /// 0xD4: always 0 (U).
+    pub unknown_0xd4: [u8; 4],
+    /// 0xD8: defeat event (1-based, 0 = none).
+    pub defeat_event: u16,
+    /// 0xDA: always 0 (U).
+    pub unknown_0xda: [u8; 4],
+    /// 0xDE: relation matrix, rows and columns player, ally, neighbour, enemy; −3..3.
+    pub relations: [[i8; 4]; 4],
+    /// 0xEF: unit id of each named character. Entries past the count may be stale; the
+    /// used ones are repeated in [`Scenario::named_characters`].
+    pub named_character_slots: [u8; 32],
+    /// 0x10F: raw scenario kind, see [`Header::kind`].
+    pub scenario_kind: u8,
+    /// 0x110: carried over from the previous campaign map, in UI order: gold, gods' favour,
+    /// fame, experience/level, personal artifacts, whole inventory, whole army (L).
+    pub carry_over: [u8; 7],
+    /// 0x117: always 0 (U).
+    pub unknown_0x117: [u8; 5],
+    /// 0x120: built-in scenario picture choice (L).
+    pub scenario_picture_index: u8,
+    /// 0x121: always 0 (U).
+    pub unknown_0x121: [u8; 14],
+}
+
+impl Header {
+    pub fn kind(&self) -> ScenarioKind {
+        match self.scenario_kind {
+            0 => ScenarioKind::Standalone,
+            1 => ScenarioKind::CampaignStart,
+            2 => ScenarioKind::CampaignContinuation,
+            k => ScenarioKind::Other(k),
+        }
+    }
+
+    pub fn start_date(&self) -> GameDate {
+        GameDate::from_minutes(self.start_time)
+    }
+
+    pub fn hero(&self, a: Archetype) -> &HeroPreset {
+        &self.heroes[a as usize]
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Terrain and objects
+// ------------------------------------------------------------------------------------------
+
+/// Terrain codes, in the order of the editor's surface palette (L).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Surface {
+    ShallowsFords = 0,
+    CoastalWater = 1,
+    DeepSea = 2,
+    LavaFields = 3,
+    Road = 4,
+    GrassLowland = 5,
+    GrassPlain = 6,
+    DryPlain = 7,
+    Marsh = 8,
+    ImpassableSwamp = 9,
+    SandDunes = 10,
+    ClaySoil = 11,
+    StonySoil = 12,
+    ScorchedLand = 13,
+    SnowyGround = 14,
+    ImpassableSnowdrifts = 15,
+}
+
+impl Surface {
+    pub const ALL: [Surface; 16] = [
+        Surface::ShallowsFords,
+        Surface::CoastalWater,
+        Surface::DeepSea,
+        Surface::LavaFields,
+        Surface::Road,
+        Surface::GrassLowland,
+        Surface::GrassPlain,
+        Surface::DryPlain,
+        Surface::Marsh,
+        Surface::ImpassableSwamp,
+        Surface::SandDunes,
+        Surface::ClaySoil,
+        Surface::StonySoil,
+        Surface::ScorchedLand,
+        Surface::SnowyGround,
+        Surface::ImpassableSnowdrifts,
+    ];
+
+    pub fn from_code(code: u8) -> Option<Surface> {
+        Surface::ALL.get(code as usize).copied()
+    }
+}
+
+/// Expand the terrain stream of `(value, run − 1)` byte pairs into `width*height` cells.
+pub fn expand_terrain(rle: &[u8], width: u32, height: u32) -> Result<Vec<u8>, DtError> {
+    if !rle.len().is_multiple_of(2) {
+        return Err(DtError::Terrain(format!("odd RLE size {}", rle.len())));
+    }
+    let cells = width as u64 * height as u64;
+    // Each pair expands to at most 256 cells; this also bounds the allocation.
+    if cells > rle.len() as u64 / 2 * 256 {
+        return Err(DtError::Terrain(format!("{} RLE bytes cannot fill {width}x{height}", rle.len())));
+    }
+    let mut out = Vec::with_capacity(cells as usize);
+    for pair in rle.chunks_exact(2) {
+        out.extend(std::iter::repeat_n(pair[0], pair[1] as usize + 1));
+    }
+    if out.len() as u64 != cells {
+        return Err(DtError::Terrain(format!("RLE expands to {} cells, expected {cells}", out.len())));
+    }
+    Ok(out)
+}
+
+/// Compress cells into the terrain stream (greedy runs of up to 256).
+pub fn compress_terrain(cells: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cells.len() {
+        let v = cells[i];
+        let run = cells[i..].iter().take(256).take_while(|c| **c == v).count();
+        out.extend_from_slice(&[v, (run - 1) as u8]);
+        i += run;
+    }
+    out
+}
+
+/// A hill, mountain, tree or stone on a cell (6 bytes). Class meanings are L:
+/// 1 hills, 5 mountains/rocks, 8 stone scatter, 9 trees, 10 dead trees, 11 dense thicket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MapObject {
+    pub x: u16,
+    pub y: u16,
+    /// Sprite id from the editor's object palette.
+    pub sprite: u8,
+    pub class: u8,
+}
+
+// ------------------------------------------------------------------------------------------
+// Buildings
+// ------------------------------------------------------------------------------------------
+
+/// Building type (byte 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BuildingType {
+    Palace = 0,
+    Town = 1,
+    Village = 2,
+    Castle = 3,
+    Fort = 4,
+    Tavern = 5,
+    Market = 6,
+    Church = 7,
+    Smithy = 8,
+    Shipyard = 9,
+    Altar = 10,
+    DungeonEntrance = 11,
+    Ruins = 12,
+    StoneBridge = 13,
+    WoodenBridge = 14,
+    Obelisk = 15,
+}
+
+impl BuildingType {
+    pub const ALL: [BuildingType; 16] = [
+        BuildingType::Palace,
+        BuildingType::Town,
+        BuildingType::Village,
+        BuildingType::Castle,
+        BuildingType::Fort,
+        BuildingType::Tavern,
+        BuildingType::Market,
+        BuildingType::Church,
+        BuildingType::Smithy,
+        BuildingType::Shipyard,
+        BuildingType::Altar,
+        BuildingType::DungeonEntrance,
+        BuildingType::Ruins,
+        BuildingType::StoneBridge,
+        BuildingType::WoodenBridge,
+        BuildingType::Obelisk,
+    ];
+
+    pub fn from_code(code: u8) -> Option<BuildingType> {
+        BuildingType::ALL.get(code as usize).copied()
+    }
+}
+
+/// A building (358 bytes). Buildings have 1-based ids in file order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Building {
+    /// 0, 2: bottom-right cell of the footprint (L).
+    pub x: u16,
+    pub y: u16,
+    /// 4: picture variant within the type.
+    pub picture_variant: u8,
+    /// 5: picture type (almost always the building type).
+    pub picture_type: u8,
+    /// 6: raw building type, see [`Building::building_type`].
+    pub kind: u8,
+    /// 7: always 0 (U).
+    pub unknown_7: u8,
+    /// 8: local event slots (1-based event ids); see [`Building::events`].
+    pub event_slots: [u16; 64],
+    /// 136: fixed artifacts (market goods or ruin treasure), GlobalIndex, 0 = empty.
+    pub artifact_slots: [u16; 64],
+    /// 264: barracks stock.
+    pub barracks: [RecruitSlot; 6],
+    /// 282: gold income per day.
+    pub gold_per_day: u16,
+    /// 284: maximum accumulated gold (villages).
+    pub gold_max: u16,
+    /// 286: always 0 (U).
+    pub unknown_286: u16,
+    /// 288: number of used event slots.
+    pub event_count: u8,
+    /// 289, 290: footprint size.
+    pub size_x: u8,
+    pub size_y: u8,
+    /// 291: always 0 (U).
+    pub unknown_291: u8,
+    /// 292: owner army id; 0xFF = none (the neutral owner applies).
+    pub owner_army: u8,
+    /// 293: linked building (1-based): a village's castle; a dungeon entrance's target (L).
+    pub linked_building: u8,
+    /// 294: has barracks.
+    pub has_barracks: u8,
+    /// 295: number of random artifacts for sale.
+    pub random_artifacts_for_sale: u8,
+    /// 296: stale u8 copy of the artifact list; ignore (L).
+    pub stale_artifacts: [u8; 6],
+    /// 302: always 0 (U).
+    pub unknown_302: [u8; 6],
+    /// 308: spells for sale (1-based spell index, 0 = none).
+    pub spells_for_sale: [u8; 6],
+    /// 314: garrison.
+    pub garrison: [Troop; 6],
+    /// 332: extra garrison defence.
+    pub garrison_extra_defence: u8,
+    /// 333: minimum random-artifact price.
+    pub price_min: u16,
+    /// 335: maximum random-artifact price; for ruins, the treasure gold.
+    pub price_max: u16,
+    /// 337: faction: 1 player, 2 ally, 3 neighbour, 4 enemy.
+    pub faction: u8,
+    /// 338: attitude towards player, ally, neighbour and enemy (−3..3).
+    pub relations: [i8; 4],
+    /// 342: always 0 (U).
+    pub unknown_342: [u8; 8],
+    /// 350: mana income per day.
+    pub mana_per_day: u8,
+    /// 351: maximum mana.
+    pub mana_max: u8,
+    /// 352: always 0 (U).
+    pub unknown_352: u8,
+    /// 353: starting building flag for knight, archmage, ranger.
+    pub start_for: [u8; 3],
+    /// 356: "all types" recruitment flag.
+    pub recruit_all_types: u8,
+    /// 357: garrison is AI-only.
+    pub garrison_ai_only: u8,
+    /// Strings: name, neutral owner's name, description.
+    pub name: String,
+    pub owner_name: String,
+    pub description: String,
+}
+
+impl Building {
+    fn read(r: &Rec) -> Building {
+        Building {
+            x: r.u16(0),
+            y: r.u16(2),
+            picture_variant: r.u8(4),
+            picture_type: r.u8(5),
+            kind: r.u8(6),
+            unknown_7: r.u8(7),
+            event_slots: r.u16s(8),
+            artifact_slots: r.u16s(136),
+            barracks: r.troops(264).map(|t| RecruitSlot { unit: t.unit, start_count: t.level, max_count: t.count }),
+            gold_per_day: r.u16(282),
+            gold_max: r.u16(284),
+            unknown_286: r.u16(286),
+            event_count: r.u8(288),
+            size_x: r.u8(289),
+            size_y: r.u8(290),
+            unknown_291: r.u8(291),
+            owner_army: r.u8(292),
+            linked_building: r.u8(293),
+            has_barracks: r.u8(294),
+            random_artifacts_for_sale: r.u8(295),
+            stale_artifacts: r.arr(296),
+            unknown_302: r.arr(302),
+            spells_for_sale: r.arr(308),
+            garrison: r.troops(314),
+            garrison_extra_defence: r.u8(332),
+            price_min: r.u16(333),
+            price_max: r.u16(335),
+            faction: r.u8(337),
+            relations: r.i8s(338),
+            unknown_342: r.arr(342),
+            mana_per_day: r.u8(350),
+            mana_max: r.u8(351),
+            unknown_352: r.u8(352),
+            start_for: r.arr(353),
+            recruit_all_types: r.u8(356),
+            garrison_ai_only: r.u8(357),
+            name: String::new(),
+            owner_name: String::new(),
+            description: String::new(),
+        }
+    }
+
+    fn write(&self, p: &mut Put) {
+        p.u16(0, self.x);
+        p.u16(2, self.y);
+        p.u8(4, self.picture_variant);
+        p.u8(5, self.picture_type);
+        p.u8(6, self.kind);
+        p.u8(7, self.unknown_7);
+        p.u16s(8, &self.event_slots);
+        p.u16s(136, &self.artifact_slots);
+        p.troops(264, &self.barracks.map(|s| Troop { unit: s.unit, level: s.start_count, count: s.max_count }));
+        p.u16(282, self.gold_per_day);
+        p.u16(284, self.gold_max);
+        p.u16(286, self.unknown_286);
+        p.u8(288, self.event_count);
+        p.u8(289, self.size_x);
+        p.u8(290, self.size_y);
+        p.u8(291, self.unknown_291);
+        p.u8(292, self.owner_army);
+        p.u8(293, self.linked_building);
+        p.u8(294, self.has_barracks);
+        p.u8(295, self.random_artifacts_for_sale);
+        p.bytes(296, &self.stale_artifacts);
+        p.bytes(302, &self.unknown_302);
+        p.bytes(308, &self.spells_for_sale);
+        p.troops(314, &self.garrison);
+        p.u8(332, self.garrison_extra_defence);
+        p.u16(333, self.price_min);
+        p.u16(335, self.price_max);
+        p.u8(337, self.faction);
+        p.i8s(338, &self.relations);
+        p.bytes(342, &self.unknown_342);
+        p.u8(350, self.mana_per_day);
+        p.u8(351, self.mana_max);
+        p.u8(352, self.unknown_352);
+        p.bytes(353, &self.start_for);
+        p.u8(356, self.recruit_all_types);
+        p.u8(357, self.garrison_ai_only);
+    }
+
+    pub fn building_type(&self) -> Option<BuildingType> {
+        BuildingType::from_code(self.kind)
+    }
+
+    /// Local event ids: the first `event_count` slots, deleted (0) slots skipped.
+    pub fn events(&self) -> impl Iterator<Item = u16> + '_ {
+        nonzero(&self.event_slots[..(self.event_count as usize).min(64)])
+    }
+
+    /// Fixed artifact ids (market goods or ruin treasure).
+    pub fn artifacts(&self) -> impl Iterator<Item = u16> + '_ {
+        nonzero(&self.artifact_slots)
+    }
+
+    /// Owner army id, `None` for the neutral owner.
+    pub fn owner(&self) -> Option<u8> {
+        (self.owner_army != 0xFF).then_some(self.owner_army)
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Armies
+// ------------------------------------------------------------------------------------------
+
+/// Army map model (byte 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ArmyModel {
+    HeroKnight = 1,
+    HeroArchmage = 2,
+    HeroRanger = 3,
+    Feudal = 4,
+    Bandits = 5,
+    Peasants = 6,
+    Inactive = 7,
+    Lantern = 8,
+    EventPoint = 9,
+    Necromancer = 10,
+    Ghosts = 11,
+    Zombies = 12,
+}
+
+impl ArmyModel {
+    pub const ALL: [ArmyModel; 12] = [
+        ArmyModel::HeroKnight,
+        ArmyModel::HeroArchmage,
+        ArmyModel::HeroRanger,
+        ArmyModel::Feudal,
+        ArmyModel::Bandits,
+        ArmyModel::Peasants,
+        ArmyModel::Inactive,
+        ArmyModel::Lantern,
+        ArmyModel::EventPoint,
+        ArmyModel::Necromancer,
+        ArmyModel::Ghosts,
+        ArmyModel::Zombies,
+    ];
+
+    pub fn from_code(code: u8) -> Option<ArmyModel> {
+        code.checked_sub(1).and_then(|i| ArmyModel::ALL.get(i as usize)).copied()
+    }
+}
+
+/// An AI army (89 bytes). The army id (byte 4) equals the 1-based record index.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Army {
+    /// 0, 2: cell.
+    pub x: u16,
+    pub y: u16,
+    /// 4: army id (1-based).
+    pub id: u8,
+    /// 5: raw map model, see [`Army::model`].
+    pub model: u8,
+    /// 6: tactical cost, editor value 1 (L).
+    pub tactical_cost_1: u16,
+    /// 8: 0..3, maybe the leader archetype (U).
+    pub unknown_8: u8,
+    /// 9: always 0 (U).
+    pub unknown_9: [u8; 4],
+    /// 13: speed correction.
+    pub speed_correction: i8,
+    /// 14: "add experience like the player".
+    pub exp_like_player: u8,
+    /// 15: always 0 (U).
+    pub unknown_15: [u8; 2],
+    /// 17: extra daily gold income.
+    pub gold_income: u16,
+    /// 19: bonus experience for hired units.
+    pub hire_bonus_exp: u16,
+    /// 21: always 0 (U).
+    pub unknown_21: [u8; 4],
+    /// 25: home building (1-based, 0 = none).
+    pub home_building: u8,
+    /// 26: leader unit id.
+    pub leader_unit: u8,
+    /// 27: leader level (L).
+    pub leader_level: u8,
+    /// 28: troops.
+    pub troops: [Troop; 6],
+    /// 46: always 0 (U).
+    pub unknown_46: [u8; 4],
+    /// 50: artifacts carried (GlobalIndex, 0 = none).
+    pub artifacts: [u8; 3],
+    /// 53: always 0 (U).
+    pub unknown_53: [u8; 5],
+    /// 58: named character (1-based index into the named characters, 0 = none).
+    pub named_character: u8,
+    /// 59: 0..2 (U).
+    pub unknown_59: u8,
+    /// 60: patrols.
+    pub patrols: u8,
+    /// 61: patrol radius.
+    pub patrol_radius: u8,
+    /// 62: units carry no money.
+    pub no_money: u8,
+    /// 63: active at start.
+    pub active: u8,
+    /// 64: faction: 1 player, 2 ally, 3 neighbour, 4 enemy.
+    pub faction: u8,
+    /// 65: attitude towards the four factions.
+    pub relations: [i8; 4],
+    /// 69: aggression.
+    pub aggression: i8,
+    /// 70: respawn time in days.
+    pub respawn_days: u8,
+    /// 71: experience correction in percent (100 = normal).
+    pub exp_correction: u8,
+    /// 72: ship type: 0 none, then hero, pirate, merchant (L).
+    pub ship: u8,
+    /// 73: always 0 (U).
+    pub unknown_73: u8,
+    /// 74: tactical cost, editor value 2 (L).
+    pub tactical_cost_2: u16,
+    /// 76: ignored by AI.
+    pub ignored_by_ai: u8,
+    /// 77: hunts only the player.
+    pub hunts_player_only: u8,
+    /// 78: no random targets.
+    pub no_random_targets: u8,
+    /// 79: no socialising with other armies.
+    pub no_socialising: u8,
+    /// 80: 0..45 (U).
+    pub unknown_80: u8,
+    /// 81: no interest in buildings.
+    pub no_building_interest: u8,
+    /// 82: garrison strength (default 50).
+    pub garrison_strength: u8,
+    /// 83: respawn the whole army, not only the leader.
+    pub respawn_all: u8,
+    /// 84: spell cast on the army (1-based spell index).
+    pub spell: u8,
+    /// 85: target model: 0 standard, 1 aggressive, 2 passive, 3 hoarding, 4 trading.
+    pub target_model: u8,
+    /// 86: always 0 (U).
+    pub unknown_86: [u8; 3],
+    /// Strings: army name, leader name, description.
+    pub name: String,
+    pub leader_name: String,
+    pub description: String,
+}
+
+impl Army {
+    fn read(r: &Rec) -> Army {
+        Army {
+            x: r.u16(0),
+            y: r.u16(2),
+            id: r.u8(4),
+            model: r.u8(5),
+            tactical_cost_1: r.u16(6),
+            unknown_8: r.u8(8),
+            unknown_9: r.arr(9),
+            speed_correction: r.i8(13),
+            exp_like_player: r.u8(14),
+            unknown_15: r.arr(15),
+            gold_income: r.u16(17),
+            hire_bonus_exp: r.u16(19),
+            unknown_21: r.arr(21),
+            home_building: r.u8(25),
+            leader_unit: r.u8(26),
+            leader_level: r.u8(27),
+            troops: r.troops(28),
+            unknown_46: r.arr(46),
+            artifacts: r.arr(50),
+            unknown_53: r.arr(53),
+            named_character: r.u8(58),
+            unknown_59: r.u8(59),
+            patrols: r.u8(60),
+            patrol_radius: r.u8(61),
+            no_money: r.u8(62),
+            active: r.u8(63),
+            faction: r.u8(64),
+            relations: r.i8s(65),
+            aggression: r.i8(69),
+            respawn_days: r.u8(70),
+            exp_correction: r.u8(71),
+            ship: r.u8(72),
+            unknown_73: r.u8(73),
+            tactical_cost_2: r.u16(74),
+            ignored_by_ai: r.u8(76),
+            hunts_player_only: r.u8(77),
+            no_random_targets: r.u8(78),
+            no_socialising: r.u8(79),
+            unknown_80: r.u8(80),
+            no_building_interest: r.u8(81),
+            garrison_strength: r.u8(82),
+            respawn_all: r.u8(83),
+            spell: r.u8(84),
+            target_model: r.u8(85),
+            unknown_86: r.arr(86),
+            ..Army::default()
+        }
+    }
+
+    fn write(&self, p: &mut Put) {
+        p.u16(0, self.x);
+        p.u16(2, self.y);
+        p.u8(4, self.id);
+        p.u8(5, self.model);
+        p.u16(6, self.tactical_cost_1);
+        p.u8(8, self.unknown_8);
+        p.bytes(9, &self.unknown_9);
+        p.i8(13, self.speed_correction);
+        p.u8(14, self.exp_like_player);
+        p.bytes(15, &self.unknown_15);
+        p.u16(17, self.gold_income);
+        p.u16(19, self.hire_bonus_exp);
+        p.bytes(21, &self.unknown_21);
+        p.u8(25, self.home_building);
+        p.u8(26, self.leader_unit);
+        p.u8(27, self.leader_level);
+        p.troops(28, &self.troops);
+        p.bytes(46, &self.unknown_46);
+        p.bytes(50, &self.artifacts);
+        p.bytes(53, &self.unknown_53);
+        p.u8(58, self.named_character);
+        p.u8(59, self.unknown_59);
+        p.u8(60, self.patrols);
+        p.u8(61, self.patrol_radius);
+        p.u8(62, self.no_money);
+        p.u8(63, self.active);
+        p.u8(64, self.faction);
+        p.i8s(65, &self.relations);
+        p.i8(69, self.aggression);
+        p.u8(70, self.respawn_days);
+        p.u8(71, self.exp_correction);
+        p.u8(72, self.ship);
+        p.u8(73, self.unknown_73);
+        p.u16(74, self.tactical_cost_2);
+        p.u8(76, self.ignored_by_ai);
+        p.u8(77, self.hunts_player_only);
+        p.u8(78, self.no_random_targets);
+        p.u8(79, self.no_socialising);
+        p.u8(80, self.unknown_80);
+        p.u8(81, self.no_building_interest);
+        p.u8(82, self.garrison_strength);
+        p.u8(83, self.respawn_all);
+        p.u8(84, self.spell);
+        p.u8(85, self.target_model);
+        p.bytes(86, &self.unknown_86);
+    }
+
+    pub fn model(&self) -> Option<ArmyModel> {
+        ArmyModel::from_code(self.model)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active != 0
+    }
+
+    /// Occupied troop slots.
+    pub fn troops(&self) -> impl Iterator<Item = &Troop> {
+        self.troops.iter().filter(|t| !t.is_empty())
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Points
+// ------------------------------------------------------------------------------------------
+
+/// A lantern or event point (99 bytes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Point {
+    /// 0, 2: cell.
+    pub x: u16,
+    pub y: u16,
+    /// 4: point id (1-based); events refer to points by it.
+    pub id: u8,
+    /// 5: 8 = active lantern, 9 = event point or inactive lantern.
+    pub model: u8,
+    /// 6: running serial number (L).
+    pub serial: u16,
+    /// 8: attached local events (the editor allows 5).
+    pub event_slots: [u16; 10],
+    /// 28: target priorities for green, blue, yellow and red (L; always 0).
+    pub priorities: [u16; 4],
+    /// 36: active duration (L; always 0).
+    pub active_duration: u16,
+    /// 38: visibility radius at start (at most 24).
+    pub radius: u8,
+    /// 39: number of attached events.
+    pub event_count: u8,
+    /// 40: active at start.
+    pub active: u8,
+    /// 41: always 0 (U).
+    pub unknown_41: [u8; 58],
+}
+
+impl Point {
+    fn read(r: &Rec) -> Point {
+        Point {
+            x: r.u16(0),
+            y: r.u16(2),
+            id: r.u8(4),
+            model: r.u8(5),
+            serial: r.u16(6),
+            event_slots: r.u16s(8),
+            priorities: r.u16s(28),
+            active_duration: r.u16(36),
+            radius: r.u8(38),
+            event_count: r.u8(39),
+            active: r.u8(40),
+            unknown_41: r.arr(41),
+        }
+    }
+
+    fn write(&self, p: &mut Put) {
+        p.u16(0, self.x);
+        p.u16(2, self.y);
+        p.u8(4, self.id);
+        p.u8(5, self.model);
+        p.u16(6, self.serial);
+        p.u16s(8, &self.event_slots);
+        p.u16s(28, &self.priorities);
+        p.u16(36, self.active_duration);
+        p.u8(38, self.radius);
+        p.u8(39, self.event_count);
+        p.u8(40, self.active);
+        p.bytes(41, &self.unknown_41);
+    }
+
+    /// Attached event ids.
+    pub fn events(&self) -> impl Iterator<Item = u16> + '_ {
+        nonzero(&self.event_slots)
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Events
+// ------------------------------------------------------------------------------------------
+
+/// Event type (byte 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventKind {
+    Global = 1,
+    Local = 2,
+    Quest = 3,
+    Rumour = 4,
+}
+
+/// Event conditions. A `*_check` byte enables the condition next to it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventConditions {
+    /// 11: squad count; the sign encodes ≥ or ≤.
+    pub squad_count: i16,
+    /// 13: army strength.
+    pub army_strength: i16,
+    /// 15: army must be inactive.
+    pub army_inactive: u8,
+    /// 18: check "current stats".
+    pub stats_check: u8,
+    /// 19: level.
+    pub level: i16,
+    /// 21: gold.
+    pub gold: i16,
+    /// 25: holiness / mana.
+    pub holiness_mana: i16,
+    /// 29..36: building ownership.
+    pub buildings_check: u8,
+    pub buildings: [u8; 3],
+    /// 1 player, 2–5 green, blue, yellow, red, 6 "not the player" (L).
+    pub buildings_owner: [u8; 3],
+    /// 36..46: named squads in some army.
+    pub units_check: u8,
+    pub units: [u8; 3],
+    pub units_named: [u8; 3],
+    pub units_owner: [u8; 3],
+    /// 46..53: artifacts.
+    pub artifacts_check: u8,
+    pub artifacts: [u8; 3],
+    pub artifacts_owner: [u8; 3],
+    /// 53..56: player defeated armies.
+    pub defeated_check: u8,
+    pub defeated_armies: [u8; 2],
+    /// 56..61: events happened with answer yes.
+    pub happened_yes_check: u8,
+    pub happened_yes: [u16; 2],
+    /// 61..66: events not happened.
+    pub not_happened_check: u8,
+    pub not_happened: [u16; 2],
+    /// 66..69: armies beaten by anyone.
+    pub beaten_check: u8,
+    pub beaten_armies: [u8; 2],
+    /// 69..74: events happened with answer no.
+    pub happened_no_check: u8,
+    pub happened_no: [u16; 2],
+    /// 74: meet army.
+    pub meet_army: u8,
+    /// 75: army is active.
+    pub army_active: u8,
+    /// 76: ask a yes/no question.
+    pub confirm_question: u8,
+    /// 146: army is in its home building.
+    pub army_at_home: u8,
+}
+
+/// Event results.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EventResults {
+    /// 16: army whose patrol changes.
+    pub patrol_army: u8,
+    /// 17: patrol delta (a community opcode selector as well).
+    pub patrol_delta: i8,
+    /// 77: relative event.
+    pub relative_event: u16,
+    /// 79: relative event delay in hours.
+    pub relative_delay_hours: u16,
+    /// 81: spell to activate on the player.
+    pub cast_spell: u8,
+    /// 82: picture: 200 defeat, 201 victory, otherwise a unit id.
+    pub picture: u8,
+    /// 83: experience change.
+    pub experience: i16,
+    /// 85: gold change.
+    pub gold: i16,
+    /// 89: mana change.
+    pub mana: i16,
+    /// 93: spells learned.
+    pub spells_learned: [u8; 4],
+    /// 97: units added.
+    pub units_add: [u8; 4],
+    /// 101: named characters for the added units.
+    pub units_add_named: [u8; 4],
+    /// 105: units removed (0xFE "added by an event", 0xFF "any unit").
+    pub units_remove: [u8; 4],
+    /// 109: named characters for the removed units.
+    pub units_remove_named: [u8; 4],
+    /// 113: artifacts gained.
+    pub artifacts_add: [u8; 4],
+    /// 117: artifacts lost.
+    pub artifacts_remove: [u8; 4],
+    /// 121: armies activated.
+    pub activate_armies: [u8; 2],
+    /// 123: army deactivated.
+    pub deactivate_army: u8,
+    /// 124: quest completed (event id).
+    pub completes_quest: u16,
+    /// 126: delay in hours.
+    pub delay_hours: u16,
+    /// 128: lanterns lit (point ids).
+    pub light_lanterns: [u16; 4],
+    /// 136: army that removed units go to.
+    pub removed_units_to_army: u8,
+    /// 137: new hero class (unit id).
+    pub new_hero_class: u8,
+    /// 138: chained (subordinate) event, run at once.
+    pub chained_event: u16,
+    /// 142: army that added units are taken from.
+    pub units_from_army: u8,
+    /// 143: move that army to the hero.
+    pub move_to_hero: u8,
+    /// 144: show army.
+    pub show_army: u8,
+    /// 145: hero has only 1 HP.
+    pub hero_one_hp: u8,
+    /// 147: start a battle with this army.
+    pub start_battle_with: u8,
+    /// 148: "no meeting with army" (also a community opcode switch).
+    pub no_meeting: u8,
+    /// 149: repeat after a yes answer.
+    pub repeat_after_yes: u8,
+}
+
+/// Flag script after `%` in an event title: `[+X | -X][=X | =/X]`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FlagScript {
+    /// Everything after the first `%`, verbatim.
+    pub raw: String,
+    /// `+X`: result, sets flag X.
+    pub set: Option<String>,
+    /// `-X`: result, clears flag X.
+    pub clear: Option<String>,
+    /// `=X`: condition, X must be set.
+    pub require_set: Option<String>,
+    /// `=/X`: condition, X must be unset.
+    pub require_unset: Option<String>,
+}
+
+impl FlagScript {
+    /// Parse the script of a title; `None` when the title has no `%`.
+    pub fn from_title(title: &str) -> Option<FlagScript> {
+        let (_, raw) = title.split_once('%')?;
+        let mut f = FlagScript { raw: raw.to_string(), ..FlagScript::default() };
+        let (action, test) = match raw.split_once('=') {
+            Some((a, t)) => (a, Some(t)),
+            None => (raw, None),
+        };
+        if let Some(x) = action.strip_prefix('+') {
+            f.set = Some(x.to_string());
+        } else if let Some(x) = action.strip_prefix('-') {
+            f.clear = Some(x.to_string());
+        }
+        if let Some(t) = test {
+            match t.strip_prefix('/') {
+                Some(x) => f.require_unset = Some(x.to_string()),
+                None => f.require_set = Some(t.to_string()),
+            }
+        }
+        Some(f)
+    }
+}
+
+/// A scenario event (171 bytes). Events have 1-based ids in file order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Event {
+    /// 0: group colour in the editor (0–5).
+    pub group_colour: u8,
+    /// 1: raw type, see [`Event::kind`].
+    pub kind: u8,
+    /// 2: start time (minutes).
+    pub start_time: u32,
+    /// 6: repeat period (minutes).
+    pub repeat: u16,
+    /// 8: active duration (minutes).
+    pub duration: u16,
+    /// 10: hero archetype: 0 all, 1 knight, 2 archmage, 3 ranger.
+    pub archetype: u8,
+    pub conditions: EventConditions,
+    pub results: EventResults,
+    /// 140: "subordinate event" flag.
+    pub subordinate: u8,
+    /// 141: 0 = may fire many times, 1 = once.
+    pub once: u8,
+    /// 23, 27, 87, 91: small or rare values (U).
+    pub unknown_23: [u8; 2],
+    pub unknown_27: [u8; 2],
+    pub unknown_87: [u8; 2],
+    pub unknown_91: [u8; 2],
+    /// 150: U (byte 156 is a 0/1 flag in about 2% of events).
+    pub unknown_150: [u8; 13],
+    /// 165: U.
+    pub unknown_165: [u8; 6],
+    /// Strings: title (with an optional flag script), yes/no question, message.
+    pub title: String,
+    pub question: String,
+    pub message: String,
+    /// Parsed from `title`.
+    pub flags: Option<FlagScript>,
+    /// Custom picture (size at byte 163): u16 width, u16 height, 16-bit pixels (L: RGB565).
+    pub custom_picture: Option<Vec<u8>>,
+}
+
+impl Event {
+    /// Returns the event and its custom picture size (byte 163).
+    fn read(r: &Rec) -> (Event, u16) {
+        let conditions = EventConditions {
+            squad_count: r.i16(11),
+            army_strength: r.i16(13),
+            army_inactive: r.u8(15),
+            stats_check: r.u8(18),
+            level: r.i16(19),
+            gold: r.i16(21),
+            holiness_mana: r.i16(25),
+            buildings_check: r.u8(29),
+            buildings: r.arr(30),
+            buildings_owner: r.arr(33),
+            units_check: r.u8(36),
+            units: r.arr(37),
+            units_named: r.arr(40),
+            units_owner: r.arr(43),
+            artifacts_check: r.u8(46),
+            artifacts: r.arr(47),
+            artifacts_owner: r.arr(50),
+            defeated_check: r.u8(53),
+            defeated_armies: r.arr(54),
+            happened_yes_check: r.u8(56),
+            happened_yes: r.u16s(57),
+            not_happened_check: r.u8(61),
+            not_happened: r.u16s(62),
+            beaten_check: r.u8(66),
+            beaten_armies: r.arr(67),
+            happened_no_check: r.u8(69),
+            happened_no: r.u16s(70),
+            meet_army: r.u8(74),
+            army_active: r.u8(75),
+            confirm_question: r.u8(76),
+            army_at_home: r.u8(146),
+        };
+        let results = EventResults {
+            patrol_army: r.u8(16),
+            patrol_delta: r.i8(17),
+            relative_event: r.u16(77),
+            relative_delay_hours: r.u16(79),
+            cast_spell: r.u8(81),
+            picture: r.u8(82),
+            experience: r.i16(83),
+            gold: r.i16(85),
+            mana: r.i16(89),
+            spells_learned: r.arr(93),
+            units_add: r.arr(97),
+            units_add_named: r.arr(101),
+            units_remove: r.arr(105),
+            units_remove_named: r.arr(109),
+            artifacts_add: r.arr(113),
+            artifacts_remove: r.arr(117),
+            activate_armies: r.arr(121),
+            deactivate_army: r.u8(123),
+            completes_quest: r.u16(124),
+            delay_hours: r.u16(126),
+            light_lanterns: r.u16s(128),
+            removed_units_to_army: r.u8(136),
+            new_hero_class: r.u8(137),
+            chained_event: r.u16(138),
+            units_from_army: r.u8(142),
+            move_to_hero: r.u8(143),
+            show_army: r.u8(144),
+            hero_one_hp: r.u8(145),
+            start_battle_with: r.u8(147),
+            no_meeting: r.u8(148),
+            repeat_after_yes: r.u8(149),
+        };
+        let e = Event {
+            group_colour: r.u8(0),
+            kind: r.u8(1),
+            start_time: r.u32(2),
+            repeat: r.u16(6),
+            duration: r.u16(8),
+            archetype: r.u8(10),
+            conditions,
+            results,
+            subordinate: r.u8(140),
+            once: r.u8(141),
+            unknown_23: r.arr(23),
+            unknown_27: r.arr(27),
+            unknown_87: r.arr(87),
+            unknown_91: r.arr(91),
+            unknown_150: r.arr(150),
+            unknown_165: r.arr(165),
+            ..Event::default()
+        };
+        (e, r.u16(163))
+    }
+
+    fn write(&self, p: &mut Put) {
+        let c = &self.conditions;
+        let s = &self.results;
+        p.u8(0, self.group_colour);
+        p.u8(1, self.kind);
+        p.u32(2, self.start_time);
+        p.u16(6, self.repeat);
+        p.u16(8, self.duration);
+        p.u8(10, self.archetype);
+        p.i16(11, c.squad_count);
+        p.i16(13, c.army_strength);
+        p.u8(15, c.army_inactive);
+        p.u8(16, s.patrol_army);
+        p.i8(17, s.patrol_delta);
+        p.u8(18, c.stats_check);
+        p.i16(19, c.level);
+        p.i16(21, c.gold);
+        p.bytes(23, &self.unknown_23);
+        p.i16(25, c.holiness_mana);
+        p.bytes(27, &self.unknown_27);
+        p.u8(29, c.buildings_check);
+        p.bytes(30, &c.buildings);
+        p.bytes(33, &c.buildings_owner);
+        p.u8(36, c.units_check);
+        p.bytes(37, &c.units);
+        p.bytes(40, &c.units_named);
+        p.bytes(43, &c.units_owner);
+        p.u8(46, c.artifacts_check);
+        p.bytes(47, &c.artifacts);
+        p.bytes(50, &c.artifacts_owner);
+        p.u8(53, c.defeated_check);
+        p.bytes(54, &c.defeated_armies);
+        p.u8(56, c.happened_yes_check);
+        p.u16s(57, &c.happened_yes);
+        p.u8(61, c.not_happened_check);
+        p.u16s(62, &c.not_happened);
+        p.u8(66, c.beaten_check);
+        p.bytes(67, &c.beaten_armies);
+        p.u8(69, c.happened_no_check);
+        p.u16s(70, &c.happened_no);
+        p.u8(74, c.meet_army);
+        p.u8(75, c.army_active);
+        p.u8(76, c.confirm_question);
+        p.u16(77, s.relative_event);
+        p.u16(79, s.relative_delay_hours);
+        p.u8(81, s.cast_spell);
+        p.u8(82, s.picture);
+        p.i16(83, s.experience);
+        p.i16(85, s.gold);
+        p.bytes(87, &self.unknown_87);
+        p.i16(89, s.mana);
+        p.bytes(91, &self.unknown_91);
+        p.bytes(93, &s.spells_learned);
+        p.bytes(97, &s.units_add);
+        p.bytes(101, &s.units_add_named);
+        p.bytes(105, &s.units_remove);
+        p.bytes(109, &s.units_remove_named);
+        p.bytes(113, &s.artifacts_add);
+        p.bytes(117, &s.artifacts_remove);
+        p.bytes(121, &s.activate_armies);
+        p.u8(123, s.deactivate_army);
+        p.u16(124, s.completes_quest);
+        p.u16(126, s.delay_hours);
+        p.u16s(128, &s.light_lanterns);
+        p.u8(136, s.removed_units_to_army);
+        p.u8(137, s.new_hero_class);
+        p.u16(138, s.chained_event);
+        p.u8(140, self.subordinate);
+        p.u8(141, self.once);
+        p.u8(142, s.units_from_army);
+        p.u8(143, s.move_to_hero);
+        p.u8(144, s.show_army);
+        p.u8(145, s.hero_one_hp);
+        p.u8(146, c.army_at_home);
+        p.u8(147, s.start_battle_with);
+        p.u8(148, s.no_meeting);
+        p.u8(149, s.repeat_after_yes);
+        p.bytes(150, &self.unknown_150);
+        p.u16(163, self.custom_picture.as_ref().map_or(0, |v| v.len() as u16));
+        p.bytes(165, &self.unknown_165);
+    }
+
+    pub fn kind(&self) -> Option<EventKind> {
+        match self.kind {
+            1 => Some(EventKind::Global),
+            2 => Some(EventKind::Local),
+            3 => Some(EventKind::Quest),
+            4 => Some(EventKind::Rumour),
+            _ => None,
+        }
+    }
+
+    /// The title without its flag script.
+    pub fn title_text(&self) -> &str {
+        self.title.split_once('%').map_or(&self.title, |(t, _)| t)
+    }
+
+    pub fn fires_once(&self) -> bool {
+        self.once != 0
+    }
+
+    pub fn start_date(&self) -> GameDate {
+        GameDate::from_minutes(self.start_time)
+    }
+}
+
+// ------------------------------------------------------------------------------------------
+// Scenario
+// ------------------------------------------------------------------------------------------
+
+/// A named character (именной персонаж): its class and name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedCharacter {
+    pub unit: u8,
+    pub name: String,
+}
+
+/// A whole `.DTm` scenario.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scenario {
+    pub header: Header,
+    /// `width*height` terrain codes, index `y*width + x`, row 0 at the top (see [`Surface`]).
+    pub terrain: Vec<u8>,
+    pub objects: Vec<MapObject>,
+    pub buildings: Vec<Building>,
+    pub armies: Vec<Army>,
+    pub points: Vec<Point>,
+    pub events: Vec<Event>,
+    pub title: String,
+    pub description: String,
+    pub campaign_name: String,
+    /// Next scenario file name (`*.DTm`), empty if none.
+    pub next_map: String,
+    pub named_characters: Vec<NamedCharacter>,
+    /// Embedded scenario picture (a LIT image), raw.
+    pub scenario_picture: Option<Vec<u8>>,
+}
+
+/// Sequential reader over the payload.
+struct Cursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize, what: &'static str) -> Result<&'a [u8], DtError> {
+        let end = self.pos.checked_add(n).filter(|e| *e <= self.data.len());
+        let end = end.ok_or(DtError::Truncated { what, offset: self.pos })?;
+        let s = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn records(&mut self, size: u32, record: usize, section: &'static str) -> Result<Vec<Rec<'a>>, DtError> {
+        if !(size as usize).is_multiple_of(record) {
+            return Err(DtError::SectionSize { section, size, record });
+        }
+        Ok(self.take(size as usize, section)?.chunks_exact(record).map(Rec).collect())
+    }
+
+    fn cstr(&mut self) -> Result<String, DtError> {
+        let rest = &self.data[self.pos..];
+        let n = rest.iter().position(|b| *b == 0).ok_or(DtError::UnterminatedString { offset: self.pos })?;
+        let s = text::decode(&rest[..n]);
+        self.pos += n + 1;
+        Ok(s)
+    }
+}
+
+impl Scenario {
+    /// Read a `.DTm` file.
+    pub fn load(path: &Path) -> Result<Scenario, DtError> {
+        let bytes = std::fs::read(path).map_err(|source| DtError::Io { path: path.to_path_buf(), source })?;
+        Scenario::from_file_bytes(&bytes)
+    }
+
+    /// Parse file contents: an `AIpf` container, or an already decompressed payload.
+    pub fn from_file_bytes(bytes: &[u8]) -> Result<Scenario, DtError> {
+        if bytes.starts_with(PAYLOAD_MAGIC) {
+            return Scenario::parse_payload(bytes);
+        }
+        Scenario::parse_payload(&container::decode(bytes)?.payload)
+    }
+
+    /// Parse an uncompressed payload. Every byte must be accounted for.
+    pub fn parse_payload(data: &[u8]) -> Result<Scenario, DtError> {
+        if !data.starts_with(PAYLOAD_MAGIC) {
+            return Err(DtError::BadMagic { what: "DTm payload" });
+        }
+        if data.len() < HEADER_SIZE {
+            return Err(DtError::Truncated { what: "header", offset: data.len() });
+        }
+        let h = Rec(&data[..HEADER_SIZE]);
+        let (width, height, text_offset) = (h.u32(0x0C), h.u32(0x10), h.u32(0x18));
+        let sizes: [u32; 6] = std::array::from_fn(|k| h.u32(0x1C + 4 * k));
+        let [terrain_size, objects_size, buildings_size, armies_size, points_size, events_size] = sizes;
+        let picture_size = h.u32(0x11C);
+        let named_count = h.u8(0xEE);
+        let header = Header {
+            width,
+            height,
+            generator_seed: h.u32(0x14),
+            unknown_0x34: h.u32(0x34),
+            start_time: h.u32(0x38),
+            heroes: std::array::from_fn(|k| {
+                let o = 0x3C + HERO_PRESET_SIZE * k;
+                HeroPreset::read(&Rec(&data[o..o + HERO_PRESET_SIZE]))
+            }),
+            victory_event: h.u16(0xD2),
+            unknown_0xd4: h.arr(0xD4),
+            defeat_event: h.u16(0xD8),
+            unknown_0xda: h.arr(0xDA),
+            relations: std::array::from_fn(|k| h.i8s(0xDE + 4 * k)),
+            named_character_slots: h.arr(0xEF),
+            scenario_kind: h.u8(0x10F),
+            carry_over: h.arr(0x110),
+            unknown_0x117: h.arr(0x117),
+            scenario_picture_index: h.u8(0x120),
+            unknown_0x121: h.arr(0x121),
+        };
+        if named_count as usize > header.named_character_slots.len() {
+            return Err(DtError::BadValue {
+                section: "header".into(),
+                key: "named character count".into(),
+                value: named_count.to_string(),
+            });
+        }
+
+        // Guard the text marker before touching the sections.
+        let marker_at = sizes.iter().try_fold(HEADER_SIZE, |acc, s| acc.checked_add(*s as usize));
+        let marker_at = marker_at.ok_or(DtError::Truncated { what: "sections", offset: HEADER_SIZE })?;
+        if marker_at.checked_add(TEXT_MARKER.len()).is_none_or(|e| e > data.len()) {
+            return Err(DtError::Truncated { what: "sections", offset: data.len() });
+        }
+        if &data[marker_at..marker_at + TEXT_MARKER.len()] != TEXT_MARKER {
+            return Err(DtError::TextMarker { offset: marker_at });
+        }
+        let text_at = marker_at + TEXT_MARKER.len();
+        if text_offset as usize != text_at {
+            return Err(DtError::TextOffset { header: text_offset, computed: text_at });
+        }
+
+        let mut c = Cursor { data, pos: HEADER_SIZE };
+        let terrain = expand_terrain(c.take(terrain_size as usize, "terrain")?, width, height)?;
+        let objects = c
+            .records(objects_size, OBJECT_SIZE, "objects")?
+            .iter()
+            .map(|r| MapObject { x: r.u16(0), y: r.u16(2), sprite: r.u8(4), class: r.u8(5) })
+            .collect();
+        let mut buildings: Vec<Building> =
+            c.records(buildings_size, BUILDING_SIZE, "buildings")?.iter().map(Building::read).collect();
+        let mut armies: Vec<Army> = c.records(armies_size, ARMY_SIZE, "armies")?.iter().map(Army::read).collect();
+        let points = c.records(points_size, POINT_SIZE, "points")?.iter().map(Point::read).collect();
+        let (mut events, picture_sizes): (Vec<Event>, Vec<u16>) =
+            c.records(events_size, EVENT_SIZE, "events")?.iter().map(Event::read).unzip();
+        c.take(TEXT_MARKER.len(), "text marker")?;
+
+        let title = c.cstr()?;
+        let description = c.cstr()?;
+        let campaign_name = c.cstr()?;
+        let next_map = c.cstr()?;
+        for b in &mut buildings {
+            (b.name, b.owner_name, b.description) = (c.cstr()?, c.cstr()?, c.cstr()?);
+        }
+        for a in &mut armies {
+            (a.name, a.leader_name, a.description) = (c.cstr()?, c.cstr()?, c.cstr()?);
+        }
+        for e in &mut events {
+            (e.title, e.question, e.message) = (c.cstr()?, c.cstr()?, c.cstr()?);
+            e.flags = FlagScript::from_title(&e.title);
+        }
+        let mut named_characters = Vec::with_capacity(named_count as usize);
+        for &unit in &header.named_character_slots[..named_count as usize] {
+            named_characters.push(NamedCharacter { unit, name: c.cstr()? });
+        }
+
+        let scenario_picture = match picture_size {
+            0 => None,
+            n => Some(c.take(n as usize, "scenario picture")?.to_vec()),
+        };
+        for (e, n) in events.iter_mut().zip(picture_sizes) {
+            if n != 0 {
+                e.custom_picture = Some(c.take(n as usize, "event picture")?.to_vec());
+            }
+        }
+        if c.pos != data.len() {
+            return Err(DtError::TrailingBytes { offset: c.pos, count: data.len() - c.pos });
+        }
+
+        Ok(Scenario {
+            header,
+            terrain,
+            objects,
+            buildings,
+            armies,
+            points,
+            events,
+            title,
+            description,
+            campaign_name,
+            next_map,
+            named_characters,
+            scenario_picture,
+        })
+    }
+
+    /// Serialise back to an uncompressed payload. For a parsed map this reproduces the
+    /// original bytes (the terrain is recompressed with greedy runs).
+    pub fn to_payload(&self) -> Vec<u8> {
+        fn records<T>(items: &[T], size: usize, write: impl Fn(&T, &mut Put)) -> Vec<u8> {
+            let mut out = vec![0u8; items.len() * size];
+            for (item, chunk) in items.iter().zip(out.chunks_exact_mut(size)) {
+                write(item, &mut Put(chunk));
+            }
+            out
+        }
+        let hd = &self.header;
+        let terrain = compress_terrain(&self.terrain);
+        let objects = records(&self.objects, OBJECT_SIZE, |o, p| {
+            p.u16(0, o.x);
+            p.u16(2, o.y);
+            p.u8(4, o.sprite);
+            p.u8(5, o.class);
+        });
+        let buildings = records(&self.buildings, BUILDING_SIZE, Building::write);
+        let armies = records(&self.armies, ARMY_SIZE, Army::write);
+        let points = records(&self.points, POINT_SIZE, Point::write);
+        let events = records(&self.events, EVENT_SIZE, Event::write);
+        let sections = [&terrain, &objects, &buildings, &armies, &points, &events];
+
+        let mut header = vec![0u8; HEADER_SIZE];
+        let mut p = Put(&mut header);
+        p.bytes(0, PAYLOAD_MAGIC);
+        p.u32(0x0C, hd.width);
+        p.u32(0x10, hd.height);
+        p.u32(0x14, hd.generator_seed);
+        let text_at = HEADER_SIZE + sections.iter().map(|s| s.len()).sum::<usize>() + TEXT_MARKER.len();
+        p.u32(0x18, text_at as u32);
+        for (k, s) in sections.iter().enumerate() {
+            p.u32(0x1C + 4 * k, s.len() as u32);
+        }
+        p.u32(0x34, hd.unknown_0x34);
+        p.u32(0x38, hd.start_time);
+        for (k, hero) in hd.heroes.iter().enumerate() {
+            let o = 0x3C + HERO_PRESET_SIZE * k;
+            hero.write(&mut Put(&mut p.0[o..o + HERO_PRESET_SIZE]));
+        }
+        p.u16(0xD2, hd.victory_event);
+        p.bytes(0xD4, &hd.unknown_0xd4);
+        p.u16(0xD8, hd.defeat_event);
+        p.bytes(0xDA, &hd.unknown_0xda);
+        for (k, row) in hd.relations.iter().enumerate() {
+            p.i8s(0xDE + 4 * k, row);
+        }
+        let mut slots = hd.named_character_slots;
+        for (slot, nc) in slots.iter_mut().zip(&self.named_characters) {
+            *slot = nc.unit;
+        }
+        p.u8(0xEE, self.named_characters.len() as u8);
+        p.bytes(0xEF, &slots);
+        p.u8(0x10F, hd.scenario_kind);
+        p.bytes(0x110, &hd.carry_over);
+        p.bytes(0x117, &hd.unknown_0x117);
+        p.u32(0x11C, self.scenario_picture.as_ref().map_or(0, |v| v.len() as u32));
+        p.u8(0x120, hd.scenario_picture_index);
+        p.bytes(0x121, &hd.unknown_0x121);
+
+        let mut out = header;
+        for s in sections {
+            out.extend_from_slice(s);
+        }
+        out.extend_from_slice(TEXT_MARKER);
+        let mut put_str = |s: &str| {
+            out.extend(text::encode(s));
+            out.push(0);
+        };
+        for s in [&self.title, &self.description, &self.campaign_name, &self.next_map] {
+            put_str(s);
+        }
+        for b in &self.buildings {
+            for s in [&b.name, &b.owner_name, &b.description] {
+                put_str(s);
+            }
+        }
+        for a in &self.armies {
+            for s in [&a.name, &a.leader_name, &a.description] {
+                put_str(s);
+            }
+        }
+        for e in &self.events {
+            for s in [&e.title, &e.question, &e.message] {
+                put_str(s);
+            }
+        }
+        for nc in &self.named_characters {
+            put_str(&nc.name);
+        }
+        if let Some(pic) = &self.scenario_picture {
+            out.extend_from_slice(pic);
+        }
+        for e in &self.events {
+            if let Some(pic) = &e.custom_picture {
+                out.extend_from_slice(pic);
+            }
+        }
+        out
+    }
+
+    pub fn width(&self) -> u32 {
+        self.header.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.header.height
+    }
+
+    /// Terrain code at a cell, `None` outside the map.
+    pub fn terrain_at(&self, x: u32, y: u32) -> Option<u8> {
+        (x < self.width() && y < self.height()).then(|| self.terrain[(y * self.width() + x) as usize])
+    }
+
+    /// Building by 1-based id.
+    pub fn building(&self, id: u16) -> Option<&Building> {
+        (id as usize).checked_sub(1).and_then(|i| self.buildings.get(i))
+    }
+
+    /// Army by 1-based id.
+    pub fn army(&self, id: u8) -> Option<&Army> {
+        (id as usize).checked_sub(1).and_then(|i| self.armies.get(i))
+    }
+
+    /// Event by 1-based id.
+    pub fn event(&self, id: u16) -> Option<&Event> {
+        (id as usize).checked_sub(1).and_then(|i| self.events.get(i))
+    }
+
+    /// The victory event, if the scenario sets one.
+    pub fn victory_event(&self) -> Option<&Event> {
+        self.event(self.header.victory_event)
+    }
+
+    /// The defeat event, if the scenario sets one.
+    pub fn defeat_event(&self) -> Option<&Event> {
+        self.event(self.header.defeat_event)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w16(b: &mut [u8], o: usize, v: u16) {
+        b[o..o + 2].copy_from_slice(&v.to_le_bytes());
+    }
+
+    fn w32(b: &mut [u8], o: usize, v: u32) {
+        b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+    }
+
+    /// A 4x2 map built byte by byte: 1 object, building, army, point and event, all
+    /// strings, one named character, a 5-byte scenario picture and a 6-byte event picture.
+    fn sample_payload() -> Vec<u8> {
+        let terrain = [6u8, 4, 4, 0, 1, 1]; // 5 × grass, 1 × road, 2 × coastal water
+        let object = [2u8, 0, 1, 0, 42, 9];
+        let mut building = [0u8; BUILDING_SIZE];
+        w16(&mut building, 0, 3);
+        w16(&mut building, 2, 1);
+        building[6] = 3; // castle
+        w16(&mut building, 8, 1); // event 1
+        w16(&mut building, 10, 0); // deleted slot
+        w16(&mut building, 12, 7); // stale beyond event_count
+        w16(&mut building, 136, 146);
+        building[264..267].copy_from_slice(&[4, 3, 9]);
+        w16(&mut building, 282, 55);
+        building[288] = 2;
+        building[292] = 0xFF;
+        building[314..317].copy_from_slice(&[9, 1, 2]);
+        building[338] = (-2i8) as u8;
+        building[353] = 1;
+        let mut army = [0u8; ARMY_SIZE];
+        w16(&mut army, 0, 1);
+        w16(&mut army, 2, 1);
+        army[4] = 1;
+        army[5] = 5; // bandits
+        army[13] = (-3i8) as u8;
+        army[28..31].copy_from_slice(&[42, 0, 2]);
+        army[63] = 1;
+        army[69] = (-20i8) as u8;
+        army[80] = 44; // unknown byte, must survive
+        let mut point = [0u8; POINT_SIZE];
+        point[4] = 1;
+        point[5] = 8;
+        point[38] = 24;
+        let mut event = [0u8; EVENT_SIZE];
+        event[1] = 3; // quest
+        w32(&mut event, 2, 624_354_300);
+        w16(&mut event, 6, 1440);
+        w16(&mut event, 21, (-7499i16) as u16);
+        w16(&mut event, 85, (-50i16) as u16);
+        w16(&mut event, 128, 1);
+        event[141] = 1;
+        event[146] = 1;
+        event[156] = 1; // unknown byte
+        w16(&mut event, 163, 6);
+
+        let sections: [&[u8]; 6] = [&terrain, &object, &building, &army, &point, &event];
+        let mut h = vec![0u8; HEADER_SIZE];
+        h[..12].copy_from_slice(PAYLOAD_MAGIC);
+        w32(&mut h, 0x0C, 4);
+        w32(&mut h, 0x10, 2);
+        let text_at = HEADER_SIZE + sections.iter().map(|s| s.len()).sum::<usize>() + 8;
+        w32(&mut h, 0x18, text_at as u32);
+        for (k, s) in sections.iter().enumerate() {
+            w32(&mut h, 0x1C + 4 * k, s.len() as u32);
+        }
+        w32(&mut h, 0x38, 624_354_300);
+        w32(&mut h, 0x3C + 50 + 12, 500); // archmage gold
+        w16(&mut h, 0x3C + 50 + 37, 2); // archmage x
+        h[0x3C + 50 + 19..0x3C + 50 + 22].copy_from_slice(&[4, 0, 3]);
+        w16(&mut h, 0xD2, 1);
+        h[0xDE + 3] = (-2i8) as u8;
+        h[0xEE] = 1;
+        h[0xEF] = 74;
+        h[0xF0] = 99; // stale slot
+        h[0x10F] = 2;
+        h[0x110] = 1;
+        w32(&mut h, 0x11C, 5);
+
+        let mut out = h;
+        for s in sections {
+            out.extend_from_slice(s);
+        }
+        out.extend_from_slice(TEXT_MARKER);
+        for s in ["Title", "Desc", "", "next.DTm", "Castle", "Owner", "", "Gang", "Boss", "", "Quest%+Foo=/Bar", "Q?", "Msg", "Hero"] {
+            out.extend_from_slice(s.as_bytes());
+            out.push(0);
+        }
+        out.extend_from_slice(b"LIT\0!");
+        out.extend_from_slice(&[1, 0, 1, 0, 0xAB, 0xCD]);
+        out
+    }
+
+    #[test]
+    fn parses_hand_built_payload() {
+        let s = Scenario::parse_payload(&sample_payload()).unwrap();
+        let h = &s.header;
+        assert_eq!((s.width(), s.height()), (4, 2));
+        assert_eq!(h.start_date(), GameDate { year: 1204, month: 5, day: 20, hour: 9, minute: 0 });
+        assert_eq!(h.hero(Archetype::Archmage).gold, 500);
+        assert_eq!(h.hero(Archetype::Archmage).x, 2);
+        assert_eq!(h.hero(Archetype::Archmage).troops[0], Troop { unit: 4, level: 0, count: 3 });
+        assert_eq!(h.relations[0], [0, 0, 0, -2]);
+        assert_eq!(h.kind(), ScenarioKind::CampaignContinuation);
+        assert_eq!(h.carry_over[0], 1);
+        assert_eq!(s.terrain, [6, 6, 6, 6, 6, 4, 1, 1]);
+        assert_eq!(s.terrain_at(1, 1), Some(4));
+        assert_eq!(s.terrain_at(4, 0), None);
+        assert_eq!(s.objects, [MapObject { x: 2, y: 1, sprite: 42, class: 9 }]);
+
+        let b = &s.buildings[0];
+        assert_eq!(b.building_type(), Some(BuildingType::Castle));
+        assert_eq!(b.events().collect::<Vec<_>>(), [1]);
+        assert_eq!(b.artifacts().collect::<Vec<_>>(), [146]);
+        assert_eq!(b.barracks[0], RecruitSlot { unit: 4, start_count: 3, max_count: 9 });
+        assert_eq!(b.garrison[0], Troop { unit: 9, level: 1, count: 2 });
+        assert_eq!((b.gold_per_day, b.owner(), b.relations[0], b.start_for), (55, None, -2, [1, 0, 0]));
+        assert_eq!((b.name.as_str(), b.owner_name.as_str(), b.description.as_str()), ("Castle", "Owner", ""));
+
+        let a = &s.armies[0];
+        assert_eq!((a.id, a.model(), a.speed_correction, a.aggression, a.unknown_80), (1, Some(ArmyModel::Bandits), -3, -20, 44));
+        assert!(a.is_active());
+        assert_eq!(a.troops().count(), 1);
+        assert_eq!((a.name.as_str(), a.leader_name.as_str()), ("Gang", "Boss"));
+
+        assert_eq!((s.points[0].id, s.points[0].model, s.points[0].radius), (1, 8, 24));
+
+        let e = &s.events[0];
+        assert_eq!(e.kind(), Some(EventKind::Quest));
+        assert_eq!((e.repeat, e.conditions.gold, e.results.gold), (1440, -7499, -50));
+        assert_eq!((e.results.light_lanterns[0], e.conditions.army_at_home, e.unknown_150[6]), (1, 1, 1));
+        assert!(e.fires_once());
+        assert_eq!(e.title_text(), "Quest");
+        let f = e.flags.as_ref().unwrap();
+        assert_eq!((f.set.as_deref(), f.require_unset.as_deref()), (Some("Foo"), Some("Bar")));
+        assert_eq!((e.question.as_str(), e.message.as_str()), ("Q?", "Msg"));
+        assert_eq!(e.custom_picture.as_deref(), Some(&[1u8, 0, 1, 0, 0xAB, 0xCD][..]));
+
+        assert_eq!((s.title.as_str(), s.description.as_str(), s.campaign_name.as_str(), s.next_map.as_str()), ("Title", "Desc", "", "next.DTm"));
+        assert_eq!(s.named_characters, [NamedCharacter { unit: 74, name: "Hero".into() }]);
+        assert_eq!(s.scenario_picture.as_deref(), Some(&b"LIT\0!"[..]));
+        assert_eq!(s.victory_event().map(|e| e.kind), Some(3));
+        assert!(s.defeat_event().is_none());
+    }
+
+    #[test]
+    fn payload_roundtrips_byte_exactly() {
+        let bytes = sample_payload();
+        let s = Scenario::parse_payload(&bytes).unwrap();
+        assert_eq!(s.to_payload(), bytes);
+    }
+
+    #[test]
+    fn reads_through_container() {
+        let bytes = sample_payload();
+        let file = container::encode(CONTAINER_VERSION, &bytes);
+        assert_eq!(Scenario::from_file_bytes(&file).unwrap(), Scenario::parse_payload(&bytes).unwrap());
+        assert!(Scenario::from_file_bytes(&bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_trailing_bytes() {
+        let mut bytes = sample_payload();
+        bytes.push(0);
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TrailingBytes { count: 1, .. })));
+    }
+
+    #[test]
+    fn rejects_missing_picture_bytes() {
+        let mut bytes = sample_payload();
+        bytes.pop();
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::Truncated { .. })));
+    }
+
+    #[test]
+    fn rejects_misplaced_text_marker() {
+        let mut bytes = sample_payload();
+        let objects_size = 0x20;
+        w32(&mut bytes, objects_size, 12); // claims two objects: marker is now misplaced
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TextMarker { .. })));
+    }
+
+    #[test]
+    fn rejects_bad_text_offset() {
+        let mut bytes = sample_payload();
+        let off = u32::from_le_bytes(bytes[0x18..0x1C].try_into().unwrap());
+        w32(&mut bytes, 0x18, off + 1);
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TextOffset { .. })));
+    }
+
+    #[test]
+    fn rejects_bad_record_size() {
+        // Move 1 byte from the object section to the terrain section: the marker stays put
+        // but the object section is no longer a multiple of 6.
+        let mut bytes = sample_payload();
+        w32(&mut bytes, 0x1C, 7);
+        w32(&mut bytes, 0x20, 5);
+        let err = Scenario::parse_payload(&bytes).unwrap_err();
+        assert!(matches!(err, DtError::Terrain(_)), "{err}");
+        w32(&mut bytes, 0x1C, 6);
+        w32(&mut bytes, 0x20, 5);
+        w32(&mut bytes, 0x24, BUILDING_SIZE as u32 + 1);
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::SectionSize { section: "objects", .. })));
+    }
+
+    #[test]
+    fn rejects_unterminated_strings() {
+        let bytes = sample_payload();
+        let text_at = u32::from_le_bytes(bytes[0x18..0x1C].try_into().unwrap()) as usize;
+        let mut cut = bytes[..text_at + 3].to_vec();
+        w32(&mut cut, 0x11C, 0);
+        assert!(matches!(Scenario::parse_payload(&cut), Err(DtError::UnterminatedString { .. })));
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        let mut bytes = sample_payload();
+        bytes[0] = b'X';
+        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::BadMagic { .. })));
+        assert!(matches!(Scenario::parse_payload(&bytes[..20]), Err(DtError::BadMagic { .. })));
+        assert!(matches!(Scenario::parse_payload(PAYLOAD_MAGIC), Err(DtError::Truncated { .. })));
+    }
+
+    #[test]
+    fn terrain_rle() {
+        assert_eq!(expand_terrain(&[5, 2, 7, 0], 2, 2).unwrap(), [5, 5, 5, 7]);
+        assert!(expand_terrain(&[5, 2, 7], 2, 2).is_err());
+        assert!(expand_terrain(&[5, 3, 7, 0], 2, 2).is_err());
+        assert!(expand_terrain(&[5, 1], 2, 2).is_err());
+        assert!(expand_terrain(&[5, 255], u32::MAX, u32::MAX).is_err());
+        let cells: Vec<u8> = std::iter::repeat_n(3, 300).chain([1, 1]).collect();
+        let rle = compress_terrain(&cells);
+        assert_eq!(rle, [3, 255, 3, 43, 1, 1]);
+        assert_eq!(expand_terrain(&rle, 302, 1).unwrap(), cells);
+    }
+
+    #[test]
+    fn game_dates() {
+        let d = GameDate::from_minutes(624_354_300);
+        assert_eq!(d, GameDate { year: 1204, month: 5, day: 20, hour: 9, minute: 0 });
+        assert_eq!(d.to_minutes(), 624_354_300);
+        assert_eq!(GameDate::from_minutes(0), GameDate { year: 0, month: 1, day: 1, hour: 0, minute: 0 });
+        assert_eq!(GameDate::from_minutes(1440 * 30 * 12 - 1), GameDate { year: 0, month: 12, day: 30, hour: 23, minute: 59 });
+    }
+
+    #[test]
+    fn flag_scripts() {
+        let f = |t: &str| FlagScript::from_title(t);
+        assert_eq!(f("No script"), None);
+        let s = f("T%+Foo").unwrap();
+        assert_eq!((s.set.as_deref(), s.clear, s.require_set, s.require_unset), (Some("Foo"), None, None, None));
+        let s = f("T%-Foo=Foo").unwrap();
+        assert_eq!((s.clear.as_deref(), s.require_set.as_deref()), (Some("Foo"), Some("Foo")));
+        let s = f("T%=/Foo").unwrap();
+        assert_eq!((s.set, s.clear, s.require_unset.as_deref()), (None, None, Some("Foo")));
+        let s = f("T%+A B=C").unwrap();
+        assert_eq!((s.set.as_deref(), s.require_set.as_deref(), s.raw.as_str()), (Some("A B"), Some("C"), "+A B=C"));
+        let s = f("T%").unwrap();
+        assert_eq!(s, FlagScript::default());
+    }
+
+    #[test]
+    fn enums_from_codes() {
+        assert_eq!(BuildingType::from_code(15), Some(BuildingType::Obelisk));
+        assert_eq!(BuildingType::from_code(16), None);
+        assert_eq!(ArmyModel::from_code(0), None);
+        assert_eq!(ArmyModel::from_code(12), Some(ArmyModel::Zombies));
+        assert_eq!(Surface::from_code(4), Some(Surface::Road));
+        assert_eq!(Surface::from_code(16), None);
+    }
+}

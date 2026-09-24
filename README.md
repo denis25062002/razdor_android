@@ -38,6 +38,22 @@ cargo test          # game rules
   it (one action). Items are defined in `data/items.txt`.
 - Clear both bandit camps to win. If your hero dies, it's over.
 
+## Using your Discord Times install
+Razdor is becoming an engine for the original game's scenarios. It reads the data from **your
+own installed copy** of *Discord Times* (Community Update) at runtime; the repo contains no
+original maps, data, text or art, and nothing from your install is ever copied or written.
+
+```sh
+export RAZDOR_DT_DIR="/path/to/Discord Times"   # the folder with DiscordTimes.exe
+cargo test                                      # also checks the readers against your files
+```
+
+What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
+`Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
+`src/dt/` (`dt::install::DtInstall::from_env()`); the formats are described in
+`docs/reference/`. Without the variable everything still works, and the tests that need the
+real files are skipped.
+
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after units
 (`knight.png`, `archmage.png`, `ranger.png`, `spearman.png`, `archer.png`, `swordsman.png`,
@@ -51,6 +67,7 @@ RAZDOR_ASSETS=./assets-local cargo run --release
 `assets-local/` is git-ignored — keep third-party art there.
 
 ## Layout
+- `src/dt/` — readers for the original's files (ini data, `.DTm` maps). Pure, no macroquad.
 - `src/rules/` — pure game logic (no macroquad), unit-tested.
 - `src/ui/` — macroquad screens; `assets.rs` is the only place that draws units and items.
 - Design: `docs/superpowers/specs/2026-09-24-razdor-prototype-design.md`.
