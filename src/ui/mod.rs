@@ -6,6 +6,9 @@ pub mod screens;
 pub mod widgets;
 pub mod world_view;
 
+use std::sync::Arc;
+
+use razdor::rules::content::Content;
 use razdor::rules::game::Game;
 
 use assets::Assets;
@@ -25,6 +28,8 @@ pub enum Screen {
 
 pub struct App {
     pub assets: Assets,
+    /// Content new games are built from (the built-in demo for now).
+    pub content: Arc<Content>,
     pub game: Option<Game>,
     pub screen: Screen,
     /// One-line notice shown on the world map / town screens.
@@ -32,13 +37,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(assets: Assets) -> Self {
-        App { assets, game: None, screen: Screen::ClassSelect, message: None }
+    pub fn new(assets: Assets, content: Arc<Content>) -> Self {
+        App { assets, content, game: None, screen: Screen::ClassSelect, message: None }
     }
 
     pub fn frame(&mut self) {
         let next = match (&mut self.screen, &mut self.game) {
-            (Screen::ClassSelect, game) => screens::class_select(game, &self.assets),
+            (Screen::ClassSelect, game) => screens::class_select(game, &self.content, &self.assets),
             (Screen::WorldMap, Some(game)) => world_view::frame(game, &self.assets, &mut self.message),
             (Screen::Town, Some(game)) => screens::town(game, &self.assets, &mut self.message),
             (Screen::Market, Some(game)) => items_view::market(game, &self.assets, &mut self.message),

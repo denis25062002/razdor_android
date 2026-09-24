@@ -1,19 +1,18 @@
+use super::content::{Content, ItemId, UnitId};
 use super::formation::{Row, Slot};
-use super::items::ItemId;
 use super::map::{center, tile_at, Tile, TileMap};
-use super::units::UnitKind;
 
 const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 
 #[derive(Clone, Debug)]
 pub enum LocationKind {
     /// `owned` castles pay `income` every midnight. `market` is the stock for sale.
-    Castle { recruits: Vec<UnitKind>, income: i32, owned: bool, market: Vec<ItemId> },
+    Castle { recruits: Vec<UnitId>, income: i32, owned: bool, market: Vec<ItemId> },
     /// Once per day: tribute, or the priest heals the squad instead.
     Village { tribute: i32, used_on_day: Option<u32> },
     Church,
     /// `loot`: items dropped when cleared.
-    Camp { enemies: Vec<(UnitKind, Slot)>, reward: i32, loot: u32 },
+    Camp { enemies: Vec<(UnitId, Slot)>, reward: i32, loot: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -31,7 +30,7 @@ pub struct Party {
     pub pos: (f32, f32),
     /// Camp it belongs to (index into `locations`).
     pub home: usize,
-    pub enemies: Vec<(UnitKind, Slot)>,
+    pub enemies: Vec<(UnitId, Slot)>,
     pub path: Vec<Tile>,
     pub chasing: bool,
     /// Game minute until which it leaves the player alone (after a stalemate).
@@ -49,18 +48,29 @@ pub struct World {
     pub map: TileMap,
     pub locations: Vec<Location>,
     pub parties: Vec<Party>,
+    /// Troops of a newly spawned gang.
+    pub gang: Vec<(UnitId, Slot)>,
 }
 
 pub const GANG_REWARD: i32 = 30;
 
-pub fn gang() -> Vec<(UnitKind, Slot)> {
-    use UnitKind::*;
-    vec![(Bandit, Slot::new(Row::Front, 2)), (Bandit, Slot::new(Row::Front, 3)), (BanditArcher, Slot::new(Row::Back, 2))]
+/// A demo unit type by its `Key=`. Panics if the built-in data lacks it.
+pub fn demo_unit(content: &Content, key: &str) -> UnitId {
+    content.unit_by_key(key).unwrap_or_else(|| panic!("demo unit '{key}' missing"))
+}
+
+/// A roaming gang: two bandits in front, an archer behind.
+pub fn gang(content: &Content) -> Vec<(UnitId, Slot)> {
+    let (bandit, archer) = (demo_unit(content, "bandit"), demo_unit(content, "bandit_archer"));
+    vec![(bandit, Slot::new(Row::Front, 2)), (bandit, Slot::new(Row::Front, 3)), (archer, Slot::new(Row::Back, 2))]
 }
 
 impl World {
-    pub fn standard() -> Self {
-        use UnitKind::*;
+    /// The demo kingdom of `data/kingdom.txt`, populated with the built-in demo units.
+    pub fn standard(content: &Content) -> Self {
+        let u = |key| demo_unit(content, key);
+        let (spearman, archer, swordsman, healer) = (u("spearman"), u("archer"), u("swordsman"), u("healer"));
+        let (bandit, bandit_archer, bandit_chief) = (u("bandit"), u("bandit_archer"), u("bandit_chief"));
         let map = TileMap::parse(KINGDOM);
         let tile = |c: char| {
             map.markers.iter().find(|(m, _)| *m == c).map(|&(_, t)| t).unwrap_or_else(|| panic!("map has no '{c}'"))
@@ -74,7 +84,7 @@ impl World {
                 "Oakford",
                 'C',
                 LocationKind::Castle {
-                    recruits: vec![Spearman, Archer, Healer],
+                    recruits: vec![spearman, archer, healer],
                     income: 20,
                     owned: true,
                     market: Vec::new(),
@@ -88,7 +98,7 @@ impl World {
                 "Greywall",
                 'G',
                 LocationKind::Castle {
-                    recruits: vec![Swordsman, Archer, Healer],
+                    recruits: vec![swordsman, archer, healer],
                     income: 0,
                     owned: false,
                     market: Vec::new(),
@@ -98,7 +108,7 @@ impl World {
                 "Bandit camp",
                 'B',
                 LocationKind::Camp {
-                    enemies: vec![(Bandit, f(1)), (Bandit, f(2)), (Bandit, f(3)), (BanditArcher, b(2)), (BanditArcher, b(3))],
+                    enemies: vec![(bandit, f(1)), (bandit, f(2)), (bandit, f(3)), (bandit_archer, b(2)), (bandit_archer, b(3))],
                     reward: 100,
                     loot: 1,
                 },
@@ -108,18 +118,18 @@ impl World {
                 'L',
                 LocationKind::Camp {
                     enemies: vec![
-                        (BanditChief, f(2)),
-                        (Bandit, f(1)),
-                        (Bandit, f(3)),
-                        (BanditArcher, b(1)),
-                        (BanditArcher, b(3)),
+                        (bandit_chief, f(2)),
+                        (bandit, f(1)),
+                        (bandit, f(3)),
+                        (bandit_archer, b(1)),
+                        (bandit_archer, b(3)),
                     ],
                     reward: 150,
                     loot: 2,
                 },
             ),
         ];
-        let mut w = World { map, locations, parties: Vec::new() };
+        let mut w = World { map, locations, parties: Vec::new(), gang: gang(content) };
         // Two gangs already on the roads, one from each camp.
         let camp = w.index_of("Bandit camp");
         let lair = w.index_of("Bandit lair");
@@ -140,7 +150,7 @@ impl World {
         self.parties.push(Party {
             pos: center(at),
             home,
-            enemies: gang(),
+            enemies: self.gang.clone(),
             path: Vec::new(),
             chasing: false,
             ignore_until: 0.0,
@@ -159,10 +169,11 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::content::Content;
 
     #[test]
     fn standard_world_places_every_location_on_a_passable_tile() {
-        let w = World::standard();
+        let w = World::standard(&Content::builtin());
         assert_eq!(w.locations.len(), 8);
         for l in &w.locations {
             assert!(w.map.passable(l.tile), "{} is on impassable ground", l.name);
@@ -172,7 +183,7 @@ mod tests {
 
     #[test]
     fn every_location_is_reachable_from_home() {
-        let w = World::standard();
+        let w = World::standard(&Content::builtin());
         let home = w.locations[0].tile;
         for l in &w.locations[1..] {
             assert!(!w.map.path(home, l.tile).is_empty(), "{} unreachable", l.name);
@@ -181,7 +192,7 @@ mod tests {
 
     #[test]
     fn two_gangs_start_on_the_map() {
-        let w = World::standard();
+        let w = World::standard(&Content::builtin());
         assert_eq!(w.parties.len(), 2);
         assert!(w.parties.iter().all(|p| w.map.passable(p.tile())));
     }

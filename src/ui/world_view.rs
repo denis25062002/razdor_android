@@ -5,7 +5,8 @@ use macroquad::prelude::*;
 use razdor::rules::battle::Team;
 use razdor::rules::game::{Event, Game, Tribute};
 use razdor::rules::map::{center, hex_distance, hex_neighbours, tile_at, Terrain, Tile, ROW_HEIGHT};
-use razdor::rules::units::UnitKind;
+use razdor::rules::content::{Content, UnitId};
+use razdor::rules::formation::Slot;
 use razdor::rules::world::LocationKind;
 
 use super::assets::Assets;
@@ -204,10 +205,17 @@ fn label(s: &str, cx: f32, y: f32) {
     text_centered(s, cx, y, 18.0, INK);
 }
 
-fn gang_summary(enemies: &[(UnitKind, razdor::rules::formation::Slot)]) -> String {
-    let bandits = enemies.iter().filter(|(k, _)| *k == UnitKind::Bandit).count();
-    let archers = enemies.iter().filter(|(k, _)| *k == UnitKind::BanditArcher).count();
-    format!("Bandit gang: {bandits} bandits, {archers} archers")
+/// "Gang: 2 Bandit, 1 Bandit archer".
+fn gang_summary(content: &Content, enemies: &[(UnitId, Slot)]) -> String {
+    let mut counts: Vec<(UnitId, usize)> = Vec::new();
+    for &(id, _) in enemies {
+        match counts.iter_mut().find(|(k, _)| *k == id) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((id, 1)),
+        }
+    }
+    let parts: Vec<String> = counts.iter().map(|(id, n)| format!("{n} {}", content.unit(*id).name)).collect();
+    format!("Gang: {}", parts.join(", "))
 }
 
 fn draw_world(game: &Game, assets: &Assets, cam: &Camera) -> Option<String> {
@@ -229,18 +237,20 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) -> Option<String> {
     let mouse = Vec2::from(mouse_position());
     for p in &game.world.parties {
         let c = cam.to_screen(p.pos);
-        assets.draw_unit(UnitKind::Bandit, Team::Enemy, c.x, c.y, 26.0);
+        if let Some(&(leader, _)) = p.enemies.first() {
+            assets.draw_unit(leader, Team::Enemy, c.x, c.y, 26.0);
+        }
         if p.chasing {
             text_centered("!", c.x + 12.0, c.y - 10.0, 24.0, RED);
         }
         if (c - mouse).length() < 16.0 {
-            hover = Some(gang_summary(&p.enemies));
+            hover = Some(gang_summary(&game.content, &p.enemies));
         }
     }
 
     let h = cam.to_screen(game.pos);
     draw_circle(h.x, h.y + 10.0, 12.0, Color::new(0.0, 0.0, 0.0, 0.3));
-    assets.draw_unit(game.hero().kind, Team::Player, h.x, h.y, 30.0);
+    assets.draw_unit(game.hero().def, Team::Player, h.x, h.y, 30.0);
     hover
 }
 
@@ -271,7 +281,7 @@ fn location_panel(game: &mut Game, message: &mut Option<String>, x: f32, mut y: 
             if button(x, y, 240.0, 40.0, &label, tribute.is_some()) {
                 *message = game.collect_tribute().map(|t| match t {
                     Tribute::Gold(g) => format!("The village pays {g} gold."),
-                    Tribute::Item(item) => format!("The village pays with a {}.", item.def().name),
+                    Tribute::Item(item) => format!("The village pays with a {}.", game.content.item(item).name),
                 });
             }
             if button(x, y + 48.0, 240.0, 40.0, "Ask the priest to heal", tribute.is_some()) {

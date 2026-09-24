@@ -1,366 +1,284 @@
-//! Items: weapons, armor, artifacts and potions, read from `data/items.txt`.
+//! Items (artefacts): slots, class limits, stat modifiers and potions (mechanics.md 4).
+//!
+//! A unit wears up to 4 items, only one weapon (melee weapon, bow or staff), never two of the
+//! same type. Melee weapons need a warrior, ranged weapons a shooter, staffs a mage. Potions
+//! and trade goods are not worn: potions are drunk from the army screen, their healing is
+//! instant and their other modifiers last until the end of the next battle.
 
-use std::sync::OnceLock;
-
-const ITEMS: &str = include_str!("../../data/items.txt");
+use super::content::{ArtefactDef, ArtefactType, Content, Stat};
+pub use super::content::{ItemId, Source};
+use super::units::{Stats, Unit};
 
 /// Item slots every unit has.
 pub const SLOTS: usize = 4;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ItemType {
-    Weapon,
-    Armor,
-    Helmet,
-    Shield,
-    Ring,
-    Amulet,
-    Boots,
-    Cloak,
-    Potion,
-}
-
-impl ItemType {
-    const ALL: [(ItemType, &'static str); 9] = [
-        (ItemType::Weapon, "weapon"),
-        (ItemType::Armor, "armor"),
-        (ItemType::Helmet, "helmet"),
-        (ItemType::Shield, "shield"),
-        (ItemType::Ring, "ring"),
-        (ItemType::Amulet, "amulet"),
-        (ItemType::Boots, "boots"),
-        (ItemType::Cloak, "cloak"),
-        (ItemType::Potion, "potion"),
-    ];
-
-    pub fn name(self) -> &'static str {
-        ItemType::ALL.iter().find(|(t, _)| *t == self).map_or("?", |(_, n)| n)
-    }
-}
-
-/// Flat stat changes while the item is worn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Bonus {
-    pub hp: i32,
-    pub dmg: i32,
-    pub armor: i32,
-    pub init: i32,
-    pub actions: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Effect {
-    /// Heals this much at the start of every round.
-    Regen(i32),
-    /// One more action per turn.
-    ExtraAction,
-    /// Flank strikes against the wearer are not doubled.
-    NoFlank,
-    /// The wearer's attacks ignore armor.
-    MagicStrike,
-    /// Potion: restores HP, capped at max.
-    Heal(i32),
-    /// Potion: more damage for the rest of the battle.
-    Might(i32),
-}
-
-impl Effect {
-    fn is_potion(self) -> bool {
-        matches!(self, Effect::Heal(_) | Effect::Might(_))
-    }
-
-    pub fn describe(self) -> String {
-        match self {
-            Effect::Regen(n) => format!("regenerates {n}/round"),
-            Effect::ExtraAction => "+1 action".into(),
-            Effect::NoFlank => "no flank damage taken".into(),
-            Effect::MagicStrike => "attacks ignore armor".into(),
-            Effect::Heal(n) => format!("drink: heal {n}"),
-            Effect::Might(n) => format!("drink: +{n} dmg this battle"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    Market,
-    Loot,
-    Tribute,
-}
-
-#[derive(Clone, Debug)]
-pub struct ItemDef {
-    pub id: String,
-    pub name: String,
-    pub ty: ItemType,
-    pub price: i32,
-    pub bonus: Bonus,
-    pub effect: Option<Effect>,
-    pub sources: Vec<Source>,
-}
-
-impl ItemDef {
-    pub fn sell_price(&self) -> i32 {
-        self.price / 2
-    }
-
-    /// Short summary, e.g. "weapon, dmg+4 init-1".
-    pub fn describe(&self) -> String {
-        let b = self.bonus;
-        let mut parts = vec![self.ty.name().to_string()];
-        for (v, name) in [(b.hp, "hp"), (b.dmg, "dmg"), (b.armor, "armor"), (b.init, "init"), (b.actions, "actions")] {
-            if v != 0 {
-                parts.push(format!("{name}{v:+}"));
-            }
-        }
-        if let Some(e) = self.effect {
-            parts.push(e.describe());
-        }
-        parts.join(", ")
-    }
-}
-
-/// Index into the item table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ItemId(pub u16);
-
-impl ItemId {
-    pub fn def(self) -> &'static ItemDef {
-        &catalog().items[self.0 as usize]
-    }
-
-    /// Looks an item up by its `id` column. Panics if there is none (for tests and fixed data).
-    pub fn named(id: &str) -> ItemId {
-        catalog().find(id).unwrap_or_else(|| panic!("no item '{id}'"))
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Catalog {
-    pub items: Vec<ItemDef>,
-}
-
-/// The shipped item table. Panics with the parse error if `data/items.txt` is malformed.
-pub fn catalog() -> &'static Catalog {
-    static CATALOG: OnceLock<Catalog> = OnceLock::new();
-    CATALOG.get_or_init(|| Catalog::parse(ITEMS).unwrap_or_else(|e| panic!("data/items.txt: {e}")))
-}
-
-fn parse_int(s: &str, what: &str) -> Result<i32, String> {
-    s.parse().map_err(|_| format!("bad {what} '{s}'"))
-}
-
-fn parse_bonus(s: &str) -> Result<Bonus, String> {
-    let mut b = Bonus::default();
-    for tok in s.split_whitespace() {
-        let at = tok.find(['+', '-']).ok_or_else(|| format!("bonus '{tok}' needs a sign, e.g. dmg+2"))?;
-        let v = parse_int(&tok[at..], "bonus value")?;
-        match &tok[..at] {
-            "hp" => b.hp += v,
-            "dmg" => b.dmg += v,
-            "armor" => b.armor += v,
-            "init" => b.init += v,
-            "actions" => b.actions += v,
-            other => return Err(format!("unknown bonus '{other}'")),
-        }
-    }
-    Ok(b)
-}
-
-fn parse_effect(s: &str) -> Result<Option<Effect>, String> {
-    let words: Vec<&str> = s.split_whitespace().collect();
-    let n = |w: &[&str]| match w {
-        [_, v] => parse_int(v, "effect value"),
-        _ => Err(format!("effect '{s}' needs one number")),
-    };
-    Ok(Some(match words.first().copied() {
-        None => return Ok(None),
-        Some("regen") => Effect::Regen(n(&words)?),
-        Some("heal") => Effect::Heal(n(&words)?),
-        Some("might") => Effect::Might(n(&words)?),
-        Some("extra_action") if words.len() == 1 => Effect::ExtraAction,
-        Some("no_flank") if words.len() == 1 => Effect::NoFlank,
-        Some("magic_strike") if words.len() == 1 => Effect::MagicStrike,
-        Some(_) => return Err(format!("unknown effect '{s}'")),
-    }))
-}
-
-fn parse_sources(s: &str) -> Result<Vec<Source>, String> {
-    let sources = s
-        .split_whitespace()
-        .map(|w| match w {
-            "market" => Ok(Source::Market),
-            "loot" => Ok(Source::Loot),
-            "tribute" => Ok(Source::Tribute),
-            other => Err(format!("unknown source '{other}'")),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if sources.is_empty() {
-        return Err("item needs at least one source".into());
-    }
-    Ok(sources)
-}
-
-fn parse_line(line: &str) -> Result<ItemDef, String> {
-    let cols: Vec<&str> = line.split('|').map(str::trim).collect();
-    let [id, name, ty, price, bonus, effect, sources] = cols[..] else {
-        return Err(format!("expected 7 columns, found {}", cols.len()));
-    };
-    if id.is_empty() || name.is_empty() {
-        return Err("id and name must not be empty".into());
-    }
-    let ty = ItemType::ALL.iter().find(|(_, n)| *n == ty).map(|(t, _)| *t).ok_or(format!("unknown type '{ty}'"))?;
-    let price = parse_int(price, "price")?;
-    if price < 0 {
-        return Err("price must not be negative".into());
-    }
-    let bonus = parse_bonus(bonus)?;
-    let effect = parse_effect(effect)?;
-    let potion = ty == ItemType::Potion;
-    if potion && (effect.is_none_or(|e| !e.is_potion()) || bonus != Bonus::default()) {
-        return Err("a potion needs a heal or might effect and no bonuses".into());
-    }
-    if !potion && effect.is_some_and(Effect::is_potion) {
-        return Err("heal and might are potion effects".into());
-    }
-    Ok(ItemDef { id: id.into(), name: name.into(), ty, price, bonus, effect, sources: parse_sources(sources)? })
-}
-
-impl Catalog {
-    /// Parses the item table; errors carry the 1-based line number.
-    pub fn parse(text: &str) -> Result<Catalog, String> {
-        let mut items: Vec<ItemDef> = Vec::new();
-        for (n, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let item = parse_line(line).map_err(|e| format!("line {}: {e}", n + 1))?;
-            if items.iter().any(|i| i.id == item.id) {
-                return Err(format!("line {}: duplicate id '{}'", n + 1, item.id));
-            }
-            items.push(item);
-        }
-        if items.is_empty() {
-            return Err("no items".into());
-        }
-        Ok(Catalog { items })
-    }
-
-    pub fn find(&self, id: &str) -> Option<ItemId> {
-        self.items.iter().position(|i| i.id == id).map(|i| ItemId(i as u16))
-    }
-
-    pub fn ids(&self) -> impl Iterator<Item = ItemId> {
-        (0..self.items.len() as u16).map(ItemId)
-    }
-
-    pub fn from_source(&self, source: Source) -> Vec<ItemId> {
-        self.ids().filter(|i| self.items[i.0 as usize].sources.contains(&source)).collect()
-    }
-}
-
-/// Passive effects of worn gear that the battle checks.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Passives {
-    pub regen: i32,
-    pub no_flank: bool,
-    pub magic_strike: bool,
-}
-
-/// Worn (non-potion) items.
-pub fn gear(items: &[Option<ItemId>; SLOTS]) -> impl Iterator<Item = &'static ItemDef> + '_ {
-    items.iter().flatten().map(|i| i.def()).filter(|d| d.ty != ItemType::Potion)
-}
-
-pub fn passives(items: &[Option<ItemId>; SLOTS]) -> Passives {
-    let mut p = Passives::default();
-    for d in gear(items) {
-        match d.effect {
-            Some(Effect::Regen(n)) => p.regen += n,
-            Some(Effect::NoFlank) => p.no_flank = true,
-            Some(Effect::MagicStrike) => p.magic_strike = true,
-            _ => {}
-        }
-    }
-    p
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EquipError {
     NoFreeSlot,
-    /// Already wears an item of this type (only potions may be doubled up).
+    /// Already wears an item of this type.
     SameType,
+    /// Already holds a weapon or staff.
+    SecondWeapon,
+    /// A melee weapon on a non-warrior, a bow on a non-shooter or a staff on a non-mage.
+    WrongClass,
+    /// Potions and trade goods cannot be worn.
+    NotWearable,
+    /// The dead cannot hold items.
+    Dead,
+    NotAPotion,
     PackFull,
     NoSuchItem,
 }
 
-/// Slot `item` would go into, or why it can't be worn.
-pub fn free_slot_for(items: &[Option<ItemId>; SLOTS], item: ItemId) -> Result<usize, EquipError> {
-    let ty = item.def().ty;
-    if ty != ItemType::Potion && items.iter().flatten().any(|i| i.def().ty == ty) {
+/// Applies worn items and active potions to `stats`. The original's order of `f-`/`d-`/`p-`
+/// is unknown; our guess: first every worn item's `f-` sets its stat, then all `d-` values
+/// (items and potions) are added, then all `p-` percentages are summed and applied to the
+/// result. A potion's `f-Hits` is its healing and does not count here. Item bonuses are
+/// added to the unit's, and an item's magic school replaces the unit's.
+pub fn apply(content: &Content, stats: &mut Stats, worn: &[ItemId], potions: &[ItemId]) {
+    let worn: Vec<&ArtefactDef> = worn.iter().map(|&i| content.item(i)).collect();
+    let potions: Vec<&ArtefactDef> = potions.iter().map(|&i| content.item(i)).collect();
+    for d in &worn {
+        for (&st, &v) in &d.fixed {
+            stats[st] = v;
+        }
+    }
+    for d in worn.iter().chain(&potions) {
+        stats.add(&d.add, 1);
+    }
+    let mut pct = std::collections::BTreeMap::<Stat, i32>::new();
+    for d in worn.iter().chain(&potions) {
+        for (&st, &v) in &d.percent {
+            *pct.entry(st).or_default() += v;
+        }
+    }
+    for (st, p) in pct {
+        stats[st] += stats[st] * p / 100;
+    }
+    for d in &worn {
+        if let Some(b) = &d.bonus {
+            stats.bonuses.push(b.clone());
+        }
+        if d.magic.is_some() {
+            stats.magic = d.magic;
+        }
+    }
+    stats.clamp();
+}
+
+/// Slot `item` would go into on `unit`, or why it can't be worn.
+pub fn slot_for(content: &Content, unit: &Unit, item: ItemId) -> Result<usize, EquipError> {
+    let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
+    if !unit.alive() {
+        return Err(EquipError::Dead);
+    }
+    if matches!(def.kind, ArtefactType::Potion | ArtefactType::Item) {
+        return Err(EquipError::NotWearable);
+    }
+    let base = unit.base_stats(content);
+    let class_ok = match def.kind {
+        ArtefactType::BlowWeapon => base.is_warrior(),
+        ArtefactType::ShotWeapon => base.is_shooter(),
+        ArtefactType::Staff => base.is_mage(),
+        _ => true,
+    };
+    if !class_ok {
+        return Err(EquipError::WrongClass);
+    }
+    let worn: Vec<&ArtefactDef> = unit.items.iter().flatten().map(|&i| content.item(i)).collect();
+    if def.kind.is_weapon() && worn.iter().any(|w| w.kind.is_weapon()) {
+        return Err(EquipError::SecondWeapon);
+    }
+    if worn.iter().any(|w| w.kind == def.kind) {
         return Err(EquipError::SameType);
     }
-    items.iter().position(Option::is_none).ok_or(EquipError::NoFreeSlot)
+    unit.items.iter().position(Option::is_none).ok_or(EquipError::NoFreeSlot)
+}
+
+/// Healing of a potion (`f-Hits`).
+pub fn heal_amount(def: &ArtefactDef) -> i32 {
+    def.fixed.get(&Stat::Hits).copied().unwrap_or(0)
+}
+
+/// A potion changes stats besides healing.
+fn has_lasting_effect(def: &ArtefactDef) -> bool {
+    !def.add.is_empty() || !def.percent.is_empty() || def.fixed.keys().any(|s| *s != Stat::Hits)
+}
+
+/// Drinks potion `item` on `unit`: heals at once (capped at max HP), and its other modifiers
+/// last until the end of the next battle. Returns HP restored.
+pub fn drink(content: &Content, unit: &mut Unit, item: ItemId) -> Result<i32, EquipError> {
+    let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
+    if def.kind != ArtefactType::Potion {
+        return Err(EquipError::NotAPotion);
+    }
+    if !unit.alive() {
+        return Err(EquipError::Dead);
+    }
+    if has_lasting_effect(def) {
+        unit.potions.push(item);
+    }
+    let before = unit.hp;
+    unit.hp = (unit.hp + heal_amount(def)).min(unit.max_hp(content));
+    Ok(unit.hp - before)
+}
+
+/// Price the market pays: `ItemSaleCost`% of the price.
+pub fn sell_price(content: &Content, item: ItemId) -> i32 {
+    (content.item(item).cost * content.options.item_sale_cost / 100).max(0)
+}
+
+pub fn kind_name(kind: ArtefactType) -> &'static str {
+    match kind {
+        ArtefactType::BlowWeapon => "melee weapon",
+        ArtefactType::ShotWeapon => "ranged weapon",
+        ArtefactType::Staff => "staff",
+        ArtefactType::Armor => "armour",
+        ArtefactType::Helm => "helm",
+        ArtefactType::Shield => "shield",
+        ArtefactType::Ring => "ring",
+        ArtefactType::Amulet => "amulet",
+        ArtefactType::Potion => "potion",
+        ArtefactType::Item => "trade goods",
+    }
+}
+
+/// Short label of a stat for descriptions and cards.
+pub fn stat_label(s: Stat) -> &'static str {
+    match s {
+        Stat::Hits => "hits",
+        Stat::AttackBlow => "attack",
+        Stat::DefenceBlow => "defence",
+        Stat::AttackShot => "shot",
+        Stat::DefenceShot => "shot defence",
+        Stat::MagicPower => "magic",
+        Stat::Initiative => "initiative",
+        Stat::Manevres => "actions",
+        Stat::ProtectLife => "life prot.",
+        Stat::ProtectDeath => "death prot.",
+        Stat::ProtectElemental => "elem. prot.",
+        Stat::Regen => "regen %",
+        Stat::Vampirizm => "vampirism %",
+    }
+}
+
+/// Short summary, e.g. "melee weapon, attack +6, initiative -1".
+pub fn describe(content: &Content, item: ItemId) -> String {
+    let d = content.item(item);
+    let mut parts = vec![kind_name(d.kind).to_string()];
+    for (&st, &v) in &d.fixed {
+        parts.push(if d.kind == ArtefactType::Potion && st == Stat::Hits {
+            format!("heals {v}")
+        } else {
+            format!("{} = {v}", stat_label(st))
+        });
+    }
+    for (&st, &v) in &d.add {
+        parts.push(format!("{} {v:+}", stat_label(st)));
+    }
+    for (&st, &v) in &d.percent {
+        parts.push(format!("{} {v:+}%", stat_label(st)));
+    }
+    if let Some(b) = &d.bonus {
+        parts.push(b.token().to_string());
+    }
+    parts.join(", ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::content::testkit::*;
+    use crate::rules::content::{Bonus, MagicDirection, MagicSchool, StatMods, UnitId};
+    use crate::rules::formation::{Row, Slot};
 
-    #[test]
-    fn shipped_table_parses() {
-        let c = catalog();
-        assert_eq!(c.items.len(), 12);
-        let axe = ItemId::named("war_axe").def();
-        assert_eq!((axe.ty, axe.price, axe.bonus.dmg, axe.bonus.init), (ItemType::Weapon, 120, 4, -1));
-        assert_eq!(ItemId::named("amulet_life").def().effect, Some(Effect::Regen(3)));
-        assert_eq!(ItemId::named("heal_potion").def().sources, vec![Source::Market, Source::Loot, Source::Tribute]);
-        for s in [Source::Market, Source::Loot, Source::Tribute] {
-            assert!(!c.from_source(s).is_empty(), "{s:?}");
-        }
-        assert_eq!(axe.describe(), "weapon, dmg+4, init-1");
+    fn gear() -> Vec<ArtefactDef> {
+        let mut sword = item(1, ArtefactType::BlowWeapon);
+        sword.add = StatMods::from([(Stat::AttackBlow, 5)]);
+        let mut bow = item(2, ArtefactType::ShotWeapon);
+        bow.add = StatMods::from([(Stat::AttackShot, 4)]);
+        let staff = item(3, ArtefactType::Staff);
+        let mut armour = item(4, ArtefactType::Armor);
+        armour.fixed = StatMods::from([(Stat::DefenceBlow, 26)]);
+        armour.add = StatMods::from([(Stat::DefenceBlow, 2)]);
+        let mut ring = item(5, ArtefactType::Ring);
+        ring.percent = StatMods::from([(Stat::AttackBlow, 50), (Stat::DefenceBlow, 10)]);
+        ring.bonus = Some(Bonus::ArmorIgnore);
+        let mut potion = item(6, ArtefactType::Potion);
+        potion.fixed = StatMods::from([(Stat::Hits, 30)]);
+        let mut might = item(7, ArtefactType::Potion);
+        might.add = StatMods::from([(Stat::AttackBlow, 10)]);
+        let armour2 = item(8, ArtefactType::Armor);
+        let goods = item(9, ArtefactType::Item);
+        vec![sword, bow, staff, armour, ring, potion, might, armour2, goods]
+    }
+
+    fn setup() -> (Content, Unit, Unit) {
+        let c = content(
+            vec![warrior(1, 20, 5), shooter(2, 10), mage(3, 10, MagicSchool::Death, MagicDirection::ToEnemy)],
+            gear(),
+        );
+        let w = Unit::new(&c, UnitId(1), Slot::new(Row::Front, 0));
+        let s = Unit::new(&c, UnitId(2), Slot::new(Row::Back, 0));
+        (c, w, s)
     }
 
     #[test]
-    fn parse_errors_name_the_line() {
-        let bad = [
-            ("x | X | weapon | 5 | dmg+1 | market", "7 columns"),
-            ("x | X | sword | 5 | | | market", "unknown type"),
-            ("x | X | weapon | cheap | | | market", "bad price"),
-            ("x | X | weapon | 5 | dmg2 | | market", "needs a sign"),
-            ("x | X | weapon | 5 | luck+1 | | market", "unknown bonus"),
-            ("x | X | weapon | 5 | | fly | market", "unknown effect"),
-            ("x | X | weapon | 5 | | regen | market", "one number"),
-            ("x | X | weapon | 5 | | heal 5 | market", "potion effects"),
-            ("x | X | potion | 5 | hp+1 | heal 5 | market", "a potion needs"),
-            ("x | X | potion | 5 | | | market", "a potion needs"),
-            ("x | X | weapon | 5 | | | shop", "unknown source"),
-            ("x | X | weapon | 5 | | |", "at least one source"),
-        ];
-        for (line, want) in bad {
-            let err = Catalog::parse(&format!("# header\n{line}")).unwrap_err();
-            assert!(err.starts_with("line 2: ") && err.contains(want), "{line}: {err}");
-        }
-        let dup = "a | A | ring | 1 | | | loot\na | B | ring | 1 | | | loot";
-        assert!(Catalog::parse(dup).unwrap_err().contains("duplicate"));
+    fn modifiers_apply_fixed_then_flat_then_percent() {
+        let (c, mut w, _) = setup();
+        w.items = [Some(ItemId(1)), Some(ItemId(4)), Some(ItemId(5)), None];
+        let s = w.stats(&c);
+        // attack: (20 + 5) × 1.5; defence: fixed 26, +2, then +10%.
+        assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow]), (37, 30));
+        assert!(s.has(&Bonus::ArmorIgnore));
     }
 
     #[test]
-    fn one_item_per_type_but_potions_stack() {
-        let (sword, axe, potion) = (ItemId::named("short_sword"), ItemId::named("war_axe"), ItemId::named("heal_potion"));
-        let mut items = [Some(sword), None, None, None];
-        assert_eq!(free_slot_for(&items, axe), Err(EquipError::SameType));
-        items[1] = Some(potion);
-        assert_eq!(free_slot_for(&items, potion), Ok(2));
-        items[2] = Some(potion);
-        items[3] = Some(potion);
-        assert_eq!(free_slot_for(&items, potion), Err(EquipError::NoFreeSlot));
+    fn one_weapon_one_per_type_and_class_limits() {
+        let (c, mut w, s) = setup();
+        assert_eq!(slot_for(&c, &w, ItemId(1)), Ok(0));
+        assert_eq!(slot_for(&c, &w, ItemId(2)), Err(EquipError::WrongClass), "bow on a warrior");
+        assert_eq!(slot_for(&c, &w, ItemId(3)), Err(EquipError::WrongClass), "staff on a warrior");
+        assert_eq!(slot_for(&c, &s, ItemId(1)), Err(EquipError::WrongClass), "sword on a shooter");
+        assert_eq!(slot_for(&c, &s, ItemId(2)), Ok(0));
+        let m = Unit::new(&c, UnitId(3), Slot::new(Row::Back, 1));
+        assert_eq!(slot_for(&c, &m, ItemId(3)), Ok(0));
+        w.items[0] = Some(ItemId(1));
+        assert_eq!(slot_for(&c, &w, ItemId(1)), Err(EquipError::SecondWeapon));
+        w.items[1] = Some(ItemId(4));
+        assert_eq!(slot_for(&c, &w, ItemId(8)), Err(EquipError::SameType));
+        assert_eq!(slot_for(&c, &w, ItemId(6)), Err(EquipError::NotWearable));
+        assert_eq!(slot_for(&c, &w, ItemId(9)), Err(EquipError::NotWearable));
+        w.hp = 0;
+        assert_eq!(slot_for(&c, &w, ItemId(5)), Err(EquipError::Dead));
     }
 
     #[test]
-    fn passives_come_from_worn_gear() {
-        let items = [Some(ItemId::named("amulet_life")), Some(ItemId::named("cloak_guard")), None, None];
-        assert_eq!(passives(&items), Passives { regen: 3, no_flank: true, magic_strike: false });
+    fn full_slots_are_reported() {
+        let (c, mut w, _) = setup();
+        let c = content(c.units.clone(), c.items.iter().cloned().chain([item(10, ArtefactType::Amulet), item(11, ArtefactType::Helm)]).collect());
+        w.items = [Some(ItemId(1)), Some(ItemId(4)), Some(ItemId(5)), Some(ItemId(10))];
+        assert_eq!(slot_for(&c, &w, ItemId(11)), Err(EquipError::NoFreeSlot));
+    }
+
+    #[test]
+    fn potions_heal_now_and_buff_until_the_next_battle_ends() {
+        let (c, mut w, _) = setup();
+        w.hp = 10;
+        assert_eq!(drink(&c, &mut w, ItemId(6)), Ok(30));
+        assert!(w.potions.is_empty(), "healing only: nothing lasts");
+        assert_eq!(drink(&c, &mut w, ItemId(6)), Ok(10), "capped at max HP");
+        assert_eq!(drink(&c, &mut w, ItemId(7)), Ok(0));
+        assert_eq!(w.stats(&c)[Stat::AttackBlow], 30);
+        assert_eq!(drink(&c, &mut w, ItemId(1)), Err(EquipError::NotAPotion));
+    }
+
+    #[test]
+    fn sale_price_and_descriptions() {
+        let (c, _, _) = setup();
+        assert_eq!(sell_price(&c, ItemId(1)), 25, "ItemSaleCost 25%");
+        assert_eq!(describe(&c, ItemId(4)), "armour, defence = 26, defence +2");
+        assert_eq!(describe(&c, ItemId(6)), "potion, heals 30");
+        assert_eq!(describe(&c, ItemId(5)), "ring, attack +50%, defence +10%, ArmorIgnore");
     }
 }

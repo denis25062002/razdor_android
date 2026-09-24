@@ -1,9 +1,12 @@
 use macroquad::prelude::*;
 
+use std::sync::Arc;
+
 use razdor::rules::battle::Team;
-use razdor::rules::formation::{Row, Slot, COLS};
-use razdor::rules::game::{Game, HireError, MAX_SQUAD};
-use razdor::rules::units::UnitKind;
+use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
+use razdor::rules::formation::Slot;
+use razdor::rules::game::{Game, HireError};
+use razdor::rules::units::Stats;
 
 use super::assets::Assets;
 use super::widgets::*;
@@ -16,36 +19,56 @@ fn seed() -> u64 {
         .unwrap_or(1)
 }
 
-fn stat_lines(kind: UnitKind) -> [String; 3] {
-    let s = kind.stats();
+/// The attack line of a card: melee `A`, ranged `S` or magic `Pwr` with the school.
+pub(super) fn attack_line(s: &Stats) -> String {
+    let mut parts = Vec::new();
+    if s.is_warrior() {
+        parts.push(format!("attack {}", s[Stat::AttackBlow]));
+    }
+    if s.is_shooter() {
+        parts.push(format!("shot {}", s[Stat::AttackShot]));
+    }
+    if s.is_mage() {
+        let school = s.magic.map_or(String::new(), |m| format!("{m:?} "));
+        parts.push(format!("{school}magic {}", s[Stat::MagicPower]));
+    }
+    if parts.is_empty() {
+        parts.push("no attack".into());
+    }
+    parts.join(", ")
+}
+
+fn stat_lines(content: &Content, kind: UnitId) -> [String; 3] {
+    let s = Stats::of_level(content, kind, 1);
     [
-        format!("HP {}   Armor {}", s.max_hp, s.armor),
-        kind.describe_attack(),
-        format!("Initiative {}", s.initiative),
+        format!("Hits {}   Defence {}/{}", s.max_hp(), s[Stat::DefenceBlow], s[Stat::DefenceShot]),
+        format!("{}: {}", s.role(), attack_line(&s)),
+        format!("Initiative {}   Actions {}", s[Stat::Initiative], s[Stat::Manevres]),
     ]
 }
 
-pub fn class_select(game: &mut Option<Game>, assets: &Assets) -> Option<Screen> {
+pub fn class_select(game: &mut Option<Game>, content: &Arc<Content>, assets: &Assets) -> Option<Screen> {
     clear_background(Color::from_rgba(24, 22, 20, 255));
     text_centered("RAZDOR", screen_width() / 2.0, 110.0, 72.0, ACCENT);
     text_centered("A time of discord. Choose who you are.", screen_width() / 2.0, 150.0, 26.0, DIM);
 
     let (w, h, gap) = (280.0, 330.0, 30.0);
     let x0 = (screen_width() - (3.0 * w + 2.0 * gap)) / 2.0;
-    for (i, kind) in UnitKind::HEROES.into_iter().enumerate() {
+    for (i, hero) in HeroClass::ALL.into_iter().enumerate() {
+        let kind = hero.unit();
         let x = x0 + i as f32 * (w + gap);
         let y = 200.0;
         let hover = mouse_in(x, y, w, h);
         draw_rectangle(x, y, w, h, PANEL);
         draw_rectangle_lines(x, y, w, h, 2.0, if hover { ACCENT } else { DIM });
         assets.draw_unit(kind, Team::Player, x + w / 2.0, y + 80.0, 96.0);
-        text_centered(kind.name(), x + w / 2.0, y + 170.0, 34.0, INK);
-        for (j, line) in stat_lines(kind).iter().enumerate() {
-            text_centered(line, x + w / 2.0, y + 210.0 + j as f32 * 26.0, 21.0, DIM);
+        text_centered(&content.unit(kind).name, x + w / 2.0, y + 170.0, 34.0, INK);
+        for (j, line) in stat_lines(content, kind).iter().enumerate() {
+            text_centered(line, x + w / 2.0, y + 210.0 + j as f32 * 26.0, 19.0, DIM);
         }
-        text_centered(&format!("{} gold", kind.starting_gold()), x + w / 2.0, y + 300.0, 24.0, ACCENT);
+        text_centered(&format!("{} gold", content.start_gold(hero)), x + w / 2.0, y + 300.0, 24.0, ACCENT);
         if hover && clicked() {
-            *game = Some(Game::new(kind, seed()));
+            *game = Some(Game::new(content.clone(), hero, seed()));
             return Some(Screen::WorldMap);
         }
     }
@@ -60,32 +83,38 @@ pub(super) fn top_bar(game: &Game) {
     text(state, 480.0, 29.0, 20.0, color);
 }
 
-/// Squad shown as its 2×6 battle formation (front row on top). Returns the panel height.
+/// Squad shown as its battle formation (front row on top). Returns the panel height.
 pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     const CELL: f32 = 36.0;
-    let h = 40.0 + 2.0 * (CELL + 14.0) + 30.0;
+    let formation = game.content.formation;
+    let rows = formation.rows();
+    let h = 40.0 + rows.len() as f32 * (CELL + 14.0) + 30.0;
     draw_rectangle(x, y, 240.0, h, PANEL);
-    text(&format!("Squad {}/{}", game.squad.len(), MAX_SQUAD), x + 12.0, y + 28.0, 24.0, INK);
+    text(&format!("Squad {}/{}", game.squad.len(), game.max_squad()), x + 12.0, y + 28.0, 24.0, INK);
     let mut hovered = None;
-    for (r, row) in [Row::Front, Row::Back].into_iter().enumerate() {
-        for col in 0..COLS {
-            let (cx, cy) = (x + 6.0 + col as f32 * (CELL + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
-            draw_rectangle_lines(cx, cy, CELL, CELL, 1.0, DIM);
-            let Some(u) = game.squad.iter().find(|u| u.slot == Slot::new(row, col)) else { continue };
-            assets.draw_unit(u.kind, Team::Player, cx + CELL / 2.0, cy + CELL / 2.0, CELL);
+    let cell = (228.0 / formation.cols as f32 - 1.0).min(CELL);
+    for (r, &row) in rows.iter().enumerate() {
+        for col in 0..formation.cols {
+            let (cx, cy) = (x + 6.0 + col as f32 * (cell + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
+            draw_rectangle_lines(cx, cy, cell, CELL, 1.0, DIM);
+            let Some(i) = game.squad.iter().position(|u| u.slot == Slot::new(row, col)) else { continue };
+            let u = &game.squad[i];
+            assets.draw_unit(u.def, Team::Player, cx + cell / 2.0, cy + CELL / 2.0, CELL);
             if u.unpaid {
-                draw_rectangle(cx, cy, CELL, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
-                text_centered("$", cx + CELL / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
+                draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
+                text_centered("$", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
             }
-            hp_bar(cx + 2.0, cy + CELL + 3.0, CELL - 4.0, u.hp, u.stats().max_hp);
-            if mouse_in(cx, cy, CELL, CELL) {
-                hovered = Some(u);
+            hp_bar(cx + 2.0, cy + CELL + 3.0, cell - 4.0, u.hp, u.max_hp(&game.content));
+            if mouse_in(cx, cy, cell, CELL) {
+                hovered = Some(i);
             }
         }
     }
-    let info = match hovered {
-        Some(u) if u.unpaid => format!("{} unpaid!", u.kind.name()),
-        Some(u) => format!("{} {}/{}  {}g/day", u.kind.name(), u.hp, u.stats().max_hp, u.kind.wage()),
+    let c = &game.content;
+    let info = match hovered.map(|i| (i, &game.squad[i])) {
+        Some((_, u)) if u.unpaid => format!("{} unpaid!", u.name(c)),
+        Some((i, u)) => format!("{} L{} {}/{}  {}g/day", u.name(c), u.level, u.hp, u.max_hp(c), game.wage(i)),
+        None if formation.reserve => "front / back / reserve".to_string(),
         None => "front row / back row".to_string(),
     };
     text(&info, x + 12.0, y + h - 10.0, 18.0, DIM);
@@ -111,17 +140,19 @@ pub fn town(game: &mut Game, assets: &Assets, message: &mut Option<String>) -> O
     let recruits = game.recruits_here().to_vec();
     for (i, kind) in recruits.into_iter().enumerate() {
         let (x, y) = (30.0, 140.0 + i as f32 * 130.0);
-        draw_rectangle(x, y, 620.0, 116.0, PANEL);
+        let c = game.content.clone();
+        let name = &c.unit(kind).name;
+        draw_rectangle(x, y, 660.0, 116.0, PANEL);
         assets.draw_unit(kind, Team::Player, x + 58.0, y + 58.0, 80.0);
-        text(kind.name(), x + 115.0, y + 34.0, 28.0, INK);
-        for (j, line) in stat_lines(kind).iter().enumerate() {
-            text(line, x + 115.0, y + 60.0 + j as f32 * 22.0, 20.0, DIM);
+        text(name, x + 115.0, y + 34.0, 28.0, INK);
+        for (j, line) in stat_lines(&c, kind).iter().enumerate() {
+            text(line, x + 115.0, y + 60.0 + j as f32 * 22.0, 19.0, DIM);
         }
-        text(&format!("Wage {} gold/day", kind.wage()), x + 300.0, y + 34.0, 20.0, ACCENT);
-        let label = format!("Hire {}g", kind.cost());
-        if button(x + 470.0, y + 36.0, 130.0, 44.0, &label, true) {
+        text(&format!("Wage {} gold/day", c.wage(kind)), x + 330.0, y + 34.0, 20.0, ACCENT);
+        let label = format!("Hire {}g", c.unit(kind).cost);
+        if button(x + 510.0, y + 36.0, 130.0, 44.0, &label, true) {
             *message = Some(match game.hire(kind) {
-                Ok(()) => format!("{} joins your squad.", kind.name()),
+                Ok(()) => format!("{name} joins your squad."),
                 Err(HireError::NotEnoughGold) => "Not enough gold.".into(),
                 Err(HireError::SquadFull) => "Your squad is full.".into(),
                 Err(HireError::NotOffered) => "Not offered here.".into(),

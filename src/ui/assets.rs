@@ -1,36 +1,37 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
-use razdor::rules::items::{catalog, Effect, ItemId, ItemType};
-use razdor::rules::units::UnitKind;
+use razdor::rules::content::{ArtefactType, Content, ItemId, UnitId};
+use razdor::rules::items::heal_amount;
+use razdor::rules::units::Stats;
 
 /// Every unit and item picture goes through here. Defaults to coloured tokens; PNGs named
-/// `<asset_key>.png` (units) or `<item id>.png` (items) in the `RAZDOR_ASSETS` directory
-/// override them.
+/// `<key>.png` (the unit's or item's `Key=`) in the `RAZDOR_ASSETS` directory override them.
 pub struct Assets {
-    sprites: HashMap<UnitKind, Texture2D>,
+    content: Arc<Content>,
+    sprites: HashMap<UnitId, Texture2D>,
     item_sprites: HashMap<ItemId, Texture2D>,
 }
 
-fn item_token(item: ItemId) -> (Color, &'static str) {
-    use ItemType::*;
-    let def = item.def();
-    match def.ty {
-        Weapon => (Color::from_rgba(190, 190, 200, 255), "W"),
+fn item_token(content: &Content, item: ItemId) -> (Color, &'static str) {
+    use ArtefactType::*;
+    let def = content.item(item);
+    match def.kind {
+        BlowWeapon => (Color::from_rgba(190, 190, 200, 255), "W"),
+        ShotWeapon => (Color::from_rgba(150, 190, 120, 255), "B"),
+        Staff => (Color::from_rgba(160, 120, 220, 255), "T"),
         Armor => (Color::from_rgba(140, 140, 150, 255), "A"),
-        Helmet => (Color::from_rgba(160, 130, 90, 255), "H"),
+        Helm => (Color::from_rgba(160, 130, 90, 255), "H"),
         Shield => (Color::from_rgba(150, 100, 60, 255), "S"),
         Ring => (Color::from_rgba(230, 200, 80, 255), "R"),
         Amulet => (Color::from_rgba(90, 200, 190, 255), "M"),
-        Boots => (Color::from_rgba(120, 90, 60, 255), "B"),
-        Cloak => (Color::from_rgba(90, 110, 170, 255), "C"),
-        Potion => match def.effect {
-            Some(Effect::Heal(_)) => (Color::from_rgba(220, 70, 70, 255), "P"),
-            _ => (Color::from_rgba(200, 120, 230, 255), "P"),
-        },
+        Item => (Color::from_rgba(200, 200, 170, 255), "$"),
+        Potion if heal_amount(def) > 0 => (Color::from_rgba(220, 70, 70, 255), "P"),
+        Potion => (Color::from_rgba(200, 120, 230, 255), "P"),
     }
 }
 
@@ -50,20 +51,18 @@ async fn load_png(path: &str) -> Option<Texture2D> {
     }
 }
 
-fn token(kind: UnitKind) -> (Color, &'static str) {
-    use UnitKind::*;
-    match kind {
-        Knight => (Color::from_rgba(200, 200, 215, 255), "K"),
-        Archmage => (Color::from_rgba(140, 110, 220, 255), "M"),
-        Ranger => (Color::from_rgba(90, 170, 90, 255), "R"),
-        Spearman => (Color::from_rgba(180, 150, 100, 255), "S"),
-        Archer => (Color::from_rgba(120, 180, 140, 255), "A"),
-        Swordsman => (Color::from_rgba(170, 170, 180, 255), "W"),
-        Healer => (Color::from_rgba(240, 230, 180, 255), "H"),
-        Bandit => (Color::from_rgba(150, 90, 70, 255), "B"),
-        BanditArcher => (Color::from_rgba(170, 120, 80, 255), "b"),
-        BanditChief => (Color::from_rgba(120, 50, 40, 255), "C"),
-    }
+/// Placeholder token: colour by role, the first letter of the name.
+fn token(content: &Content, kind: UnitId) -> (Color, String) {
+    let s = Stats::of_level(content, kind, 1);
+    let fill = if s.is_mage() {
+        Color::from_rgba(150, 120, 220, 255)
+    } else if s.is_shooter() {
+        Color::from_rgba(110, 180, 120, 255)
+    } else {
+        Color::from_rgba(185, 170, 150, 255)
+    };
+    let letter = content.unit(kind).name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    (fill, letter)
 }
 
 pub fn team_color(team: Team) -> Color {
@@ -74,22 +73,22 @@ pub fn team_color(team: Team) -> Color {
 }
 
 impl Assets {
-    pub async fn load() -> Self {
+    pub async fn load(content: Arc<Content>) -> Self {
         let mut sprites = HashMap::new();
         let mut item_sprites = HashMap::new();
         if let Ok(dir) = std::env::var("RAZDOR_ASSETS") {
-            for kind in UnitKind::ALL {
-                if let Some(tex) = load_png(&format!("{dir}/{}.png", kind.asset_key())).await {
+            for kind in content.unit_ids() {
+                if let Some(tex) = load_png(&format!("{dir}/{}.png", content.unit_key(kind))).await {
                     sprites.insert(kind, tex);
                 }
             }
-            for item in catalog().ids() {
-                if let Some(tex) = load_png(&format!("{dir}/{}.png", item.def().id)).await {
+            for item in content.item_ids() {
+                if let Some(tex) = load_png(&format!("{dir}/{}.png", content.item_key(item))).await {
                     item_sprites.insert(item, tex);
                 }
             }
         }
-        Assets { sprites, item_sprites }
+        Assets { content, sprites, item_sprites }
     }
 
     /// Draw an item icon filling the square at (x, y).
@@ -99,7 +98,7 @@ impl Assets {
             draw_texture_ex(tex, x, y, WHITE, params);
             return;
         }
-        let (fill, letter) = item_token(item);
+        let (fill, letter) = item_token(&self.content, item);
         let pad = size * 0.12;
         draw_rectangle(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, fill);
         draw_rectangle_lines(x + pad, y + pad, size - 2.0 * pad, size - 2.0 * pad, 2.0, BLACK);
@@ -109,7 +108,7 @@ impl Assets {
     }
 
     /// Draw a unit centred on (cx, cy) inside a square of `size`.
-    pub fn draw_unit(&self, kind: UnitKind, team: Team, cx: f32, cy: f32, size: f32) {
+    pub fn draw_unit(&self, kind: UnitId, team: Team, cx: f32, cy: f32, size: f32) {
         let ring = team_color(team);
         if let Some(tex) = self.sprites.get(&kind) {
             draw_circle(cx, cy + size * 0.38, size * 0.4, Color { a: 0.5, ..ring });
@@ -122,12 +121,12 @@ impl Assets {
             );
             return;
         }
-        let (fill, letter) = token(kind);
+        let (fill, letter) = token(&self.content, kind);
         let r = size * 0.38;
         draw_circle(cx, cy, r + 3.0, ring);
         draw_circle(cx, cy, r, fill);
         let fs = (size * 0.5) as u16;
-        let dim = measure_text(letter, None, fs, 1.0);
-        draw_text(letter, cx - dim.width / 2.0, cy + dim.offset_y / 2.0, fs as f32, BLACK);
+        let dim = measure_text(&letter, None, fs, 1.0);
+        draw_text(&letter, cx - dim.width / 2.0, cy + dim.offset_y / 2.0, fs as f32, BLACK);
     }
 }

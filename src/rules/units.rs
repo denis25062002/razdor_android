@@ -1,253 +1,326 @@
+//! Units: effective stats and persistent unit instances (level, XP, HP, items).
+//!
+//! A unit's role follows from its stats, as in the original (mechanics.md 1.2): melee
+//! attack > 0 makes a warrior, ranged attack > 0 a shooter, magic power > 0 with a school a
+//! mage. A unit can be several at once.
+
+use std::ops::{Index, IndexMut};
+
+use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, MAX_XP_GAIN};
 use super::formation::{Row, Slot};
-use super::items::{gear, passives, Effect, ItemId, Passives, SLOTS};
+use super::items::{self, SLOTS};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttackKind {
-    /// Warrior: reaches only the enemy front row while it stands.
-    Melee,
-    /// Shooter: any enemy.
-    Ranged,
-    /// Mage: any enemy, ignores armor.
-    Magic,
-    /// Mage: restores HP to any wounded ally.
-    Heal { amount: i32 },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum UnitKind {
-    Knight,
-    Archmage,
-    Ranger,
-    Spearman,
-    Archer,
-    Swordsman,
-    Healer,
-    Bandit,
-    BanditArcher,
-    BanditChief,
-}
-
-#[derive(Clone, Copy, Debug)]
+/// Effective stats of a unit: numbers by [`Stat`] plus magic, nature and bonuses.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stats {
-    pub max_hp: i32,
-    pub dmg_min: i32,
-    pub dmg_max: i32,
-    pub armor: i32,
-    pub initiative: i32,
-    /// Action points per turn: each attack, heal or move costs one.
-    pub actions: i32,
-    pub attack: AttackKind,
+    values: [i32; Stat::ALL.len()],
+    pub magic: Option<MagicSchool>,
+    pub direction: Option<MagicDirection>,
+    pub nature: Nature,
+    /// The unit's own bonus plus those granted by worn items.
+    pub bonuses: Vec<Bonus>,
+    /// Community: percent of physical damage ignored.
+    pub evasion: i32,
+    /// Community per-unit overrides of the magic power floor and drain.
+    pub min_magic_power: Option<i32>,
+    pub mana_drain: Option<i32>,
+}
+
+fn stat_index(s: Stat) -> usize {
+    Stat::ALL.iter().position(|x| *x == s).expect("in ALL")
+}
+
+impl Index<Stat> for Stats {
+    type Output = i32;
+    fn index(&self, s: Stat) -> &i32 {
+        &self.values[stat_index(s)]
+    }
+}
+
+impl IndexMut<Stat> for Stats {
+    fn index_mut(&mut self, s: Stat) -> &mut i32 {
+        &mut self.values[stat_index(s)]
+    }
 }
 
 impl Stats {
-    /// Adds to both ends of the damage roll; for healers it adds to the heal instead.
-    pub fn add_damage(&mut self, n: i32) {
-        match &mut self.attack {
-            AttackKind::Heal { amount } => *amount = (*amount + n).max(0),
-            _ => {
-                self.dmg_min = (self.dmg_min + n).max(0);
-                self.dmg_max = (self.dmg_max + n).max(0);
-            }
-        }
-    }
-}
-
-impl AttackKind {
-    pub fn role(self) -> &'static str {
-        match self {
-            AttackKind::Melee => "warrior",
-            AttackKind::Ranged => "shooter",
-            AttackKind::Magic | AttackKind::Heal { .. } => "mage",
-        }
-    }
-
-    /// Row a newly hired unit of this kind is placed in.
-    pub fn preferred_row(self) -> Row {
-        match self {
-            AttackKind::Melee => Row::Front,
-            _ => Row::Back,
-        }
-    }
-}
-
-impl UnitKind {
-    pub const HEROES: [UnitKind; 3] = [UnitKind::Knight, UnitKind::Archmage, UnitKind::Ranger];
-    pub const ALL: [UnitKind; 10] = [
-        UnitKind::Knight,
-        UnitKind::Archmage,
-        UnitKind::Ranger,
-        UnitKind::Spearman,
-        UnitKind::Archer,
-        UnitKind::Swordsman,
-        UnitKind::Healer,
-        UnitKind::Bandit,
-        UnitKind::BanditArcher,
-        UnitKind::BanditChief,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            UnitKind::Knight => "Knight",
-            UnitKind::Archmage => "Archmage",
-            UnitKind::Ranger => "Ranger",
-            UnitKind::Spearman => "Spearman",
-            UnitKind::Archer => "Archer",
-            UnitKind::Swordsman => "Swordsman",
-            UnitKind::Healer => "Healer",
-            UnitKind::Bandit => "Bandit",
-            UnitKind::BanditArcher => "Bandit archer",
-            UnitKind::BanditChief => "Bandit chief",
-        }
-    }
-
-    /// File stem used by the optional sprite override directory.
-    pub fn asset_key(self) -> &'static str {
-        match self {
-            UnitKind::Knight => "knight",
-            UnitKind::Archmage => "archmage",
-            UnitKind::Ranger => "ranger",
-            UnitKind::Spearman => "spearman",
-            UnitKind::Archer => "archer",
-            UnitKind::Swordsman => "swordsman",
-            UnitKind::Healer => "healer",
-            UnitKind::Bandit => "bandit",
-            UnitKind::BanditArcher => "bandit_archer",
-            UnitKind::BanditChief => "bandit_chief",
-        }
-    }
-
-    pub fn stats(self) -> Stats {
-        use AttackKind::*;
-        let s = |max_hp, dmg_min, dmg_max, armor, initiative, actions, attack| Stats {
-            max_hp,
-            dmg_min,
-            dmg_max,
-            armor,
-            initiative,
-            actions,
-            attack,
+    /// Base stats of a type at `level` (1 = as hired): the definition plus `d-*` per level.
+    pub fn of_level(content: &Content, id: UnitId, level: i32) -> Stats {
+        let def = content.unit(id);
+        let mut s = Stats {
+            values: Stat::ALL.map(|st| def.stat(st)),
+            magic: def.magic,
+            direction: def.magic_direction,
+            nature: def.nature,
+            bonuses: def.bonus.iter().cloned().collect(),
+            evasion: def.evasion.unwrap_or(0),
+            min_magic_power: def.min_magic_power,
+            mana_drain: def.mana_drain,
         };
-        match self {
-            UnitKind::Knight => s(60, 10, 14, 5, 5, 1, Melee),
-            UnitKind::Archmage => s(32, 9, 13, 0, 6, 1, Magic),
-            UnitKind::Ranger => s(40, 5, 7, 1, 7, 2, Ranged),
-            UnitKind::Spearman => s(30, 5, 8, 2, 4, 1, Melee),
-            UnitKind::Archer => s(22, 5, 8, 0, 5, 1, Ranged),
-            UnitKind::Swordsman => s(38, 7, 10, 3, 5, 1, Melee),
-            UnitKind::Healer => s(20, 0, 0, 0, 3, 1, Heal { amount: 10 }),
-            UnitKind::Bandit => s(28, 6, 9, 1, 4, 1, Melee),
-            UnitKind::BanditArcher => s(20, 5, 8, 0, 5, 1, Ranged),
-            UnitKind::BanditChief => s(65, 11, 15, 3, 6, 1, Melee),
-        }
-    }
-
-    /// One-line summary of how the unit fights, for cards and tooltips.
-    pub fn describe_attack(self) -> String {
-        let s = self.stats();
-        let actions = if s.actions > 1 { format!(", {} actions", s.actions) } else { String::new() };
-        match s.attack {
-            AttackKind::Heal { amount } => format!("mage, heals {amount}{actions}"),
-            a => format!("{}, dmg {}-{}{actions}", a.role(), s.dmg_min, s.dmg_max),
-        }
-    }
-
-    pub fn cost(self) -> i32 {
-        match self {
-            UnitKind::Spearman => 30,
-            UnitKind::Archer => 40,
-            UnitKind::Swordsman => 50,
-            UnitKind::Healer => 45,
-            _ => 0,
-        }
-    }
-
-    /// Daily pay; heroes are free.
-    pub fn wage(self) -> i32 {
-        match self {
-            UnitKind::Spearman => 3,
-            UnitKind::Archer => 4,
-            UnitKind::Swordsman => 5,
-            UnitKind::Healer => 4,
-            _ => 0,
-        }
-    }
-
-    pub fn starting_gold(self) -> i32 {
-        match self {
-            UnitKind::Knight => 100,
-            UnitKind::Archmage => 120,
-            UnitKind::Ranger => 110,
-            _ => 0,
-        }
-    }
-}
-
-/// A persistent squad member on the world map.
-#[derive(Clone, Debug)]
-pub struct Unit {
-    pub kind: UnitKind,
-    pub hp: i32,
-    /// Cell in the squad's battle formation.
-    pub slot: Slot,
-    /// Missed the last payday: refuses to fight until paid.
-    pub unpaid: bool,
-    /// Worn gear and carried potions.
-    pub items: [Option<ItemId>; SLOTS],
-}
-
-impl Unit {
-    pub fn new(kind: UnitKind, slot: Slot) -> Self {
-        Unit { kind, hp: kind.stats().max_hp, slot, unpaid: false, items: [None; SLOTS] }
-    }
-
-    /// Base stats plus worn gear (potions only count once drunk).
-    pub fn stats(&self) -> Stats {
-        let mut s = self.kind.stats();
-        for d in gear(&self.items) {
-            let b = d.bonus;
-            s.max_hp += b.hp;
-            s.add_damage(b.dmg);
-            s.armor += b.armor;
-            s.initiative += b.init;
-            s.actions += b.actions + i32::from(d.effect == Some(Effect::ExtraAction));
-        }
-        s.max_hp = s.max_hp.max(1);
-        s.armor = s.armor.max(0);
-        s.actions = s.actions.max(1);
+        s.add(&def.level_up, level - 1);
         s
     }
 
-    pub fn passives(&self) -> Passives {
-        passives(&self.items)
+    /// Adds `times` × each modifier.
+    pub fn add(&mut self, mods: &StatMods, times: i32) {
+        for (&st, &v) in mods {
+            self[st] += v * times;
+        }
     }
 
-    pub fn heal_full(&mut self) {
-        self.hp = self.stats().max_hp;
+    pub fn has(&self, b: &Bonus) -> bool {
+        self.bonuses.contains(b)
+    }
+
+    pub fn has_any(&self, bs: &[Bonus]) -> bool {
+        bs.iter().any(|b| self.has(b))
+    }
+
+    pub fn is_warrior(&self) -> bool {
+        self[Stat::AttackBlow] > 0
+    }
+
+    pub fn is_shooter(&self) -> bool {
+        self[Stat::AttackShot] > 0
+    }
+
+    pub fn is_mage(&self) -> bool {
+        self[Stat::MagicPower] > 0 && self.magic.is_some()
+    }
+
+    /// Whom the mage's magic reaches; a school without a direction counts as `ToAll` (guess).
+    pub fn magic_direction(&self) -> MagicDirection {
+        self.direction.unwrap_or(MagicDirection::ToAll)
+    }
+
+    /// Percent protection against hostile magic of `school`.
+    pub fn protection(&self, school: MagicSchool) -> i32 {
+        self[match school {
+            MagicSchool::Life => Stat::ProtectLife,
+            MagicSchool::Death => Stat::ProtectDeath,
+            MagicSchool::Elemental => Stat::ProtectElemental,
+        }]
+    }
+
+    pub fn max_hp(&self) -> i32 {
+        self[Stat::Hits]
+    }
+
+    /// Stats never go negative; a unit keeps at least 1 HP maximum.
+    pub fn clamp(&mut self) {
+        for v in &mut self.values {
+            *v = (*v).max(0);
+        }
+        self[Stat::Hits] = self[Stat::Hits].max(1);
+    }
+
+    /// Row a newly hired unit of this kind goes to: warriors in front, the rest behind.
+    pub fn preferred_row(&self) -> Row {
+        if self.is_warrior() {
+            Row::Front
+        } else {
+            Row::Back
+        }
+    }
+
+    /// "warrior", "shooter", "mage" or a combination such as "warrior, mage".
+    pub fn role(&self) -> String {
+        let mut r = Vec::new();
+        if self.is_warrior() {
+            r.push("warrior");
+        }
+        if self.is_shooter() {
+            r.push("shooter");
+        }
+        if self.is_mage() {
+            r.push("mage");
+        }
+        if r.is_empty() {
+            r.push("civilian");
+        }
+        r.join(", ")
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PromoteError {
+    /// Not in this unit's upgrade tree, or its level is too low.
+    NotAvailable,
+}
+
+/// A persistent army member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unit {
+    pub def: UnitId,
+    /// 1 as hired.
+    pub level: i32,
+    /// Progress towards the next level.
+    pub xp: i32,
+    pub hp: i32,
+    /// Cell in the battle formation.
+    pub slot: Slot,
+    /// Missed the last payday: refuses to fight until paid.
+    pub unpaid: bool,
+    /// Worn items.
+    pub items: [Option<ItemId>; SLOTS],
+    /// Drunk potions whose effect lasts until the end of the next battle.
+    pub potions: Vec<ItemId>,
+}
+
+impl Unit {
+    pub fn new(content: &Content, def: UnitId, slot: Slot) -> Unit {
+        let hp = content.unit(def).hits.max(1);
+        Unit { def, level: 1, xp: 0, hp, slot, unpaid: false, items: [None; SLOTS], potions: Vec::new() }
+    }
+
+    pub fn name<'a>(&self, content: &'a Content) -> &'a str {
+        &content.unit(self.def).name
+    }
+
+    /// Stats without items or potions.
+    pub fn base_stats(&self, content: &Content) -> Stats {
+        Stats::of_level(content, self.def, self.level)
+    }
+
+    /// Level stats with worn items and active potions applied (see [`items::apply`]).
+    pub fn stats(&self, content: &Content) -> Stats {
+        let mut s = self.base_stats(content);
+        let worn: Vec<ItemId> = self.items.iter().flatten().copied().collect();
+        items::apply(content, &mut s, &worn, &self.potions);
+        s
+    }
+
+    pub fn max_hp(&self, content: &Content) -> i32 {
+        self.stats(content).max_hp()
+    }
+
+    pub fn heal_full(&mut self, content: &Content) {
+        self.hp = self.max_hp(content);
+    }
+
+    pub fn alive(&self) -> bool {
+        self.hp > 0
+    }
+
+    pub fn xp_to_next(&self, content: &Content) -> i32 {
+        content.xp_to_next(self.def, self.level)
+    }
+
+    /// Adds XP (at most [`MAX_XP_GAIN`] at once) and levels up while enough is banked; each
+    /// level adds the type's `d-*` gains, the HP gain also to current HP. Returns levels gained.
+    pub fn gain_xp(&mut self, content: &Content, amount: i32) -> i32 {
+        self.xp += amount.clamp(0, MAX_XP_GAIN);
+        let mut gained = 0;
+        loop {
+            let need = self.xp_to_next(content);
+            if self.xp < need {
+                break;
+            }
+            self.xp -= need;
+            let before = self.max_hp(content);
+            self.level += 1;
+            gained += 1;
+            self.hp = (self.hp + self.max_hp(content) - before).max(1);
+        }
+        gained
+    }
+
+    /// Classes this unit may be promoted to now (`NextUnitN` with `NextUnitNLevel` reached).
+    pub fn promotions(&self, content: &Content) -> Vec<UnitId> {
+        content
+            .unit(self.def)
+            .upgrades
+            .iter()
+            .filter(|u| self.level >= u.level.max(1))
+            .filter_map(|u| u.target.map(UnitId))
+            .filter(|id| content.try_unit(*id).is_some())
+            .collect()
+    }
+
+    /// Switch to class `to` from the upgrade tree. The unit starts the new class at level 1
+    /// with no XP and the same fraction of its HP (our guess; the original's handling is not
+    /// decoded). Items the new class may not wear are taken off and returned.
+    pub fn promote(&mut self, content: &Content, to: UnitId) -> Result<Vec<ItemId>, PromoteError> {
+        if !self.promotions(content).contains(&to) {
+            return Err(PromoteError::NotAvailable);
+        }
+        let (hp, max) = (self.hp, self.max_hp(content));
+        self.def = to;
+        self.level = 1;
+        self.xp = 0;
+        let mut removed = Vec::new();
+        let worn: Vec<ItemId> = self.items.iter().flatten().copied().collect();
+        self.items = [None; SLOTS];
+        for item in worn {
+            match items::slot_for(content, self, item) {
+                Ok(slot) => self.items[slot] = Some(item),
+                Err(_) => removed.push(item),
+            }
+        }
+        self.hp = (hp * self.max_hp(content) / max.max(1)).max(1);
+        Ok(removed)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::content::testkit::*;
+    use crate::rules::content::{UnitDef, Upgrade};
 
-    #[test]
-    fn gear_adds_to_stats_and_potions_do_not() {
-        let mut u = Unit::new(UnitKind::Spearman, Slot::new(Row::Front, 2));
-        u.items = [
-            Some(ItemId::named("war_axe")),
-            Some(ItemId::named("oak_shield")),
-            Some(ItemId::named("boots_haste")),
-            Some(ItemId::named("might_potion")),
-        ];
-        let s = u.stats();
-        // Spearman 30 HP, 5-8, armor 2, init 4, 1 action.
-        assert_eq!((s.max_hp, s.dmg_min, s.dmg_max, s.armor, s.initiative, s.actions), (35, 9, 12, 3, 5, 2));
+    fn militia() -> UnitDef {
+        let mut u = warrior(1, 20, 5);
+        u.level_up = StatMods::from([(Stat::Hits, 5), (Stat::AttackBlow, 2), (Stat::Initiative, 1)]);
+        u.upgrades = vec![Upgrade { target_name: "guard".into(), target: Some(2), level: 2 }];
+        u
+    }
+
+    fn slot() -> Slot {
+        Slot::new(Row::Front, 0)
     }
 
     #[test]
-    fn healer_damage_bonus_adds_to_the_heal() {
-        let mut u = Unit::new(UnitKind::Healer, Slot::new(Row::Back, 2));
-        u.items[0] = Some(ItemId::named("ring_might"));
-        assert_eq!(u.stats().attack, AttackKind::Heal { amount: 12 });
+    fn roles_follow_the_stats() {
+        let c = content(vec![warrior(1, 10, 0), shooter(2, 10), mage(3, 10, MagicSchool::Life, MagicDirection::ToAlly)], vec![]);
+        let s = |id| Stats::of_level(&c, UnitId(id), 1);
+        assert!(s(1).is_warrior() && !s(1).is_shooter() && !s(1).is_mage());
+        assert!(s(2).is_shooter() && s(2).preferred_row() == Row::Back);
+        assert!(s(3).is_mage() && s(3).role() == "mage");
+    }
+
+    #[test]
+    fn level_ups_apply_d_deltas() {
+        let c = content(vec![militia(), warrior(2, 30, 8)], vec![]);
+        let mut u = Unit::new(&c, UnitId(1), slot());
+        u.hp = 30;
+        assert_eq!(u.gain_xp(&c, 59), 0);
+        assert_eq!(u.gain_xp(&c, 1 + 84 + 10), 2, "60 then 84");
+        assert_eq!((u.level, u.xp), (3, 10));
+        let s = u.stats(&c);
+        assert_eq!((s.max_hp(), s[Stat::AttackBlow], s[Stat::Initiative]), (60, 24, 12));
+        assert_eq!(u.hp, 40, "HP gains also heal");
+    }
+
+    #[test]
+    fn xp_gain_is_capped() {
+        let mut m = militia();
+        m.start_experience = 100_000;
+        let c = content(vec![m], vec![]);
+        let mut u = Unit::new(&c, UnitId(1), slot());
+        u.gain_xp(&c, 1_000_000);
+        assert_eq!(u.xp, MAX_XP_GAIN);
+    }
+
+    #[test]
+    fn promotion_through_the_upgrade_tree() {
+        let c = content(vec![militia(), warrior(2, 30, 8)], vec![]);
+        let mut u = Unit::new(&c, UnitId(1), slot());
+        assert!(u.promotions(&c).is_empty(), "needs level 2");
+        assert_eq!(u.promote(&c, UnitId(2)), Err(PromoteError::NotAvailable));
+        u.gain_xp(&c, 60);
+        assert_eq!(u.promotions(&c), vec![UnitId(2)]);
+        u.hp = 30; // of 55
+        assert_eq!(u.promote(&c, UnitId(2)), Ok(vec![]));
+        assert_eq!((u.def, u.level, u.xp, u.hp), (UnitId(2), 1, 0, 27));
     }
 }
