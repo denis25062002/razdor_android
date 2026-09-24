@@ -79,8 +79,8 @@ impl Layout {
         vec2(OX + slot.col as f32 * self.pitch_x, OY + line as f32 * self.pitch_y + gap)
     }
 
-    fn grid_height(&self) -> f32 {
-        2.0 * self.rows as f32 * self.pitch_y + MID_GAP - 10.0
+    fn panel_height(&self) -> f32 {
+        (2.0 * self.rows as f32 * self.pitch_y + MID_GAP - 10.0).max(560.0).min(screen_height() - OY - 8.0)
     }
 }
 
@@ -219,13 +219,13 @@ impl BattleView {
 
         self.draw(&l, assets);
 
-        if self.battle.is_deploying() && button(l.panel_x + 12.0, OY + 330.0, 200.0, 48.0, "Fight!", true) {
+        if self.battle.is_deploying() && button(l.panel_x + 12.0, OY + l.panel_height() - 64.0, 200.0, 48.0, "Fight!", true) {
             self.selected = None;
             self.battle.begin();
         }
 
         if over {
-            return self.result_overlay(game, message, outcome);
+            return self.result_overlay(&l, game, message, outcome);
         }
         None
     }
@@ -359,7 +359,9 @@ impl BattleView {
         let f = &self.battle.fighters[id];
         let (s, base) = (&f.stats, &f.base);
         let (w, h) = (l.card_w, l.card_h);
-        let fs = (h * 0.115).clamp(11.0, 16.0);
+        // Whole pixels keep the small pixel font crisp.
+        let p = p.round();
+        let fs = (h * 0.115).clamp(11.0, 16.0).round();
         draw_rectangle(p.x, p.y, w, h, Color::new(0.14, 0.13, 0.12, 1.0));
         draw_rectangle(p.x, p.y, w, 4.0, team_color(f.team));
         assets.draw_unit(f.unit, f.team, p.x + w / 2.0, p.y + h * 0.26, h * 0.4);
@@ -394,7 +396,8 @@ impl BattleView {
         if f.curse().is_some() {
             draw_circle(p.x + w - 10.0, p.y + h * 0.4 + 12.0, 5.0, PURPLE);
         }
-        if !self.battle.is_deploying() && f.alive() && self.battle.helpless(id) {
+        let fighting = !self.battle.is_deploying() && self.battle.outcome() == Outcome::Ongoing;
+        if fighting && f.alive() && f.slot.row != Row::Reserve && self.battle.helpless(id) {
             text_centered("can't reach", p.x + w / 2.0, p.y + h * 0.44, fs, DIM);
         }
         if let Some(c) = border {
@@ -518,7 +521,7 @@ impl BattleView {
         let b = &self.battle;
         let x = l.panel_x;
         let w = screen_width() - x - 16.0;
-        let h = l.grid_height().max(560.0).min(screen_height() - OY - 8.0);
+        let h = l.panel_height();
         draw_rectangle(x, OY, w, h, PANEL);
 
         let (title, color) = match b.active() {
@@ -543,24 +546,29 @@ impl BattleView {
         }
 
         if b.is_deploying() {
-            for line in [
+            let row2 = format!("has +{} defence against shots. When a front", b.content().options.row2_def);
+            let lines = [
                 "Click a card, then a cell to move or swap it.",
                 "Warriors fight from the front row and hit the",
                 "three cells opposite; with those empty, a long",
                 "strike reaches the nearest enemy, halving its",
                 "defence. Shooters and mages in the back row",
                 "reach anyone not in the reserve. The back row",
-                "has +5 defence against shots. When a front",
-                "row falls, the rear steps forward.",
-            ] {
-                text(line, x + 12.0, y.max(OY + 190.0), 17.0, DIM);
-                y = y.max(OY + 190.0) + 18.0;
+                &row2,
+                "row falls, the rear steps forward. The reserve",
+                "cannot act or be attacked; units step out of it.",
+            ];
+            y = y.max(OY + 190.0);
+            for line in lines {
+                text(line, x + 12.0, y, 17.0, DIM);
+                y += 18.0;
             }
             return;
         }
 
         text("Turn order", x + 12.0, y + 6.0, 20.0, INK);
-        for (n, id) in b.queue().take(6).enumerate() {
+        let queue: Vec<usize> = if b.outcome() == Outcome::Ongoing { b.queue().take(6).collect() } else { Vec::new() };
+        for (n, &id) in queue.iter().enumerate() {
             let q = &b.fighters[id];
             let marker = if n == 0 { "> " } else { "  " };
             let line = format!("{marker}{} ({})", q.name, q.stats[Stat::Initiative]);
@@ -583,10 +591,12 @@ impl BattleView {
         }
     }
 
-    fn result_overlay(&self, game: &mut Game, message: &mut Option<String>, outcome: Outcome) -> Option<Screen> {
-        let (w, h) = (460.0, 200.0);
-        let (x, y) = ((screen_width() - w) / 2.0, (screen_height() - h) / 2.0);
-        draw_rectangle(x, y, w, h, PANEL);
+    /// Result box over the side panel, so the XP badges on the cards stay visible.
+    fn result_overlay(&self, l: &Layout, game: &mut Game, message: &mut Option<String>, outcome: Outcome) -> Option<Screen> {
+        let (w, h) = (360.0, 200.0);
+        let panel_w = screen_width() - l.panel_x - 16.0;
+        let (x, y) = (l.panel_x + (panel_w - w).max(0.0) / 2.0, OY + 120.0);
+        draw_rectangle(x, y, w, h, Color::new(0.1, 0.09, 0.08, 1.0));
         draw_rectangle_lines(x, y, w, h, 2.0, ACCENT);
         let (title, sub, color) = match outcome {
             Outcome::Victory => ("Victory!", "", ACCENT),

@@ -883,7 +883,8 @@ impl Battle {
                 }
                 self.refresh(target);
                 hit.buff = buff;
-                self.log.push(format!("{name} {}s {tname}: {}", kind.label(), buff.describe()));
+                let verb = if kind == ActionKind::Bless { "blesses" } else { "curses" };
+                self.log.push(format!("{name} {verb} {tname}: {}", buff.describe()));
             }
             _ => {
                 let raw = if kind == ActionKind::Strike { self.magic_strike(id, target) } else { self.physical_damage(id, target, kind) };
