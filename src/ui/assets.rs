@@ -7,12 +7,34 @@ use razdor::rules::battle::Team;
 use razdor::rules::items::{catalog, Effect, ItemId, ItemType};
 use razdor::rules::units::UnitKind;
 
+use super::dt_art::DtArt;
+
 /// Every unit and item picture goes through here. Defaults to coloured tokens; PNGs named
 /// `<asset_key>.png` (units) or `<item id>.png` (items) in the `RAZDOR_ASSETS` directory
-/// override them.
+/// override them. With a Discord Times install (`RAZDOR_DT_DIR`), the original portraits are
+/// drawn instead of tokens.
 pub struct Assets {
     sprites: HashMap<UnitKind, Texture2D>,
     item_sprites: HashMap<ItemId, Texture2D>,
+    /// Original art from the player's install, if present.
+    pub dt: Option<DtArt>,
+}
+
+/// Discord Times unit (`GlobalIndex`) whose portrait stands in for a demo unit.
+fn dt_stand_in(kind: UnitKind) -> u32 {
+    use UnitKind::*;
+    match kind {
+        Knight => 1,
+        Archmage => 2,
+        Ranger => 3,
+        Spearman => 6,
+        Archer => 21,
+        Swordsman => 12,
+        Healer => 26,
+        Bandit => 62,
+        BanditArcher => 80,
+        BanditChief => 89,
+    }
 }
 
 fn item_token(item: ItemId) -> (Color, &'static str) {
@@ -89,7 +111,7 @@ impl Assets {
                 }
             }
         }
-        Assets { sprites, item_sprites }
+        Assets { sprites, item_sprites, dt: DtArt::from_env() }
     }
 
     /// Draw an item icon filling the square at (x, y).
@@ -111,10 +133,11 @@ impl Assets {
     /// Draw a unit centred on (cx, cy) inside a square of `size`.
     pub fn draw_unit(&self, kind: UnitKind, team: Team, cx: f32, cy: f32, size: f32) {
         let ring = team_color(team);
-        if let Some(tex) = self.sprites.get(&kind) {
+        let dt_portrait = || self.dt.as_ref()?.unit_portrait(dt_stand_in(kind));
+        if let Some(tex) = self.sprites.get(&kind).cloned().or_else(dt_portrait) {
             draw_circle(cx, cy + size * 0.38, size * 0.4, Color { a: 0.5, ..ring });
             draw_texture_ex(
-                tex,
+                &tex,
                 cx - size / 2.0,
                 cy - size / 2.0,
                 WHITE,

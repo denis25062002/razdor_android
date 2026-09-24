@@ -2,10 +2,12 @@
 //!
 //! Pure data decoding: no macroquad and no game rules. Nothing here ships original content;
 //! everything is read at runtime from the player's own install (see [`install`]).
-//! Formats are documented in `docs/reference/dtm-format.md` and `docs/reference/mechanics.md`.
+//! Formats are documented in `docs/reference/dtm-format.md` and `docs/reference/mechanics.md`,
+//! images in `docs/reference/graphics-formats.md`.
 pub mod container;
 pub mod data;
 pub mod dtm;
+pub mod gfx;
 pub mod ini;
 pub mod install;
 pub mod text;
@@ -44,6 +46,8 @@ pub enum DtError {
     BadValue { section: String, key: String, value: String },
     /// A required ini key or section is missing.
     Missing { section: String, key: String },
+    /// An image record is malformed (bad size, or it runs past the end of the data).
+    Image { what: &'static str, offset: usize },
 }
 
 impl fmt::Display for DtError {
@@ -69,6 +73,7 @@ impl fmt::Display for DtError {
             DtError::TrailingBytes { offset, count } => write!(f, "{count} trailing bytes at {offset:#x}"),
             DtError::BadValue { section, key, value } => write!(f, "[{section}] {key}={value}: bad value"),
             DtError::Missing { section, key } => write!(f, "[{section}] {key} is missing"),
+            DtError::Image { what, offset } => write!(f, "bad {what} at offset {offset:#x}"),
         }
     }
 }

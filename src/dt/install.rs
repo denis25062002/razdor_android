@@ -63,6 +63,11 @@ fn find(dir: &Path, name: &str) -> Result<PathBuf, DtError> {
     Err(DtError::Io { path: exact, source: std::io::ErrorKind::NotFound.into() })
 }
 
+/// `dir/a/b/c` from a `/`-separated relative path, matching each component ignoring case.
+pub(crate) fn find_path(dir: &Path, rel: &str) -> Result<PathBuf, DtError> {
+    rel.split('/').filter(|c| !c.is_empty()).try_fold(dir.to_path_buf(), |p, c| find(&p, c))
+}
+
 fn read_ini(dir: &Path, name: &str) -> Result<Ini, DtError> {
     let path = find(dir, name)?;
     let bytes = std::fs::read(&path).map_err(io_err(&path))?;

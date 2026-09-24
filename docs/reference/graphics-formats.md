@@ -1,7 +1,7 @@
 # Discord Times (Aterdux, 2004) graphics formats
 
 These notes are for interop only: a remake loads art from the user's own install at runtime.
-Reference decoder: `gfx_decode.py` (Python + Pillow + numpy). `python3 gfx_decode.py FILE... OUTDIR`.
+Reference decoder: `gfx_decode.py` (Python + Pillow + numpy); the Rust port `src/dt/gfx.rs` is bit-identical to it on all 421 files. `python3 gfx_decode.py FILE... OUTDIR`.
 All 421 `.lit/.ugs/.spi` files in the Community Update install decode without errors. Each format below
 was checked by eye against the gameplay video.
 
@@ -65,7 +65,9 @@ The decoder finds it by searching for the repeated `(u16 w, u16 h)`:
   9 = harbours/lighthouses and piers, 10 = altars/stone circles, 11 = cave, 12 = ruins,
   13 = stone road/bridge pieces, 14 = wooden bridges.
   Total: 370 records. See `png/objects_sec0.png` and `png/objects_sec1.png`.
-  (cat, idx) are most likely the object keys used by the .DTm map files; I have not checked this against a map yet.
+  **Keys (H):** section A `(cat, idx)` = a `.DTm` map object's `(class, sprite)`, and section B `(cat, idx)` =
+  a building's `(picture type, picture variant)` (bytes 5 and 4). Every object and building of all 15 shipped maps
+  resolves to a sprite this way (checked by `dt::gfx` tests).
 
 ---------------------------------------------------------------------------------------------------
 ## 2. LIT: Aterdux's JPEG-like DCT image (or raw YCbCr)
@@ -139,8 +141,7 @@ round spell/ability badge icons (22 filled and 11 empty black badges).
 
 ## 6. Open questions
 - Direction order of the unit rows, and the frame-to-time mapping for spell/battle animations (50 and 25 frames).
-- Exact meaning of the Objects.ugs section-B `(a,b)` fields and the section-A 4th byte. Mapping of (cat, idx)
-  to DTm map object records.
+- Exact meaning of the Objects.ugs section-B `(a,b)` fields and the section-A 4th byte.
 - What `IconIndex` indexes.
 - Whether LIT's IDCT rounding matches the original exactly. The output is visually indistinguishable,
   so this only matters for bit-exactness.

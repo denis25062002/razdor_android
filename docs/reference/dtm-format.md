@@ -158,7 +158,8 @@ several objects.
 | 2, 3 | 1–4 | – | 11–23 | stray and rare. Unknown. |
 
 The sprite id appears to be grouped by tens (a style family) plus a variant digit. The ids index the editor's object
-palette and `Graphics/Objects/Objects.ugs`. That mapping, and exact passability per class, is **U**.
+palette and `Graphics/Objects/Objects.ugs`: (class, sprite) is the (cat, idx) key of an Objects.ugs section-A
+record (C: every object of every shipped map resolves). Exact passability per class is **U**.
 
 ## 6. Buildings (358 bytes each, C unless noted)
 
@@ -458,7 +459,6 @@ codec itself is out of scope here (U).
 ## 13. Open questions
 
 - Exact passability and speed factor for each terrain code and object class.
-- Mapping of object sprite ids to the sprites in `Objects.ugs`.
 - Hex row parity.
 - Army bytes 8, 59 and 80. Hero preset bytes 0–7 and 17–18. Header 0x120.
 - Event bytes 150–162.
