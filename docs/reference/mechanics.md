@@ -494,7 +494,10 @@ any listed type. [doc/inf]
 
 ---
 
-## 7. Current Razdor guess → real rule
+## 7. Prototype guess (before Stage 2) → real rule
+
+Stage 2 replaced the left column with the right one for units, battle, items and wages;
+see section 8 for the choices Razdor makes where the original is unknown.
 
 | Topic | Razdor now | Original |
 |---|---|---|
@@ -530,6 +533,56 @@ any listed type. [doc/inf]
 | Global magic | none | Spell book: learn for gold, cast for mana and time, on a whole army, before battles. |
 
 ---
+
+## 8. Razdor implementation choices
+
+Where the sections above say [unk] or [inf], Razdor (`src/rules/`) makes these choices.
+Each is marked *(guess)* in the code.
+
+- **Levels** start at 1 as hired; XP to the next level is `StartExpirience ×
+  (LevelMultipler/100)^(level−1)`. Promotion starts the new class at level 1 with no XP and
+  the same HP fraction; items the new class cannot wear go to the pack.
+- **Item modifiers**: every worn item's `f-` sets its stat first, then all `d-` are added,
+  then all `p-` are summed and applied. An item's `Magic` replaces the unit's school.
+  Potions: `f-Hits` heals at once; other modifiers last until the next battle ends.
+- **Tactical cost** (for XP): `Cost × CostMultipler/100`, +10% per level above 1.
+- **XP pool**: as in 1.4 without the damage-exchange term; weight per survivor
+  `(4 − row)·10 + damage dealt + HP healed`; at least 1 each.
+- **Wages**: every recruit uses hiring kind 1. Medic 15% and Ranger 20% daily healing do
+  not add up (the larger applies).
+- **Battle turn limit**: `BattleEndTurn` full turns are played, then a stalemate; nobody
+  wins, the player withdraws.
+- **Hero**: at 0 HP he leaves the field like any unit; if anyone of his army survives he
+  returns with 1 HP after the battle.
+- **Effects**: blessings and curses last 3 turns including the one they are cast in. A new
+  one replaces the old; a unit holds at most one blessing and one curse. Friendly mages do
+  not bless an already blessed unit.
+- **Magic**: a strike needs power left after protection; a school with no
+  `MagicDirection` counts as `ToAll`. Default hostile action: strike for Life casters,
+  curse otherwise (the right click picks the other).
+- **Regen** heals `Regen`% of max HP at the start of every turn from turn 2. **Poison**:
+  a physical hit of more than 1 damage poisons; 15% of max HP per turn, can kill.
+- **Counterblow**: one melee strike back after being struck in melee (not after shots or
+  magic), by warriors only.
+- **Piercing** (`ArmorIgnore`, the vampire gifts, `Artillery`): the unit's defence is
+  ignored, building defence still counts.
+- **Garrison**: in a building with defence ≥ 10, attack and defence ×2 at the start and
+  damage taken ×2/3.
+- **Movement into the reserve**: any empty reserve cell, from the back row only.
+- **Collapse**: when a front row is empty, the back row steps forward; if the back row is
+  empty too, the reserve does. It also happens after moves.
+- **AI**: heal an ally below half HP; else a killing blow on the most dangerous target;
+  else (non-Life casters) curse the most dangerous uncursed enemy; else the attack needing
+  the fewest hits; else heal or bless. Units without a target step towards a cell with one
+  (warriors to the front row, others to the back row); units in the reserve stay there.
+- **Community bonuses not implemented** (no effect yet): Hunger, Berserk, Exhaustion,
+  Drying, CtrPoison, Suicide, Caster, Splash, Fortify, Dominate, Concentration, PoisonS,
+  Stun, Potent, FirstShot, Bastion, Flying, Flock, Bleed, HoldLine, ArmorBreaker,
+  FasterAttack, NoHeal, PreventiveStrike, Neutralize, KillingStrike, BloodThrist, Assault,
+  EternalGift, FateGift. `PoisonArmorIgnore` counts as piercing; `Evasion`,
+  `MinMagicPower` and `ManaDrain` are implemented.
+- **Not used yet**: `Surrender`, `CostGoldDiv`, the Archmage's world-spell bonus, "dark
+  forces only" items, paying `Nature=Elemental` units in mana.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

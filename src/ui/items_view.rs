@@ -29,7 +29,7 @@ pub(super) fn unit_stat_lines(content: &Content, u: &Unit, wage: i32) -> Vec<Str
         format!("Defence {} melee / {} ranged", s[Stat::DefenceBlow], s[Stat::DefenceShot]),
         format!("Initiative {}   Actions {}", s[Stat::Initiative], s[Stat::Manevres]),
         format!(
-            "Magic protection: life {}%  elements {}%  death {}%",
+            "Magic prot. life {}% / elem. {}% / death {}%",
             s[Stat::ProtectLife],
             s[Stat::ProtectElemental],
             s[Stat::ProtectDeath]

@@ -13,13 +13,14 @@ No original game assets are used; all art is placeholder shapes, swappable later
 ## Scope
 
 ### Start
-Pick a hero class:
+Pick a hero class. As in the original, the three classes are unit ids 1–3; their stats are
+our own numbers in `data/units.ini`:
 
-| Class    | HP | Dmg   | Armor | Move | Init | Attack              | Gold |
-|----------|----|-------|-------|------|------|---------------------|------|
-| Knight   | 60 | 10–14 | 4     | 3    | 5    | Melee               | 100  |
-| Archmage | 32 | 9–13  | 0     | 3    | 6    | Ranged 6, magic     | 120  |
-| Ranger   | 40 | 8–11  | 1     | 4    | 7    | Ranged 7            | 110  |
+| Class    | Hits | Attack               | Defence (melee/ranged) | Init | Actions | Gold | Class bonus |
+|----------|------|----------------------|------------------------|------|---------|------|-------------|
+| Knight   | 70   | melee 24             | 10 / 8                 | 8    | 1       | 100  | his army takes 10% less physical damage |
+| Archmage | 42   | Elemental magic 26   | 2 / 4                  | 22   | 2       | 120  | curses slow the enemy (fewer actions, less initiative) |
+| Ranger   | 55   | ranged 17, regen 5%  | 4 / 6                  | 16   | 2       | 110  | the army heals 20% of max HP each day |
 
 ### World map and time (v2, as in the original)
 Replaces the v1 four-node graph. Sources: overview image of the first official map on the
@@ -66,107 +67,112 @@ player when within 5 hexes. Touching a gang starts a battle against its formatio
 30 gold). After a stalemate the gang ignores the player for 2 game hours. Each uncleared camp
 spawns a gang every 3 days while it has fewer than 2 out. Two gangs roam from the start.
 
-| Recruit   | Wage/day |
-|-----------|----------|
-| Spearman  | 3        |
-| Archer    | 4        |
-| Swordsman | 5        |
-| Healer    | 4        |
+Wages follow the original's formula from the unit's cost (mechanics.md 1.5):
+`round(Cost / 2 × f)` with f = ¼ up to 50 gold, ½ up to 100, ¾ up to 150, 1 above.
+`AddPayment` in the army cuts wages by 30%.
 
-### Recruits
+| Recruit   | Cost | Wage/day |
+|-----------|------|----------|
+| Spearman  | 40   | 5        |
+| Archer    | 45   | 6        |
+| Swordsman | 50   | 6        |
+| Healer    | 50   | 6        |
 
-| Unit      | Cost | HP | Dmg  | Armor | Move | Init | Attack    |
-|-----------|------|----|------|-------|------|------|-----------|
-| Spearman  | 30   | 30 | 5–8  | 2     | 3    | 4    | Melee     |
-| Archer    | 40   | 22 | 5–8  | 0     | 3    | 5    | Ranged 6  |
-| Swordsman | 50   | 38 | 7–10 | 3     | 3    | 5    | Melee     |
-| Healer    | 45   | 20 | —    | 0     | 3    | 3    | Heal 10, range 4 |
+### Units and content (v5: data-driven)
+All rules read a `rules::content::Content`: unit, item and spell definitions plus the
+`_Global.ini` options (magic divisors, drain and floors, `Row2Def`, `BattleEndTurn`, XP and
+wage constants, sale price). It comes either from a Discord Times install
+(`Content::from_dt`) or from the built-in demo (`Content::builtin`): `data/units.ini` and
+`data/items.ini`, our own content written in the original's ini schema, so the same parser
+reads both. Demo-only keys: `Key=` (sprite file stem, stable name), `StartGold=`, `Sources=`.
+The demo options are the vanilla defaults except faster XP (player XP 100% instead of 50%,
+`MainExpCorrection` 60).
 
+| Unit          | Cost | Hits | Attack         | Defence | Init | Notes |
+|---------------|------|------|----------------|---------|------|-------|
+| Spearman      | 40   | 40   | melee 16       | 6 / 3   | 7    | `SpearDefense`; promotes to Swordsman at level 2 |
+| Archer        | 45   | 30   | ranged 14      | 2 / 4   | 12   | |
+| Swordsman     | 50   | 50   | melee 20       | 9 / 6   | 8    | |
+| Healer        | 50   | 28   | Life magic 14  | 1 / 2   | 10   | heals the wounded, blesses the rest |
+| Bandit        | —    | 36   | melee 15       | 4 / 2   | 7    | |
+| Bandit archer | —    | 26   | ranged 12      | 1 / 3   | 11   | |
+| Bandit chief  | —    | 80   | melee 22       | 8 / 6   | 9    | `Counterblow` |
+
+A unit's role follows from its stats (melee attack → warrior, ranged → shooter, magic power
+and a school → mage). Units have a **level** (1 as hired) and **XP**; the next level needs
+`StartExpirience × (LevelMultipler/100)^(level−1)` and adds the type's `d-*` gains. A unit
+that reaches `NextUnitNLevel` can be **promoted** to `NextUnitN` from the Squad screen: it
+starts the new class at level 1 *(guess)*; items it can no longer wear go to the pack.
 Recruits that die in battle are gone.
 
-Enemies: Bandit (26 HP, 5–8, armor 1, melee), Bandit archer (18 HP, 4–7, ranged 6),
-Bandit chief (55 HP, 9–13, armor 3, melee).
-
-### Battle (v3: card formation, rules from the Discord Times wiki)
-Replaces the v1 10×8 movement grid. Rules follow the fan wiki
-(discorttimes.fandom.com: Параметры, Фланговый удар, Стрелок); gaps are marked *(guess)*.
-
-- Each side has a **2×6 formation**: a front row and a back row of 6 cells. Before the
-  fight there is a **deploy phase** where the player moves/swaps their own cards; the
-  formation is kept for the next battle.
-- Every unit is a **warrior** (melee), **shooter** (ranged) or **mage** (magic / heal).
-- **Actions:** on its turn a unit has `actions` points (Ranger 2, others 1). Each attack,
-  heal or move costs 1. Space ends the turn early.
-- **Move:** step to an orthogonally adjacent empty cell of your own formation *(guess:
-  orthogonal only)*.
-- **Warrior reach:** only from the front row (back-row warriors are helpless). Hits any
-  enemy front-row card in the same column or a neighbouring one (front, front-left,
-  front-right). A diagonal hit while the cell straight ahead is empty is a **flank
-  strike**, attack ×2 *(guess: diagonals with the opposite cell occupied deal normal damage)*.
-- **Collapse:** when a side's front row is empty, its back row steps forward (same columns).
-  So melee never reaches the back row directly.
-- **Shooter / mage:** may target any enemy. Magic ignores armor.
-- **Healer:** restores HP to any wounded ally, capped at max HP.
-- Damage = roll(min..=max) (×2 on a flank) − armor (magic ignores armor), **minimum 1**:
-  armor never fully blocks.
-- **No counterattacks** (none documented in the original).
-- Turn order each round: living units by initiative (desc), ties → player first.
-- Enemy AI, per action: act on the lowest-HP legal target (flank preferred on ties); a
-  warrior with no target steps toward a cell that has one; otherwise it waits.
-- End: all enemies dead = victory; hero dead = defeat. After **20 rounds** the battle
-  stops undecided: the squad withdraws, the camp stays, no reward.
-- Squad cap: 12 including the hero. Hiring drops a unit into the first free cell of
-  its preferred row (warriors front, others back), centre columns first.
-
-Unit changes vs v1: `moves` and ranges removed; `actions` added (Ranger: 2, dmg 5–7).
 Camp formations — Bandit camp: 3 bandits front, 2 archers back, reward 100.
 Bandit lair: chief + 2 bandits front, 2 archers back, reward 150.
-Knight armor 5. Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
-Balance (AI vs AI, 200 seeds): hero alone loses the camp; hero + 3 spearmen wins it;
-the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 
-### Items and market (v4, as in the original)
-Sources: ru.wikipedia (item kinds: armor, weapons, potions, artifacts; villages may hand out
-items), the fan wiki (4 inventory slots, no two items of the same type). Gaps are *(guess)*.
+### Battle (v5: the original's rules)
+Replaces the v3 wiki-based rules. Full rules and formulas: `docs/reference/mechanics.md`
+sections 2 and 3.3; our guesses are listed in its "Razdor implementation choices" section.
 
-**Item table.** All items live in `data/items.txt` (embedded with `include_str!`, like the
-map), one per line, `|`-separated columns:
-`id | name | type | price | bonuses | effect | sources`.
-- *type*: `weapon armor helmet shield ring amulet boots cloak potion`.
-- *bonuses*: space-separated `hp dmg armor init actions` with a sign, e.g. `dmg+4 init-1`.
-  `dmg` adds to both ends of the damage roll; for a healer it adds to the heal *(guess)*.
-- *effect* (at most one): `regen N` (heals N at the start of each round), `extra_action`
-  (+1 action per turn), `no_flank` (flank strikes on the wearer are not doubled),
-  `magic_strike` (the wearer's attacks ignore armor). Potions only: `heal N` (restores HP,
-  capped), `might N` (+N damage for the rest of the battle).
-- *sources*: any of `market loot tribute`.
-- A malformed file fails at startup with the line number; a test checks the shipped file.
+- **Formation** from `Content`: default **2 × 6** (the Community wide row), vanilla
+  **3 × 4 with a reserve row** supported. The reserve cannot act (except to step out) and
+  cannot be targeted. Deploy phase first; the deployed formation is kept afterwards.
+- **Turn order:** by initiative, the attacker +1 (walking into a camp makes you the attacker,
+  a gang that catches you attacks), `Artillery` first. Each unit has `Manevres` actions per
+  turn (an attack, a spell or a step); `HorseAtack`/`OldVampirsGist`/`FastDead` +1 on turn 1.
+- **Moves:** to an empty own cell in columns c−1..c+1 of the front and back rows; from the
+  reserve to any front/back cell; into the reserve from the back row *(guess)*.
+- **Reach:** warriors from the front row hit enemy front cells c−1..c+1; with all three
+  empty, a **long strike** reaches the nearest front unit on either side, halving its
+  defence (`FlankStrike` doubles the attack). Shooters and hostile mages in the back row
+  reach anyone in the enemy's front and back rows; in the front row, shooters only the
+  adjacent front units unless none are there, mages nothing unless none are there. Friendly
+  mages heal the wounded or bless the rest.
+- **Damage** is deterministic: attack − defence, at least 1, with the vanilla bonuses
+  (`SpearDefense`, `ArmorIgnore`, `Unvulnerabe`, `Ghost`, `Evasive`, `Dead`, `GodAnger` …),
+  +`Row2Def` defence against shots in the back row, knight hero −10%.
+- **Magic** by school with protection % and nature multipliers; blessings and curses last
+  3 turns *(guess)*; mage power drains each turn down to a floor.
+- **Collapse:** when a front row is empty the back row steps forward (then the reserve).
+- **End:** a side with no living units loses. The hero cannot die while his army lives: he
+  comes back with 1 HP. After `BattleEndTurn` (25) turns the battle is a stalemate: you
+  withdraw, the camp stays. There is no retreat.
+- **XP** after the battle for the survivors, from the strength of the enemy destroyed
+  (mechanics.md 1.4, simplified); shown as "XP +N" on the cards.
+- **AI:** heal a badly hurt ally, else kill if it can, else (non-Life casters) curse an
+  uncursed enemy, else the attack needing the fewest hits; warriors in the back row step
+  into the front row.
+- **UI:** cards show the original's strip (`A:`/`S:`/`Pwr:`, `D: melee/ranged`, `Mnvr`,
+  `Ini`, `Hits`, level); lowered values red, raised blue. Hovering a target previews
+  "strike: −N hits" or the curse's effect; right click picks the alternative action (e.g.
+  a mage's strike instead of its curse).
 
-**Slots.** Every unit (hero and recruits) has 4 slots. At most one item of each type per
-unit, except potions: several potions may be carried. Any unit may wear any item. Gear
-bonuses and effects apply everywhere (max HP on the map, all stats in battle). Enemies
-carry no items.
+### Items and market (v5, as in the original)
+Items are artefact definitions (`data/items.ini` in the demo, `Rus_Artefacts.ini` from an
+install): type, price, `d-`/`p-`/`f-` stat modifiers, a granted bonus or magic school.
+
+**Slots.** Every unit has 4 slots: only **one weapon** (melee weapon, bow or staff), never
+two of the same type; melee weapons need a warrior, bows a shooter, staffs a mage. Potions
+and trade goods cannot be worn. Modifiers apply `f-` first (sets the stat), then all `d-`,
+then the summed `p-` percentages *(guess: the original's order is unknown)*.
+
+**Potions** are drunk from the Squad screen: healing is instant, other modifiers last until
+the end of the next battle.
 
 **Pack.** The party shares a pack of up to 16 unworn items *(guess)*. Loot, tribute and
-purchases go there; what does not fit is left behind. A **Squad** screen (from the world map
-or a castle, never mid-battle) moves items between the pack and units. Taking off an item
-that raised max HP caps current HP to the new max. A recruit who dies loses its gear.
+purchases go there; what does not fit is left behind. Taking off an item that raised max HP
+caps current HP to the new max. A recruit who dies loses its gear.
 
-**Market.** Both castles have one (foreign Greywall trades too *(guess)*): 6 items drawn at
-random from `market` items, restocked every Monday 00:00. Buy at the price, sell anything
-from the pack for half its price, rounded down *(guess)*.
+**Market.** Both castles have one: 6 items drawn at random from `market` items, restocked
+every Monday 00:00. Selling pays `ItemSaleCost` = 25% of the price; a `Merchant` in the
+army gets +50% when selling and −30% when buying. Personal (negative-price) items cannot be
+sold.
 
 **Loot.** Bandit camp victory: 1 item; lair: 2; a beaten gang drops one 30% of the time.
 Drawn from `loot` items. **Tribute:** a village pays a `tribute` item instead of gold 25% of
 the time (gold if the pack is full).
 
-**Potions in battle.** On its turn a unit may drink one of its own potions for 1 action.
-A heal potion needs the drinker to be wounded. The potion is used up. The AI does not
-drink. Unused potions stay with the survivor.
-
 ### Out of scope (YAGNI)
-XP/levels, quests, dialogue, save/load, sound, morale, fog of war.
-Items leave out: role restrictions, item durability, enemy gear, the AI using potions.
+Quests, dialogue, save/load, sound, morale, fog of war.
+Items leave out: item durability, enemy gear, "dark forces only" items, the AI using potions.
 Map v2 leaves out: ships (half-speed time), resurrecting the dead within 7 days, leaving
 garrisons, capturing castles, taverns, non-bandit parties (peasants, undead, feudal lords).
 
@@ -178,13 +184,14 @@ src/
   rules/           pure game logic, no macroquad dependency, unit-tested
     mod.rs
     rng.rs         small seeded xorshift RNG (deterministic tests)
-    units.rs       UnitKind, Stats, AttackKind, Unit (with gear and effective stats)
-    items.rs       item table parsed from data/items.txt: types, bonuses, effects, sources
+    content.rs     Content: unit/item/spell defs and options, from an install or data/*.ini
+    units.rs       Stats (by stat, bonuses, magic), Unit (level, XP, HP, items, promotion)
+    items.rs       slot and class rules, f-/d-/p- modifiers, potions, sale price
     map.rs         TileMap: hex terrain grid parsed from data/kingdom.txt, hex math, A*
     clock.rs       Clock: game minutes → day / weekday / HH:MM, midnight rollover
     world.rs       Locations and roaming parties on the tile map
-    formation.rs   Row, Slot, 2×6 formation helpers
-    battle.rs      Battle: deploy, turn order, attack/heal/drink, effects, win/lose/stalemate, AI
+    formation.rs   Row, Slot, Formation (2×6 or 3×4 + reserve)
+    battle.rs      Battle: deploy, turn order, reach, damage, magic, effects, XP, AI
     game.rs        Game: hero, gold, squad, clock, travel tick (movement, time, parties,
                    encounters, paydays), hiring, tribute, pack, equip, market, loot,
                    battle setup/resolve
@@ -207,11 +214,13 @@ src/
 - Enemy turns are played with a short delay and a strike/hit animation so they are readable.
 
 ## Testing
-Unit tests in `rules`: turn order, column reach and flank ×2, helpless back-row
-warriors, collapse, movement and action points, armor minimum 1, magic, heal cap, deploy
-swaps, win/lose/stalemate, AI targeting and approach, hiring, battle results.
-Map parsing and A* (costs, impassable terrain), clock rollover, wages and unpaid units,
-daily tribute, time frozen while standing still, party chase and encounter, arrival.
-Item table parsing and errors, equip rules, gear stats, buy/sell, weekly restock, loot and
-tribute items, potions, regen / no_flank / magic_strike / extra_action.
-UI is verified by running the game.
+Unit tests in `rules` with small synthetic `Content` (no game files): every reach rule,
+long strike and `FlankStrike`, `Row2Def` vs shots only, `SpearDefense` on turn 1,
+`ArmorIgnore`, `Unvulnerabe`/`Ghost`, `Evasive`/`Dead`/`GodAnger`/Evasion, knight −10%,
+counterblow and death curse, magic by school and nature with protection, blessings and
+curses, power drain to the floor, reserve rules, collapse, movement, initiative with the
+attacker bonus, actions, turn limit, hero survival, XP split, AI choices; XP-to-level,
+level-up deltas, promotion; item slot/class rules and modifier order; wages; the demo
+data; map, clock, world and game flow. With `RAZDOR_DT_DIR` set, `Content::from_dt` loads
+the install and auto-played battles between armies of real units always end (numeric
+assertions only). UI is verified by running the game.

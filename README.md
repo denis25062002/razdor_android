@@ -9,7 +9,8 @@ cargo test          # game rules
 ```
 
 ## How to play
-- Pick a hero: Knight (melee tank), Archmage (magic ignores armor), Ranger (long bow).
+- Pick a hero: Knight (melee; his army takes 10% less physical damage), Archmage
+  (Elemental magic: slows or burns the enemy), Ranger (long bow; the army heals 20% a day).
 - The kingdom is a hex map, as in the original (`data/kingdom.txt`, one character per hex,
   odd rows shifted half a hex): click anywhere to walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
   impassable. Right click or Space stops.
@@ -19,24 +20,34 @@ cargo test          # game rules
   church heal the squad; castles recruit.
 - Bandit gangs roam the map, chase you when you're close ("!") and attack on contact.
   Surviving camps send out new gangs every few days.
-- Battles are fought card-style, as in the original: each side stands in a 2×6
-  formation (front row + back row). Before the fight, click a card and then a cell to
-  move or swap it, then press **Fight!** (or Enter). The formation is kept.
-- Units act in initiative order. The gold-framed card acts. Each attack, heal or step
-  costs one action (the Ranger has 2): click a red-framed enemy to attack (green frame =
-  heal an ally, "x2" = flank strike), a lit cell to step there, Space to end the turn.
-- Warriors fight only from the front row and hit an enemy front-row card straight ahead,
-  front-left or front-right. A diagonal hit while the cell ahead is empty is a flank
-  strike, double attack. When a side's front row falls, its rear steps forward.
-- Shooters and mages hit anyone; magic ignores armor. Armor always lets 1 damage through.
-  No counterattacks, as in the original.
-- After 20 rounds an undecided battle ends and you withdraw. Squad cap: 12.
-- Items, as in the original: every unit has 4 slots (one item per type, potions may
-  stack). Buy them at castle markets (new stock every Monday, sell for half price), loot
-  them from camps and gangs, or get them as village tribute. Manage gear from
-  **Squad & gear** on the map or in a castle. In battle, click a potion button to drink
-  it (one action). Items are defined in `data/items.txt`.
-- Clear both bandit camps to win. If your hero dies, it's over.
+- Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
+  2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row is
+  supported too). Before the fight, click a card and then a cell to move or swap it, then
+  press **Fight!** (or Enter). The deployed formation is kept.
+- Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
+  actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
+  card to preview the action ("strike: -12 hits", a curse's effect), left click to do it,
+  right click for the alternative (a mage's strike instead of its curse). Click a lit cell
+  to step there (columns c−1..c+1), Space ends the turn.
+- Warriors fight only from the front row and hit the three enemy front cells opposite; with
+  those three empty, a long strike reaches the nearest enemy front card, halving its
+  defence. Shooters and mages in the back row reach anyone outside the reserve. Damage is
+  attack minus defence, at least 1, no dice; the back row has +5 defence against shots.
+  Mages strike, curse, heal or bless by their school; their power drains each turn.
+- When a front row falls, the rear steps forward. There is no retreat; after 25 turns an
+  undecided battle ends and both sides pull back. Your hero survives with 1 HP as long as
+  anyone in his army does; you lose when the whole army is dead. Army cap: 12.
+- Survivors gain XP ("XP +N" on the cards). Levels add stats; some units can be promoted
+  from **Squad & gear** (the spearman becomes a swordsman at level 2).
+- Items, as in the original: every unit has 4 slots, one weapon, never two of the same
+  type; melee weapons for warriors, bows for shooters, staffs for mages. Buy them at castle
+  markets (new stock every Monday, sell for a quarter of the price), loot them from camps
+  and gangs, or get them as village tribute. Manage gear from **Squad & gear** on the map or
+  in a castle; potions are drunk there (healing at once, other effects last until the end of
+  the next battle).
+- Units and items of the demo are our own content in `data/units.ini` and `data/items.ini`,
+  written in the same format the engine reads from a Discord Times install.
+- Clear both bandit camps to win. If your whole army falls, it's over.
 
 ## Using your Discord Times install
 Razdor is becoming an engine for the original game's scenarios. It reads the data from **your
@@ -51,14 +62,15 @@ cargo test                                      # also checks the readers agains
 What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 `Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
 `src/dt/` (`dt::install::DtInstall::from_env()`); the formats are described in
-`docs/reference/`. Without the variable everything still works, and the tests that need the
+`docs/reference/`. `rules::content::Content::from_dt` turns them into the definitions the
+rules use (the battle rules already run on the original's units; playing its maps comes next). Without the variable everything still works, and the tests that need the
 real files are skipped.
 
 ## Custom sprites
-All art is placeholder tokens. To use your own, put PNGs named after units
-(`knight.png`, `archmage.png`, `ranger.png`, `spearman.png`, `archer.png`, `swordsman.png`,
-`healer.png`, `bandit.png`, `bandit_archer.png`, `bandit_chief.png`) and items (by their id
-in `data/items.txt`, e.g. `short_sword.png`) in a folder and run:
+All art is placeholder tokens. To use your own, put PNGs named after the units' and items'
+`Key=` in `data/units.ini` / `data/items.ini` (`knight.png`, `archmage.png`, `ranger.png`,
+`spearman.png`, `archer.png`, `swordsman.png`, `healer.png`, `bandit.png`,
+`bandit_archer.png`, `bandit_chief.png`, `short_sword.png`, …) in a folder and run:
 
 ```sh
 RAZDOR_ASSETS=./assets-local cargo run --release
