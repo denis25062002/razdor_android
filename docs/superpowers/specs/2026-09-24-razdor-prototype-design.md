@@ -73,7 +73,7 @@ Replaces the v1 10×8 movement grid.
 Unit changes vs v1: `moves` and ranges removed; `attacks` added (Ranger: 2 × 5–7).
 Camp formations — Bandit camp: 3 bandits front, 2 archers back, reward 100.
 Bandit lair: chief + 2 bandits front, 2 archers back, reward 150.
-Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
+Knight armor 5 (so archers can glance off). Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
 Balance (AI vs AI, 200 seeds): hero alone loses the camp; hero + 3 spearmen wins it;
 the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 

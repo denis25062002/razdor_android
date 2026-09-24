@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn armor_can_block_completely_and_magic_ignores_it() {
-        // Bandit archer 4-7 vs knight armor 4 gives 0..=3; over many seeds some are blocked.
+        // Bandit archer 5-8 vs knight armor 5 gives 0..=3; over many seeds some are blocked.
         let mut blocked = false;
         for seed in 0..30 {
             let p = [(Knight, 60, f(2), 0)];
@@ -377,7 +377,7 @@ mod tests {
         let mut bt = battle(&[(Ranger, b(2))], &[(BanditChief, f(2))]);
         let hits = bt.act(1).unwrap();
         assert_eq!(hits.len(), 2);
-        assert_eq!(bt.fighters[1].hp, 55 - hits.iter().map(|h| h.amount).sum::<i32>());
+        assert_eq!(bt.fighters[1].hp, 65 - hits.iter().map(|h| h.amount).sum::<i32>());
     }
 
     #[test]

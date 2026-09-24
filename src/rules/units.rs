@@ -113,7 +113,7 @@ impl UnitKind {
             attack,
         };
         match self {
-            UnitKind::Knight => s(60, 10, 14, 4, 5, 1, Melee),
+            UnitKind::Knight => s(60, 10, 14, 5, 5, 1, Melee),
             UnitKind::Archmage => s(32, 9, 13, 0, 6, 1, Magic),
             UnitKind::Ranger => s(40, 5, 7, 1, 7, 2, Ranged),
             UnitKind::Spearman => s(30, 5, 8, 2, 4, 1, Melee),

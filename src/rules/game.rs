@@ -204,8 +204,8 @@ mod tests {
         }
         b.fighters[0].hp = 17;
         let gold = g.gold;
-        assert_eq!(g.resolve_battle(&b), BattleResult::Victory { reward: 80, lost: 1 });
-        assert_eq!(g.gold, gold + 80);
+        assert_eq!(g.resolve_battle(&b), BattleResult::Victory { reward: 100, lost: 1 });
+        assert_eq!(g.gold, gold + 100);
         assert_eq!(g.squad.len(), 1);
         assert_eq!(g.hero().hp, 17);
         assert_eq!(g.travel(0).unwrap(), Arrival::Town);
