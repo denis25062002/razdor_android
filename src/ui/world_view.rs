@@ -22,6 +22,7 @@ use super::battle_view::BattleView;
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
+use super::minimap;
 use super::screens::squad_panel;
 use super::widgets::*;
 use super::Screen;
@@ -37,17 +38,22 @@ pub struct MapView {
     pub zoom: f32,
     /// Hovered target cell, its path from the party and the travel time (minutes).
     preview: Option<(Tile, Tile, Vec<Tile>, f32)>,
+    /// The minimap window is open.
+    pub minimap: bool,
+    /// Where the camera looks when moved by the minimap (world units); `None` follows the hero.
+    pub look: Option<(f32, f32)>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, preview: None }
+        MapView { zoom: 1.0, preview: None, minimap: false, look: None }
     }
 }
 
 impl MapView {
     pub fn reset(&mut self) {
         self.preview = None;
+        self.look = None;
     }
 }
 
@@ -56,7 +62,7 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Placeholder colour of a terrain code (our own palette).
-fn surface_color(code: u8) -> Color {
+pub(super) fn surface_color(code: u8) -> Color {
     match code {
         0 => rgb(120, 170, 200),
         1 => rgb(60, 110, 180),
@@ -99,13 +105,18 @@ struct Camera {
 
 impl Camera {
     fn follow(game: &Game, zoom: f32) -> Camera {
+        Camera::looking_at(game, zoom, game.pos)
+    }
+
+    /// Centred on world position `at` (clamped to the map).
+    fn looking_at(game: &Game, zoom: f32, at: (f32, f32)) -> Camera {
         let view = Rect::new(0.0, 0.0, screen_width() - PANEL_W, screen_height() - BAR_H);
         let map = &game.world.map;
         let scale = PX * zoom;
         let rh = map.grid.row_height();
         let world = vec2((map.w as f32 + 0.5) * scale, (map.h as f32) * rh * scale);
         let pad = vec2(0.5 * scale, 0.5 * rh * scale);
-        let centre = Vec2::from(game.pos) * scale + pad;
+        let centre = Vec2::from(at) * scale + pad;
         let mut origin = centre - vec2(view.w, view.h) / 2.0;
         origin.x = origin.x.clamp(0.0, (world.x - view.w).max(0.0));
         origin.y = origin.y.clamp(0.0, (world.y - view.h).max(0.0));
@@ -124,6 +135,21 @@ impl Camera {
     /// Cell size on screen.
     fn cell_size(&self) -> Vec2 {
         vec2(self.scale, self.scale * self.grid.row_height())
+    }
+
+    /// The part of the world in view, in world units.
+    fn world_rect(&self) -> Rect {
+        let o = self.origin / self.scale;
+        Rect::new(o.x, o.y, self.view.w / self.scale, self.view.h / self.scale)
+    }
+
+    /// The fog layer over the whole map (`ui::minimap`).
+    fn draw_fog(&self, game: &Game) {
+        let map = &game.world.map;
+        let rh = map.grid.row_height();
+        let tl = self.to_screen((-0.5, -0.5 * rh));
+        let br = self.to_screen((map.w as f32 - 0.5, (map.h as f32 - 0.5) * rh));
+        minimap::draw_fog(&game.fog, tl, br);
     }
 
     fn tile_under_mouse(&self) -> Option<Tile> {
@@ -382,20 +408,23 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     // Sprites stand on their cell and reach up to ~8 cells above it.
     let (below, side) = (10, 8);
     let mut items: Vec<(f32, Drawable)> = Vec::new();
+    let fog = &game.fog;
     for o in map.objects_in_rows(r0 - 1, r1 + below) {
-        if o.tile.0 >= c0 - side && o.tile.0 < c1 + side {
+        if o.tile.0 >= c0 - side && o.tile.0 < c1 + side && fog.explored(o.tile) {
             items.push((o.tile.1 as f32 * rh, Drawable::Object(*o)));
         }
     }
     for (i, l) in game.world.locations.iter().enumerate() {
         let (ax, ay) = l.anchor;
-        if ay >= r0 - 1 && ay < r1 + below && ax >= c0 - side && ax - l.size.0 < c1 + side {
+        let seen = l.cells().any(|t| fog.explored(t));
+        if seen && ay >= r0 - 1 && ay < r1 + below && ax >= c0 - side && ax - l.size.0 < c1 + side {
             // Bridges lie flat: under everything standing on them.
             let key = if l.kind.is_bridge() { ay as f32 * rh - 1000.0 } else { ay as f32 * rh + 0.01 };
             items.push((key, Drawable::Building(i)));
         }
     }
-    for (i, a) in game.world.armies.iter().enumerate() {
+    // Armies in the dark keep moving but are not shown.
+    for (i, a) in game.world.armies.iter().enumerate().filter(|(_, a)| fog.explored(a.tile(map))) {
         items.push((a.pos.1 + 0.02, Drawable::Army(i)));
     }
     items.push((game.pos.1 + 0.03, Drawable::Hero));
@@ -535,10 +564,11 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
         return None;
     }
     let near = 22.0 * (cam.scale / PX).max(0.6);
-    if let Some(a) = game.world.armies.iter().find(|a| (cam.to_screen(a.pos) - vec2(0.0, 12.0 * cam.scale / PX) - m).length() < near) {
+    let map = &game.world.map;
+    if let Some(a) = game.world.armies.iter().filter(|a| game.fog.explored(a.tile(map))).find(|a| (cam.to_screen(a.pos) - vec2(0.0, 12.0 * cam.scale / PX) - m).length() < near) {
         return Some(army_tooltip(a));
     }
-    let t = cam.tile_under_mouse()?;
+    let t = cam.tile_under_mouse().filter(|&t| game.fog.explored(t))?;
     let l = game.world.location_covering(t).or_else(|| game.world.location_at(t))?;
     Some(location_tooltip(game, &game.world.locations[l]))
 }
@@ -645,6 +675,7 @@ pub fn backdrop(game: &Game, assets: &Assets) {
     clear_background(rgb(10, 12, 10));
     let cam = Camera::follow(game, 1.0);
     draw_world(game, assets, &cam);
+    cam.draw_fog(game);
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.3));
     let (w, h) = (screen_width(), screen_height());
     draw_rectangle(0.0, h - BAR_H, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
@@ -705,16 +736,21 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.zoom = (view.zoom / 1.2).max(0.4);
     }
 
-    // Input: click to walk, right click or Space to stop.
-    let cam = Camera::follow(game, view.zoom);
-    let hovered = cam.tile_under_mouse();
-    if clicked() {
+    // Input: click to walk, right click or Space to stop; M toggles the minimap.
+    if key(KeyCode::M) {
+        view.minimap = !view.minimap;
+    }
+    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.pos));
+    let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(mouse_position()));
+    let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
+    if clicked() && !on_minimap {
         if let Some(t) = hovered {
             let target = game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t);
             if target != game.tile() && !game.set_destination(target) {
                 *message = Some("No way through.".into());
             }
             view.preview = None;
+            view.look = None;
         }
     }
     if right_clicked() || key(KeyCode::Space) {
@@ -725,13 +761,14 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let events = if input_blocked() { Vec::new() } else { game.tick(get_frame_time().min(0.1)) };
     let mut next = handle_events(game, events, message, dialogs);
 
-    let cam = Camera::follow(game, view.zoom);
+    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.pos));
     draw_world(game, assets, &cam);
+    cam.draw_fog(game);
 
     // Route: the one being walked, or a preview of where a click would lead.
     if game.moving() {
         draw_route(game, &game.path, game.minutes_left(), &cam, Color::new(1.0, 0.95, 0.6, 0.9));
-    } else if let Some(t) = cam.tile_under_mouse() {
+    } else if let Some(t) = cam.tile_under_mouse().filter(|_| !on_minimap) {
         let target = game
             .world
             .location_covering(t)
@@ -740,7 +777,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             .map_or(t, |l| l.tile);
         let from = game.tile();
         if view.preview.as_ref().is_none_or(|p| p.0 != target || p.1 != from) {
-            let path = game.world.map.path(from, target);
+            let path = game.plan(target);
             let minutes = game.travel_minutes(&path);
             view.preview = Some((target, from, path, minutes));
         }
@@ -764,7 +801,15 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 
     let bar = bottom_bar(game, message, dialogs);
     next = next.or(bar);
-    if let Some(t) = hover_tooltip(game, &cam) {
+    if minimap::toggle_button(screen_width() - 378.0, screen_height() - BAR_H + 8.0, view.minimap) {
+        view.minimap = !view.minimap;
+    }
+    if view.minimap {
+        if let Some(at) = minimap::window(game, cam.view, cam.world_rect(), surface_color) {
+            view.look = Some(at);
+        }
+    }
+    if let Some(t) = hover_tooltip(game, &cam).filter(|_| !on_minimap) {
         draw_tooltip(game, assets, &t);
     }
     if let Some(m) = message {

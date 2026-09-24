@@ -86,8 +86,11 @@ mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, frien
 greet you; hostile castles, forts and ruins with a garrison fight when you step into their
 gate, and a won castle or fort is yours with its income (an empty hostile one is taken by
 walking in). Towns, castles, forts, churches, villages, markets and taverns open their
-building windows with the stock, prices and spells of the map. Fog of war, events and
-quests come in the next stages (see
+building windows with the stock, prices and spells of the map. The fog of war hides what
+the hero has not seen yet (unexplored ground is black and cannot be walked; a click into the
+dark makes the hero feel his way towards it); M or the "Map (M)" button opens the minimap of
+the explored land, and a click on it moves the camera. Events and quests come in the next
+stages (see
 `docs/superpowers/specs/2026-09-25-dt-revival-design.md`); ships are not in yet, so maps with
 islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
