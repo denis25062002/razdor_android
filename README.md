@@ -15,11 +15,14 @@ cargo test          # game rules
 - Battles are fought card-style, as in the original: each side stands in a 2×6
   formation (front row + back row). Before the fight, click a card and then a cell to
   move or swap it, then press **Fight!** (or Enter). The formation is kept.
-- Units act in initiative order. The gold-framed card acts: click a red-framed enemy to
-  attack (green frame = heal an ally), Space to wait.
-- Warriors hit the enemy front row, and the back row only once the front is empty.
-  A warrior in your back row can't act while your front row stands.
-  Shooters and mages hit anyone; magic ignores armor. Heavy armor can block a hit.
+- Units act in initiative order. The gold-framed card acts. Each attack, heal or step
+  costs one action (the Ranger has 2): click a red-framed enemy to attack (green frame =
+  heal an ally, "x2" = flank strike), a lit cell to step there, Space to end the turn.
+- Warriors fight only from the front row and hit the card opposite them. If that cell is
+  empty they can hit a neighbouring column instead: a flank strike, double attack.
+  When a side's front row falls, its rear steps forward.
+- Shooters and mages hit anyone; magic ignores armor. Armor always lets 1 damage through.
+  No counterattacks, as in the original.
 - After 20 rounds an undecided battle ends and you withdraw. Squad cap: 12.
 - Clear both bandit camps to win. If your hero dies, it's over.
 

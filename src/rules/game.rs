@@ -223,7 +223,7 @@ mod tests {
             b.begin();
             let mut steps = 0;
             while b.outcome() == Outcome::Ongoing {
-                b.ai_turn();
+                b.ai_step();
                 steps += 1;
                 assert!(steps < 1000, "seed {seed}: battle never ended");
             }

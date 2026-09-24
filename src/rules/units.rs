@@ -33,7 +33,8 @@ pub struct Stats {
     pub dmg_max: i32,
     pub armor: i32,
     pub initiative: i32,
-    pub attacks: i32,
+    /// Action points per turn: each attack, heal or move costs one.
+    pub actions: i32,
     pub attack: AttackKind,
 }
 
@@ -103,13 +104,13 @@ impl UnitKind {
 
     pub fn stats(self) -> Stats {
         use AttackKind::*;
-        let s = |max_hp, dmg_min, dmg_max, armor, initiative, attacks, attack| Stats {
+        let s = |max_hp, dmg_min, dmg_max, armor, initiative, actions, attack| Stats {
             max_hp,
             dmg_min,
             dmg_max,
             armor,
             initiative,
-            attacks,
+            actions,
             attack,
         };
         match self {
@@ -129,10 +130,10 @@ impl UnitKind {
     /// One-line summary of how the unit fights, for cards and tooltips.
     pub fn describe_attack(self) -> String {
         let s = self.stats();
-        let times = if s.attacks > 1 { format!(" x{}", s.attacks) } else { String::new() };
+        let actions = if s.actions > 1 { format!(", {} actions", s.actions) } else { String::new() };
         match s.attack {
-            AttackKind::Heal { amount } => format!("mage, heals {amount}"),
-            a => format!("{}, dmg {}-{}{times}", a.role(), s.dmg_min, s.dmg_max),
+            AttackKind::Heal { amount } => format!("mage, heals {amount}{actions}"),
+            a => format!("{}, dmg {}-{}{actions}", a.role(), s.dmg_min, s.dmg_max),
         }
     }
 

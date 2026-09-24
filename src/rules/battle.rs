@@ -1,4 +1,4 @@
-use super::formation::{Row, Slot};
+use super::formation::{Row, Slot, COLS};
 use super::rng::Rng;
 use super::units::{AttackKind, UnitKind};
 
@@ -9,6 +9,15 @@ pub const MAX_ROUNDS: u32 = 20;
 pub enum Team {
     Player,
     Enemy,
+}
+
+impl Team {
+    pub fn other(self) -> Team {
+        match self {
+            Team::Player => Team::Enemy,
+            Team::Enemy => Team::Player,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,10 +49,19 @@ impl Fighter {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
     pub target: usize,
-    /// Damage dealt (0 = blocked by armor) or HP restored.
+    /// Damage dealt or HP restored.
     pub amount: i32,
     pub heal: bool,
+    pub flank: bool,
     pub killed: bool,
+}
+
+/// One AI action, for the UI to animate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Strike { actor: usize, hit: Hit },
+    Move { actor: usize, from: Slot, to: Slot },
+    Wait { actor: usize },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -59,9 +77,17 @@ pub struct Battle {
     pub log: Vec<String>,
     order: Vec<usize>,
     turn: usize,
+    actions_left: i32,
     deploying: bool,
     stalemate: bool,
     rng: Rng,
+}
+
+fn neighbours(s: Slot) -> impl Iterator<Item = Slot> {
+    let other_row = Slot::new(if s.row == Row::Front { Row::Back } else { Row::Front }, s.col);
+    let left = s.col.checked_sub(1).map(|c| Slot::new(s.row, c));
+    let right = (s.col + 1 < COLS).then(|| Slot::new(s.row, s.col + 1));
+    [Some(other_row), left, right].into_iter().flatten()
 }
 
 impl Battle {
@@ -93,6 +119,7 @@ impl Battle {
             log: Vec::new(),
             order: Vec::new(),
             turn: 0,
+            actions_left: 0,
             deploying: true,
             stalemate: false,
             rng: Rng::new(seed),
@@ -125,6 +152,8 @@ impl Battle {
     pub fn begin(&mut self) {
         if self.deploying {
             self.deploying = false;
+            self.collapse(Team::Player);
+            self.collapse(Team::Enemy);
             self.start_round();
         }
     }
@@ -144,6 +173,13 @@ impl Battle {
         self.order = order;
         self.turn = 0;
         self.log.push(format!("-- Round {} --", self.round));
+        self.begin_turn();
+    }
+
+    fn begin_turn(&mut self) {
+        if let Some(&id) = self.order.get(self.turn) {
+            self.actions_left = self.fighters[id].kind.stats().actions;
+        }
     }
 
     /// Fighter whose turn it is; `None` while deploying or once the battle is over.
@@ -152,6 +188,10 @@ impl Battle {
             return None;
         }
         self.order.get(self.turn).copied()
+    }
+
+    pub fn actions_left(&self) -> i32 {
+        self.actions_left
     }
 
     /// Upcoming fighters this round, starting with the active one.
@@ -177,73 +217,128 @@ impl Battle {
         self.fighters.iter().any(|f| f.alive() && f.team == team && f.slot.row == row)
     }
 
-    /// A warrior in the back row is stuck behind its own living front line.
-    pub fn blocked(&self, id: usize) -> bool {
-        let f = &self.fighters[id];
-        f.kind.stats().attack == AttackKind::Melee && f.slot.row == Row::Back && self.row_occupied(f.team, Row::Front)
+    /// With its front row gone, a side's back row steps forward.
+    fn collapse(&mut self, team: Team) {
+        if self.row_occupied(team, Row::Front) || !self.row_occupied(team, Row::Back) {
+            return;
+        }
+        for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team) {
+            f.slot.row = Row::Front;
+        }
+        let side = if team == Team::Player { "Your" } else { "The enemy" };
+        self.log.push(format!("{side} rear steps forward"));
     }
 
-    pub fn can_target(&self, id: usize, target: usize) -> bool {
+    /// A warrior in the back row cannot strike at all.
+    pub fn helpless(&self, id: usize) -> bool {
+        let f = &self.fighters[id];
+        f.kind.stats().attack == AttackKind::Melee && f.slot.row == Row::Back
+    }
+
+    /// Whether `id`, standing on `from`, may act on `target`; `Some(true)` for a flank strike.
+    fn reach_from(&self, id: usize, from: Slot, target: usize) -> Option<bool> {
         let f = &self.fighters[id];
         let t = &self.fighters[target];
         if !f.alive() || !t.alive() {
-            return false;
+            return None;
         }
         match f.kind.stats().attack {
-            AttackKind::Heal { .. } => t.team == f.team && t.hp < t.kind.stats().max_hp,
-            AttackKind::Ranged | AttackKind::Magic => t.team != f.team,
+            AttackKind::Heal { .. } => (t.team == f.team && t.hp < t.kind.stats().max_hp).then_some(false),
+            AttackKind::Ranged | AttackKind::Magic => (t.team != f.team).then_some(false),
             AttackKind::Melee => {
-                t.team != f.team
-                    && !self.blocked(id)
-                    && (t.slot.row == Row::Front || !self.row_occupied(t.team, Row::Front))
+                if t.team == f.team || from.row != Row::Front || t.slot.row != Row::Front {
+                    return None;
+                }
+                let opposite_empty = self.at(t.team, Slot::new(Row::Front, from.col)).is_none();
+                match t.slot.col.abs_diff(from.col) {
+                    0 => Some(false),
+                    1 if opposite_empty => Some(true),
+                    _ => None,
+                }
             }
         }
+    }
+
+    pub fn can_target(&self, id: usize, target: usize) -> bool {
+        self.reach_from(id, self.fighters[id].slot, target).is_some()
+    }
+
+    pub fn is_flank(&self, id: usize, target: usize) -> bool {
+        self.reach_from(id, self.fighters[id].slot, target) == Some(true)
     }
 
     pub fn targets(&self, id: usize) -> Vec<usize> {
         (0..self.fighters.len()).filter(|&t| self.can_target(id, t)).collect()
     }
 
-    /// Attack or heal `target` with the active fighter; ends its turn.
-    pub fn act(&mut self, target: usize) -> Result<Vec<Hit>, ActionError> {
+    fn has_target_from(&self, id: usize, from: Slot) -> bool {
+        (0..self.fighters.len()).any(|t| self.reach_from(id, from, t).is_some())
+    }
+
+    /// Empty own cells the fighter could step to.
+    pub fn moves(&self, id: usize) -> Vec<Slot> {
+        let f = &self.fighters[id];
+        neighbours(f.slot).filter(|&s| self.at(f.team, s).is_none()).collect()
+    }
+
+    fn spend_action(&mut self) {
+        self.actions_left -= 1;
+        if self.actions_left <= 0 {
+            self.end_turn();
+        }
+    }
+
+    /// Step the active fighter to a neighbouring empty cell; costs one action.
+    pub fn move_active(&mut self, to: Slot) -> Result<(), ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
-        if !self.can_target(id, target) {
+        if !self.moves(id).contains(&to) {
             return Err(ActionError::InvalidTarget);
         }
+        self.fighters[id].slot = to;
+        let team = self.fighters[id].team;
+        self.log.push(format!("{} moves", self.fighters[id].kind.name()));
+        self.collapse(team);
+        self.spend_action();
+        Ok(())
+    }
+
+    /// Attack or heal `target` with the active fighter; costs one action.
+    pub fn act(&mut self, target: usize) -> Result<Hit, ActionError> {
+        let id = self.active().ok_or(ActionError::NotYourTurn)?;
+        let flank = self.reach_from(id, self.fighters[id].slot, target).ok_or(ActionError::InvalidTarget)?;
         let stats = self.fighters[id].kind.stats();
         let name = self.fighters[id].kind.name();
         let tname = self.fighters[target].kind.name();
-        let mut hits = Vec::new();
 
-        if let AttackKind::Heal { amount } = stats.attack {
+        let hit = if let AttackKind::Heal { amount } = stats.attack {
             let t = &mut self.fighters[target];
             let before = t.hp;
             t.hp = (t.hp + amount).min(t.kind.stats().max_hp);
             let healed = t.hp - before;
             self.log.push(format!("{name} heals {tname} +{healed}"));
-            hits.push(Hit { target, amount: healed, heal: true, killed: false });
+            Hit { target, amount: healed, heal: true, flank: false, killed: false }
         } else {
             let armor = if stats.attack == AttackKind::Magic { 0 } else { self.fighters[target].kind.stats().armor };
-            for _ in 0..stats.attacks {
-                if !self.fighters[target].alive() {
-                    break;
-                }
-                let dmg = (self.rng.range(stats.dmg_min, stats.dmg_max) - armor).max(0);
-                let t = &mut self.fighters[target];
-                t.hp -= dmg;
-                let killed = !t.alive();
-                self.log.push(match (dmg, killed) {
-                    (0, _) => format!("{name} hits {tname}: blocked"),
-                    (_, true) => format!("{name} kills {tname} ({dmg})"),
-                    _ => format!("{name} hits {tname} for {dmg}"),
-                });
-                hits.push(Hit { target, amount: dmg, heal: false, killed });
-            }
-        }
-        self.end_turn();
-        Ok(hits)
+            let roll = self.rng.range(stats.dmg_min, stats.dmg_max) * if flank { 2 } else { 1 };
+            let dmg = (roll - armor).max(1);
+            let t = &mut self.fighters[target];
+            t.hp -= dmg;
+            let killed = !t.alive();
+            let how = if flank { " from the flank" } else { "" };
+            self.log.push(if killed {
+                format!("{name} kills {tname}{how} ({dmg})")
+            } else {
+                format!("{name} hits {tname}{how} for {dmg}")
+            });
+            let team = self.fighters[target].team;
+            self.collapse(team);
+            Hit { target, amount: dmg, heal: false, flank, killed }
+        };
+        self.spend_action();
+        Ok(hit)
     }
 
+    /// End the active fighter's turn, forfeiting any remaining actions.
     pub fn skip(&mut self) {
         if let Some(id) = self.active() {
             self.log.push(format!("{} waits", self.fighters[id].kind.name()));
@@ -262,6 +357,7 @@ impl Battle {
                 return;
             }
             if self.fighters[self.order[self.turn]].alive() {
+                self.begin_turn();
                 return;
             }
         }
@@ -273,23 +369,56 @@ impl Battle {
         let heals = matches!(self.fighters[id].kind.stats().attack, AttackKind::Heal { .. });
         let key = |t: usize| {
             let f = &self.fighters[t];
-            // Healers pick the lowest HP fraction (permille); attackers the lowest HP.
-            if heals { f.hp * 1000 / f.kind.stats().max_hp } else { f.hp }
+            // Healers pick the lowest HP fraction (permille); attackers the lowest HP, flanks first.
+            let hp = if heals { f.hp * 1000 / f.kind.stats().max_hp } else { f.hp };
+            (hp, !self.is_flank(id, t), t)
         };
-        self.targets(id).into_iter().min_by_key(|&t| (key(t), t))
+        self.targets(id).into_iter().min_by_key(|&t| key(t))
     }
 
-    /// Plays the active fighter's turn automatically.
-    /// Returns the actor and its hits (empty if it had to wait).
-    pub fn ai_turn(&mut self) -> Option<(usize, Vec<Hit>)> {
+    /// How good a cell is for a warrior that currently has nothing to hit.
+    fn approach_score(&self, id: usize, s: Slot) -> (bool, bool, bool, i32) {
+        let team = self.fighters[id].team;
+        let dist = self
+            .fighters
+            .iter()
+            .filter(|e| e.alive() && e.team != team && e.slot.row == Row::Front)
+            .map(|e| e.slot.col.abs_diff(s.col) as i32)
+            .min()
+            .unwrap_or(0);
+        let front_free = self.at(team, Slot::new(Row::Front, s.col)).is_none();
+        (self.has_target_from(id, s), s.row == Row::Front, front_free, -dist)
+    }
+
+    /// Cell the AI would step to, if stepping strictly improves its position.
+    fn ai_move(&self) -> Option<Slot> {
         let id = self.active()?;
-        match self.ai_choice() {
-            Some(t) => Some((id, self.act(t).unwrap_or_default())),
-            None => {
-                self.skip();
-                Some((id, Vec::new()))
-            }
+        if self.fighters[id].kind.stats().attack != AttackKind::Melee {
+            return None;
         }
+        let here = self.approach_score(id, self.fighters[id].slot);
+        self.moves(id)
+            .into_iter()
+            .map(|s| (self.approach_score(id, s), s))
+            .filter(|(score, _)| *score > here)
+            .max_by_key(|&(score, s)| (score, std::cmp::Reverse(s.col)))
+            .map(|(_, s)| s)
+    }
+
+    /// Plays one action of the active fighter automatically.
+    pub fn ai_step(&mut self) -> Option<Step> {
+        let actor = self.active()?;
+        if let Some(t) = self.ai_choice() {
+            let hit = self.act(t).ok()?;
+            return Some(Step::Strike { actor, hit });
+        }
+        if let Some(to) = self.ai_move() {
+            let from = self.fighters[actor].slot;
+            self.move_active(to).ok()?;
+            return Some(Step::Move { actor, from, to });
+        }
+        self.skip();
+        Some(Step::Wait { actor })
     }
 
     /// Final (squad index, hp, slot) of the player's fighters; dead ones have hp <= 0.
@@ -318,75 +447,92 @@ mod tests {
         bt
     }
 
+    fn kinds(bt: &Battle) -> Vec<UnitKind> {
+        bt.queue().map(|i| bt.fighters[i].kind).collect()
+    }
+
     #[test]
     fn turn_order_by_initiative_player_first_on_ties() {
         // Ranger 7, Archmage 6, Bandit chief 6: the tie goes to the player.
-        let bt = battle(&[(Ranger, b(2)), (Archmage, b(3))], &[(BanditChief, f(2))]);
-        let order: Vec<_> = bt.queue().map(|i| bt.fighters[i].kind).collect();
-        assert_eq!(order, vec![Ranger, Archmage, BanditChief]);
+        let bt = battle(&[(Ranger, b(2)), (Archmage, b(3)), (Knight, f(2))], &[(BanditChief, f(2))]);
+        assert_eq!(kinds(&bt), vec![Ranger, Archmage, BanditChief, Knight]);
     }
 
     #[test]
-    fn warrior_reaches_back_row_only_when_front_is_empty() {
-        let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(0)), (BanditArcher, b(5))]);
+    fn warrior_hits_opposite_card_only_while_it_stands() {
+        let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(1)), (Bandit, f(2)), (Bandit, f(3))]);
         let knight = bt.active().unwrap();
-        assert_eq!(bt.targets(knight), vec![1]);
-        bt.fighters[1].hp = 0;
-        assert_eq!(bt.targets(knight), vec![2]);
+        assert_eq!(bt.targets(knight), vec![2], "opposite occupied: no diagonals");
+        bt.fighters[2].hp = 0;
+        assert_eq!(bt.targets(knight), vec![1, 3], "opposite empty: both flanks open");
+        assert!(bt.is_flank(knight, 1));
     }
 
     #[test]
-    fn back_row_warrior_is_blocked_by_own_front_line() {
-        let mut bt = battle(&[(Knight, b(2)), (Spearman, f(0))], &[(Bandit, f(0))]);
-        assert!(bt.blocked(0));
+    fn warrior_cannot_reach_two_columns_away() {
+        let bt = battle(&[(Knight, f(0))], &[(Bandit, f(2))]);
         assert!(bt.targets(0).is_empty());
-        bt.fighters[1].hp = 0;
-        assert!(!bt.blocked(0));
-        assert_eq!(bt.targets(0), vec![2]);
     }
 
     #[test]
-    fn shooters_and_mages_hit_any_row() {
-        let bt = battle(&[(Ranger, b(0)), (Archmage, b(1))], &[(Bandit, f(0)), (BanditArcher, b(5))]);
-        assert_eq!(bt.targets(0), vec![2, 3]);
-        assert_eq!(bt.targets(1), vec![2, 3]);
+    fn flank_strike_doubles_attack_before_armor() {
+        // Knight 10-14 x2 = 20-28, minus bandit armor 1.
+        let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(3))]);
+        let hit = bt.act(1).unwrap();
+        assert!(hit.flank);
+        assert!((19..=27).contains(&hit.amount), "{hit:?}");
     }
 
     #[test]
-    fn armor_can_block_completely_and_magic_ignores_it() {
-        // Bandit archer 5-8 vs knight armor 5 gives 0..=3; over many seeds some are blocked.
-        let mut blocked = false;
+    fn back_row_warrior_is_helpless() {
+        let bt = battle(&[(Knight, b(2)), (Spearman, f(2))], &[(Bandit, f(2))]);
+        assert!(bt.helpless(0));
+        assert!(bt.targets(0).is_empty());
+    }
+
+    #[test]
+    fn rear_collapses_forward_when_front_row_dies() {
+        let mut bt = battle(&[(Ranger, b(2))], &[(Bandit, f(2)), (BanditArcher, b(4))]);
+        // Ranger alone in the back row: it already stepped forward at the start.
+        assert_eq!(bt.fighters[0].slot, f(2));
+        bt.fighters[1].hp = 1;
+        bt.act(1).unwrap();
+        assert_eq!(bt.fighters[2].slot, f(4), "archer steps into the front row");
+    }
+
+    #[test]
+    fn armor_always_lets_one_through_and_magic_ignores_it() {
         for seed in 0..30 {
             let p = [(Knight, 60, f(2), 0)];
             let mut bt = Battle::new(&p, &[(BanditArcher, b(2))], seed);
             bt.begin();
             bt.skip(); // knight and archer both init 5: knight first
-            let hits = bt.act(0).unwrap();
-            assert!(hits[0].amount <= 3);
-            blocked |= hits[0].amount == 0;
+            let hit = bt.act(0).unwrap();
+            assert!((1..=3).contains(&hit.amount), "{hit:?}");
         }
-        assert!(blocked, "armor never blocked");
-
         let mut bt = battle(&[(Archmage, b(2))], &[(BanditChief, f(2))]);
-        let hits = bt.act(1).unwrap();
-        assert!((9..=13).contains(&hits[0].amount));
+        let hit = bt.act(1).unwrap();
+        assert!((9..=13).contains(&hit.amount));
     }
 
     #[test]
-    fn ranger_strikes_twice() {
-        let mut bt = battle(&[(Ranger, b(2))], &[(BanditChief, f(2))]);
-        let hits = bt.act(1).unwrap();
-        assert_eq!(hits.len(), 2);
-        assert_eq!(bt.fighters[1].hp, 65 - hits.iter().map(|h| h.amount).sum::<i32>());
+    fn actions_cover_moving_and_attacking() {
+        // Ranger has 2 actions: move, then shoot, and only then the turn passes.
+        let mut bt = battle(&[(Ranger, b(2)), (Knight, f(2))], &[(BanditChief, f(2))]);
+        let ranger = bt.active().unwrap();
+        assert_eq!(bt.actions_left(), 2);
+        bt.move_active(b(3)).unwrap();
+        assert_eq!(bt.active(), Some(ranger));
+        bt.act(2).unwrap();
+        assert_ne!(bt.active(), Some(ranger));
     }
 
     #[test]
-    fn extra_attacks_stop_when_target_dies() {
-        let mut bt = battle(&[(Ranger, b(2))], &[(Bandit, f(2)), (Bandit, f(3))]);
-        bt.fighters[1].hp = 1;
-        let hits = bt.act(1).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].killed);
+    fn moves_are_to_adjacent_empty_own_cells() {
+        let bt = battle(&[(Knight, f(0)), (Spearman, f(1))], &[(Bandit, f(0))]);
+        assert_eq!(bt.moves(0), vec![b(0)]);
+        let mut bt = battle(&[(Knight, f(0)), (Spearman, f(1))], &[(Bandit, f(0))]);
+        assert_eq!(bt.move_active(f(2)), Err(ActionError::InvalidTarget));
     }
 
     #[test]
@@ -444,24 +590,31 @@ mod tests {
     }
 
     #[test]
-    fn ai_prefers_weakest_legal_target() {
-        // The spearman is weakest but in the back row; a bandit must hit the front row.
-        let mut bt = battle(&[(Knight, f(2)), (Swordsman, f(3)), (Spearman, b(2))], &[(Bandit, f(2))]);
+    fn ai_prefers_weakest_reachable_target() {
+        // Bandit at f(3) faces the swordsman; the wounded spearman two columns away is out of reach.
+        let mut bt = battle(&[(Knight, f(2)), (Swordsman, f(3)), (Spearman, f(5))], &[(Bandit, f(3))]);
         bt.fighters[1].hp = 20;
         bt.fighters[2].hp = 3;
-        bt.skip(); // knight (5)
-        bt.skip(); // swordsman (5)
-        bt.skip(); // spearman (4, ties go to the player)
-        assert_eq!(bt.fighters[bt.active().unwrap()].kind, Bandit);
+        while bt.fighters[bt.active().unwrap()].kind != Bandit {
+            bt.skip();
+        }
         assert_eq!(bt.ai_choice(), Some(1));
     }
 
     #[test]
-    fn ai_waits_when_it_has_no_action() {
-        let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(2)), (BanditChief, b(2))]);
+    fn ai_warrior_steps_toward_a_target() {
+        // Chief at f(5), the only player card at f(1): nothing in reach, so it walks left.
+        let mut bt = battle(&[(Knight, f(1))], &[(BanditChief, f(5))]);
         assert_eq!(bt.fighters[bt.active().unwrap()].kind, BanditChief);
-        let (actor, hits) = bt.ai_turn().unwrap();
-        assert_eq!(actor, 2);
-        assert!(hits.is_empty(), "chief is blocked behind the bandit");
+        let step = bt.ai_step().unwrap();
+        assert_eq!(step, Step::Move { actor: 1, from: f(5), to: f(4) });
+    }
+
+    #[test]
+    fn ai_back_row_warrior_steps_forward() {
+        let mut bt = battle(&[(Knight, f(2))], &[(Bandit, f(2)), (BanditChief, b(3))]);
+        assert_eq!(bt.fighters[bt.active().unwrap()].kind, BanditChief);
+        let step = bt.ai_step().unwrap();
+        assert_eq!(step, Step::Move { actor: 2, from: b(3), to: f(3) });
     }
 }

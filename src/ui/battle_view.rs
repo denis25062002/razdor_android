@@ -2,7 +2,7 @@ use std::f32::consts::PI;
 
 use macroquad::prelude::*;
 
-use razdor::rules::battle::{Battle, Hit, Outcome, Team, MAX_ROUNDS};
+use razdor::rules::battle::{Battle, Hit, Outcome, Step, Team, MAX_ROUNDS};
 use razdor::rules::formation::{Row, Slot, COLS};
 use razdor::rules::game::{BattleResult, Game};
 
@@ -21,13 +21,30 @@ const OY: f32 = 64.0;
 const PANEL_X: f32 = OX + COLS as f32 * PITCH_X + 16.0;
 const PANEL_H: f32 = 4.0 * PITCH_Y + MID_GAP - 10.0;
 const AI_DELAY: f32 = 0.45;
-const FX_TIME: f32 = 0.6;
+const STRIKE_TIME: f32 = 0.6;
+const MOVE_TIME: f32 = 0.25;
 
-/// A strike being animated: the actor lunges, targets flash and show numbers.
+/// An action being animated.
+enum FxKind {
+    /// The actor lunges, the target flashes and shows the number.
+    Strike { hit: Hit },
+    /// The actor slides between two cells.
+    Move { from: Vec2, to: Vec2 },
+}
+
 struct Fx {
     actor: usize,
-    hits: Vec<Hit>,
+    kind: FxKind,
     t: f32,
+}
+
+impl Fx {
+    fn duration(&self) -> f32 {
+        match self.kind {
+            FxKind::Strike { .. } => STRIKE_TIME,
+            FxKind::Move { .. } => MOVE_TIME,
+        }
+    }
 }
 
 pub struct BattleView {
@@ -75,7 +92,7 @@ impl BattleView {
         let dt = get_frame_time();
         if let Some(fx) = &mut self.fx {
             fx.t += dt;
-            if fx.t >= FX_TIME {
+            if fx.t >= fx.duration() {
                 self.fx = None;
             }
         }
@@ -90,9 +107,15 @@ impl BattleView {
                     self.ai_timer += dt;
                     if self.ai_timer >= AI_DELAY {
                         self.ai_timer = 0.0;
-                        if let Some((actor, hits)) = self.battle.ai_turn() {
-                            self.fx = Some(Fx { actor, hits, t: 0.0 });
-                        }
+                        self.fx = match self.battle.ai_step() {
+                            Some(Step::Strike { actor, hit }) => Some(Fx { actor, kind: FxKind::Strike { hit }, t: 0.0 }),
+                            Some(Step::Move { actor, from, to }) => {
+                                let team = self.battle.fighters[actor].team;
+                                let kind = FxKind::Move { from: cell_pos(team, from), to: cell_pos(team, to) };
+                                Some(Fx { actor, kind, t: 0.0 })
+                            }
+                            Some(Step::Wait { .. }) | None => None,
+                        };
                     }
                 }
             }
@@ -143,8 +166,14 @@ impl BattleView {
             return;
         }
         if let Some(t) = self.fighter_under_mouse() {
-            if let Ok(hits) = self.battle.act(t) {
-                self.fx = Some(Fx { actor: active, hits, t: 0.0 });
+            if let Ok(hit) = self.battle.act(t) {
+                self.fx = Some(Fx { actor: active, kind: FxKind::Strike { hit }, t: 0.0 });
+            }
+        } else if let Some((Team::Player, to)) = cell_under_mouse() {
+            let from = self.battle.fighters[active].slot;
+            if self.battle.move_active(to).is_ok() {
+                let kind = FxKind::Move { from: cell_pos(Team::Player, from), to: cell_pos(Team::Player, to) };
+                self.fx = Some(Fx { actor: active, kind, t: 0.0 });
             }
         }
     }
@@ -153,9 +182,9 @@ impl BattleView {
         clear_background(Color::from_rgba(30, 32, 28, 255));
         let active = self.battle.active();
         let player_turn = active.is_some_and(|a| self.battle.fighters[a].team == Team::Player) && self.fx.is_none();
-        let targets = match (player_turn, active) {
-            (true, Some(a)) => self.battle.targets(a),
-            _ => Vec::new(),
+        let (targets, moves) = match (player_turn, active) {
+            (true, Some(a)) => (self.battle.targets(a), self.battle.moves(a)),
+            _ => (Vec::new(), Vec::new()),
         };
         let hovered_cell = cell_under_mouse();
 
@@ -163,22 +192,32 @@ impl BattleView {
         for (team, slot) in all_cells() {
             let p = cell_pos(team, slot);
             draw_rectangle(p.x, p.y, CARD_W, CARD_H, Color::new(0.2, 0.22, 0.19, 1.0));
-            let lit = self.battle.is_deploying() && team == Team::Player && hovered_cell == Some((team, slot));
+            if team == Team::Player && moves.contains(&slot) {
+                draw_rectangle(p.x, p.y, CARD_W, CARD_H, Color::new(1.0, 1.0, 0.6, 0.15));
+            }
+            let lit = (self.battle.is_deploying() || moves.contains(&slot))
+                && team == Team::Player
+                && hovered_cell == Some((team, slot));
             draw_rectangle_lines(p.x, p.y, CARD_W, CARD_H, 1.0, if lit { INK } else { Color::new(0.35, 0.37, 0.32, 1.0) });
         }
         let mid = cell_pos(Team::Player, Slot::new(Row::Front, 0)).y - MID_GAP / 2.0;
         text_centered("vs", OX + (COLS as f32 * PITCH_X) / 2.0, mid + 8.0, 22.0, DIM);
 
         for (i, f) in self.battle.fighters.iter().enumerate() {
-            let in_fx = self.fx.as_ref().is_some_and(|fx| fx.hits.iter().any(|h| h.target == i));
+            let in_fx = self.fx.as_ref().is_some_and(|fx| matches!(&fx.kind, FxKind::Strike { hit } if hit.target == i));
             if !f.alive() && !in_fx {
                 continue;
             }
             let mut p = cell_pos(f.team, f.slot);
             if let Some(fx) = self.fx.as_ref().filter(|fx| fx.actor == i) {
-                let lunge = (fx.t / (FX_TIME * 0.5)).min(1.0);
-                let dir = if f.team == Team::Player { -1.0 } else { 1.0 };
-                p.y += dir * 16.0 * (lunge * PI).sin();
+                match fx.kind {
+                    FxKind::Strike { .. } => {
+                        let lunge = (fx.t / (STRIKE_TIME * 0.5)).min(1.0);
+                        let dir = if f.team == Team::Player { -1.0 } else { 1.0 };
+                        p.y += dir * 16.0 * (lunge * PI).sin();
+                    }
+                    FxKind::Move { from, to } => p = from.lerp(to, (fx.t / MOVE_TIME).min(1.0)),
+                }
             }
             let border = if Some(i) == active && self.fx.is_none() {
                 Some(ACCENT)
@@ -190,12 +229,17 @@ impl BattleView {
                 None
             };
             self.draw_card(assets, i, p, border);
+            if let (Some(a), true) = (active, targets.contains(&i)) {
+                if self.battle.is_flank(a, i) {
+                    text("x2", p.x + CARD_W - 30.0, p.y + 24.0, 24.0, ACCENT);
+                }
+            }
         }
 
         if let Some(fx) = &self.fx {
             self.draw_fx(fx);
         }
-        self.draw_panel(player_turn, &targets);
+        self.draw_panel(player_turn, &targets, &moves);
     }
 
     fn draw_card(&self, assets: &Assets, id: usize, p: Vec2, border: Option<Color>) {
@@ -213,8 +257,8 @@ impl BattleView {
         if f.is_hero {
             text("*", p.x + 6.0, p.y + 22.0, 26.0, ACCENT);
         }
-        if !self.battle.is_deploying() && f.alive() && self.battle.blocked(id) {
-            text_centered("blocked", p.x + CARD_W / 2.0, p.y + 18.0, 16.0, DIM);
+        if !self.battle.is_deploying() && f.alive() && self.battle.helpless(id) {
+            text_centered("helpless", p.x + CARD_W / 2.0, p.y + 18.0, 16.0, DIM);
         }
         if let Some(c) = border {
             draw_rectangle_lines(p.x - 2.0, p.y - 2.0, CARD_W + 4.0, CARD_H + 4.0, 4.0, c);
@@ -222,36 +266,28 @@ impl BattleView {
     }
 
     fn draw_fx(&self, fx: &Fx) {
-        let k = fx.t / FX_TIME;
-        let mut per_target: Vec<(usize, Vec<String>, bool)> = Vec::new();
-        for h in &fx.hits {
-            let label = match (h.heal, h.amount) {
-                (true, n) => format!("+{n}"),
-                (false, 0) => "blocked".to_string(),
-                (false, n) => format!("-{n}"),
-            };
-            match per_target.iter_mut().find(|(t, _, _)| *t == h.target) {
-                Some(entry) => entry.1.push(label),
-                None => per_target.push((h.target, vec![label], h.heal)),
-            }
-        }
-        for (target, labels, heal) in per_target {
-            let f = &self.battle.fighters[target];
-            let p = cell_pos(f.team, f.slot);
-            let flash = if heal {
-                Color::new(0.2, 1.0, 0.3, 0.45 * (1.0 - k))
-            } else {
-                Color::new(1.0, 0.1, 0.1, 0.5 * (1.0 - k))
-            };
-            draw_rectangle(p.x, p.y, CARD_W, CARD_H, flash);
-            let label = labels.join(" ");
-            let y = p.y + 50.0 - 30.0 * k;
-            text_centered(&label, p.x + CARD_W / 2.0 + 1.0, y + 1.0, 30.0, BLACK);
-            text_centered(&label, p.x + CARD_W / 2.0, y, 30.0, if heal { GREEN } else { WHITE });
-        }
+        let FxKind::Strike { hit } = &fx.kind else { return };
+        let k = fx.t / STRIKE_TIME;
+        let f = &self.battle.fighters[hit.target];
+        let p = cell_pos(f.team, f.slot);
+        let flash = if hit.heal {
+            Color::new(0.2, 1.0, 0.3, 0.45 * (1.0 - k))
+        } else {
+            Color::new(1.0, 0.1, 0.1, 0.5 * (1.0 - k))
+        };
+        draw_rectangle(p.x, p.y, CARD_W, CARD_H, flash);
+        let label = match (hit.heal, hit.flank) {
+            (true, _) => format!("+{}", hit.amount),
+            (false, true) => format!("-{} flank!", hit.amount),
+            (false, false) => format!("-{}", hit.amount),
+        };
+        let y = p.y + 50.0 - 30.0 * k;
+        let size = if hit.flank { 22.0 } else { 28.0 };
+        text_centered(&label, p.x + CARD_W / 2.0 + 1.0, y + 1.0, size, BLACK);
+        text_centered(&label, p.x + CARD_W / 2.0, y, size, if hit.heal { GREEN } else { WHITE });
     }
 
-    fn draw_panel(&self, player_turn: bool, targets: &[usize]) {
+    fn draw_panel(&self, player_turn: bool, targets: &[usize], moves: &[Slot]) {
         let x = PANEL_X;
         let w = screen_width() - x - 16.0;
         draw_rectangle(x, OY, w, PANEL_H, PANEL);
@@ -265,6 +301,10 @@ impl BattleView {
         text(title, x + 12.0, OY + 30.0, 26.0, color);
         if !self.battle.is_deploying() {
             text(&format!("Round {}/{}", self.battle.round, MAX_ROUNDS), x + w - 130.0, OY + 30.0, 20.0, DIM);
+        }
+        if let Some(a) = self.battle.active() {
+            let total = self.battle.fighters[a].kind.stats().actions;
+            text(&format!("Actions {}/{total}", self.battle.actions_left()), x + w - 130.0, OY + 52.0, 18.0, DIM);
         }
 
         // Hovered unit (or the active one) details.
@@ -285,11 +325,13 @@ impl BattleView {
         let mut y = OY + 140.0;
         if self.battle.is_deploying() {
             for line in [
-                "Click a card, then a cell to move",
-                "or swap it. Warriors hit the enemy",
-                "front row first; shooters and mages",
-                "hit anyone. A back-row warrior waits",
-                "until your own front row falls.",
+                "Click a card, then a cell to move or",
+                "swap it. Warriors fight from the front",
+                "row and hit the card opposite; if that",
+                "cell is empty they flank a neighbour",
+                "for double damage. Shooters and mages",
+                "hit anyone. When a front row falls,",
+                "the rear steps forward.",
             ] {
                 text(line, x + 12.0, y, 18.0, DIM);
                 y += 20.0;
@@ -310,10 +352,10 @@ impl BattleView {
         }
 
         if player_turn {
-            let hint = if targets.is_empty() {
-                "Nothing in reach: Space to wait"
-            } else {
-                "Click a framed card, Space to wait"
+            let hint = match (targets.is_empty(), moves.is_empty()) {
+                (false, _) => "Click a framed card or a lit cell. Space: end turn",
+                (true, false) => "Nothing in reach: step to a lit cell, or Space",
+                (true, true) => "Nothing to do: Space to end turn",
             };
             text(hint, x + 12.0, OY + PANEL_H - 14.0, 18.0, ACCENT);
         }

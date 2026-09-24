@@ -48,32 +48,40 @@ Recruits that die in battle are gone.
 Enemies: Bandit (26 HP, 5–8, armor 1, melee), Bandit archer (18 HP, 4–7, ranged 6),
 Bandit chief (55 HP, 9–13, armor 3, melee).
 
-### Battle (v2 — card formation, as in the original)
-Replaces the v1 10×8 movement grid.
+### Battle (v3: card formation, rules from the Discord Times wiki)
+Replaces the v1 10×8 movement grid. Rules follow the fan wiki
+(discorttimes.fandom.com: Параметры, Фланговый удар, Стрелок); gaps are marked *(guess)*.
 
-- Each side has a **2×6 formation**: a front row and a back row of 6 cells. Cards never
-  move during the fight. Before it starts there is a **deploy phase** where the player
-  moves/swaps their own cards; the formation is kept for the next battle.
+- Each side has a **2×6 formation**: a front row and a back row of 6 cells. Before the
+  fight there is a **deploy phase** where the player moves/swaps their own cards; the
+  formation is kept for the next battle.
 - Every unit is a **warrior** (melee), **shooter** (ranged) or **mage** (magic / heal).
-- **Warrior:** may act only from the front row, or from the back row if its own front
-  row is empty. Targets the enemy front row; the back row only once the front is empty.
+- **Actions:** on its turn a unit has `actions` points (Ranger 2, others 1). Each attack,
+  heal or move costs 1. Space ends the turn early.
+- **Move:** step to an orthogonally adjacent empty cell of your own formation *(guess:
+  orthogonal only)*.
+- **Warrior reach:** only from the front row (back-row warriors are helpless). Hits the
+  enemy front-row card in the same column. If that opposite cell is empty it may instead
+  hit a card in a neighbouring column: a **flank strike**, attack ×2.
+- **Collapse:** when a side's front row is empty, its back row steps forward (same columns).
+  So melee never reaches the back row directly.
 - **Shooter / mage:** may target any enemy. Magic ignores armor.
 - **Healer:** restores HP to any wounded ally, capped at max HP.
-- Damage per attack = roll(min..=max) − armor (magic ignores armor), **minimum 0** —
-  heavy armor can block a blow completely. A unit makes `attacks` strikes per turn on
-  the same target (stops if it dies).
+- Damage = roll(min..=max) (×2 on a flank) − armor (magic ignores armor), **minimum 1**:
+  armor never fully blocks.
+- **No counterattacks** (none documented in the original).
 - Turn order each round: living units by initiative (desc), ties → player first.
-  A turn is one action or a skip (Space). A unit with no legal action can only skip.
-- Enemy AI: act on the lowest-HP legal target; heal the most wounded ally.
+- Enemy AI, per action: act on the lowest-HP legal target (flank preferred on ties); a
+  warrior with no target steps toward a cell that has one; otherwise it waits.
 - End: all enemies dead = victory; hero dead = defeat. After **20 rounds** the battle
   stops undecided: the squad withdraws, the camp stays, no reward.
 - Squad cap: 12 including the hero. Hiring drops a unit into the first free cell of
   its preferred row (warriors front, others back), centre columns first.
 
-Unit changes vs v1: `moves` and ranges removed; `attacks` added (Ranger: 2 × 5–7).
+Unit changes vs v1: `moves` and ranges removed; `actions` added (Ranger: 2, dmg 5–7).
 Camp formations — Bandit camp: 3 bandits front, 2 archers back, reward 100.
 Bandit lair: chief + 2 bandits front, 2 archers back, reward 150.
-Knight armor 5 (so archers can glance off). Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
+Knight armor 5. Enemy stats retuned: Bandit 28 HP 6–9, Bandit archer 20 HP 5–8, Chief 65 HP 11–15 armor 3.
 Balance (AI vs AI, 200 seeds): hero alone loses the camp; hero + 3 spearmen wins it;
 the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 
@@ -109,7 +117,7 @@ src/
 - Enemy turns are played with a short delay and a strike/hit animation so they are readable.
 
 ## Testing
-Unit tests in `rules`: turn order, warrior reach and back-row blocking, damage/armor
-block/magic, multiple attacks, heal cap, deploy swaps, win/lose/stalemate, AI target
-choice, travel adjacency, hiring cost/cap/slotting, battle result updates the squad.
+Unit tests in `rules`: turn order, column reach and flank ×2, helpless back-row
+warriors, collapse, movement and action points, armor minimum 1, magic, heal cap, deploy
+swaps, win/lose/stalemate, AI targeting and approach, travel, hiring, battle results.
 UI is verified by running the game.
