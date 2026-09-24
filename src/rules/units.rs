@@ -147,6 +147,17 @@ impl UnitKind {
         }
     }
 
+    /// Daily pay; heroes are free.
+    pub fn wage(self) -> i32 {
+        match self {
+            UnitKind::Spearman => 3,
+            UnitKind::Archer => 4,
+            UnitKind::Swordsman => 5,
+            UnitKind::Healer => 4,
+            _ => 0,
+        }
+    }
+
     pub fn starting_gold(self) -> i32 {
         match self {
             UnitKind::Knight => 100,
@@ -164,11 +175,13 @@ pub struct Unit {
     pub hp: i32,
     /// Cell in the squad's battle formation.
     pub slot: Slot,
+    /// Missed the last payday: refuses to fight until paid.
+    pub unpaid: bool,
 }
 
 impl Unit {
     pub fn new(kind: UnitKind, slot: Slot) -> Self {
-        Unit { kind, hp: kind.stats().max_hp, slot }
+        Unit { kind, hp: kind.stats().max_hp, slot, unpaid: false }
     }
 
     pub fn heal_full(&mut self) {

@@ -21,18 +21,55 @@ Pick a hero class:
 | Archmage | 32 | 9–13  | 0     | 3    | 6    | Ranged 6, magic     | 120  |
 | Ranger   | 40 | 8–11  | 1     | 4    | 7    | Ranged 7            | 110  |
 
-### World map
-Four hand-placed locations joined by roads:
+### World map and time (v2, as in the original)
+Replaces the v1 four-node graph. Sources: overview image of the first official map on the
+Discord Times wiki, mygames.org.ru, pooha.net tips, discordtimes.ucoz.ru walkthrough.
 
-- **Oakford** (home town) — recruits: Spearman, Archer, Healer
-- **Bandit camp** — battle vs 3 bandits + 1 bandit archer, reward 80 gold
-- **Greywall** (second town) — recruits: Swordsman, Archer, Healer
-- **Bandit lair** — battle vs chief + 2 bandits + 2 bandit archers, reward 150 gold
+**Map.** A hand-made 64×40 tile map stored as text in `data/kingdom.txt`, laid out like the
+original's first scenario: castle in the north-west, villages, forests crossed by dirt roads,
+a ruined fortress, a church, a fishing village by a lake, swamp in the south-west, sea along
+the south and a second castle with a bridge in the south-east.
 
-Roads: Oakford–Camp, Oakford–Greywall, Camp–Lair, Greywall–Lair.
-Clicking an adjacent location moves the hero there; each move = 1 day.
-Entering a town fully heals the squad. Entering an uncleared camp starts a battle.
-Clearing both camps = victory.
+| Terrain  | Char | Game time per tile | Passable |
+|----------|------|--------------------|----------|
+| Road     | `=`  | 30 min             | yes      |
+| Grass    | `.`  | 1 h                | yes      |
+| Forest   | `T`  | 2 h 30             | yes      |
+| Swamp    | `,`  | 3 h                | yes      |
+| Water    | `~`  | —                  | no       |
+| Mountain | `^`  | —                  | no       |
+
+Location letters sit on road/grass tiles (listed in `World::standard`).
+Click a tile and the party walks the cheapest path (A*, 8-directional). The camera follows.
+
+**Time.** A clock (day, weekday, HH:MM), starting day 1 (Monday) 08:00. **Time passes only
+while the party moves** (as in the original): walking a tile costs its terrain time; real
+speed is 1 game hour ≈ 0.2 s. At **00:00** a new day starts *(sources disagree between noon
+and midnight; midnight chosen, it matches the "wait for 24:00 to collect tribute" tip)*:
+- castle income is added (Oakford: 20 gold);
+- every recruit is paid its daily wage (hero is free); if gold runs out, the remaining
+  units are **unpaid** and refuse to fight (they sit out battles) until a later payday;
+- village tribute becomes available again; camps may send out a new gang.
+
+**Locations.**
+- **Castle** (Oakford: yours, income 20/day; Greywall: foreign). Recruit, full heal on entry.
+- **Village** ×3: once per day either collect tribute (10 gold) or ask the priest to heal
+  the squad.
+- **Church**: full heal, free.
+- **Bandit camp** / **Bandit lair**: garrisoned; entering starts the battle. Clearing both wins.
+
+**Roaming parties.** Bandit gangs move on the map in the same game time as the player
+(0.8× player speed on equal terrain). They wander around their home camp, and chase the
+player when within 5 tiles. Touching a gang starts a battle against its formation (reward
+30 gold). After a stalemate the gang ignores the player for 2 game hours. Each uncleared camp
+spawns a gang every 3 days while it has fewer than 2 out. Two gangs roam from the start.
+
+| Recruit   | Wage/day |
+|-----------|----------|
+| Spearman  | 3        |
+| Archer    | 4        |
+| Swordsman | 5        |
+| Healer    | 4        |
 
 ### Recruits
 
@@ -87,6 +124,8 @@ the lair needs ~5 recruits (hero + 3 spearmen alone loses it).
 
 ### Out of scope (YAGNI)
 XP/levels, quests, dialogue, equipment, save/load, sound, morale, fog of war, hex grid.
+Map v2 leaves out: ships (half-speed time), resurrecting the dead within 7 days, leaving
+garrisons, capturing castles, taverns, non-bandit parties (peasants, undead, feudal lords).
 
 ## Architecture
 
@@ -97,10 +136,13 @@ src/
     mod.rs
     rng.rs         small seeded xorshift RNG (deterministic tests)
     units.rs       UnitKind, Stats, AttackKind, Unit
-    world.rs       World map: locations, roads, travel
+    map.rs         TileMap: terrain grid parsed from data/kingdom.txt, A* pathfinding
+    clock.rs       Clock: game minutes → day / weekday / HH:MM, midnight rollover
+    world.rs       Locations and roaming parties on the tile map
     formation.rs   Row, Slot, 2×6 formation helpers
     battle.rs      Battle: deploy, turn order, attack/heal, win/lose/stalemate, AI
-    game.rs        Game: hero, gold, squad, day, location; hire; battle setup/resolve
+    game.rs        Game: hero, gold, squad, clock, travel tick (movement, time, parties,
+                   encounters, paydays), hiring, tribute, battle setup/resolve
   ui/              macroquad presentation only
     mod.rs
     assets.rs      Assets: draws units/tiles; optional PNG override dir
@@ -119,5 +161,7 @@ src/
 ## Testing
 Unit tests in `rules`: turn order, column reach and flank ×2, helpless back-row
 warriors, collapse, movement and action points, armor minimum 1, magic, heal cap, deploy
-swaps, win/lose/stalemate, AI targeting and approach, travel, hiring, battle results.
+swaps, win/lose/stalemate, AI targeting and approach, hiring, battle results.
+Map parsing and A* (costs, impassable terrain), clock rollover, wages and unpaid units,
+daily tribute, time frozen while standing still, party chase and encounter, arrival.
 UI is verified by running the game.

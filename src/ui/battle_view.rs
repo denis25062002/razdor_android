@@ -386,7 +386,7 @@ impl BattleView {
                 Some(Screen::WorldMap)
             }
             BattleResult::Withdrew { lost } => {
-                *message = Some(format!("You withdraw from the camp{}.", losses(lost)));
+                *message = Some(format!("Nobody breaks. You withdraw{}.", losses(lost)));
                 Some(Screen::WorldMap)
             }
         }

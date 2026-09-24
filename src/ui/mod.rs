@@ -3,6 +3,7 @@ pub mod assets;
 pub mod battle_view;
 pub mod screens;
 pub mod widgets;
+pub mod world_view;
 
 use razdor::rules::game::Game;
 
@@ -34,7 +35,7 @@ impl App {
     pub fn frame(&mut self) {
         let next = match (&mut self.screen, &mut self.game) {
             (Screen::ClassSelect, game) => screens::class_select(game, &self.assets),
-            (Screen::WorldMap, Some(game)) => screens::world_map(game, &self.assets, &mut self.message),
+            (Screen::WorldMap, Some(game)) => world_view::frame(game, &self.assets, &mut self.message),
             (Screen::Town, Some(game)) => screens::town(game, &self.assets, &mut self.message),
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message),
             (Screen::GameOver, game) => screens::game_over(game),

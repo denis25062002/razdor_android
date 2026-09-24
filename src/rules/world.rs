@@ -1,80 +1,144 @@
 use super::formation::{Row, Slot};
+use super::map::{Tile, TileMap};
 use super::units::UnitKind;
+
+const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 
 #[derive(Clone, Debug)]
 pub enum LocationKind {
-    Town { recruits: Vec<UnitKind> },
+    /// `owned` castles pay `income` every midnight.
+    Castle { recruits: Vec<UnitKind>, income: i32, owned: bool },
+    /// Once per day: tribute, or the priest heals the squad instead.
+    Village { tribute: i32, used_on_day: Option<u32> },
+    Church,
     Camp { enemies: Vec<(UnitKind, Slot)>, reward: i32 },
 }
 
 #[derive(Clone, Debug)]
 pub struct Location {
     pub name: &'static str,
-    /// Position on the map in 0..1 screen-independent coordinates.
-    pub pos: (f32, f32),
+    pub tile: Tile,
     pub kind: LocationKind,
     pub cleared: bool,
 }
 
+/// A bandit gang roaming the map.
 #[derive(Clone, Debug)]
-pub struct World {
-    pub locations: Vec<Location>,
-    pub roads: Vec<(usize, usize)>,
+pub struct Party {
+    /// Position in tile units; tile (x, y) has its centre at (x, y).
+    pub pos: (f32, f32),
+    /// Camp it belongs to (index into `locations`).
+    pub home: usize,
+    pub enemies: Vec<(UnitKind, Slot)>,
+    pub path: Vec<Tile>,
+    pub chasing: bool,
+    /// Game minute until which it leaves the player alone (after a stalemate).
+    pub ignore_until: f64,
 }
 
-pub const HOME: usize = 0;
+impl Party {
+    pub fn tile(&self) -> Tile {
+        (self.pos.0.round() as i32, self.pos.1.round() as i32)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct World {
+    pub map: TileMap,
+    pub locations: Vec<Location>,
+    pub parties: Vec<Party>,
+}
+
+pub const GANG_REWARD: i32 = 30;
+
+pub fn gang() -> Vec<(UnitKind, Slot)> {
+    use UnitKind::*;
+    vec![(Bandit, Slot::new(Row::Front, 2)), (Bandit, Slot::new(Row::Front, 3)), (BanditArcher, Slot::new(Row::Back, 2))]
+}
 
 impl World {
     pub fn standard() -> Self {
         use UnitKind::*;
+        let map = TileMap::parse(KINGDOM);
+        let tile = |c: char| {
+            map.markers.iter().find(|(m, _)| *m == c).map(|&(_, t)| t).unwrap_or_else(|| panic!("map has no '{c}'"))
+        };
         let f = |col| Slot::new(Row::Front, col);
         let b = |col| Slot::new(Row::Back, col);
-        let loc = |name, pos, kind| Location { name, pos, kind, cleared: false };
-        World {
-            locations: vec![
-                loc("Oakford", (0.18, 0.70), LocationKind::Town { recruits: vec![Spearman, Archer, Healer] }),
-                loc(
-                    "Bandit camp",
-                    (0.45, 0.30),
-                    LocationKind::Camp {
-                        enemies: vec![
-                            (Bandit, f(1)),
-                            (Bandit, f(2)),
-                            (Bandit, f(3)),
-                            (BanditArcher, b(2)),
-                            (BanditArcher, b(3)),
-                        ],
-                        reward: 100,
-                    },
-                ),
-                loc("Greywall", (0.55, 0.78), LocationKind::Town { recruits: vec![Swordsman, Archer, Healer] }),
-                loc(
-                    "Bandit lair",
-                    (0.84, 0.42),
-                    LocationKind::Camp {
-                        enemies: vec![
-                            (BanditChief, f(2)),
-                            (Bandit, f(1)),
-                            (Bandit, f(3)),
-                            (BanditArcher, b(1)),
-                            (BanditArcher, b(3)),
-                        ],
-                        reward: 150,
-                    },
-                ),
-            ],
-            roads: vec![(0, 1), (0, 2), (1, 3), (2, 3)],
-        }
+        let loc = |name, c, kind| Location { name, tile: tile(c), kind, cleared: false };
+        let village = || LocationKind::Village { tribute: 10, used_on_day: None };
+        let locations = vec![
+            loc(
+                "Oakford",
+                'C',
+                LocationKind::Castle { recruits: vec![Spearman, Archer, Healer], income: 20, owned: true },
+            ),
+            loc("Millbrook", 'M', village()),
+            loc("Ashford", 'A', village()),
+            loc("Saltmarsh", 'S', village()),
+            loc("St. Beor's church", '+', LocationKind::Church),
+            loc(
+                "Greywall",
+                'G',
+                LocationKind::Castle { recruits: vec![Swordsman, Archer, Healer], income: 0, owned: false },
+            ),
+            loc(
+                "Bandit camp",
+                'B',
+                LocationKind::Camp {
+                    enemies: vec![(Bandit, f(1)), (Bandit, f(2)), (Bandit, f(3)), (BanditArcher, b(2)), (BanditArcher, b(3))],
+                    reward: 100,
+                },
+            ),
+            loc(
+                "Bandit lair",
+                'L',
+                LocationKind::Camp {
+                    enemies: vec![
+                        (BanditChief, f(2)),
+                        (Bandit, f(1)),
+                        (Bandit, f(3)),
+                        (BanditArcher, b(1)),
+                        (BanditArcher, b(3)),
+                    ],
+                    reward: 150,
+                },
+            ),
+        ];
+        let mut w = World { map, locations, parties: Vec::new() };
+        // Two gangs already on the roads, one from each camp.
+        let camp = w.index_of("Bandit camp");
+        let lair = w.index_of("Bandit lair");
+        w.spawn_party(camp, (40, 14));
+        w.spawn_party(lair, (14, 21));
+        w
     }
 
-    pub fn connected(&self, a: usize, b: usize) -> bool {
-        self.roads.iter().any(|&(x, y)| (x, y) == (a, b) || (y, x) == (a, b))
+    pub fn index_of(&self, name: &str) -> usize {
+        self.locations.iter().position(|l| l.name == name).unwrap_or_else(|| panic!("no location {name}"))
+    }
+
+    pub fn location_at(&self, t: Tile) -> Option<usize> {
+        self.locations.iter().position(|l| l.tile == t)
+    }
+
+    pub fn spawn_party(&mut self, home: usize, at: Tile) {
+        self.parties.push(Party {
+            pos: (at.0 as f32, at.1 as f32),
+            home,
+            enemies: gang(),
+            path: Vec::new(),
+            chasing: false,
+            ignore_until: 0.0,
+        });
+    }
+
+    pub fn camps(&self) -> impl Iterator<Item = (usize, &Location)> {
+        self.locations.iter().enumerate().filter(|(_, l)| matches!(l.kind, LocationKind::Camp { .. }))
     }
 
     pub fn all_camps_cleared(&self) -> bool {
-        self.locations
-            .iter()
-            .all(|l| !matches!(l.kind, LocationKind::Camp { .. }) || l.cleared)
+        self.camps().all(|(_, l)| l.cleared)
     }
 }
 
@@ -83,9 +147,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn roads_are_bidirectional() {
+    fn standard_world_places_every_location_on_a_passable_tile() {
         let w = World::standard();
-        assert!(w.connected(0, 1) && w.connected(1, 0));
-        assert!(!w.connected(0, 3));
+        assert_eq!(w.locations.len(), 8);
+        for l in &w.locations {
+            assert!(w.map.passable(l.tile), "{} is on impassable ground", l.name);
+        }
+        assert_eq!(w.location_at(w.locations[0].tile), Some(0));
+    }
+
+    #[test]
+    fn every_location_is_reachable_from_home() {
+        let w = World::standard();
+        let home = w.locations[0].tile;
+        for l in &w.locations[1..] {
+            assert!(!w.map.path(home, l.tile).is_empty(), "{} unreachable", l.name);
+        }
+    }
+
+    #[test]
+    fn two_gangs_start_on_the_map() {
+        let w = World::standard();
+        assert_eq!(w.parties.len(), 2);
+        assert!(w.parties.iter().all(|p| w.map.passable(p.tile())));
     }
 }

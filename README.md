@@ -10,8 +10,15 @@ cargo test          # game rules
 
 ## How to play
 - Pick a hero: Knight (melee tank), Archmage (magic ignores armor), Ranger (long bow).
-- On the map, click a highlighted neighbouring location to travel (1 day).
-  Towns heal your squad and sell recruits; red triangles are bandit camps.
+- The kingdom is a free-roaming tile map (`data/kingdom.txt`, editable): click anywhere to
+  walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
+  impassable. Right click or Space stops.
+- Time runs only while you travel, as in the original. At midnight your castle pays income
+  and every recruit takes a daily wage; units you can't pay refuse to fight.
+- Villages give tribute once a day, or their priest heals you instead. Castles and the
+  church heal the squad; castles recruit.
+- Bandit gangs roam the map, chase you when you're close ("!") and attack on contact.
+  Surviving camps send out new gangs every few days.
 - Battles are fought card-style, as in the original: each side stands in a 2×6
   formation (front row + back row). Before the fight, click a card and then a cell to
   move or swap it, then press **Fight!** (or Enter). The formation is kept.
