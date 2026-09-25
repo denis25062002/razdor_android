@@ -10,6 +10,7 @@
 //! `mechanics.md` §8.
 
 use crate::dt::dtm::{Event, EventKind, Scenario};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
 /// 1-based event id, in file order.
@@ -33,7 +34,7 @@ const CHAIN_DEPTH: usize = 32;
 
 /// Where the player stands: in a building (1-based index in the scenario) or on an event point
 /// (its point id).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Place {
     Building(u16),
     Point(u8),
@@ -51,7 +52,7 @@ pub enum UnitPick {
 }
 
 /// The answer to an event's yes/no question. Events without a question count as `Yes`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Answer {
     Yes,
     No,
@@ -71,7 +72,7 @@ pub enum Extension {
 
 /// What the game has to show or do after the engine ran. World effects (gold, units, armies,
 /// …) have already been applied through [`EventWorld`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventOutcome {
     /// The event fired. `message`: it has a message to show (otherwise it fired silently).
     Fired { event: EventId, message: bool },
@@ -148,7 +149,7 @@ pub trait EventWorld {
     fn hero_to_one_hp(&mut self);
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct EventState {
     /// The last answer, if the event ever fired or was declined.
     answer: Option<Answer>,
@@ -162,20 +163,26 @@ struct EventState {
     window: Option<u64>,
 }
 
-/// The script state of a scenario: see the module docs.
-#[derive(Clone, Debug)]
+/// The script state of a scenario: see the module docs. A save keeps the state only; the
+/// events and places come from the scenario again ([`EventEngine::restore_statics`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventEngine {
+    #[serde(skip)]
     events: Vec<Event>,
     state: Vec<EventState>,
+    #[serde(skip)]
     places: HashMap<Place, Vec<EventId>>,
     flags: BTreeSet<String>,
     journal: Vec<EventId>,
     completed: Vec<EventId>,
+    #[serde(skip)]
     victory: EventId,
+    #[serde(skip)]
     defeat: EventId,
     pending: Option<EventId>,
     last_place: Option<Place>,
     ended: Option<EventOutcome>,
+    #[serde(skip)]
     extensions: Vec<(EventId, Extension)>,
 }
 
@@ -272,6 +279,20 @@ impl EventEngine {
             ended: None,
             extensions,
         }
+    }
+
+    /// Puts back what a save leaves out (the events, places, victory and defeat events)
+    /// from `fresh`, the engine of the same scenario. Fails if the event count differs.
+    pub fn restore_statics(&mut self, fresh: EventEngine) -> Result<(), String> {
+        if self.state.len() != fresh.events.len() {
+            return Err(format!("{} events saved, the map has {}", self.state.len(), fresh.events.len()));
+        }
+        self.events = fresh.events;
+        self.places = fresh.places;
+        self.victory = fresh.victory;
+        self.defeat = fresh.defeat;
+        self.extensions = fresh.extensions;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------------------

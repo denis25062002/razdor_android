@@ -6,6 +6,7 @@ use razdor::rules::battle::Team;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
 use razdor::rules::formation::Slot;
 use razdor::rules::game::Game;
+use razdor::rules::save::ScenarioRef;
 use razdor::rules::script::ScriptEnd;
 use razdor::rules::units::Stats;
 
@@ -84,6 +85,9 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             }
         }
     }
+    if button(screen_width() - 220.0, 40.0, 180.0, 44.0, "Load a game", true) {
+        return Some(Screen::Load(super::saves::LoadView::new(super::saves::Back::Title)));
+    }
     let y = screen_height() - 110.0;
     if let Some((Some(_), desc)) = hovered {
         for (i, line) in wrap(&desc, w, 18.0).iter().take(4).enumerate() {
@@ -148,7 +152,15 @@ pub fn class_select(
         }
         if hover && clicked() {
             *game = Some(match &scenario {
-                Some((e, c)) => Game::from_scenario(c.clone(), &e.scenario, hero, seed()),
+                Some((e, c)) => {
+                    let mut g = Game::from_scenario(c.clone(), &e.scenario, hero, seed());
+                    // Saves name the map file and a hash of its bytes.
+                    match ScenarioRef::of_map(&e.path, &e.file) {
+                        Ok(origin) => g.set_origin(origin),
+                        Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
+                    }
+                    g
+                }
                 None => Game::new(content.clone(), hero, seed()),
             });
             return Some(Screen::WorldMap);

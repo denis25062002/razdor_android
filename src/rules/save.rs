@@ -1,0 +1,620 @@
+//! Saved games: the whole [`Game`] with serde, as bzip2-compressed JSON.
+//!
+//! A save holds the game's state only. What comes from the scenario (the map, the texts of
+//! buildings, armies and events, the event scripts) and the content (units, items, spells)
+//! is left out and rebuilt on load: the save names its scenario ([`ScenarioRef`]: the demo,
+//! or a map file of the install with an FNV-1a hash of its bytes), and loading reads that map
+//! again from `RAZDOR_DT_DIR`. A missing or changed map is refused ([`SaveError`]).
+//!
+//! Saves are the player's data. They live in the platform data folder
+//! (`$XDG_DATA_HOME/razdor/saves`, `~/.local/share/razdor/saves`, `%APPDATA%\razdor\saves`,
+//! …; [`default_dir`]), or where `RAZDOR_SAVE_DIR` points; never in the repo or the game's
+//! folder. Manual saves go to `manual/`, autosaves to `auto/`: one before every battle and
+//! one at every 12:00 report, named by the in-game date as in the original ("1204.06.03,
+//! 12 h"). Only the newest [`AUTOSAVES_KEPT`] autosaves are kept.
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::dt::dtm::Scenario;
+
+use super::clock::Clock;
+use super::content::{Content, ItemId, UnitId};
+use super::events::EventEngine;
+use super::game::Game;
+use super::world::World;
+
+/// Bumped when the saved state changes shape; older saves are refused.
+pub const FORMAT_VERSION: u32 = 1;
+pub const EXTENSION: &str = "rzsave";
+/// Overrides the save folder (tests, portable installs).
+pub const DIR_ENV: &str = "RAZDOR_SAVE_DIR";
+/// Autosaves kept; older ones are deleted when a new one is written.
+pub const AUTOSAVES_KEPT: usize = 10;
+const MANUAL_DIR: &str = "manual";
+const AUTO_DIR: &str = "auto";
+
+/// Which scenario a game plays.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScenarioRef {
+    /// The built-in demo (our own content, always available).
+    Demo,
+    /// A map of the install: its file name without the extension and a hash of its bytes.
+    Map { file: String, hash: u64 },
+}
+
+impl ScenarioRef {
+    /// The reference of map file `path` (named `file` without the extension).
+    pub fn of_map(path: &Path, file: &str) -> std::io::Result<ScenarioRef> {
+        Ok(ScenarioRef::Map { file: file.to_string(), hash: fnv1a(&std::fs::read(path)?) })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaveKind {
+    Manual,
+    Auto,
+}
+
+/// What the load screen shows of a save.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SaveMeta {
+    pub version: u32,
+    pub kind: SaveKind,
+    /// The save's name: the player's for manual saves, "Battle - …" or the date for autosaves.
+    pub name: String,
+    pub scenario: ScenarioRef,
+    /// The scenario's title (the demo's, or the map's) and the hero's class.
+    pub title: String,
+    pub hero: String,
+    /// In-game date and time ([`Clock::label`]).
+    pub date: String,
+    /// Real time of saving, seconds since 1970.
+    pub saved_at: u64,
+}
+
+#[derive(Debug)]
+pub enum SaveError {
+    Io(std::io::Error),
+    /// Not a save, or a damaged one.
+    Corrupt(String),
+    /// Written by another version of the save format.
+    Version(u32),
+    /// The game does not know which scenario it plays.
+    NoScenario,
+    /// A map save, but `RAZDOR_DT_DIR` is not set or has no maps folder.
+    NoInstall,
+    /// The map file is gone from the install.
+    MapMissing(String),
+    /// The map file's bytes differ from the saved game's.
+    MapChanged(String),
+    /// The saved game does not fit the map or the install's data any more.
+    Mismatch(String),
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::Io(e) => write!(f, "cannot read or write the save: {e}"),
+            SaveError::Corrupt(e) => write!(f, "the save is damaged: {e}"),
+            SaveError::Version(v) => write!(f, "the save is from another version (format {v}, this one reads {FORMAT_VERSION})"),
+            SaveError::NoScenario => write!(f, "this game's scenario is unknown, it cannot be saved"),
+            SaveError::NoInstall => write!(f, "this save needs your Discord Times install: set RAZDOR_DT_DIR"),
+            SaveError::MapMissing(m) => write!(f, "the map \"{m}\" is not in your install any more"),
+            SaveError::MapChanged(m) => write!(f, "the map \"{m}\" has changed since the game was saved"),
+            SaveError::Mismatch(e) => write!(f, "the save does not fit the map or the data: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SaveError {}
+
+impl From<std::io::Error> for SaveError {
+    fn from(e: std::io::Error) -> SaveError {
+        SaveError::Io(e)
+    }
+}
+
+/// 64-bit FNV-1a: a stable hash of a map's bytes (stable across Rust versions, unlike std's).
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// The original's autosave name for a moment: "1204.06.03, 12 h".
+pub fn date_name(clock: &Clock) -> String {
+    format!("{}.{:02}.{:02}, {} h", clock.year(), clock.month(), clock.day(), clock.hour())
+}
+
+/// The save folder: `RAZDOR_SAVE_DIR`, else `razdor/saves` in the platform data folder.
+pub fn default_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os(DIR_ENV).filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d));
+    }
+    dirs::data_dir().map(|d| d.join("razdor").join("saves"))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn now_millis() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis())
+}
+
+/// The meta of `game` saved now as `name`.
+pub fn meta_of(game: &Game, kind: SaveKind, name: &str) -> Result<SaveMeta, SaveError> {
+    let scenario = game.origin.clone().ok_or(SaveError::NoScenario)?;
+    Ok(SaveMeta {
+        version: FORMAT_VERSION,
+        kind,
+        name: name.to_string(),
+        scenario,
+        title: game.world.title.clone(),
+        hero: game.hero().name(&game.content).to_string(),
+        date: game.clock.label(),
+        saved_at: now_secs(),
+    })
+}
+
+#[derive(Serialize)]
+struct SaveOut<'a> {
+    meta: &'a SaveMeta,
+    game: &'a Game,
+}
+
+#[derive(Deserialize)]
+struct SaveIn {
+    meta: SaveMeta,
+    game: Game,
+}
+
+#[derive(Deserialize)]
+struct MetaIn {
+    meta: SaveMeta,
+}
+
+/// The save file's bytes: bzip2-compressed JSON of the meta and the game.
+pub fn encode(meta: &SaveMeta, game: &Game) -> Result<Vec<u8>, SaveError> {
+    let json = serde_json::to_vec(&SaveOut { meta, game }).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+    enc.write_all(&json)?;
+    Ok(enc.finish()?)
+}
+
+fn unpack(bytes: &[u8]) -> Result<Vec<u8>, SaveError> {
+    let mut json = Vec::new();
+    bzip2::read::BzDecoder::new(bytes).read_to_end(&mut json).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    Ok(json)
+}
+
+fn check_version(meta: &SaveMeta) -> Result<(), SaveError> {
+    if meta.version != FORMAT_VERSION {
+        return Err(SaveError::Version(meta.version));
+    }
+    Ok(())
+}
+
+/// Reads a save's bytes: its meta and the game state, not yet restored (see [`restore`]).
+pub fn decode(bytes: &[u8]) -> Result<(SaveMeta, Game), SaveError> {
+    let json = unpack(bytes)?;
+    let meta: MetaIn = serde_json::from_slice(&json).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    check_version(&meta.meta)?;
+    let s: SaveIn = serde_json::from_slice(&json).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    Ok((s.meta, s.game))
+}
+
+/// Only the meta of a save file (for the load screen).
+pub fn read_meta(path: &Path) -> Result<SaveMeta, SaveError> {
+    let json = unpack(&std::fs::read(path)?)?;
+    let m: MetaIn = serde_json::from_slice(&json).map_err(|e| SaveError::Corrupt(e.to_string()))?;
+    Ok(m.meta)
+}
+
+/// The player's data folder for a kind of save.
+fn kind_dir(dir: &Path, kind: SaveKind) -> PathBuf {
+    dir.join(match kind {
+        SaveKind::Manual => MANUAL_DIR,
+        SaveKind::Auto => AUTO_DIR,
+    })
+}
+
+/// A file name from a save name: letters and digits kept, the rest `_`.
+fn slug(name: &str) -> String {
+    let s: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).take(60).collect();
+    if s.trim_matches('_').is_empty() {
+        "save".to_string()
+    } else {
+        s
+    }
+}
+
+/// Writes `game` into save folder `dir` as `name`. A manual save of the same name is
+/// replaced; autosaves get a file of their own each, and only the newest
+/// [`AUTOSAVES_KEPT`] stay. Returns the file written.
+pub fn write(dir: &Path, kind: SaveKind, name: &str, game: &Game) -> Result<PathBuf, SaveError> {
+    let meta = meta_of(game, kind, name)?;
+    let bytes = encode(&meta, game)?;
+    let folder = kind_dir(dir, kind);
+    std::fs::create_dir_all(&folder)?;
+    let path = match kind {
+        SaveKind::Manual => folder.join(format!("{}.{EXTENSION}", slug(name))),
+        SaveKind::Auto => {
+            // Millisecond stamps sort by age; a counter keeps two in the same millisecond apart.
+            let stamp = now_millis();
+            (0..)
+                .map(|k| folder.join(format!("{stamp:015}-{k:02}.{EXTENSION}")))
+                .find(|p| !p.exists())
+                .expect("a free name")
+        }
+    };
+    // Write aside, then move into place, so a crash never leaves half a save.
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, &path)?;
+    if kind == SaveKind::Auto {
+        rotate(&folder, AUTOSAVES_KEPT)?;
+    }
+    Ok(path)
+}
+
+/// A save found in the folder.
+#[derive(Clone, Debug)]
+pub struct SaveEntry {
+    pub path: PathBuf,
+    pub meta: SaveMeta,
+}
+
+/// Save files of one kind, newest first. Unreadable files are skipped.
+pub fn list(dir: &Path, kind: SaveKind) -> Vec<SaveEntry> {
+    let Ok(read) = std::fs::read_dir(kind_dir(dir, kind)) else { return Vec::new() };
+    let mut v: Vec<SaveEntry> = read
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == EXTENSION))
+        .filter_map(|path| Some(SaveEntry { meta: read_meta(&path).ok()?, path }))
+        .collect();
+    v.sort_by(|a, b| b.meta.saved_at.cmp(&a.meta.saved_at).then_with(|| b.path.cmp(&a.path)));
+    v
+}
+
+/// Deletes all but the newest `keep` save files of folder `folder` (by file name, which for
+/// autosaves is their time stamp).
+fn rotate(folder: &Path, keep: usize) -> Result<(), SaveError> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(folder)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == EXTENSION))
+        .collect();
+    files.sort();
+    let excess = files.len().saturating_sub(keep);
+    for old in &files[..excess] {
+        std::fs::remove_file(old)?;
+    }
+    Ok(())
+}
+
+/// Where a map save finds its scenario: the install folder and its content.
+pub struct Install<'a> {
+    pub dir: &'a Path,
+    pub content: Arc<Content>,
+}
+
+/// Reads and restores a save file (see [`restore`]).
+pub fn load(path: &Path, demo: Arc<Content>, install: Option<&Install>) -> Result<Game, SaveError> {
+    let (meta, game) = decode(&std::fs::read(path)?)?;
+    restore(&meta, game, demo, install)
+}
+
+/// Rebuilds what the save left out: the content, and the world's and the event engine's
+/// statics from the scenario (the demo, or the map file of the install, which must be the
+/// very file the game was saved with).
+pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Option<&Install>) -> Result<Game, SaveError> {
+    check_version(meta)?;
+    let (content, fresh, engine) = match &meta.scenario {
+        ScenarioRef::Demo => {
+            let world = World::standard(&demo);
+            (demo, world, None)
+        }
+        ScenarioRef::Map { file, hash } => {
+            let install = install.ok_or(SaveError::NoInstall)?;
+            let maps = crate::dt::install::list_maps(install.dir).map_err(|_| SaveError::NoInstall)?;
+            let entry = maps.iter().find(|m| &m.name == file).ok_or_else(|| SaveError::MapMissing(file.clone()))?;
+            let bytes = std::fs::read(&entry.path)?;
+            if fnv1a(&bytes) != *hash {
+                return Err(SaveError::MapChanged(file.clone()));
+            }
+            let scenario = Scenario::from_file_bytes(&bytes).map_err(|e| SaveError::Mismatch(e.to_string()))?;
+            let world = World::from_scenario(&scenario, &install.content);
+            (install.content.clone(), world, Some(EventEngine::new(&scenario)))
+        }
+    };
+    if (game.fog.w, game.fog.h) != (fresh.map.w, fresh.map.h) {
+        return Err(SaveError::Mismatch("the map's size differs".into()));
+    }
+    game.world.restore_statics(fresh).map_err(SaveError::Mismatch)?;
+    match (game.script.as_deref_mut(), engine) {
+        (Some(e), Some(fresh)) => e.restore_statics(fresh).map_err(SaveError::Mismatch)?,
+        (None, _) => {}
+        (Some(_), None) => return Err(SaveError::Mismatch("events saved for the demo".into())),
+    }
+    game.content = content;
+    game.origin = Some(meta.scenario.clone());
+    check_content(&game).map_err(SaveError::Mismatch)?;
+    Ok(game)
+}
+
+/// Every unit, item and spell the game refers to exists in its content.
+fn check_content(g: &Game) -> Result<(), String> {
+    let c = &g.content;
+    let unit = |id: UnitId| c.try_unit(id).map(|_| ()).ok_or(format!("unknown unit {}", id.0));
+    let item = |id: ItemId| c.try_item(id).map(|_| ()).ok_or(format!("unknown item {}", id.0));
+    let w = &g.world;
+    let stationed = w.locations.iter().flat_map(|l| l.stationed.iter().map(|s| &s.unit));
+    for u in g.squad.iter().chain(stationed) {
+        unit(u.def)?;
+        u.items.iter().flatten().chain(&u.potions).try_for_each(|&i| item(i))?;
+    }
+    g.pack.iter().try_for_each(|&i| item(i))?;
+    let armies = w.armies.iter().chain(w.inactive.iter());
+    let troops = w.locations.iter().flat_map(|l| l.garrison.iter()).chain(armies.clone().flat_map(|a| a.troops.iter())).chain(w.gang.iter());
+    for t in troops {
+        unit(t.unit)?;
+    }
+    for l in &w.locations {
+        l.recruits.iter().try_for_each(|r| unit(r.unit))?;
+        l.treasure.iter().try_for_each(|&i| item(i))?;
+        if let Some(s) = &l.shop {
+            s.fixed.iter().chain(&s.stock).try_for_each(|&i| item(i))?;
+        }
+    }
+    armies.flat_map(|a| a.items.iter()).try_for_each(|&i| item(i))?;
+    if g.squad.is_empty() {
+        return Err("no hero".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::rules::battle::Outcome;
+    use crate::rules::content::HeroClass;
+    use crate::rules::game::Foe;
+
+    /// A fresh, empty folder under the system temp dir for one test (never the player's).
+    pub(crate) fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("razdor-test-{}-{name}-{}", std::process::id(), now_millis()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn json(g: &Game) -> String {
+        serde_json::to_string(g).unwrap()
+    }
+
+    /// Save, load, and compare: the state serialises the same, and what was rebuilt matches.
+    pub(crate) fn roundtrip(g: &Game, demo: Arc<Content>, install: Option<&Install>) -> Game {
+        let meta = meta_of(g, SaveKind::Manual, "test").unwrap();
+        let bytes = encode(&meta, g).unwrap();
+        let (m, loaded) = decode(&bytes).unwrap();
+        assert_eq!(m, meta);
+        let loaded = restore(&m, loaded, demo, install).unwrap();
+        assert_eq!(json(&loaded), json(g), "state differs after a load");
+        assert_eq!(loaded.world.title, g.world.title);
+        assert_eq!((loaded.world.map.w, loaded.world.map.h), (g.world.map.w, g.world.map.h));
+        assert_eq!(loaded.world.events, g.world.events);
+        assert_eq!(loaded.world.points, g.world.points);
+        let names = |g: &Game| g.world.locations.iter().map(|l| (l.name.clone(), l.description.clone())).collect::<Vec<_>>();
+        assert_eq!(names(&loaded), names(g));
+        let armies = |g: &Game| g.world.armies.iter().map(|a| (a.name.clone(), a.leader_name.clone())).collect::<Vec<_>>();
+        assert_eq!(armies(&loaded), armies(g));
+        for t in [(0, 0), (5, 5), (g.world.map.w - 1, g.world.map.h - 1)] {
+            assert_eq!(loaded.world.map.minutes(t), g.world.map.minutes(t));
+            assert_eq!(loaded.world.location_at(t), g.world.location_at(t));
+        }
+        assert!(Arc::ptr_eq(&loaded.content, &g.content) || loaded.content.units.len() == g.content.units.len());
+        loaded
+    }
+
+    fn demo() -> Arc<Content> {
+        Arc::new(Content::builtin())
+    }
+
+    fn walk(g: &mut Game, frames: usize) {
+        for _ in 0..frames {
+            if !g.moving() {
+                break;
+            }
+            g.tick(0.05);
+            if g.foe.is_some() {
+                break;
+            }
+        }
+    }
+
+    fn fight(g: &mut Game) {
+        let mut b = g.start_battle();
+        b.begin();
+        let mut steps = 0;
+        while b.outcome() == Outcome::Ongoing && steps < 5000 {
+            b.ai_step();
+            steps += 1;
+        }
+        g.resolve_battle(&b);
+        g.drain_events();
+    }
+
+    #[test]
+    fn fnv_and_date_names() {
+        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(date_name(&Clock::at(1204, 6, 3, 12)), "1204.06.03, 12 h");
+        assert_eq!(slug("My game: day 3!"), "My_game__day_3_");
+        assert_eq!(slug("Битва - Замок"), "Битва_-_Замок");
+        assert_eq!(slug("///"), "save");
+    }
+
+    #[test]
+    fn demo_roundtrip_after_walking_and_a_battle() {
+        let c = demo();
+        let mut g = Game::new(c.clone(), HeroClass::Archmage, 7);
+        roundtrip(&g, c.clone(), None);
+        g.hire(crate::rules::world::demo_unit(&g.content, "spearman")).unwrap();
+        g.set_destination(g.world.locations[g.world.index_of("Millbrook")].tile);
+        walk(&mut g, 400);
+        g.wait(4);
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        fight(&mut g);
+        g.gold += 5;
+        let loaded = roundtrip(&g, c.clone(), None);
+        // The loaded game goes on exactly like the original.
+        let (mut a, mut b) = (g, loaded);
+        for g in [&mut a, &mut b] {
+            g.wait(30);
+        }
+        assert_eq!(json(&a), json(&b));
+    }
+
+    #[test]
+    fn saves_are_written_listed_and_read_back() {
+        let dir = temp_dir("list");
+        let c = demo();
+        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        let p = write(&dir, SaveKind::Manual, "First", &g).unwrap();
+        assert!(p.starts_with(dir.join("manual")));
+        g.gold = 999;
+        write(&dir, SaveKind::Manual, "First", &g).unwrap();
+        write(&dir, SaveKind::Manual, "Second", &g).unwrap();
+        let saves = list(&dir, SaveKind::Manual);
+        assert_eq!(saves.len(), 2, "the same name is replaced");
+        assert_eq!(saves[0].meta.hero, g.hero().name(&g.content));
+        assert_eq!(saves[0].meta.title, "Demo kingdom");
+        assert_eq!(saves[0].meta.date, g.clock.label());
+        let first = saves.iter().find(|s| s.meta.name == "First").unwrap();
+        let loaded = load(&first.path, c, None).unwrap();
+        assert_eq!(loaded.gold, 999);
+        assert!(list(&dir, SaveKind::Auto).is_empty());
+        std::fs::write(dir.join("manual").join("junk.rzsave"), b"not a save").unwrap();
+        assert_eq!(list(&dir, SaveKind::Manual).len(), 2, "unreadable files are skipped");
+        assert!(matches!(load(&dir.join("manual").join("junk.rzsave"), demo(), None), Err(SaveError::Corrupt(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autosaves_rotate() {
+        let dir = temp_dir("auto");
+        let g = Game::new(demo(), HeroClass::Ranger, 3);
+        for k in 0..AUTOSAVES_KEPT + 4 {
+            write(&dir, SaveKind::Auto, &format!("auto {k}"), &g).unwrap();
+        }
+        let saves = list(&dir, SaveKind::Auto);
+        assert_eq!(saves.len(), AUTOSAVES_KEPT);
+        let mut names: Vec<String> = saves.iter().map(|s| s.meta.name.clone()).collect();
+        names.sort_by_key(|n| n[5..].parse::<usize>().unwrap());
+        assert_eq!(names.first().map(String::as_str), Some("auto 4"), "the oldest went first");
+        assert_eq!(saves[0].meta.name, format!("auto {}", AUTOSAVES_KEPT + 3), "newest first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn noon_asks_for_an_autosave_named_by_the_date() {
+        let mut g = Game::new(demo(), HeroClass::Knight, 3);
+        g.world.armies.clear();
+        g.wait(3);
+        assert_eq!(g.autosave_due, None);
+        g.wait(1);
+        assert_eq!(g.autosave_due.as_deref(), Some("1200.04.00, 12 h"));
+    }
+
+    #[test]
+    fn a_save_of_another_version_or_without_a_scenario_is_refused() {
+        let mut g = Game::new(demo(), HeroClass::Knight, 3);
+        let mut meta = meta_of(&g, SaveKind::Manual, "x").unwrap();
+        meta.version = 99;
+        let bytes = encode(&meta, &g).unwrap();
+        assert!(matches!(decode(&bytes), Err(SaveError::Version(99))));
+        g.origin = None;
+        assert!(matches!(meta_of(&g, SaveKind::Manual, "x"), Err(SaveError::NoScenario)));
+    }
+
+    #[test]
+    fn map_saves_need_the_same_map_file() {
+        use crate::rules::world::testkit as tk;
+        // A fake install: a maps folder with one hand-built map.
+        let dir = temp_dir("maps");
+        let maps = dir.join(crate::dt::install::MAPS_DIR);
+        std::fs::create_dir_all(&maps).unwrap();
+        let mut s = tk::scenario(24, 6);
+        s.header.heroes[0] = tk::hero(2, 2, 200, &[tk::troop(4, 0, 2)]);
+        let path = maps.join("Test.DTm");
+        std::fs::write(&path, s.to_payload()).unwrap();
+        let content = Arc::new(tk::content());
+        let scenario = Scenario::load(&path).unwrap();
+        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight, 1);
+        g.set_origin(ScenarioRef::of_map(&path, "Test").unwrap());
+        g.set_destination((10, 3));
+        walk(&mut g, 200);
+        let install = Install { dir: &dir, content: content.clone() };
+        roundtrip(&g, demo(), Some(&install));
+
+        let meta = meta_of(&g, SaveKind::Manual, "x").unwrap();
+        let bytes = encode(&meta, &g).unwrap();
+        let again = || decode(&bytes).unwrap();
+        assert!(matches!(restore(&again().0, again().1, demo(), None), Err(SaveError::NoInstall)));
+        // Changed: one more gold in the preset.
+        s.header.heroes[0].gold += 1;
+        std::fs::write(&path, s.to_payload()).unwrap();
+        assert!(matches!(restore(&again().0, again().1, demo(), Some(&install)), Err(SaveError::MapChanged(m)) if m == "Test"));
+        std::fs::rename(&path, maps.join("Other.DTm")).unwrap();
+        assert!(matches!(restore(&again().0, again().1, demo(), Some(&install)), Err(SaveError::MapMissing(_))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn rk1() -> Option<(crate::dt::install::DtInstall, crate::dt::install::MapEntry)> {
+        let dir = std::env::var_os(crate::dt::install::ENV_VAR)?;
+        let dt = crate::dt::install::DtInstall::load(Path::new(&dir)).expect("install loads");
+        let m = dt.maps.iter().find(|m| m.name.starts_with("РК1")).expect("РК1 in the install").clone();
+        Some((dt, m))
+    }
+
+    #[test]
+    fn rk1_roundtrip_after_walking_and_a_battle() {
+        let Some((dt, entry)) = rk1() else { return };
+        let content = Arc::new(Content::from_dt(&dt));
+        let scenario = entry.load().unwrap();
+        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight, 11);
+        g.set_origin(ScenarioRef::of_map(&entry.path, &entry.name).unwrap());
+        g.drain_events();
+        let install = Install { dir: &dt.dir, content: content.clone() };
+        roundtrip(&g, demo(), Some(&install));
+        // Walk towards the nearest building, then fight the nearest army.
+        let here = g.tile();
+        let target = g
+            .world
+            .locations
+            .iter()
+            .map(|l| l.tile)
+            .filter(|&t| t != here && g.fog.explored(t))
+            .min_by_key(|&t| g.world.map.distance(t, here));
+        if let Some(t) = target {
+            g.set_destination(t);
+            walk(&mut g, 300);
+            g.drain_events();
+        }
+        if !g.world.armies.is_empty() {
+            g.foe = Some(Foe::Army(0));
+            fight(&mut g);
+        }
+        g.foe = None;
+        assert!(g.battles > 0 && g.clock.total_minutes() > scenario.header.start_time as f64, "walked and fought");
+        let loaded = roundtrip(&g, demo(), Some(&install));
+        let (mut a, mut b) = (g, loaded);
+        for g in [&mut a, &mut b] {
+            g.wait(12);
+        }
+        assert_eq!(json(&a), json(&b), "the loaded game goes on like the original");
+    }
+}

@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, Stat, UnitId, MAX_XP_GAIN};
+use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, SpellDef, Stat, UnitId, MAX_XP_GAIN};
 use super::formation::{Formation, Row, Slot};
 use super::units::{Stats, Unit};
 
@@ -316,6 +316,25 @@ impl Battle {
 
     pub fn content(&self) -> &Content {
         &self.content
+    }
+
+    /// Lasting world spells on `team`'s army (`rules::magic`): their modifiers change the
+    /// fighters' starting stats. A higher maximum HP raises the HP by the same amount, a
+    /// lower one caps it *(guess)*. Call before [`Battle::begin`].
+    pub fn apply_spells(&mut self, team: Team, spells: &[&SpellDef]) {
+        if spells.is_empty() {
+            return;
+        }
+        for f in self.fighters.iter_mut().filter(|f| f.team == team) {
+            let before = f.base.max_hp();
+            super::magic::apply(&mut f.base, spells);
+            let after = f.base.max_hp();
+            f.stats = f.base.clone();
+            f.power = f.base[Stat::MagicPower];
+            if f.alive() {
+                f.hp = (f.hp + (after - before).max(0)).min(after);
+            }
+        }
     }
 
     /// Extra defence of the building `team` fights in (garrisons). Set before [`Battle::begin`].

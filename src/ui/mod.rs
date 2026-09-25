@@ -6,17 +6,22 @@ pub mod dialog;
 pub mod dt_art;
 pub mod items_view;
 pub mod minimap;
+pub mod saves;
 pub mod screens;
+pub mod spellbook;
 pub mod story;
 pub mod widgets;
 pub mod world_view;
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use razdor::dt::dtm::Scenario;
 use razdor::rules::content::Content;
+use razdor::rules::events::EventOutcome;
 use razdor::rules::game::Game;
+use razdor::rules::save::{self, Install};
 use razdor::rules::script::ScriptEnd;
 
 use assets::Assets;
@@ -39,6 +44,12 @@ pub enum Screen {
     Battle(Box<BattleView>),
     /// The quest journal, with the selected line.
     Journal { selected: usize },
+    /// The spell book, with the selected cell.
+    Spellbook { selected: usize },
+    /// The Esc menu, and the save and load windows.
+    Menu,
+    Save(saves::SaveView),
+    Load(saves::LoadView),
     GameOver,
     Victory,
 }
@@ -47,6 +58,7 @@ pub enum Screen {
 pub struct ScenarioEntry {
     /// File name without the extension.
     pub file: String,
+    pub path: PathBuf,
     pub scenario: Scenario,
 }
 
@@ -65,6 +77,10 @@ pub struct App {
     /// Modal windows waiting to be read (noon reports, victories), first on top.
     pub dialogs: VecDeque<Dialog>,
     pub map_view: MapView,
+    /// A save file the load window picked: loaded after the frame.
+    pub pending_load: Option<PathBuf>,
+    /// Why the last load failed (shown in the load window).
+    pub load_error: Option<String>,
 }
 
 impl App {
@@ -75,7 +91,7 @@ impl App {
             .iter()
             .flat_map(|d| d.install.maps.iter())
             .filter_map(|m| match m.load() {
-                Ok(scenario) => Some(ScenarioEntry { file: m.name.clone(), scenario }),
+                Ok(scenario) => Some(ScenarioEntry { file: m.name.clone(), path: m.path.clone(), scenario }),
                 Err(e) => {
                     eprintln!("{}: {e}", m.name);
                     None
@@ -92,6 +108,32 @@ impl App {
             message: None,
             dialogs: VecDeque::new(),
             map_view: MapView::default(),
+            pending_load: None,
+            load_error: None,
+        }
+    }
+
+    /// Loads save file `path`: the demo from the built-in data, a map from the install (the
+    /// same map file only). A pending battle starts again; a pending question is asked again.
+    fn load(&mut self, path: &std::path::Path) {
+        let install = self.assets.dt.as_ref().zip(self.dt_content.clone()).map(|(d, content)| Install { dir: &d.install.dir, content });
+        match save::load(path, self.demo.clone(), install.as_ref()) {
+            Ok(mut game) => {
+                self.dialogs.clear();
+                self.message = None;
+                self.load_error = None;
+                self.map_view.reset();
+                if let Some(q) = game.pending_question() {
+                    story::show(&game, &EventOutcome::Question(q), &mut self.message, &mut self.dialogs);
+                }
+                self.screen = if game.foe.is_some() {
+                    Screen::Battle(Box::new(BattleView::new(game.start_battle())))
+                } else {
+                    Screen::WorldMap
+                };
+                self.game = Some(game);
+            }
+            Err(e) => self.load_error = Some(format!("Cannot load: {e}.")),
         }
     }
 
@@ -115,6 +157,12 @@ impl App {
             }
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message, &mut self.dialogs),
             (Screen::Journal { selected }, Some(game)) => story::journal(game, &self.assets, selected),
+            (Screen::Spellbook { selected }, Some(game)) => {
+                spellbook::frame(game, &self.assets, selected, &mut self.message, &mut self.dialogs)
+            }
+            (Screen::Menu, Some(game)) => saves::menu(game, &self.assets),
+            (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
+            (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
             (Screen::GameOver, game) => screens::game_over(game),
             (Screen::Victory, game) => screens::victory(game),
             (_, None) => Some(Screen::ScenarioSelect),
@@ -140,7 +188,20 @@ impl App {
                 _ => {}
             }
         }
+        // The noon report asks for an autosave, named by the date.
+        if let Some(g) = self.game.as_mut() {
+            if let Some(name) = g.autosave_due.take() {
+                saves::autosave(g, &name);
+            }
+        }
+        if let Some(path) = self.pending_load.take() {
+            self.load(&path);
+            return;
+        }
         if let Some(next) = next {
+            if matches!(next, Screen::Load(_)) {
+                self.load_error = None;
+            }
             if matches!(next, Screen::ScenarioSelect) {
                 self.dialogs.clear();
             }

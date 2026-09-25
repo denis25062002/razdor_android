@@ -10,6 +10,8 @@ use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
 use super::formation::Slot;
 use super::items::{self, EquipError};
+use super::magic::ActiveSpell;
+use super::save::ScenarioRef;
 use super::map::{Tile, TileMap};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
@@ -116,7 +118,7 @@ pub enum BattleResult {
 
 /// The noon report (video notes: the daily report comes at 12:00): money and mana after
 /// the day's income and wages.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DayReport {
     /// Absolute day index (see [`Clock::day_index`]).
     pub day: u64,
@@ -135,7 +137,7 @@ pub struct DayReport {
     pub mana_total: i32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     /// The party stopped on a location (index into `world.locations`).
     Arrived(usize),
@@ -152,14 +154,18 @@ pub enum Event {
 }
 
 /// Who the next battle is against.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Foe {
     /// The garrison of a location (a castle, a fort, ruins, a demo camp).
     Garrison(usize),
     Army(usize),
 }
 
+/// The whole game state. It is saved with serde (`rules::save`), except the content and the
+/// statics of the world and the event engine, which a load rebuilds from the scenario.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Game {
+    #[serde(skip)]
     pub content: Arc<Content>,
     /// Squad member 0 is always the hero.
     pub squad: Vec<Unit>,
@@ -176,15 +182,15 @@ pub struct Game {
     pub foe: Option<Foe>,
     /// Shared bag of unworn items.
     pub pack: Vec<ItemId>,
-    /// The hero's spell book (1-based spell indices; casting comes in Stage 7).
+    /// The hero's spell book (1-based spell indices), cast with [`Game::cast`].
     pub spells: Vec<u8>,
     /// Explored cells (`rules::fog`): off in the demo, on for scenarios.
     pub fog: Fog,
     /// Where the player clicked: the walk is planned again towards it as the fog lifts.
     pub goal: Option<Tile>,
-    start_day: u64,
+    pub(crate) start_day: u64,
     pub(crate) rng: Rng,
-    battles: u64,
+    pub(crate) battles: u64,
     /// The scenario's event engine (`None` in the demo). Taken out while it runs.
     pub(crate) script: Option<Box<EventEngine>>,
     /// Events produced outside [`Game::tick`] and [`Game::wait`] (at the start, after a
@@ -200,8 +206,14 @@ pub struct Game {
     pub(crate) beaten_armies: BTreeSet<ArmyId>,
     /// 1 knight, 2 archmage, 3 ranger: the class the game started with (events check it).
     pub(crate) archetype: u8,
-    /// Spells events cast on the army; world spells come in Stage 7.
-    pub cast_on_army: Vec<u8>,
+    /// Lasting world spells on the hero's army (`rules::magic`).
+    pub(crate) effects: Vec<ActiveSpell>,
+    /// The scenario the game plays (`rules::save`): the demo, or a map file of the install
+    /// with a hash of its bytes. The UI sets it for maps ([`Game::set_origin`]).
+    pub origin: Option<ScenarioRef>,
+    /// An autosave is due (the noon report came): its name. The UI writes it and clears it.
+    #[serde(skip)]
+    pub autosave_due: Option<String>,
 }
 
 /// Moves `pos` along `path` for up to `minutes` of game time; cell costs are multiplied by
@@ -261,7 +273,9 @@ impl Game {
             met_armies: BTreeSet::new(),
             beaten_armies: BTreeSet::new(),
             archetype: 1,
-            cast_on_army: Vec::new(),
+            effects: Vec::new(),
+            origin: None,
+            autosave_due: None,
         };
         // The scenario garrisons of the player's own buildings are his troops there, already
         // past their paid first day.
@@ -286,8 +300,15 @@ impl Game {
         let gold = content.start_gold(hero);
         let mut g = Game::with_world(content, world, squad, home, seed);
         g.gold = gold;
+        g.spells = g.content.start_spells(hero);
         g.archetype = archetype_of(hero);
+        g.origin = Some(ScenarioRef::Demo);
         g
+    }
+
+    /// Records which map file the game plays, for saves.
+    pub fn set_origin(&mut self, origin: ScenarioRef) {
+        self.origin = Some(origin);
     }
 
     /// A new game on an original scenario, with the hero preset of `hero`.
@@ -326,7 +347,7 @@ impl Game {
         self.content.formation.capacity()
     }
 
-    fn squad_has(&self, b: &Bonus) -> bool {
+    pub(crate) fn squad_has(&self, b: &Bonus) -> bool {
         self.squad.iter().any(|u| u.alive() && u.stats(&self.content).has(b))
     }
 
@@ -610,7 +631,7 @@ impl Game {
     }
 
     /// An army on a neighbouring cell: a hostile one attacks, a friendly one greets once.
-    fn contact(&mut self) -> Option<Event> {
+    pub(crate) fn contact(&mut self) -> Option<Event> {
         let now = self.clock.total_minutes();
         let here = self.tile();
         let mut found = None;
@@ -669,10 +690,13 @@ impl Game {
                 Tick::Noon(day) => {
                     let report = self.new_day(day);
                     events.push(Event::NewDay(report));
+                    // The original autosaves every day at 12:00, named by the date.
+                    self.autosave_due = Some(super::save::date_name(&self.clock));
                 }
             }
         }
         self.bury_old_corpses();
+        self.expire_spells();
         self.move_armies(minutes);
         // Time passed: the scenario's events run.
         events.extend(self.run_script());
@@ -948,6 +972,11 @@ impl Game {
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && !u.unpaid)).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
+        // Lasting world spells change the stats of both sides.
+        b.apply_spells(Team::Player, &self.army_spells());
+        if let Some(Foe::Army(i)) = self.foe {
+            b.apply_spells(Team::Enemy, &self.spells_on_army(i));
+        }
         if defence > 0 {
             b.set_building_defence(Team::Enemy, defence);
         }
@@ -1221,6 +1250,7 @@ pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     let mut u = Unit::new(content, t.unit, t.slot);
     u.level = t.level.max(1);
     u.heal_full(content);
+    u.hp = (u.hp - t.hurt).max(1);
     u
 }
 

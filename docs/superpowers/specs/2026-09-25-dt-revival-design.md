@@ -136,7 +136,13 @@ files with `RAZDOR_DT_DIR`, and ends in its own commit.
    answers and rumours), story and question dialogs with rewards and pictures, quest notices,
    the journal screen, rumours for 10 gold in main halls, victory/defeat end screens. Lantern
    reveals are recorded in `Game::pending_reveals` for the fog of war.
-7. **Spells on the world map; save/load.**
+7. **Spells on the world map; save/load.** *Done:* `rules::magic` (spell book casting for
+   mana and game time, Archmage and Caster modifiers, own army or an enemy army within 3
+   cells, lasting `d-`/`p-` effects applied to both sides' stats when a battle starts,
+   instant heal/damage, events' spells through the same path), `rules::save` (serde +
+   bzip2 JSON, the scenario named by file and hash and re-read on load, manual saves,
+   autosaves before battles and at noon, the newest 10 kept), the spell book, save, load
+   and Esc menu windows in `ui/`.
 
 ## Out of scope for now
 

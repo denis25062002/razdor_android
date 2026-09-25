@@ -663,8 +663,8 @@ Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
   fort garrison with one unit of `Surrender=20`).
 - **Village alternatives**: collect the tribute, or instead the priest heals the army, or
   the innkeeper pays off the unpaid. The long blessing, furs and magic ritual are not in
-  yet (TODO, with spells).
-- **Not used yet**: `CostGoldDiv`, the Archmage's world-spell bonus, "dark forces only"
+  yet.
+- **Not used yet**: `CostGoldDiv`, "dark forces only"
   items, ships at shipyards, named units that cannot be left in a garrison.
 
 ### 8.1 Event engine (Stage 6, `src/rules/events.rs`)
@@ -729,8 +729,8 @@ events only; texts are read from the scenario at runtime.
   "move to hero" also activates it, next to the hero *(guess)*; the hero's new class keeps
   level, XP and items and loses the class bonuses; a battle an event starts is against the
   army as it stands after all the event's effects; a delay passes time (armies move, the
-  noon report comes) with the hero standing still. Spells cast on the army are recorded for
-  Stage 7. Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
+  noon report comes) with the hero standing still. A spell cast on the army takes effect at
+  once and for free through the world-spell path (§8.3). Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
   without a radius reveals 5 cells, an army 3 *(guess)*) for the fog of war.
 - **Rumours** cost 10 gold (the footage) and are listed in the main hall with the building's
   quests in the journal and those done.
@@ -778,6 +778,74 @@ Explored cells stay explored; there is no "seen before" state (the video).
   the view as a light rectangle. A click on it moves the camera there (as in the video); a click
   on the map to walk returns the camera to the hero.
 - **Demo**: the built-in demo plays without fog.
+
+### 8.3 World spells (Stage 7, `src/rules/magic.rs`, `src/ui/spellbook.rs`)
+
+- **Where**: from the spell book on the world map (bottom-bar "Spells (B)" or B), never in
+  battle. `Target=Hero` spells go on the hero's own army; `Enemy` and `OneEnemy` on a whole
+  hostile army *(guess: `OneEnemy` is treated like `Enemy`)* that stands within **3 cells** of
+  the hero on explored ground *(guess: the range is not known)*.
+- **Cost and time**: `CostMana` and `TimeCast` hours. The Archmage hero halves both; a unit
+  with the Community `Caster` bonus anywhere in the living army takes 20% off both; the two
+  stack (×0.5 × 0.8), rounded to whole mana and minutes *(guess)*. The mana is paid first.
+  `TimeCast`/`TimeWork` are "at caster level 0"; the level scaling is unknown and not applied
+  *(guess)*.
+- **Casting passes time** in 5-minute slices like a wait: armies move, the noon report comes,
+  the scenario's events run. A hostile army reaching the hero interrupts the cast and the
+  battle follows; the mana is lost *(guess)*. If the target army left the range or the map by
+  the time the spell is ready, it is lost too *(guess)*.
+- **Duration**: `TimeWork` hours from the moment the spell is ready; empty or 0 is instant,
+  9999 or more lasts for good. Casting a spell that is already on the army starts its time
+  anew; different spells add up *(guess)*. Effects are kept per army with their end minute and
+  dropped when time passes beyond it.
+- **Stats**: while a spell lasts, its `d-` values are added to each unit's stats (after items
+  and potions), then the `p-` percentages of all lasting spells are summed per stat and
+  applied, as for items *(guess)*. This happens when a battle starts (both sides: the
+  hero's army and a hostile army under the hero's curses). A higher maximum HP raises the
+  unit's HP by the same amount for that battle, a lower one caps it *(guess)*.
+- **Instant hits**: `DeltaFixedHits` (plus `DeltaPercentHits`% of the maximum) heal or wound
+  every living unit of the target when the spell is ready. Healing is capped at the maximum
+  and does not raise the dead. On the own army, wounds leave at least 1 HP *(guess)*. On an
+  enemy army a troop that loses all its HP falls; its wounds stay with the troop (it fights
+  with them) and do not heal on the map *(guess)*; an army with nobody left counts as beaten
+  by the player, with no loot *(guess)*.
+- **`p-LifeLose`** (scenario-only curses): a negative value is a lasting percent loss of
+  maximum HP (like `p-Hits`); a positive value lifts the lasting life-draining curses from
+  the army *(guess: the scenario-only curse and the spell lifting it come as a −20 / +20 pair)*.
+- **Events** that cast a spell on the army ("cast spell" result) use the same path, for free
+  and at once, with the spell's normal duration.
+- **Potions** keep their Stage 4 rule: modifiers last until the end of the next battle.
+- **Demo spells**: `data/spells.ini`, our own (a heal, two blessings, a fire bolt, a curse),
+  taught at St. Beor's church and Greywall; the demo's Archmage starts with two
+  (`StartSpells=`); demo villages give 10 mana a day as tribute.
+
+### 8.4 Saves (Stage 7, `src/rules/save.rs`, `src/ui/saves.rs`)
+
+- **Format**: the whole `Game` serialised with serde as JSON, compressed with bzip2 (a
+  scenario game of РК1 is about 3 KB). The file has the meta (name, kind, scenario
+  reference, scenario title, hero class, in-game date, real save time) and the game.
+  `FORMAT_VERSION` guards the layout; other versions are refused.
+- **What is not stored**: the content (units, items, spells: rebuilt from the demo data or
+  the install), the map, the buildings' and armies' texts, the scenario's event list,
+  places and victory/defeat events (`#[serde(skip)]`). The save names its scenario: the demo,
+  or the map's file name plus a 64-bit FNV-1a hash of the file's bytes. Loading reads that
+  file again from `RAZDOR_DT_DIR`; a missing install, a missing map or a map whose bytes
+  changed is refused with a message. A game whose units, items or buildings no longer exist
+  in the data is refused too.
+- **Where**: `RAZDOR_SAVE_DIR` if set, else the platform data folder (`dirs::data_dir()`:
+  `$XDG_DATA_HOME/razdor/saves` or `~/.local/share/razdor/saves` on Linux,
+  `~/Library/Application Support/razdor/saves` on macOS, `%APPDATA%\razdor\saves` on
+  Windows); manual saves in `manual/` (a save of the same name is replaced), autosaves in
+  `auto/`. Never the repo or the game folder.
+- **Autosaves** (as in the footage): before every battle ("Battle - <army or building>")
+  and at every 12:00 report (named by the in-game date, "1204.06.03, 12 h"); the newest 10
+  are kept, older ones deleted *(guess: the original's count is not known)*.
+- **Loading** a save made before a battle starts that battle again; a question the scenario
+  was asking is asked again. The windows of the moment (reports, story dialogs) are not
+  saved.
+- **Screens**: bottom-bar "Save" / "Load", the Esc menu (back, save, load, main menu) and a
+  "Load a game" button on the title screen. The load window has the original's two tabs,
+  saves and autosaves, newest first, with the scenario, the hero and the in-game date.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

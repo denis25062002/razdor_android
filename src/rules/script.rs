@@ -390,7 +390,7 @@ impl EventWorld for Game {
             }
         }
         let c = self.content.clone();
-        let mut u = troop_unit(&c, &Troop { unit: id, level, slot });
+        let mut u = troop_unit(&c, &Troop::new(id, level, slot));
         u.named = named;
         u.from_event = true;
         self.squad.push(u);
@@ -417,7 +417,7 @@ impl EventWorld for Game {
             let taken: Vec<_> = a.troops.iter().map(|t| t.slot).collect();
             let row = Stats::of_level(&c, u.def, 1).preferred_row();
             if let Some(slot) = c.formation.free_slot(&taken, row).filter(|_| taken.len() < c.formation.capacity()) {
-                a.troops.push(Troop { unit: u.def, level: u.level, slot });
+                a.troops.push(Troop::new(u.def, u.level, slot));
                 if u.named != 0 {
                     a.named = u.named;
                 }
@@ -455,9 +455,12 @@ impl EventWorld for Game {
         }
     }
 
-    /// Recorded for Stage 7 (spells on the world map).
+    /// The spell takes effect on the army at once and for free, as a cast of it would
+    /// ([`Game::apply_spell_to_army`]); an unknown spell does nothing.
     fn apply_spell(&mut self, spell: u8) {
-        self.cast_on_army.push(spell);
+        if let Some(def) = self.spell(spell as u32).cloned() {
+            self.apply_spell_to_army(&def);
+        }
     }
 
     fn activate_army(&mut self, army: ArmyId) {
@@ -611,6 +614,26 @@ mod tests {
             events.extend(g.tick(0.05));
         }
         events
+    }
+
+    #[test]
+    fn an_event_casts_its_spell_on_the_army_through_the_world_spell_path() {
+        use crate::rules::content::{testkit as ck, Content, Stat, StatMods};
+        let mut e = ev(EventKind::Global);
+        e.results.cast_spell = 1;
+        let s = world(vec![e]);
+        let base = content();
+        // Spell 1: +10 hits at once, +2 initiative for 5 hours.
+        let spell = crate::rules::content::SpellDef { time_work: Some(5), add: StatMods::from([(Stat::Initiative, 2)]), ..ck::spell(1, 0) };
+        let c = Content::new(base.units.clone(), base.items.clone(), vec![spell], base.options.clone(), base.formation);
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight, 1);
+        let now = g.clock.total_minutes() as u64;
+        assert_eq!(fired(&g.drain_events()), vec![1]);
+        assert_eq!(g.active_spells(), &[crate::rules::magic::ActiveSpell { spell: 1, until: Some(now + 300) }]);
+        let plain = g.squad[1].stats(&g.content)[Stat::Initiative];
+        assert_eq!(g.stats_with_spells(1)[Stat::Initiative], plain + 2);
+        g.wait(5);
+        assert!(g.active_spells().is_empty());
     }
 
     #[test]

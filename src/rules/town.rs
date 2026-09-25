@@ -275,7 +275,7 @@ impl Game {
     }
 
     /// Learns spell `id` in the sanctuary here for its `CostGold`; it goes into the hero's
-    /// book (which holds [`SPELL_BOOK_SIZE`] spells). Casting comes in Stage 7.
+    /// book (which holds [`SPELL_BOOK_SIZE`] spells), to be cast on the map (`rules::magic`).
     pub fn learn_spell(&mut self, id: u32) -> Result<(), ServiceError> {
         let spell = self.spells_here().into_iter().find(|s| s.id == id).ok_or(ServiceError::NotHere)?;
         let price = Price::gold(spell.cost_gold.max(0));

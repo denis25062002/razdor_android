@@ -254,6 +254,13 @@ pub struct TileMap {
     pub markers: Vec<(char, Tile)>,
 }
 
+/// An empty 0×0 map: the placeholder a loaded save holds until the real map is rebuilt.
+impl Default for TileMap {
+    fn default() -> TileMap {
+        TileMap::from_codes(Grid::Square8, 0, 0, &[], Vec::new())
+    }
+}
+
 impl TileMap {
     /// A map from terrain codes (`w*h`, row by row) and objects. Costs follow
     /// [`surface_minutes`], [`object_effect`] and [`object_radius`].

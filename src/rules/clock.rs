@@ -24,7 +24,7 @@ pub enum Tick {
     Noon(u64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Clock {
     /// Minutes since year 0, month 1, day 0, 00:00.
     minutes: f64,

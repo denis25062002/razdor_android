@@ -149,7 +149,7 @@ pub enum PromoteError {
 }
 
 /// A persistent army member.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Unit {
     pub def: UnitId,
     /// 1 as hired.

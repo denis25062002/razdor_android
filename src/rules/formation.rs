@@ -4,7 +4,7 @@
 //! default, as in the player's install and the gameplay video); vanilla is 3 rows of 4, the
 //! third being the reserve. Both hold 12 units.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Row {
     /// Row 1: fights in melee, screens the back row.
     Front,
@@ -30,7 +30,7 @@ impl Row {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
     pub row: Row,
     pub col: u8,

@@ -1,5 +1,5 @@
 /// Small deterministic xorshift RNG so battles are reproducible in tests.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rng(u64);
 
 impl Rng {

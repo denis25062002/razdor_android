@@ -18,11 +18,11 @@ use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
 use razdor::rules::world::{Army, Location, LocationKind, Troop};
 
 use super::assets::Assets;
-use super::battle_view::BattleView;
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
 use super::minimap;
+use super::saves::{self, Back, LoadView, SaveView};
 use super::screens::squad_panel;
 use super::story;
 use super::widgets::*;
@@ -482,7 +482,7 @@ struct Tooltip {
     footer: Vec<(String, Color)>,
 }
 
-fn army_tooltip(a: &Army) -> Tooltip {
+fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
     let title = if a.name.is_empty() { "Army".to_string() } else { a.name.clone() };
     let mut footer = Vec::new();
     if !a.leader_name.is_empty() {
@@ -491,6 +491,16 @@ fn army_tooltip(a: &Army) -> Tooltip {
     }
     let stance = if a.hostile() { ("Hostile: attacks on sight", RED) } else { ("Not hostile", DIM) };
     footer.push((stance.0.to_string(), stance.1));
+    // World spells on it, and wounds they left.
+    let now = game.clock.total_minutes() as u64;
+    let spells: Vec<&str> = a.effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| game.spell(e.spell)).map(|s| s.name.as_str()).collect();
+    if !spells.is_empty() {
+        footer.push((format!("Under spells: {}", spells.join(", ")), MANA));
+    }
+    let hurt: i32 = a.troops.iter().map(|t| t.hurt).sum();
+    if hurt > 0 {
+        footer.push((format!("Wounded by magic: -{hurt} hits"), MANA));
+    }
     for line in wrap(&a.description, 330.0, 16.0).into_iter().take(4) {
         footer.push((line, INK));
     }
@@ -567,7 +577,7 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
     let near = 22.0 * (cam.scale / PX).max(0.6);
     let map = &game.world.map;
     if let Some(a) = game.world.armies.iter().filter(|a| game.fog.explored(a.tile(map))).find(|a| (cam.to_screen(a.pos) - vec2(0.0, 12.0 * cam.scale / PX) - m).length() < near) {
-        return Some(army_tooltip(a));
+        return Some(army_tooltip(game, a));
     }
     let t = cam.tile_under_mouse().filter(|&t| game.fog.explored(t))?;
     let l = game.world.location_covering(t).or_else(|| game.world.location_at(t))?;
@@ -593,7 +603,7 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     } else if loc.defended() {
         if button(x, y, 240.0, 44.0, "Attack the garrison", true) {
             game.foe = Some(Foe::Garrison(l));
-            return Some(Screen::Battle(Box::new(BattleView::new(game.start_battle()))));
+            return Some(saves::battle(game));
         }
     } else if let Some(first) = first_tab(loc) {
         if button(x, y, 240.0, 44.0, "Enter", true) {
@@ -636,10 +646,10 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             *message = Some(m);
         }
         match event {
-            Event::Encounter(_) => next = Some(Screen::Battle(Box::new(BattleView::new(game.start_battle())))),
+            Event::Encounter(_) => next = Some(saves::battle(game)),
             Event::Arrived(l) => {
                 if game.foe.is_some() {
-                    next = Some(Screen::Battle(Box::new(BattleView::new(game.start_battle()))));
+                    next = Some(saves::battle(game));
                 } else if let Some(first) = first_tab(&game.world.locations[l]) {
                     *message = None;
                     next = Some(Screen::Building(BuildingView::new(first)));
@@ -693,38 +703,55 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDe
     draw_line(0.0, y, w, y, 2.0, Color::new(0.35, 0.45, 0.4, 1.0));
     let mut next = None;
     let idle = game.foe.is_none();
-    if button(10.0, y + 8.0, 110.0, 40.0, "Wait 1 h", idle) || (idle && key(KeyCode::Key1)) {
+    if button(8.0, y + 8.0, 96.0, 40.0, "Wait 1 h", idle) || (idle && key(KeyCode::Key1)) {
         let events = game.wait(1);
         next = handle_events(game, events, message, dialogs);
     }
-    if button(128.0, y + 8.0, 110.0, 40.0, "Wait 4 h", idle) || (idle && key(KeyCode::Key4)) {
+    if button(110.0, y + 8.0, 96.0, 40.0, "Wait 4 h", idle) || (idle && key(KeyCode::Key4)) {
         let events = game.wait(4);
         next = handle_events(game, events, message, dialogs);
     }
-    // Time panel.
-    let (pw, px) = (380.0, (w - 380.0) / 2.0);
+    if (button(212.0, y + 8.0, 104.0, 40.0, "Spells (B)", idle) || (idle && key(KeyCode::B))) && next.is_none() {
+        game.stop();
+        *message = None;
+        next = Some(Screen::Spellbook { selected: 0 });
+    }
+    if button(322.0, y + 8.0, 70.0, 40.0, "Save", idle) && next.is_none() {
+        game.stop();
+        next = Some(Screen::Save(SaveView::new(game, Back::Map)));
+    }
+    if button(398.0, y + 8.0, 70.0, 40.0, "Load", true) && next.is_none() {
+        game.stop();
+        next = Some(Screen::Load(LoadView::new(Back::Map)));
+    }
+    // Time panel: between the left buttons and the minimap button.
+    let (px, pr) = (476.0, w - 498.0);
+    let (pw, cx) = ((pr - px).max(200.0), (px + pr) / 2.0);
     draw_rectangle(px, y + 6.0, pw, 46.0, Color::new(0.42, 0.20, 0.14, 1.0));
     draw_rectangle_lines(px, y + 6.0, pw, 46.0, 2.0, Color::new(0.6, 0.45, 0.3, 1.0));
-    text_centered(&format!("Time: {}", game.clock.label()), w / 2.0, y + 25.0, 20.0, INK);
+    let label = game.clock.label();
+    let size = if measure(&label, 20.0).width < pw - 12.0 { 20.0 } else { 17.0 };
+    text_centered(&label, cx, y + 25.0, size, INK);
     if game.moving() {
         let left = format!("Path left: {}", duration_label(game.minutes_left() as f64));
-        text_centered(&left, w / 2.0, y + 45.0, 17.0, ACCENT);
+        text_centered(&left, cx, y + 45.0, 17.0, ACCENT);
     } else {
-        text_centered("time stands still", w / 2.0, y + 45.0, 16.0, DIM);
+        text_centered("time stands still", cx, y + 45.0, 16.0, DIM);
     }
     let quests = game.script().map(|s| s.journal().len());
     let label = quests.map_or("Journal".to_string(), |n| format!("Journal ({n})"));
-    if (button(w - 402.0, y + 8.0, 144.0, 40.0, &label, quests.is_some()) || (quests.is_some() && key(KeyCode::J))) && next.is_none() {
+    if (button(w - 366.0, y + 8.0, 132.0, 40.0, &label, quests.is_some()) || (quests.is_some() && key(KeyCode::J))) && next.is_none() {
         game.stop();
         next = Some(Screen::Journal { selected: 0 });
     }
-    if button(w - 250.0, y + 8.0, 120.0, 40.0, "Squad", true) && next.is_none() {
+    if button(w - 228.0, y + 8.0, 100.0, 40.0, "Squad", true) && next.is_none() {
         game.stop();
         *message = None;
         next = Some(Screen::Squad { selected: 0, scroll: 0, back: None });
     }
-    if button(w - 122.0, y + 8.0, 112.0, 40.0, "Menu", true) && next.is_none() {
-        next = Some(Screen::ScenarioSelect);
+    if (button(w - 122.0, y + 8.0, 114.0, 40.0, "Menu (Esc)", true) || key(KeyCode::Escape)) && next.is_none() {
+        game.stop();
+        next = Some(Screen::Menu);
     }
     resource_strip(game);
     next
@@ -806,6 +833,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     if next.is_none() {
         next = location_panel(game, x + 15.0, y);
     }
+    // Lasting world spells on the army.
+    let now = game.clock.total_minutes() as u64;
+    let spells: Vec<String> = game
+        .active_spells()
+        .iter()
+        .filter_map(|e| {
+            let name = &game.spell(e.spell)?.name;
+            Some(match e.until {
+                Some(t) => format!("{name} ({})", duration_label(t.saturating_sub(now) as f64)),
+                None => name.clone(),
+            })
+        })
+        .collect();
+    for (i, line) in spells.iter().take(3).enumerate() {
+        text(line, x + 15.0, panel_h - 150.0 + i as f32 * 18.0, 16.0, MANA);
+    }
     let help = ["Click the map to travel; time passes", "only while you move or wait.", "Right click / Space: stop.", "Wheel or +/-: zoom. 1 / 4: wait."];
     for (i, line) in help.iter().enumerate() {
         text(line, x + 15.0, panel_h - 80.0 + i as f32 * 18.0, 15.0, DIM);
@@ -813,7 +856,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 
     let bar = bottom_bar(game, message, dialogs);
     next = next.or(bar);
-    if minimap::toggle_button(screen_width() - 378.0, screen_height() - BAR_H + 8.0, view.minimap) {
+    if minimap::toggle_button(screen_width() - 492.0, screen_height() - BAR_H + 8.0, view.minimap) {
         view.minimap = !view.minimap;
     }
     if view.minimap {

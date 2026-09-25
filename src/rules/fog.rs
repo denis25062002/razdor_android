@@ -33,7 +33,7 @@ pub const MAX_LANTERN_RADIUS: i32 = 24;
 pub const LANTERN_MODEL: u8 = 8;
 
 /// Explored cells of a `w × h` map, one bit per cell (row by row).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Fog {
     pub w: i32,
     pub h: i32,

@@ -590,32 +590,6 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     next
 }
 
-fn spell_lines(game: &Game, s: &SpellDef) -> Vec<String> {
-    use razdor::rules::items::stat_label;
-    let mut effects = Vec::new();
-    if let Some(h) = s.delta_fixed_hits {
-        effects.push(if h >= 0 { format!("heals {h} hits") } else { format!("{} hits", h) });
-    }
-    for (&st, &v) in &s.add {
-        effects.push(format!("{} {v:+}", stat_label(st)));
-    }
-    for (&st, &v) in &s.percent {
-        effects.push(format!("{} {v:+}%", stat_label(st)));
-    }
-    let school = s.school.map_or(String::new(), |m| format!("{m:?} magic. "));
-    let duration = match s.time_work {
-        None => "instant".to_string(),
-        Some(h) if h >= 9999 => "permanent".to_string(),
-        Some(h) => format!("lasts {h} h"),
-    };
-    let _ = game;
-    vec![
-        effects.join(", "),
-        format!("{school}Mana {}, reading {} h", s.cost_mana, s.time_cast.unwrap_or(0)),
-        duration,
-    ]
-}
-
 /// Sanctuary: spells for sale; a spell bought goes into the hero's book.
 fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut Option<String>) {
     let (x, y, w) = (f.cx, f.cy, f.cw);
@@ -633,7 +607,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     match chosen {
         Some(s) => {
             text_centered(&s.name, x + dw / 2.0, y + 30.0, 21.0, BOX_INK);
-            for (i, line) in spell_lines(game, s).iter().enumerate() {
+            for (i, line) in super::spellbook::spell_lines(game, s).iter().enumerate() {
                 text_centered(line, x + dw / 2.0, y + 60.0 + i as f32 * 22.0, 16.0, MANA);
             }
         }
@@ -652,7 +626,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     }
     resource_icon(Resource::Gold, x + 26.0, by + 70.0, 34.0);
     text(&format!("Gold {}", game.gold), x + 50.0, by + 77.0, 20.0, ACCENT);
-    text(&format!("Book {}/{SPELL_BOOK_SIZE}. Casting comes later.", game.spells.len()), x, by + 118.0, 16.0, DIM);
+    text(&format!("Book {}/{SPELL_BOOK_SIZE}. Cast from the spell book on the map (B).", game.spells.len()), x, by + 118.0, 16.0, DIM);
     if let Some(l) = game.location {
         let dy = y + 26.0 + 26.0 + 7.0 * 30.0 + 50.0;
         description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0);

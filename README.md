@@ -102,6 +102,33 @@ islands are only partly walkable. Russian text needs a TrueType font with Cyrill
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 
+## Spells
+Learn spells for gold at a sanctuary (the **Sanctuary** tab of towns and churches; the book
+holds 15). Open the spell book from the map with **Spells (B)** or B: every spell shows its
+mana cost and casting time for your hero, how long it lasts and what it does. Blessings and
+heals go on your own army; curses and bolts on a hostile army within 3 cells that you can
+see. Casting costs mana **and game time**: armies move meanwhile, and an enemy reaching you
+breaks the spell. The Archmage casts twice as fast for half the mana, a unit with the
+Community `Caster` bonus takes another 20% off. Lasting spells change your units' (or the
+cursed army's) stats in the battles while they last; the side panel and the book show the
+time left. Healing and bolts act at once. The demo has five spells of its own
+(`data/spells.ini`) at St. Beor's church and Greywall; its Archmage starts with two, and
+villages pay mana. Scenario events that cast spells on your army use the same rules.
+
+## Saves
+**Save** and **Load** on the bottom bar, the **Menu (Esc)**, and **Load a game** on the
+title screen. The load window has two tabs, your saves and the autosaves, newest first,
+with the scenario, the hero and the in-game date. The game autosaves before every battle
+and at every 12:00 report (named by the date, "1204.06.03, 12 h"); the newest 10 autosaves
+are kept.
+
+Saves are your data and live in your data folder, never in the repo or the game folder:
+`$XDG_DATA_HOME/razdor/saves` (usually `~/.local/share/razdor/saves`) on Linux,
+`~/Library/Application Support/razdor/saves` on macOS, `%APPDATA%\razdor\saves` on
+Windows, or wherever `RAZDOR_SAVE_DIR` points. A save of a scenario stores the map's file
+name and a hash of its bytes, not the map: loading reads the map again from
+`RAZDOR_DT_DIR` and refuses if it is missing or has changed. Demo saves need no install.
+
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after the units' and items'
 `Key=` in `data/units.ini` / `data/items.ini` (`knight.png`, `archmage.png`, `ranger.png`,

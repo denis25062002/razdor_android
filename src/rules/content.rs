@@ -11,7 +11,7 @@ pub use crate::dt::data::{
     ArtefactDef, ArtefactType, Bonus, GlobalOptions, MagicDirection, MagicSchool, Nature, SpellDef, Stat, StatMods,
     UnitDef, Upgrade,
 };
-use crate::dt::data::{parse_artefacts, parse_units};
+use crate::dt::data::{parse_artefacts, parse_spells, parse_units};
 use crate::dt::ini::Ini;
 use crate::dt::install::DtInstall;
 
@@ -19,20 +19,21 @@ use super::formation::Formation;
 
 const BUILTIN_UNITS: &str = include_str!("../../data/units.ini");
 const BUILTIN_ITEMS: &str = include_str!("../../data/items.ini");
+const BUILTIN_SPELLS: &str = include_str!("../../data/spells.ini");
 
 /// Community cap on XP gained at once (mechanics.md 1.4).
 pub const MAX_XP_GAIN: i32 = 5256;
 
 /// A unit type: its `GlobalIndex`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct UnitId(pub u32);
 
 /// An item type: its `GlobalIndex`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct ItemId(pub u32);
 
 /// The three hero classes. Their unit ids are 1–3 in the original and in the demo.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum HeroClass {
     /// Army takes 10% less physical damage.
     Knight,
@@ -61,7 +62,7 @@ impl HeroClass {
 /// The two hiring kinds of the wage code (mechanics.md 1.5). Which units the original puts
 /// in which kind is unknown; Razdor's guess: `Nature=Rogue` units are mercenaries, everyone
 /// else a recruit ([`WageKind::of`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WageKind {
     /// Kind 1: `round(Cost / CostRecrutDiv × f)` with the cost brackets.
     Recruit,
@@ -113,6 +114,13 @@ pub struct Content {
     item_index: HashMap<u32, usize>,
 }
 
+/// No units, items or spells: the placeholder a loaded save holds until its content is set.
+impl Default for Content {
+    fn default() -> Content {
+        Content::new(Vec::new(), Vec::new(), Vec::new(), GlobalOptions::default(), Formation::WIDE)
+    }
+}
+
 impl Content {
     pub fn new(
         units: Vec<UnitDef>,
@@ -132,13 +140,15 @@ impl Content {
         Content::new(dt.units.clone(), dt.artefacts.clone(), dt.spells.clone(), dt.options.clone(), Formation::WIDE)
     }
 
-    /// The built-in demo: `data/units.ini` and `data/items.ini` (our own content). The
+    /// The built-in demo: `data/units.ini`, `data/items.ini` and `data/spells.ini` (our own
+    /// content). The
     /// options are the vanilla defaults except for faster XP, so the short demo shows levels.
     pub fn builtin() -> Content {
         let units = parse_units(&Ini::parse(BUILTIN_UNITS)).unwrap_or_else(|e| panic!("data/units.ini: {e}"));
         let items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).unwrap_or_else(|e| panic!("data/items.ini: {e}"));
+        let spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
         let options = GlobalOptions { hero_experience_modificator: 100, main_exp_correction: 60, ..GlobalOptions::default() };
-        Content::new(units, items, Vec::new(), options, Formation::WIDE)
+        Content::new(units, items, spells, options, Formation::WIDE)
     }
 
     pub fn try_unit(&self, id: UnitId) -> Option<&UnitDef> {
@@ -208,6 +218,12 @@ impl Content {
     /// Gold a hero class starts with (demo `StartGold=`, else 100).
     pub fn start_gold(&self, hero: HeroClass) -> i32 {
         self.try_unit(hero.unit()).and_then(|u| u.extra.get("StartGold")).and_then(|g| g.parse().ok()).unwrap_or(100)
+    }
+
+    /// Spells a demo hero class has in its book at the start (demo `StartSpells=`).
+    pub fn start_spells(&self, hero: HeroClass) -> Vec<u8> {
+        let list = self.try_unit(hero.unit()).and_then(|u| u.extra.get("StartSpells"));
+        list.map_or_else(Vec::new, |l| l.split_whitespace().filter_map(|x| x.parse().ok()).collect())
     }
 
     /// XP needed to go from `level` (1 = as hired) to the next:
@@ -369,15 +385,19 @@ mod tests {
         let c = Content::builtin();
         assert_eq!(c.units.len(), 10);
         assert_eq!(c.items.len(), 15);
+        assert_eq!(c.spells.len(), 5);
+        assert!(c.spells.iter().all(|s| s.extra.is_empty()), "unknown spell keys");
         for h in HeroClass::ALL {
             assert!(c.try_unit(h.unit()).is_some(), "{h:?}");
         }
-        assert!(c.units.iter().all(|u| u.extra.keys().all(|k| k == "Key" || k == "StartGold")), "unknown unit keys");
+        assert!(c.units.iter().all(|u| u.extra.keys().all(|k| matches!(k.as_str(), "Key" | "StartGold" | "StartSpells"))), "unknown unit keys");
         assert!(c.items.iter().all(|i| i.extra.keys().all(|k| k == "Key" || k == "Sources")), "unknown item keys");
         let spear = c.unit_by_key("spearman").unwrap();
         assert_eq!(c.unit(spear).bonus, Some(Bonus::SpearDefense));
         assert_eq!(c.unit(spear).upgrades[0].target, c.unit_by_key("swordsman").map(|u| u.0));
         assert_eq!(c.start_gold(HeroClass::Archmage), 120);
+        assert_eq!(c.start_spells(HeroClass::Archmage), vec![1, 4]);
+        assert!(c.start_spells(HeroClass::Knight).is_empty());
         for s in [Source::Market, Source::Loot, Source::Tribute] {
             assert!(!c.items_from(s).is_empty(), "{s:?}");
         }

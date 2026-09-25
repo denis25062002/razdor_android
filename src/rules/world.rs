@@ -11,6 +11,7 @@ use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 use super::clock::Clock;
 use super::content::{Content, HeroClass, ItemId, UnitId};
 use super::formation::{Row, Slot};
+use super::magic::ActiveSpell;
 use super::map::{Decoration, Grid, Tile, TileMap, MIN_MINUTES};
 use super::units::{Stats, Unit};
 
@@ -20,12 +21,22 @@ const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 pub const HOSTILE_BELOW: i8 = 0;
 
 /// A unit in an army or a garrison.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Troop {
     pub unit: UnitId,
     /// 1 as hired.
     pub level: i32,
     pub slot: Slot,
+    /// Hit points lost to world spells (a troop fights with its maximum minus this).
+    #[serde(default)]
+    pub hurt: i32,
+}
+
+impl Troop {
+    /// A troop at full health.
+    pub fn new(unit: UnitId, level: i32, slot: Slot) -> Troop {
+        Troop { unit, level, slot, hurt: 0 }
+    }
 }
 
 /// Places `(unit, level, count)` entries into free formation cells, each unit in its preferred
@@ -49,7 +60,7 @@ pub fn place_troops(content: &Content, occupied: &[Slot], entries: &[(u32, i32, 
             match content.formation.free_slot(&taken, row) {
                 Some(slot) if taken.len() < content.formation.capacity() => {
                     taken.push(slot);
-                    out.push(Troop { unit: id, level: level.max(1), slot });
+                    out.push(Troop::new(id, level.max(1), slot));
                 }
                 _ => dropped += 1,
             }
@@ -63,7 +74,7 @@ fn dt_entries(troops: &[dtm::Troop]) -> Vec<(u32, i32, i32)> {
 }
 
 /// The 16 building types of the original plus the demo's bandit camp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LocationKind {
     Palace,
     Town,
@@ -146,7 +157,7 @@ impl LocationKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Owner {
     Player,
     /// An army of the scenario, by its 1-based id.
@@ -156,7 +167,7 @@ pub enum Owner {
 }
 
 /// A unit type a barracks offers. `stock: None` = unlimited (the demo).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Recruit {
     pub unit: UnitId,
     pub stock: Option<i32>,
@@ -193,7 +204,7 @@ impl Recruit {
 }
 
 /// A player's unit left in a garrison, and the game minute it was left there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stationed {
     pub unit: Unit,
     pub since: u64,
@@ -203,7 +214,7 @@ pub struct Stationed {
 pub type EventId = u16;
 
 /// What the building screens show of a scenario event (the event engine is separate).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EventInfo {
     pub kind: Option<EventKind>,
     /// The title without its flag script.
@@ -223,7 +234,7 @@ pub struct MapPoint {
 }
 
 /// Items for sale.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Shop {
     /// Always stocked.
     pub fixed: Vec<ItemId>,
@@ -235,13 +246,17 @@ pub struct Shop {
     pub stock: Vec<ItemId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     /// 1-based building id in the scenario (events refer to it); 0 in the demo.
     pub id: u16,
+    /// Texts of the scenario: not saved, restored from it on load.
+    #[serde(skip)]
     pub name: String,
     /// The neutral owner's name (a village headman, a lord …).
+    #[serde(skip)]
     pub owner_name: String,
+    #[serde(skip)]
     pub description: String,
     pub kind: LocationKind,
     /// Entry cell: stepping onto it enters the building.
@@ -386,12 +401,18 @@ impl Location {
 }
 
 /// An army on the map (an AI lord, a gang, peasants) or, in the demo, a bandit gang.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Army {
     /// 1-based army id in the scenario; 0 for the demo's gangs.
     pub id: u8,
+    /// Unique among the world's armies for the whole game (a spell's target is followed by it).
+    pub uid: u32,
+    /// Texts of the scenario: not saved, restored from it on load.
+    #[serde(skip)]
     pub name: String,
+    #[serde(skip)]
     pub leader_name: String,
+    #[serde(skip)]
     pub description: String,
     /// Map model (`.DTm` army byte 5): 4 feudal, 5 bandits, 6 peasants, …
     pub model: u8,
@@ -423,6 +444,9 @@ pub struct Army {
     pub rest_until: f64,
     /// Named character (1-based, the scenario's list) leading it; 0 none.
     pub named: u8,
+    /// World spells cast on it that still last (curses of the player's hero).
+    #[serde(default)]
+    pub effects: Vec<ActiveSpell>,
 }
 
 impl Army {
@@ -463,9 +487,13 @@ pub struct HeroStart {
     pub location: Option<usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct World {
+    /// Statics (the map, texts, indexes) are not saved: they are rebuilt from the scenario
+    /// when a game is loaded ([`World::restore_statics`]).
+    #[serde(skip)]
     pub title: String,
+    #[serde(skip)]
     pub map: TileMap,
     pub locations: Vec<Location>,
     /// Armies on the map.
@@ -483,16 +511,27 @@ pub struct World {
     /// Units of the scenario that the content does not know or that did not fit.
     pub dropped_units: usize,
     /// The scenario's events by id − 1 (titles and kinds only).
+    #[serde(skip)]
     pub events: Vec<EventInfo>,
     /// Lanterns and event points.
+    #[serde(skip)]
     pub points: Vec<MapPoint>,
     /// Names of the scenario's named characters, by id − 1.
+    #[serde(skip)]
     pub named_characters: Vec<String>,
+    /// Last [`Army::uid`] handed to a spawned demo gang.
+    pub next_uid: u32,
+    #[serde(skip)]
     entries: HashMap<Tile, usize>,
+    #[serde(skip)]
     footprints: HashMap<Tile, usize>,
 }
 
 pub const GANG_REWARD: i32 = 30;
+/// What the demo calls its roaming gangs.
+const GANG_NAME: &str = "Bandit gang";
+/// Uids above the scenario's army ids (1..=255) go to the demo's gangs.
+const FIRST_GANG_UID: u32 = 256;
 /// Demo gangs carry this much gold; the victor takes `VictoryGoldDiv` of it.
 const GANG_GOLD: i32 = 2 * GANG_REWARD;
 const GANG_SLOWNESS: f32 = 1.25;
@@ -506,7 +545,7 @@ pub fn demo_unit(content: &Content, key: &str) -> UnitId {
 /// A roaming gang: two bandits in front, an archer behind.
 pub fn gang(content: &Content) -> Vec<Troop> {
     let (bandit, archer) = (demo_unit(content, "bandit"), demo_unit(content, "bandit_archer"));
-    let t = |unit, row, col| Troop { unit, level: 1, slot: Slot::new(row, col) };
+    let t = |unit, row, col| Troop::new(unit, 1, Slot::new(row, col));
     vec![t(bandit, Row::Front, 2), t(bandit, Row::Front, 3), t(archer, Row::Back, 2)]
 }
 
@@ -553,6 +592,7 @@ impl World {
             events: Vec::new(),
             points: Vec::new(),
             named_characters: Vec::new(),
+            next_uid: FIRST_GANG_UID,
             entries: HashMap::new(),
             footprints: HashMap::new(),
         }
@@ -699,6 +739,7 @@ impl World {
             let home = (a.home_building as usize).checked_sub(1).filter(|&j| j < world.locations.len());
             let army = Army {
                 id: a.id,
+                uid: a.id as u32,
                 name: a.name.clone(),
                 leader_name: a.leader_name.clone(),
                 description: a.description.clone(),
@@ -720,6 +761,7 @@ impl World {
                 met: false,
                 rest_until: 0.0,
                 named: a.named_character,
+                effects: Vec::new(),
             };
             // Ships (pirates, merchants) are not simulated yet: they wait with the inactive, as
             // does an army placed far out on the water.
@@ -776,7 +818,7 @@ impl World {
         let tile = |c: char| {
             map.markers.iter().find(|(m, _)| *m == c).map(|&(_, t)| t).unwrap_or_else(|| panic!("map has no '{c}'"))
         };
-        let t = |unit, row, col| Troop { unit, level: 1, slot: Slot::new(row, col) };
+        let t = |unit, row, col| Troop::new(unit, 1, Slot::new(row, col));
         let (f, b) = (Row::Front, Row::Back);
         let recruits = |units: Vec<UnitId>| units.into_iter().map(|unit| Recruit { unit, stock: None, max: 0, progress: 0 }).collect();
         let shop = || Some(Shop { fixed: Vec::new(), random: 6, price: (0, 0), stock: Vec::new() });
@@ -793,11 +835,16 @@ impl World {
         greywall.picture = (3, 2);
         greywall.recruits = recruits(vec![swordsman, archer, healer]);
         greywall.shop = shop();
+        greywall.spells = vec![3, 5];
         let village = |name, c| {
             let mut v = Location::new(LocationKind::Village, name, tile(c));
             v.gold_income = 10;
             v.gold_max = 10;
             v.tribute_gold = 10;
+            // The peasants pray for the hero: mana for the demo's spells.
+            v.mana_income = 10;
+            v.mana_max = 10;
+            v.tribute_mana = 10;
             v.picture = (2, 6);
             v
         };
@@ -816,7 +863,7 @@ impl World {
             village("Millbrook", 'M'),
             village("Ashford", 'A'),
             village("Saltmarsh", 'S'),
-            Location { picture: (7, 4), ..Location::new(LocationKind::Church, "St. Beor's church", tile('+')) },
+            Location { picture: (7, 4), spells: vec![1, 2, 4], ..Location::new(LocationKind::Church, "St. Beor's church", tile('+')) },
             greywall,
             camp(
                 "Bandit camp",
@@ -844,6 +891,43 @@ impl World {
         w.spawn_gang(camp, (39, 16));
         w.spawn_gang(lair, (14, 24));
         w
+    }
+
+    /// Puts back what a save leaves out (the `#[serde(skip)]` fields: the map, the texts and
+    /// the indexes) from `fresh`, the same world rebuilt from its scenario or the demo. Fails
+    /// when the saved world does not fit it (another map).
+    pub fn restore_statics(&mut self, fresh: World) -> Result<(), String> {
+        if self.locations.len() != fresh.locations.len() {
+            return Err(format!("{} buildings saved, the map has {}", self.locations.len(), fresh.locations.len()));
+        }
+        for (l, f) in self.locations.iter_mut().zip(&fresh.locations) {
+            if l.id != f.id || l.kind != f.kind || l.anchor != f.anchor {
+                return Err(format!("building {} does not match the map", l.id));
+            }
+            l.name.clone_from(&f.name);
+            l.owner_name.clone_from(&f.owner_name);
+            l.description.clone_from(&f.description);
+        }
+        let texts: HashMap<u8, &Army> = fresh.armies.iter().chain(fresh.inactive.iter()).filter(|a| a.id != 0).map(|a| (a.id, a)).collect();
+        for a in self.armies.iter_mut().chain(self.inactive.iter_mut()) {
+            match texts.get(&a.id) {
+                _ if a.id == 0 => a.name = GANG_NAME.to_string(),
+                Some(f) => {
+                    a.name.clone_from(&f.name);
+                    a.leader_name.clone_from(&f.leader_name);
+                    a.description.clone_from(&f.description);
+                }
+                None => return Err(format!("army {} is not on the map", a.id)),
+            }
+        }
+        self.title = fresh.title;
+        self.map = fresh.map;
+        self.events = fresh.events;
+        self.points = fresh.points;
+        self.named_characters = fresh.named_characters;
+        self.entries = fresh.entries;
+        self.footprints = fresh.footprints;
+        Ok(())
     }
 
     pub fn index_of(&self, name: &str) -> usize {
@@ -882,9 +966,11 @@ impl World {
 
     /// A demo gang from camp `home` at `at`.
     pub fn spawn_gang(&mut self, home: usize, at: Tile) {
+        self.next_uid = self.next_uid.max(FIRST_GANG_UID) + 1;
         self.armies.push(Army {
             id: 0,
-            name: "Bandit gang".to_string(),
+            uid: self.next_uid,
+            name: GANG_NAME.to_string(),
             leader_name: String::new(),
             description: String::new(),
             model: 5,
@@ -905,6 +991,7 @@ impl World {
             met: false,
             rest_until: 0.0,
             named: 0,
+            effects: Vec::new(),
         });
     }
 
