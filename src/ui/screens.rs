@@ -15,6 +15,40 @@ use super::audio::{cue, Cue};
 use super::widgets::*;
 use super::{ScenarioEntry, Screen};
 
+/// Longest hero name the class screen takes.
+const NAME_MAX: usize = 24;
+
+thread_local! {
+    /// The hero's name typed on the class screen (kept between frames and games).
+    static HERO_NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Applies this frame's typing to `name`: printable characters are added (up to
+/// [`NAME_MAX`]), Backspace removes the last one.
+fn edit_name(name: &mut String) {
+    while let Some(c) = get_char_pressed() {
+        if !c.is_control() && name.chars().count() < NAME_MAX {
+            name.push(c);
+        }
+    }
+    if !input_blocked() && is_key_pressed(KeyCode::Backspace) {
+        name.pop();
+    }
+}
+
+/// The name field of the class screen: what was typed, or the class names as a hint.
+fn name_field(name: &str, x: f32, y: f32, w: f32) {
+    text("Hero's name (type it; empty: the class's name):", x, y - 8.0, 18.0, DIM);
+    draw_rectangle(x, y, w, 36.0, PANEL);
+    draw_rectangle_lines(x, y, w, 36.0, 2.0, ACCENT);
+    let caret = if (get_time() * 2.0) as i64 % 2 == 0 { "|" } else { "" };
+    if name.is_empty() {
+        text(&format!("{caret}(the class's name)"), x + 10.0, y + 25.0, 20.0, DIM);
+    } else {
+        text(&format!("{name}{caret}"), x + 10.0, y + 25.0, 20.0, INK);
+    }
+}
+
 fn seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -123,6 +157,12 @@ pub fn class_select(
 
     let (w, h, gap) = (300.0, 380.0, 30.0);
     let x0 = (screen_width() - (3.0 * w + 2.0 * gap)) / 2.0;
+    let name = HERO_NAME.with(|n| {
+        let mut n = n.borrow_mut();
+        edit_name(&mut n);
+        n.clone()
+    });
+    name_field(&name, (screen_width() - 420.0) / 2.0, 600.0, 420.0);
     for (i, hero) in HeroClass::ALL.into_iter().enumerate() {
         let kind = hero.unit();
         let x = x0 + i as f32 * (w + gap);
@@ -166,6 +206,9 @@ pub fn class_select(
                 }
                 None => Game::new(content.clone(), hero, seed()),
             });
+            if let Some(g) = game.as_mut() {
+                g.set_hero_name(&name);
+            }
             return Some(Screen::WorldMap);
         }
     }

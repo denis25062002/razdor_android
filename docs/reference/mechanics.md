@@ -604,15 +604,24 @@ Each is marked *(guess)* in the code.
   gives ruins' treasure gold and items. Bridge footprints are road.
 - **Villages** start with one day's tribute; at midnight it grows by `gold/mana per day` up to
   the maximum. Collecting takes all of it.
-- **Armies**: model 7 / byte 63 = off the map at start; ships are not simulated yet. Hostile =
+- **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile =
   the army's own attitude towards the player < 0. Hostile armies chase the hero within 6
   cells and fight on contact (neighbouring cell); others greet once and let him pass.
   Patrolling armies wander within their patrol radius, resting 30–180 min between legs.
   Speed correction: ±10% per point. Troops: the middle byte of each triple is levels above
   the first; the leader is a troop of its own. Loot: `gold income / VictoryGoldDiv`, at least
   `MinVictoryGold`, plus the army's artifacts.
-- **Hero start**: the preset's cell (moved to its building's entry if it lies in the walls),
-  gold, combat experience, troops and artifacts. Mana starts at 0.
+- **Hero start**: the entry of the preset's start building (preset byte 16) when it names
+  one; else, of the buildings flagged as a start for the class (building byte 353), the one
+  nearest the preset's cell if within 8 cells *(guess: on "Проклятое озеро" each class's
+  preset stands next to its flagged building)*; else the preset's cell (moved to a
+  building's entry if it lies in the walls). Gold, combat experience, troops and artifacts
+  from the preset. Mana starts at 0.
+- **Gates**: a building whose walls cut its entry off from open ground holding a bridge or
+  another building gets a passage inside its footprint from the entry to the nearest wall
+  cell on the far side *(guess)*; the passage counts as the entry (a garrison still bars the
+  way). The shipped maps need it for forts at the foot of bridges (ДС2 twice, "Другой
+  берег" once) and one set of ruins on ДС2.
 
 Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
 
@@ -661,11 +670,15 @@ Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
   gold income (the footage: +30 for a fort of income 30, +125 for a castle of income 125).
   Every beaten enemy unit gives its `Surrender` value in mana (the footage: +20 mana from a
   fort garrison with one unit of `Surrender=20`).
-- **Village alternatives**: collect the tribute, or instead the priest heals the army, or
-  the innkeeper pays off the unpaid. The long blessing, furs and magic ritual are not in
-  yet.
+- **Village alternatives** *(guess: which of the five a village offers is not decoded;
+  Razdor offers all of them, once a day, each instead of the tribute and using it up)*:
+  collect the tribute (gold and mana); the priest heals the army; the innkeeper pays off the
+  unpaid; a **long blessing**: the cheapest (in mana) lasting spell on the own army whose
+  modifiers are all gains, cast for free through the world-spell path (§8.3) for 3 times
+  its `TimeWork`; **furs** worth 150% of the gold tribute (no mana); a **magic ritual**
+  giving the mana tribute plus 1 mana per 2 gold of it.
 - **Not used yet**: `CostGoldDiv`, "dark forces only"
-  items, ships at shipyards, named units that cannot be left in a garrison.
+  items, named units that cannot be left in a garrison.
 
 ### 8.1 Event engine (Stage 6, `src/rules/events.rs`)
 
@@ -877,6 +890,39 @@ Explored cells stay explored; there is no "seen before" state (the video).
   `InterfaceBarScroll` are not used yet.
 - **Settings**: music 60%, effects 80% by default; steps of 10%; N mutes the music. Kept in
   `audio.json` in the save folder.
+
+### 8.6 Ships (`src/rules/ships.rs`)
+
+- **Water**: coastal water and deep sea that is not under a building (bridges are land);
+  shallows and fords are walked, as before. On foot water blocks.
+- **Renting**: a friendly shipyard's "Ships" tab rents a ship for `ShipCost` gold. It
+  waits at the water next to the land nearest the entry on foot, within 24 steps
+  *(guess)*; a new rent replaces the old ship (one at a time). "Проклятое озеро"'s lake is
+  shallows, so its two shipyards have no water to offer.
+- **Sailing**: one route plans walking, boarding, sailing and landing: a step from land
+  onto water is allowed only onto the waiting ship, a step from the ship onto any walkable
+  cell lands. Clicking water sails there (boarding first), clicking land while at sea
+  lands at the best coast cell. The ship stays where the hero left it; walking back onto
+  it boards it. A sea cell costs 40 minutes *(guess)*, the same for every class (the
+  Ranger's bonus is for walking).
+- **Fog**: the hero sees as far at sea as on land; routes need explored water as they need
+  explored land.
+- **Scenario ships** (army byte 72: 1 hero ship, 2 pirates, 3 merchants): placed on the
+  nearest water within 8 cells, move on water only, always cruise within their patrol
+  radius (8 when the editor gives 0) *(guess)*; hostile ones chase the hero to the water
+  next to him and fight on contact like any army. Merchants never attack (their attitude
+  is raised to at least 0; РК4's merchant is marked −2 in its file) *(guess)*. Events bring
+  waiting ships onto the water.
+- **Saves**: the ship (cell, aboard) is part of the game state; the water mask and building
+  passages are rebuilt from the map.
+- **Reachability** (env-gated test): from every class's start, walking and renting a ship
+  at every shipyard reached, every building entry of every shipped map is reachable except
+  the second tutorial's church, which stands in a ring of dense thickets and impassable bog.
+
+### 8.7 Hero name
+
+- The class screen takes a name (up to 24 characters, typed); `#HERONAME` in the
+  scenario's texts becomes it, `#HEROCLASS` the class's name. Empty: the class's name.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

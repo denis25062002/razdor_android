@@ -97,8 +97,14 @@ ones are marked there; the main hall lists the building's quests and the rumours
 (10 gold each). The scenario's victory or defeat event ends the game. The fog of war hides what the hero
 has not seen yet (unexplored ground is black and cannot be walked; a click into the dark
 makes the hero feel his way towards it); M or the "Map (M)" button opens the minimap of the
-explored land, and a click on it moves the camera. Ships are not in yet, so maps with
-islands are only partly walkable. Russian text needs a TrueType font with Cyrillic: a common
+explored land, and a click on it moves the camera. A **shipyard** rents a ship for
+`ShipCost` gold (250): click the water to board it and sail, click the shore to land; the
+ship waits where you left it until you walk back onto it (one ship at a time). Pirate
+ships sail and attack like hostile armies, merchant ships never attack. Villages offer,
+once a day and instead of the tribute, the priest's healing, paying off the unpaid, a long
+blessing, furs worth more gold, or a magic ritual for mana. The hero starts in the preset's
+start building when the map names one, and the class screen takes a name for him
+(`#HERONAME`; empty means the class's name). Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 

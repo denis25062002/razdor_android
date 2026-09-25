@@ -174,6 +174,11 @@ pub fn surface_minutes(s: Surface) -> Option<u16> {
     })
 }
 
+/// Open water a ship sails on: coastal water and deep sea (shallows and fords are walked).
+pub fn is_water(s: Surface) -> bool {
+    matches!(s, Surface::CoastalWater | Surface::DeepSea)
+}
+
 /// Cheapest cost of any passable cell, for the A* heuristic.
 pub const MIN_MINUTES: u16 = 30;
 
@@ -424,8 +429,18 @@ impl TileMap {
     /// [`TileMap::path_limited`] stepping only onto cells `allowed` accepts (the fog of war:
     /// explored cells, `rules::fog`).
     pub fn path_where(&self, from: Tile, to: Tile, max_nodes: usize, allowed: &dyn Fn(Tile) -> bool) -> Vec<Tile> {
+        if !self.passable(to) || !allowed(to) {
+            return Vec::new();
+        }
+        self.path_by(from, to, max_nodes, &|_, n| self.minutes(n).filter(|_| allowed(n)))
+    }
+
+    /// Cheapest path (A*) where `step(from, onto)` gives the minutes per cell of a step
+    /// between neighbours, `None` if it is not allowed (ships: `rules::ships`). Costs must be
+    /// at least [`MIN_MINUTES`]. Excludes `from`; empty if unreachable or equal.
+    pub fn path_by(&self, from: Tile, to: Tile, max_nodes: usize, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
         let (Some(start), Some(goal)) = (self.index(from), self.index(to)) else { return Vec::new() };
-        if from == to || !self.passable(to) || !allowed(to) {
+        if from == to {
             return Vec::new();
         }
         let g = self.grid;
@@ -459,10 +474,7 @@ impl TileMap {
             let here = self.tile_of(i);
             for nb in self.grid.neighbours(here) {
                 let Some(j) = self.index(nb) else { continue };
-                let c = self.cost[j];
-                if c == 0 || !allowed(nb) {
-                    continue;
-                }
+                let Some(c) = step(here, nb).filter(|&c| c > 0) else { continue };
                 let ng = gc + (c as f32 * self.grid.step_length(here, nb)).round() as u32;
                 if ng < best[j] {
                     best[j] = ng;
@@ -477,10 +489,15 @@ impl TileMap {
     /// Travel time (minutes) of `path` from `from`, as [`TileMap::path`] returns it: each
     /// cell's cost times the length of the step onto it.
     pub fn path_minutes(&self, from: Tile, path: &[Tile]) -> u32 {
+        self.path_minutes_by(from, path, &|t| self.minutes(t).unwrap_or(0) as f32)
+    }
+
+    /// [`TileMap::path_minutes`] with the minutes per cell given by `cost`.
+    pub fn path_minutes_by(&self, from: Tile, path: &[Tile], cost: &dyn Fn(Tile) -> f32) -> u32 {
         let mut prev = from;
         let mut total = 0.0;
         for &t in path {
-            total += self.minutes(t).unwrap_or(0) as f32 * self.grid.step_length(prev, t);
+            total += cost(t) * self.grid.step_length(prev, t);
             prev = t;
         }
         total.round() as u32

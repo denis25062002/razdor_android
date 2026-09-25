@@ -5,13 +5,14 @@ use crate::dt::dtm::Scenario;
 
 use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick, MINUTES_PER_DAY};
-use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId};
+use super::content::{Bonus, Content, HeroClass, ItemId, Source, SpellDef, UnitId};
 use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
 use super::formation::Slot;
 use super::items::{self, EquipError};
-use super::magic::ActiveSpell;
+use super::magic::{self, ActiveSpell};
 use super::save::ScenarioRef;
+use super::ships::{Ship, SEA_MINUTES};
 use super::map::{Tile, TileMap};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
@@ -45,6 +46,12 @@ pub const MARKET_STOCK: usize = 6;
 const GANG_LOOT_CHANCE: i32 = 30;
 /// Percent chance that a demo village pays tribute with an item instead of gold.
 const TRIBUTE_ITEM_CHANCE: i32 = 25;
+/// A village's long blessing lasts this many times its spell's own time *(guess)*.
+pub const BLESSING_FACTOR: u64 = 3;
+/// A village's furs fetch this percentage of its gold tribute *(guess)*.
+pub const FURS_PERCENT: i32 = 150;
+/// The magic ritual gives one mana for this much of the gold tribute *(guess)*.
+pub const RITUAL_GOLD_PER_MANA: i32 = 2;
 /// The Ranger hero moves 20% faster on the map (mechanics.md 7).
 const RANGER_SPEED: f32 = 1.2;
 
@@ -214,16 +221,22 @@ pub struct Game {
     /// An autosave is due (the noon report came): its name. The UI writes it and clears it.
     #[serde(skip)]
     pub autosave_due: Option<String>,
+    /// The rented ship (`rules::ships`), if any.
+    #[serde(default)]
+    pub ship: Option<Ship>,
+    /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
+    #[serde(default)]
+    pub hero_name: Option<String>,
 }
 
-/// Moves `pos` along `path` for up to `minutes` of game time; cell costs are multiplied by
-/// `slowness`. Stops early on a cell `stop` accepts (the rest of the path is dropped).
+/// Moves `pos` along `path` for up to `minutes` of game time; `cost` gives the minutes per
+/// cell. Stops early on a cell `stop` accepts (the rest of the path is dropped).
 /// Returns the minutes used.
-fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32, slowness: f32, stop: &dyn Fn(Tile) -> bool) -> f32 {
+fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32, cost: &dyn Fn(Tile) -> f32, stop: &dyn Fn(Tile) -> bool) -> f32 {
     let mut left = minutes;
     while left > 0.0 {
         let Some(&next) = path.first() else { break };
-        let per_tile = map.minutes(next).unwrap_or(60) as f32 * slowness;
+        let per_tile = cost(next);
         let goal = map.center(next);
         let (dx, dy) = (goal.0 - pos.0, goal.1 - pos.1);
         let need = (dx * dx + dy * dy).sqrt() * per_tile;
@@ -276,6 +289,8 @@ impl Game {
             effects: Vec::new(),
             origin: None,
             autosave_due: None,
+            ship: None,
+            hero_name: None,
         };
         // The scenario garrisons of the player's own buildings are his troops there, already
         // past their paid first day.
@@ -336,6 +351,20 @@ impl Game {
 
     pub fn hero(&self) -> &Unit {
         &self.squad[0]
+    }
+
+    /// The hero's name for `#HERONAME`: the one the player chose, else his class's name.
+    pub fn hero_name(&self) -> String {
+        match &self.hero_name {
+            Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+            _ => self.hero().name(&self.content).to_string(),
+        }
+    }
+
+    /// Names the hero (an empty name means his class's name).
+    pub fn set_hero_name(&mut self, name: &str) {
+        let n = name.trim();
+        self.hero_name = (!n.is_empty()).then(|| n.to_string());
     }
 
     pub fn hero_class(&self) -> Option<HeroClass> {
@@ -425,7 +454,7 @@ impl Game {
     }
 
     /// Terrain-cost multiplier of the hero's army.
-    fn slowness(&self) -> f32 {
+    pub(crate) fn slowness(&self) -> f32 {
         if self.hero_class() == Some(HeroClass::Ranger) {
             1.0 / RANGER_SPEED
         } else {
@@ -435,7 +464,7 @@ impl Game {
 
     /// Minutes the hero needs to walk `path`.
     pub fn travel_minutes(&self, path: &[Tile]) -> f32 {
-        self.world.map.path_minutes(self.tile(), path) as f32 * self.slowness()
+        self.world.map.path_minutes_by(self.tile(), path, &|t| self.cell_minutes(t)) as f32
     }
 
     /// Minutes left on the current route.
@@ -515,8 +544,13 @@ impl Game {
 
     /// The route a click on `to` walks now: over explored ground only, towards the nearest
     /// explored cell if `to` is in the dark ([`fog::plan`]).
+    /// With a ship the route may board it, sail and land ([`Game::step_minutes`]).
     pub fn plan(&self, to: Tile) -> Vec<Tile> {
-        fog::plan(&self.world.map, &self.fog, self.tile(), to)
+        self.plan_from(self.tile(), to)
+    }
+
+    fn plan_from(&self, from: Tile, to: Tile) -> Vec<Tile> {
+        fog::plan_by(&self.world.map, &self.fog, from, to, &|a, b| self.step_minutes(a, b))
     }
 
     /// Reveals the hero's surroundings. Returns true if new ground came into view.
@@ -544,7 +578,7 @@ impl Game {
         // Finish the step under way (it may be a gate), then follow the new route.
         let path = match self.path.first() {
             Some(&next) => {
-                let rest = fog::plan(&self.world.map, &self.fog, next, goal);
+                let rest = self.plan_from(next, goal);
                 std::iter::once(next).chain(rest).collect()
             }
             None => self.plan(goal),
@@ -575,8 +609,10 @@ impl Game {
             // A hostile garrison stops the party at its gate.
             let at_gate = |t: Tile| world.location_at(t).is_some_and(|l| world.locations[l].defended());
             let before = path.len();
-            let used = walk(&world.map, pos, path, slice, slowness, &at_gate);
+            let cost = |t: Tile| hero_cell_minutes(world, slowness, t);
+            let used = walk(&world.map, pos, path, slice, &cost, &at_gate);
             let stopped = path.is_empty() && before > 0 && at_gate(world.map.tile_at(*pos));
+            self.update_ship();
             budget -= slice;
             let revealed = self.look_around();
             self.feel_the_way(revealed, stopped);
@@ -824,13 +860,25 @@ impl Game {
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
         let entries: Vec<Tile> = self.world.locations.iter().map(|l| l.tile).collect();
-        let World { map, armies, .. } = &mut self.world;
+        let mut armies = std::mem::take(&mut self.world.armies);
+        let world = &self.world;
+        let map = &world.map;
         for a in armies.iter_mut() {
             let here = a.tile(map);
-            let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS;
-            if near {
-                if !a.chasing || a.path.last() != Some(&hero_tile) {
-                    a.path = map.path_limited(here, hero_tile, AI_PATH_NODES);
+            let sails = a.sails();
+            // Ships stay on the water: they chase the hero to the water next to him.
+            let goal = if sails { Game::sea_chase_goal(world, here, hero_tile) } else { Some(hero_tile) };
+            let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS && goal.is_some();
+            let route = |from: Tile, to: Tile| {
+                if sails {
+                    map.path_by(from, to, AI_PATH_NODES, &|x, y| world.sea_step(x, y))
+                } else {
+                    map.path_limited(from, to, AI_PATH_NODES)
+                }
+            };
+            if let (true, Some(goal)) = (near, goal) {
+                if !a.chasing || a.path.last() != Some(&goal) {
+                    a.path = route(here, goal);
                     a.chasing = true;
                 }
             } else if a.chasing {
@@ -841,8 +889,9 @@ impl Game {
                 let r = a.patrol_radius;
                 for _ in 0..3 {
                     let t = (a.post.0 + self.rng.range(-r, r), a.post.1 + self.rng.range(-r, r));
-                    if map.passable(t) && !entries.contains(&t) && map.distance(t, a.post) <= r {
-                        a.path = map.path_limited(here, t, AI_PATH_NODES);
+                    let fits = if sails { world.is_sea(t) } else { map.passable(t) };
+                    if fits && !entries.contains(&t) && map.distance(t, a.post) <= r {
+                        a.path = route(here, t);
                         if !a.path.is_empty() {
                             break;
                         }
@@ -851,8 +900,11 @@ impl Game {
                 // Rest between patrol legs, or after failing to find one *(guess)*.
                 a.rest_until = now + self.rng.range(30, 180) as f64;
             }
-            walk(map, &mut a.pos, &mut a.path, minutes, a.slowness, &|_| false);
+            let slowness = a.slowness;
+            let cost = |t: Tile| if sails { SEA_MINUTES as f32 * slowness } else { map.minutes(t).unwrap_or(60) as f32 * slowness };
+            walk(map, &mut a.pos, &mut a.path, minutes, &cost, &|_| false);
         }
+        self.world.armies = armies;
     }
 
     /// Price to hire unit type `kind`: its `Cost` (in mana for elementals).
@@ -954,6 +1006,66 @@ impl Game {
             n += 1;
         }
         Some(n)
+    }
+
+    /// The spell a village's long blessing casts: the cheapest (in mana, then by id) lasting
+    /// spell on the hero's own army whose modifiers are all gains *(guess: the original's
+    /// blessing is not in the data files)*.
+    pub fn village_blessing(&self) -> Option<&SpellDef> {
+        self.content
+            .spells
+            .iter()
+            .filter(|s| !magic::targets_enemy(s) && magic::is_lasting(s) && magic::Duration::of(s) != magic::Duration::Permanent)
+            .filter(|s| s.add.values().chain(s.percent.values()).all(|&v| v >= 0) && s.life_lose_percent.is_none())
+            .min_by_key(|s| (s.cost_mana, s.id))
+    }
+
+    /// Instead of the tribute: the village's long blessing ([`Game::village_blessing`]) is
+    /// cast on the army for free, lasting [`BLESSING_FACTOR`] times the spell's own time
+    /// *(guess)*. Returns the spell, `None` if the village has nothing to give today or the
+    /// game has no such spell.
+    pub fn village_bless(&mut self) -> Option<u32> {
+        self.village_ready()?;
+        let spell = self.village_blessing()?.clone();
+        self.use_village()?;
+        self.apply_spell_to_army(&spell);
+        let now = self.clock.total_minutes() as u64;
+        if let magic::Duration::Minutes(m) = magic::Duration::of(&spell) {
+            for e in self.effects.iter_mut().filter(|e| e.spell == spell.id) {
+                e.until = Some(now + m * BLESSING_FACTOR);
+            }
+        }
+        Some(spell.id)
+    }
+
+    /// Gold the village's furs fetch now: [`FURS_PERCENT`]% of the waiting gold tribute.
+    pub fn furs_value(&self) -> Option<i32> {
+        self.village_ready().map(|l| self.world.locations[l].tribute_gold * FURS_PERCENT / 100)
+    }
+
+    /// Instead of the tribute: the village's furs, worth more gold than the tribute but no
+    /// mana *(guess)*. Returns the gold.
+    pub fn sell_furs(&mut self) -> Option<i32> {
+        let gold = self.furs_value()?;
+        self.use_village()?;
+        self.gold += gold;
+        Some(gold)
+    }
+
+    /// Mana the village's magic ritual gives now: the waiting mana plus one per
+    /// [`RITUAL_GOLD_PER_MANA`] gold of the tribute.
+    pub fn ritual_value(&self) -> Option<i32> {
+        let v = &self.world.locations[self.village_ready()?];
+        Some(v.tribute_mana + v.tribute_gold / RITUAL_GOLD_PER_MANA)
+    }
+
+    /// Instead of the tribute: a magic power ritual turns the whole tribute into mana
+    /// *(guess)*. Returns the mana.
+    pub fn magic_ritual(&mut self) -> Option<i32> {
+        let mana = self.ritual_value()?;
+        self.use_village()?;
+        self.mana += mana;
+        Some(mana)
     }
 
     /// Battle against the pending foe. Unpaid units refuse to fight. Walking into a garrison
@@ -1235,6 +1347,16 @@ impl Game {
     }
 }
 
+
+/// Minutes per cell the hero spends on `t`: [`SEA_MINUTES`] at sea, else the terrain times
+/// `slowness`.
+pub(crate) fn hero_cell_minutes(world: &World, slowness: f32, t: Tile) -> f32 {
+    if world.is_sea(t) {
+        SEA_MINUTES as f32
+    } else {
+        world.map.minutes(t).unwrap_or(60) as f32 * slowness
+    }
+}
 
 /// The event engine's archetype code of a hero class.
 fn archetype_of(hero: HeroClass) -> u8 {
@@ -1936,6 +2058,57 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
         assert_eq!((g.tile(), g.foe), ((10, 2), Some(Foe::Garrison(0))));
+    }
+
+    fn at_village(gold: i32, mana: i32) -> Game {
+        let mut s = strip();
+        let mut v = building(BuildingType::Village, 6, 2, (1, 1));
+        v.gold_per_day = gold as u16;
+        v.gold_max = gold as u16;
+        v.mana_per_day = mana as u8;
+        v.mana_max = mana as u8;
+        v.relations = [1, 0, 0, 0];
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.set_destination((6, 2));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.location, Some(0));
+        g
+    }
+
+    #[test]
+    fn village_furs_and_ritual_replace_the_tribute() {
+        let mut g = at_village(40, 6);
+        let (gold, mana) = (g.gold, g.mana);
+        assert_eq!((g.furs_value(), g.ritual_value()), (Some(60), Some(26)));
+        assert_eq!(g.sell_furs(), Some(60));
+        assert_eq!((g.gold, g.mana), (gold + 60, mana), "more gold than the tribute, no mana");
+        assert_eq!((g.sell_furs(), g.magic_ritual(), g.collect_tribute()), (None, None, None), "once a day");
+        g.wait(24);
+        assert_eq!(g.magic_ritual(), Some(26));
+        assert_eq!((g.gold, g.mana), (gold + 60 - g.daily_wages(), mana + 26));
+        assert_eq!(g.village_bless(), None, "already used today");
+    }
+
+    #[test]
+    fn village_blessing_is_a_long_lasting_spell() {
+        let mut g = at_village(40, 6);
+        // The testkit has no spells: no blessing, and the tribute is kept.
+        assert_eq!(g.village_bless(), None);
+        assert_eq!(g.tribute_available(), Some(40));
+        // The demo's cheapest blessing is spell 3 (8 hours): blessed for three times as long.
+        let mut d = quiet_game(HeroClass::Knight);
+        d.location = Some(d.world.index_of("Millbrook"));
+        let spell = d.village_blessing().map(|s| (s.id, s.time_work));
+        assert_eq!(spell, Some((3, Some(8))));
+        let now = d.clock.total_minutes() as u64;
+        assert_eq!(d.village_bless(), Some(3));
+        assert_eq!(d.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, Some(now + 3 * 8 * 60))]);
+        assert_eq!(d.tribute_available(), None);
+        d.wait(12);
+        assert_eq!(d.active_spells().len(), 1, "still blessed after its own 8 hours");
+        d.wait(12);
+        assert!(d.active_spells().is_empty());
     }
 
     #[test]

@@ -156,20 +156,31 @@ pub fn for_scenario(map: &TileMap, s: Option<&Scenario>, enabled: bool) -> Fog {
 /// path), so walking there reveals more ground and the route can be planned again. Empty when
 /// no explored cell gets closer than `from` itself.
 pub fn plan(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Vec<Tile> {
-    let ok = |t: Tile| fog.explored(t);
+    plan_by(map, fog, from, to, &|_, n| map.minutes(n))
+}
+
+/// [`plan`] with the steps a [`TileMap::path_by`] cost function allows (on foot, or with a
+/// ship, `rules::ships`).
+pub fn plan_by(map: &TileMap, fog: &Fog, from: Tile, to: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
+    let ok = |a: Tile, n: Tile| step(a, n).filter(|_| fog.explored(n));
     if !fog.enabled || fog.explored(to) {
-        let p = map.path_where(from, to, usize::MAX, &ok);
+        let p = map.path_by(from, to, usize::MAX, &ok);
         if !p.is_empty() || !fog.enabled {
             return p;
         }
     }
-    let Some(goal) = nearest_explored(map, fog, from, to) else { return Vec::new() };
-    map.path_where(from, goal, usize::MAX, &ok)
+    let Some(goal) = nearest_explored_by(map, fog, from, to, step) else { return Vec::new() };
+    map.path_by(from, goal, usize::MAX, &ok)
 }
 
 /// The explored, passable cell reachable from `from` over explored cells whose centre is
 /// nearest to `to`'s; `None` if that is `from` itself (or `from` is off the map).
 pub fn nearest_explored(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Option<Tile> {
+    nearest_explored_by(map, fog, from, to, &|_, n| map.minutes(n))
+}
+
+/// [`nearest_explored`] over the steps `step` allows.
+pub fn nearest_explored_by(map: &TileMap, fog: &Fog, from: Tile, to: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Option<Tile> {
     let start = map.mask_index(from)?;
     let g = map.grid;
     let target = g.center(to);
@@ -184,7 +195,7 @@ pub fn nearest_explored(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Optio
     while let Some(t) = stack.pop() {
         for n in g.neighbours(t) {
             let Some(j) = map.mask_index(n) else { continue };
-            if seen[j] || !map.passable(n) || !fog.explored(n) {
+            if seen[j] || step(t, n).is_none() || !fog.explored(n) {
                 continue;
             }
             seen[j] = true;

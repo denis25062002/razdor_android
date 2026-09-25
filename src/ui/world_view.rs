@@ -31,6 +31,8 @@ use super::Screen;
 /// Screen pixels per world unit (one cell width) at zoom 1: the original's 32 px cells.
 const PX: f32 = 32.0;
 const PANEL_W: f32 = 270.0;
+/// Sail colour of the hero's own ship.
+const HERO_SAIL: Color = Color::new(0.35, 0.8, 0.45, 1.0);
 const BAR_H: f32 = 84.0;
 use super::dialog::MANA;
 
@@ -247,6 +249,8 @@ enum Drawable {
     Object(Decoration),
     Building(usize),
     Army(usize),
+    /// The hero's ship, waiting where he left it.
+    Ship,
     Hero,
 }
 
@@ -370,9 +374,27 @@ fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f
     true
 }
 
+/// A ship on the water (a placeholder shape: hull, mast and a sail of `sail` colour).
+fn draw_ship(cam: &Camera, pos: (f32, f32), sail: Color) {
+    let c = cam.to_screen(pos);
+    let k = cam.scale / PX;
+    let (hw, hh) = (18.0 * k, 7.0 * k);
+    let hull = Color::new(0.42, 0.26, 0.12, 1.0);
+    let (top, bottom) = (c.y - hh * 0.2, c.y + hh);
+    draw_ellipse(c.x, bottom + 2.0 * k, hw * 1.1, 4.0 * k, 0.0, Color::new(0.0, 0.1, 0.2, 0.35));
+    draw_rectangle(c.x - hw * 0.7, top, hw * 1.4, bottom - top, hull);
+    draw_triangle(vec2(c.x - hw, top), vec2(c.x - hw * 0.7, top), vec2(c.x - hw * 0.7, bottom), hull);
+    draw_triangle(vec2(c.x + hw, top), vec2(c.x + hw * 0.7, top), vec2(c.x + hw * 0.7, bottom), hull);
+    draw_line(c.x, top, c.x, top - 30.0 * k, 2.0 * k.max(0.5), Color::new(0.3, 0.2, 0.1, 1.0));
+    draw_triangle(vec2(c.x + 1.0, top - 28.0 * k), vec2(c.x + 1.0, top - 6.0 * k), vec2(c.x + 16.0 * k, top - 8.0 * k), sail);
+}
+
 fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let next = a.path.first().map(|&t| game.world.map.center(t));
-    if !draw_figure(art, figure_stem(a.model), a.pos, next, cam) {
+    if a.sails() {
+        let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
+        draw_ship(cam, a.pos, sail);
+    } else if !draw_figure(art, figure_stem(a.model), a.pos, next, cam) {
         let c = cam.to_screen(a.pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
@@ -395,6 +417,10 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let next = game.path.first().map(|&t| game.world.map.center(t));
     let c = cam.to_screen(game.pos);
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
+    if game.aboard() {
+        draw_ship(cam, game.pos, HERO_SAIL);
+        return;
+    }
     if !draw_figure(art, figure_stem(model), game.pos, next, cam) {
         assets.draw_unit(game.hero().def, Team::Player, c.x, c.y - 10.0, 30.0);
     }
@@ -428,6 +454,9 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     for (i, a) in game.world.armies.iter().enumerate().filter(|(_, a)| fog.explored(a.tile(map))) {
         items.push((a.pos.1 + 0.02, Drawable::Army(i)));
     }
+    if let Some(ship) = game.ship.filter(|s| !s.aboard && fog.explored(s.tile)) {
+        items.push((map.center(ship.tile).1 + 0.02, Drawable::Ship));
+    }
     items.push((game.pos.1 + 0.03, Drawable::Hero));
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (_, d) in &items {
@@ -435,6 +464,11 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
             Drawable::Object(o) => draw_object(o, art, cam),
             Drawable::Building(i) => draw_building(&game.world.locations[*i], art, cam),
             Drawable::Army(i) => draw_army(game, &game.world.armies[*i], assets, art, cam),
+            Drawable::Ship => {
+                if let Some(ship) = game.ship {
+                    draw_ship(cam, map.center(ship.tile), HERO_SAIL);
+                }
+            }
             Drawable::Hero => draw_hero(game, assets, art, cam),
         }
     }
@@ -587,7 +621,7 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
 /// The location the party stands on: enter it, or attack its garrison.
 fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     let Some(l) = game.location else {
-        text("On the road.", x, y + 20.0, 20.0, DIM);
+        text(if game.aboard() { "At sea." } else { "On the road." }, x, y + 20.0, 20.0, DIM);
         return None;
     };
     let loc = &game.world.locations[l];
@@ -781,7 +815,12 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     if clicked() && !on_minimap {
         if let Some(t) = hovered {
-            let target = game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t);
+            // Water is sailed to with a ship; otherwise a click next to open ground means it.
+            let target = if game.can_sail_to(t) {
+                t
+            } else {
+                game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t)
+            };
             if target != game.tile() && !game.set_destination(target) {
                 *message = Some("No way through.".into());
             }
@@ -848,6 +887,11 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         .collect();
     for (i, line) in spells.iter().take(3).enumerate() {
         text(line, x + 15.0, panel_h - 150.0 + i as f32 * 18.0, 16.0, MANA);
+    }
+    if game.aboard() {
+        text("At sea: click the shore to land.", x + 15.0, panel_h - 100.0, 15.0, ACCENT);
+    } else if game.ship.is_some() {
+        text("Your ship waits; walk onto it to sail.", x + 15.0, panel_h - 100.0, 15.0, ACCENT);
     }
     let help = ["Click the map to travel; time passes", "only while you move or wait.", "Right click / Space: stop.", "Wheel or +/-: zoom. 1 / 4: wait."];
     for (i, line) in help.iter().enumerate() {

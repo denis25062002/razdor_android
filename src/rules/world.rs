@@ -12,7 +12,7 @@ use super::clock::Clock;
 use super::content::{Content, HeroClass, ItemId, UnitId};
 use super::formation::{Row, Slot};
 use super::magic::ActiveSpell;
-use super::map::{Decoration, Grid, Tile, TileMap, MIN_MINUTES};
+use super::map::{is_water, Decoration, Grid, Tile, TileMap, MIN_MINUTES};
 use super::units::{Stats, Unit};
 
 const KINGDOM: &str = include_str!("../../data/kingdom.txt");
@@ -303,6 +303,11 @@ pub struct Location {
     pub linked: Option<usize>,
     /// Garrison beaten / treasure taken.
     pub cleared: bool,
+    /// Footprint cells opened as a passage through the building, to the far side (a fort
+    /// guarding a bridge; [`World::open_gates`]). They count as its entry. Rebuilt from the
+    /// scenario on load.
+    #[serde(skip)]
+    pub gates: Vec<Tile>,
 }
 
 impl Location {
@@ -339,6 +344,7 @@ impl Location {
             events: Vec::new(),
             linked: None,
             cleared: false,
+            gates: Vec::new(),
         }
     }
 
@@ -447,6 +453,9 @@ pub struct Army {
     /// World spells cast on it that still last (curses of the player's hero).
     #[serde(default)]
     pub effects: Vec<ActiveSpell>,
+    /// Ship type (`.DTm` army byte 72): 0 a land army, else it sails (`rules::ships::kind`).
+    #[serde(default)]
+    pub ship: u8,
 }
 
 impl Army {
@@ -462,6 +471,11 @@ impl Army {
     /// The troop in the middle of the front row, else the first one.
     pub fn leader(&self) -> Option<UnitId> {
         self.troops.first().map(|t| t.unit)
+    }
+
+    /// A ship: it moves on open water only (`rules::ships`).
+    pub fn sails(&self) -> bool {
+        self.ship != 0
     }
 
     /// Terrain-cost multiplier for the editor's speed correction (about −3..+5): 10% per
@@ -525,7 +539,17 @@ pub struct World {
     entries: HashMap<Tile, usize>,
     #[serde(skip)]
     footprints: HashMap<Tile, usize>,
+    /// Open water a ship can sail on, a `w*h` mask (`rules::ships`): coastal or deep water
+    /// that is not a building's footprint or a bridge.
+    #[serde(skip)]
+    pub(crate) sea: Vec<bool>,
 }
+
+/// How far an army is moved to find a cell of its kind (land, or water for a ship).
+pub const PLACE_RADIUS: i32 = 8;
+/// A start building from the per-class flags (building byte 353) is used only this close to
+/// the preset's position *(guess)*.
+pub const START_BUILDING_RADIUS: i32 = 8;
 
 pub const GANG_REWARD: i32 = 30;
 /// What the demo calls its roaming gangs.
@@ -595,6 +619,7 @@ impl World {
             next_uid: FIRST_GANG_UID,
             entries: HashMap::new(),
             footprints: HashMap::new(),
+            sea: Vec::new(),
         }
     }
 
@@ -609,11 +634,17 @@ impl World {
                 self.footprints.insert(t, i);
                 if l.kind.is_bridge() {
                     self.map.open(t, MIN_MINUTES);
-                } else if t != l.tile {
+                } else if t != l.tile && !l.gates.contains(&t) {
                     self.map.block(t);
                 }
             }
             if !l.kind.is_bridge() {
+                for &g in &l.gates {
+                    self.entries.insert(g, i);
+                    if !self.map.passable(g) {
+                        self.map.open(g, 60);
+                    }
+                }
                 self.entries.insert(l.tile, i);
                 if !self.map.passable(l.tile) {
                     // An entry on impassable ground (an island fort) stays reachable where it
@@ -621,6 +652,75 @@ impl World {
                     self.map.open(l.tile, 60);
                 }
             }
+        }
+        let map = &self.map;
+        self.sea = (0..map.w * map.h)
+            .map(|i| {
+                let t = (i % map.w, i / map.w);
+                is_water(map.surface(t)) && !map.passable(t) && !self.footprints.contains_key(&t)
+            })
+            .collect();
+    }
+
+    /// Opens a passage through every building whose walls cut off open ground with a bridge or
+    /// another building on it that its entry does not lead to *(guess)*: the shipped maps put forts at the foot of bridges (ДС2, and the
+    /// bridge to a town on "Другой берег"), whose far side is reachable only through the
+    /// fort. The passage runs inside the footprint from the entry to the wall cell nearest it
+    /// that touches the other side; its cells count as the building's entry, so a garrison
+    /// still bars the way. One building at a time, until no building separates regions.
+    fn open_gates(&mut self) {
+        loop {
+            let (label, _) = self.map.regions();
+            let lab = |t: Tile| self.map.mask_index(t).map_or(u32::MAX, |i| label[i]);
+            // Regions worth a passage: those holding a bridge or another building's entry.
+            let worth: std::collections::HashSet<u32> = self
+                .locations
+                .iter()
+                .flat_map(|l| if l.kind.is_bridge() { l.cells().collect::<Vec<_>>() } else { vec![l.tile] })
+                .map(lab)
+                .collect();
+            let mut gate = None;
+            'buildings: for (i, l) in self.locations.iter().enumerate().filter(|(_, l)| !l.kind.is_bridge()) {
+                let home = lab(l.tile);
+                if home == u32::MAX {
+                    continue;
+                }
+                let cells: Vec<Tile> = l.cells().filter(|&t| self.map.in_bounds(t)).collect();
+                let g = self.map.grid;
+                let mut exits: Vec<Tile> = cells
+                    .iter()
+                    .copied()
+                    .filter(|&c| c != l.tile && !l.gates.contains(&c))
+                    .filter(|&c| g.neighbours(c).any(|n| !cells.contains(&n) && lab(n) != u32::MAX && lab(n) != home && worth.contains(&lab(n))))
+                    .collect();
+                exits.sort_by_key(|&c| (g.distance(l.tile, c), c.1, c.0));
+                for exit in exits {
+                    // A way inside the footprint from the entry (or an open gate) to the exit.
+                    let mut prev = HashMap::from([(l.tile, l.tile)]);
+                    let mut queue = std::collections::VecDeque::from([l.tile]);
+                    while let Some(t) = queue.pop_front() {
+                        if t == exit {
+                            let mut way = Vec::new();
+                            let mut cur = exit;
+                            while cur != l.tile {
+                                way.push(cur);
+                                cur = prev[&cur];
+                            }
+                            gate = Some((i, way));
+                            break 'buildings;
+                        }
+                        for n in g.neighbours(t).filter(|n| cells.contains(n)) {
+                            if let std::collections::hash_map::Entry::Vacant(e) = prev.entry(n) {
+                                e.insert(t);
+                                queue.push_back(n);
+                            }
+                        }
+                    }
+                }
+            }
+            let Some((i, way)) = gate else { return };
+            self.locations[i].gates.extend(way);
+            self.place_buildings();
         }
     }
 
@@ -720,6 +820,7 @@ impl World {
             l.tile = choose_entry(&walled, &regions, l);
         }
         world.place_buildings();
+        world.open_gates();
 
         for a in &s.armies {
             let mut entries = Vec::new();
@@ -732,10 +833,18 @@ impl World {
             if troops.is_empty() {
                 continue;
             }
-            let mut tile = (a.x as i32, a.y as i32);
-            if !world.map.passable(tile) {
-                tile = world.map.nearest_passable(tile, 8).unwrap_or(tile);
-            }
+            let at = (a.x as i32, a.y as i32);
+            let placed = if a.ship != 0 {
+                world.nearest_sea(at, PLACE_RADIUS)
+            } else if world.map.passable(at) {
+                Some(at)
+            } else {
+                world.map.nearest_passable(at, PLACE_RADIUS)
+            };
+            let tile = placed.unwrap_or(at);
+            // Merchant ships trade and never attack (guess; one shipped merchant is marked
+            // ill-disposed in its file).
+            let attitude = if a.ship == super::ships::kind::MERCHANT { a.relations[0].max(0) } else { a.relations[0] };
             let home = (a.home_building as usize).checked_sub(1).filter(|&j| j < world.locations.len());
             let army = Army {
                 id: a.id,
@@ -747,11 +856,12 @@ impl World {
                 pos: world.map.center(tile),
                 home,
                 post: tile,
-                patrols: a.patrols != 0,
-                patrol_radius: a.patrol_radius as i32,
+                // Ships always cruise their waters *(guess)*.
+                patrols: a.patrols != 0 || a.ship != 0,
+                patrol_radius: if a.ship != 0 && a.patrol_radius == 0 { super::ships::SHIP_PATROL } else { a.patrol_radius as i32 },
                 troops,
                 faction: a.faction,
-                attitude: a.relations[0],
+                attitude,
                 gold: a.gold_income as i32,
                 items: artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)),
                 slowness: Army::slowness_for(a.speed_correction),
@@ -762,10 +872,11 @@ impl World {
                 rest_until: 0.0,
                 named: a.named_character,
                 effects: Vec::new(),
+                ship: a.ship,
             };
-            // Ships (pirates, merchants) are not simulated yet: they wait with the inactive, as
-            // does an army placed far out on the water.
-            if a.is_active() && a.ship == 0 && world.map.passable(tile) {
+            // An army with no cell of its kind nearby (a land army far out on the water)
+            // waits with the inactive.
+            if a.is_active() && placed.is_some() {
                 world.armies.push(army);
             } else {
                 world.inactive.push(army);
@@ -774,9 +885,39 @@ impl World {
         world
     }
 
-    /// Where and with what the hero of `class` starts in scenario `s` (its header preset).
-    /// A start inside a building's walls moves to the building's entry, else to the nearest
-    /// open cell.
+    /// The building the hero of `class` starts in, index into `locations`: the preset's
+    /// start building (1-based, 0 = none); else, of the buildings flagged as a start for the
+    /// class (building byte 353), the one nearest the preset's cell if it is within
+    /// [`START_BUILDING_RADIUS`] *(guess: the original's use of the flags is not decoded;
+    /// the shipped maps that use them put each class's preset next to its flagged
+    /// building)*. Bridges are never a start.
+    pub fn start_building(&self, s: &Scenario, class: HeroClass) -> Option<usize> {
+        let k = match class {
+            HeroClass::Knight => 0,
+            HeroClass::Archmage => 1,
+            HeroClass::Ranger => 2,
+        };
+        let archetype = [Archetype::Knight, Archetype::Archmage, Archetype::Ranger][k];
+        let p = s.header.hero(archetype);
+        let ok = |i: usize| self.locations.get(i).is_some_and(|l| !l.kind.is_bridge());
+        if let Some(i) = (p.start_building as usize).checked_sub(1) {
+            return ok(i).then_some(i);
+        }
+        let at = (p.x as i32, p.y as i32);
+        s.buildings
+            .iter()
+            .enumerate()
+            .filter(|(i, b)| b.start_for[k] != 0 && ok(*i))
+            .map(|(i, _)| (self.map.distance(at, self.locations[i].tile), i))
+            .min()
+            .filter(|&(d, _)| d <= START_BUILDING_RADIUS)
+            .map(|(_, i)| i)
+    }
+
+    /// Where and with what the hero of `class` starts in scenario `s` (its header preset):
+    /// at the entry of his start building ([`World::start_building`]) when there is one,
+    /// else at the preset's cell. A start inside a building's walls moves to the building's
+    /// entry, else to the nearest open cell.
     pub fn hero_start(&self, s: &Scenario, content: &Content, class: HeroClass) -> HeroStart {
         let archetype = match class {
             HeroClass::Knight => Archetype::Knight,
@@ -785,6 +926,9 @@ impl World {
         };
         let p = s.header.hero(archetype);
         let mut tile = (p.x as i32, p.y as i32);
+        if let Some(l) = self.start_building(s, class) {
+            tile = self.locations[l].tile;
+        }
         if let Some(&l) = self.footprints.get(&tile) {
             if !self.map.passable(tile) {
                 tile = self.locations[l].tile;
@@ -905,6 +1049,7 @@ impl World {
                 return Err(format!("building {} does not match the map", l.id));
             }
             l.name.clone_from(&f.name);
+            l.gates.clone_from(&f.gates);
             l.owner_name.clone_from(&f.owner_name);
             l.description.clone_from(&f.description);
         }
@@ -927,6 +1072,7 @@ impl World {
         self.named_characters = fresh.named_characters;
         self.entries = fresh.entries;
         self.footprints = fresh.footprints;
+        self.sea = fresh.sea;
         Ok(())
     }
 
@@ -992,6 +1138,7 @@ impl World {
             rest_until: 0.0,
             named: 0,
             effects: Vec::new(),
+            ship: 0,
         });
     }
 
@@ -1214,6 +1361,35 @@ mod tests {
     }
 
     #[test]
+    fn a_fort_at_the_foot_of_a_bridge_lets_the_hero_through() {
+        // Water on rows 4 and 5, a bridge across at x = 5; the fort (4..=5, 6..=7) closes
+        // the gap between impassable bogs on the south bank.
+        let mut s = scenario(10, 10);
+        for x in 0..10 {
+            set(&mut s, x, 4, Surface::DeepSea);
+            set(&mut s, x, 5, Surface::DeepSea);
+        }
+        for x in [0, 1, 2, 3, 6, 7, 8, 9] {
+            set(&mut s, x, 6, Surface::ImpassableSwamp);
+            set(&mut s, x, 7, Surface::ImpassableSwamp);
+        }
+        let fort = building(BuildingType::Fort, 5, 7, (2, 2));
+        let bridges = [building(BuildingType::StoneBridge, 5, 4, (1, 1)), building(BuildingType::StoneBridge, 5, 5, (1, 1))];
+        s.buildings = vec![fort, building(BuildingType::Village, 2, 9, (1, 1)), bridges[0].clone(), bridges[1].clone()];
+        let w = World::from_scenario(&s, &content());
+        let f = &w.locations[0];
+        assert!(!f.gates.is_empty(), "a passage through the fort");
+        let path = w.map.path((2, 9), (2, 1));
+        assert!(!path.is_empty(), "north over the bridge, through the fort");
+        assert!(path.iter().any(|&t| t != f.tile && f.cells().any(|c| c == t)), "{path:?}");
+        assert!(f.gates.iter().all(|&g| w.location_at(g) == Some(0)), "the passage counts as the fort");
+        // With nothing beyond the walls, nothing is opened.
+        s.buildings.truncate(1);
+        let w = World::from_scenario(&s, &content());
+        assert!(w.locations[0].gates.is_empty());
+    }
+
+    #[test]
     fn village_tribute_refills_up_to_the_maximum() {
         let mut s = scenario(4, 4);
         let mut v = building(BuildingType::Village, 1, 1, (1, 1));
@@ -1355,7 +1531,7 @@ mod real_maps {
             assert_eq!(w.armies.len() + w.inactive.len(), manned, "{}: every army with troops", m.name);
             // Every unit type is known; one РК6 garrison lists 13 units, one more than a formation holds.
             assert!(w.dropped_units <= 1, "{}: {} units dropped", m.name, w.dropped_units);
-            assert!(w.armies.iter().all(|a| w.map.passable(a.tile(&w.map))), "{}", m.name);
+            assert!(w.armies.iter().all(|a| if a.sails() { w.is_sea(a.tile(&w.map)) } else { w.map.passable(a.tile(&w.map)) }), "{}", m.name);
             assert!(w.locations.iter().all(|l| w.map.passable(l.tile)), "{}", m.name);
             for class in HeroClass::ALL {
                 let h = w.hero_start(&s, &c, class);
@@ -1371,8 +1547,41 @@ mod real_maps {
                 }
             }
         }
-        // Maps with islands need ships (not in yet); the rest is walkable.
+        // On foot alone; with ships every building is reachable (see below).
         assert!(totals.0 * 100 / totals.1 >= 80, "{totals:?}");
+    }
+
+    /// Buildings (not bridges) whose entry the hero can reach by land and sea from `start`
+    /// ([`World::reachable_with_ships`]): (reached, all, ids of the others).
+    fn reachable_by_ship(w: &World, start: Tile) -> (usize, usize, Vec<u16>) {
+        let reach = w.reachable_with_ships(start);
+        let entries: Vec<&Location> = w.locations.iter().filter(|l| !l.kind.is_bridge()).collect();
+        let missed: Vec<u16> = entries.iter().filter(|l| !w.map.mask_index(l.tile).is_some_and(|i| reach[i])).map(|l| l.id).collect();
+        (entries.len() - missed.len(), entries.len(), missed)
+    }
+
+    #[test]
+    fn every_building_is_reachable_by_land_and_sea() {
+        let Some((dt, c)) = install() else { return };
+        let mut report = Vec::new();
+        for m in &dt.maps {
+            let s = m.load().unwrap();
+            let w = World::from_scenario(&s, &c);
+            for class in HeroClass::ALL {
+                let h = w.hero_start(&s, &c, class);
+                let (ok, n, missed) = reachable_by_ship(&w, h.tile);
+                report.push((m.name.clone(), class, ok, n, missed));
+            }
+        }
+        for (name, class, ok, n, missed) in &report {
+            eprintln!("{name} {class:?}: {ok}/{n} buildings; unreached ids {missed:?}");
+        }
+        // Every map, except the second tutorial's church (building 15), which stands in a
+        // ring of dense thickets and bog.
+        for (name, class, ok, n, missed) in &report {
+            let expected: &[u16] = if name.starts_with("Обучающий2") { &[15] } else { &[] };
+            assert_eq!(missed.as_slice(), expected, "{name} {class:?}: {ok}/{n}");
+        }
     }
 
     #[test]
@@ -1415,3 +1624,6 @@ mod real_maps {
         }
     }
 }
+
+
+

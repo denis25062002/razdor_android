@@ -64,6 +64,7 @@ pub fn tab_label(t: Tab) -> &'static str {
         Tab::Market => "Market",
         Tab::Sanctuary => "Sanctuary",
         Tab::Tribute => "Tribute",
+        Tab::Shipyard => "Ships",
     }
 }
 
@@ -667,16 +668,56 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     if button(x, by, 420.0, 42.0, &format!("Instead: the innkeeper pays {unpaid} unpaid"), ready && unpaid > 0) {
         *message = game.innkeeper_pay().map(|n| format!("The innkeeper pays off {n} of your men."));
     }
-    by += 56.0;
-    let notes = [
-        "The tribute grows every midnight up to the village's maximum.",
-        "Not yet offered: a long blessing, furs to sell, the magic ritual (coming with spells).",
-    ];
-    for (i, n) in notes.iter().enumerate() {
-        text(n, x, by + i as f32 * 20.0, 16.0, DIM);
+    by += 52.0;
+    let blessing = game.village_blessing().map(|s| s.name.clone());
+    let label = match &blessing {
+        Some(name) => format!("Instead: a long blessing ({name})"),
+        None => "Instead: a long blessing (no such spell)".to_string(),
+    };
+    if button(x, by, 420.0, 42.0, &label, ready && blessing.is_some()) && game.village_bless().is_some() {
+        *message = Some(format!("The villagers pray for you: {}.", blessing.unwrap_or_default()));
     }
-    let dy = by + 50.0;
+    by += 52.0;
+    let furs = game.furs_value().unwrap_or(0);
+    if button(x, by, 420.0, 42.0, &format!("Instead: furs worth {furs} gold"), ready) {
+        *message = game.sell_furs().map(|g| format!("The furs fetch {g} gold."));
+    }
+    by += 52.0;
+    let ritual = game.ritual_value().unwrap_or(0);
+    if button(x, by, 420.0, 42.0, &format!("Instead: a magic ritual, {ritual} mana"), ready) {
+        *message = game.magic_ritual().map(|m| format!("The ritual gives {m} mana."));
+    }
+    by += 56.0;
+    text("The tribute grows every midnight up to the village's maximum. One service a day.", x, by, 16.0, DIM);
+    let dy = by + 24.0;
     description_box(&v.description, x, dy, w, f.y + f.h - dy - 10.0);
+}
+
+/// A shipyard: rent a ship for `ShipCost` gold. It waits on the water nearby.
+fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
+    let Some(l) = game.location else { return };
+    let (x, y, w) = (f.cx, f.cy, f.cw);
+    let price = game.ship_price();
+    draw_rectangle(x, y, w, 120.0, Color::new(0.2, 0.12, 0.07, 1.0));
+    text("The shipwright rents out ships. One ship at a time: a new one sends the old one home.", x + 16.0, y + 28.0, 18.0, INK);
+    resource_icon(Resource::Gold, x + 40.0, y + 76.0, 40.0);
+    text(&format!("A ship: {price} gold"), x + 70.0, y + 84.0, 20.0, ACCENT);
+    let by = y + 140.0;
+    let label = if game.ship.is_some() { "Rent a new ship" } else { "Rent a ship" };
+    if button(x, by, 420.0, 42.0, label, game.gold >= price) {
+        *message = Some(match game.rent_ship() {
+            Ok(_) => "The ship waits at the pier. Walk onto it, or click the water.".into(),
+            Err(razdor::rules::ships::ShipError::NoWater) => "There is no water to sail from here.".into(),
+            Err(razdor::rules::ships::ShipError::NotEnoughGold) => "Not enough gold.".into(),
+            Err(razdor::rules::ships::ShipError::NoShipyard) => "The shipwright will not deal with you.".into(),
+        });
+    }
+    let notes = ["With a ship, click the water to sail; click the shore to land.", "The ship waits where you land; walk back onto it to sail again."];
+    for (i, n) in notes.iter().enumerate() {
+        text(n, x, by + 70.0 + i as f32 * 20.0, 16.0, DIM);
+    }
+    let dy = by + 120.0;
+    description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0);
 }
 
 /// The building window. `Exit` (or Escape) returns to the map.
@@ -719,6 +760,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         Tab::Market => next = market(game, assets, &f, view, message),
         Tab::Sanctuary => sanctuary(game, &f, view, message),
         Tab::Tribute => tribute(game, &f, message),
+        Tab::Shipyard => shipyard(game, &f, message),
     }
     if let Some(m) = message {
         let w = measure(m, 20.0).width + 40.0;

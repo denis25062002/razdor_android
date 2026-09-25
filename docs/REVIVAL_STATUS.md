@@ -5,7 +5,7 @@ the original scenarios with the original rules, reading maps, unit/item/spell da
 **your own installed copy** at runtime. Without an install it runs a small built-in demo made of
 our own content.
 
-Branch: `dt-revival` (16 commits on top of `main`; `main` is untouched). About 22 k lines of Rust.
+Branch: `dt-revival` (19 commits on top of `main`; `main` is untouched). About 24 k lines of Rust.
 
 ## How to play
 
@@ -15,7 +15,8 @@ cargo run --release
 ```
 
 Pick a scenario (the built-in demo or any map in `Maps_Rus`), then a hero class from that
-scenario's presets. Unset `RAZDOR_DT_DIR` to play the demo only.
+scenario's presets; type a name for the hero on that screen if you like (`#HERONAME` in the
+texts; empty means the class's name). Unset `RAZDOR_DT_DIR` to play the demo only.
 
 Controls: click the map to walk (a dotted route shows the travel time); right click / Space
 stops; wheel or +/− zooms; 1 / 4 wait 1 or 4 hours; M minimap; J journal; B spell book;
@@ -29,9 +30,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Original files** | `.DTm` scenarios (all 15 shipped maps parse byte-exactly and re-serialise identically), `Rus_Units/Artefacts/Spells.ini`, `_Global.ini`, art (`.ugs`, `.lit`, `.spi`; all 421 files decode, pixel-identical to the reference decoder). |
 | **World map** | Scenario terrain, trees, hills, mountains, buildings and army figures drawn with the original art; 8-way square grid (see *Decisions*); A* routes with travel time; army and building tooltips (army formation preview); zoom. |
 | **Time** | The original calendar (30-day months, days from 0, hours). Time passes while walking, waiting, healing, casting. Villages refill at 00:00; the income/wages report and an autosave come at 12:00 (as in the footage). |
+| **Ships** | Shipyards rent a ship for `ShipCost` (250 gold). Click the water to board and sail, the shore to land; the ship waits where you land and you board it again by walking onto it; one ship at a time. Pirate, merchant and hero ships of the scenarios sail and cruise; pirates attack like hostile armies, merchants never do. Saved with the game. With ships every building of every shipped map is reachable from every start, except one church in the second tutorial (walled in by thickets and bog). |
 | **Fog of war** | Unexplored land is black with a soft edge and cannot be walked; the hero feels his way into the dark; lanterns and scripted reveals light areas. Minimap of the explored land with owner-coloured icons. |
 | **Armies** | Placed from the scenario, active/inactive, factions and attitudes; hostile armies chase and attack; friendly ones greet (events run on meeting). |
-| **Buildings** | All 16 types. Building window with the original's tabs by type: main hall (quests, rumours for 10 gold), barracks (stock that regrows, paid healing, resurrection within 7 days), garrison, market + sell shop (25% sale price, prices by attitude), sanctuary (learn spells), village tribute (gold and mana; priest heal; innkeeper pays the unpaid). Capturing forts and castles changes owner and income. Ruins give their treasure. |
+| **Buildings** | All 16 types. Building window with the original's tabs by type: main hall (quests, rumours for 10 gold), barracks (stock that regrows, paid healing, resurrection within 7 days), garrison, market + sell shop (25% sale price, prices by attitude), sanctuary (learn spells), village tribute (gold and mana) or, instead, once a day: priest heal, innkeeper pays the unpaid, a long blessing (a spell for 3× its time), furs (150% of the gold) or a magic ritual (mana), shipyard (rent a ship). Forts at the foot of bridges let you through to the bridge. Capturing forts and castles changes owner and income. Ruins give their treasure. |
 | **Economy** | Gold and mana; building income; wages from unit cost (recruit / mercenary kinds); unpaid units sit out battles and desert after 7 days; loot = loser's gold ÷ 2 (min 25) plus items; mana from surrendered units. |
 | **Battle** | The original's rules: 2×6 formation (Community wide row, as in your install; vanilla 3×4 + reserve supported), deterministic attack − defence (min 1), separate melee/ranged defence, back row +5 vs shots, the real reach rules (front / diagonals at normal damage; long strike halving defence when all three are empty), shooters and mages by row, magic by school with protection % and creature nature, magic power drain, all 21 vanilla unit bonuses, initiative with attacker +1, actions per unit, 25-turn limit, no retreat, hero survives while any unit lives. Cards show the original's stats; hover previews damage or curse effects. |
 | **Units** | XP and levels (`StartExpirience·(LevelMultipler/100)^L`, per-level stat gains), promotions along the upgrade tree, 4 item slots with the one-weapon / one-per-type / class rules, `f-`/`d-`/`p-` modifiers, potions, 40-slot backpack, hero class bonuses (knight −10% physical damage to his army, archmage cheaper faster spells, ranger faster and better healing). |
@@ -40,7 +42,7 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **263 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **278 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -50,6 +52,11 @@ files run only when it is set. `cargo clippy --all-targets` is clean.
 - **Square cells with 8 neighbours for scenarios**, not hexes: РК3's bridges are diagonal chains
   of 1×1 pieces that no hex row parity connects (one is the only way to the capital), and the
   editor's grid is square. The demo keeps its hex map.
+- **Ships** (all *(guess)*, mechanics.md §8.6): 40 minutes per sea cell for every class; a
+  rented ship waits at the water nearest the shipyard on foot; ship armies always cruise;
+  merchants never attack. **Gates**: a fort standing at the foot of a bridge lets the hero
+  through its walls to the bridge (ДС2, "Другой берег"). **Start building**: the preset's,
+  else the class's flagged building (byte 353) next to the preset's cell.
 - **Daily report at 12:00**, villages at 00:00: the footage shows the report and autosave at noon.
 - **Prices fitted to the footage** (+15% per attitude step below 1; a fort capture pays one day
   of income; a beaten unit gives its `Surrender` value in mana).
@@ -62,13 +69,15 @@ after `main` returned); the game now ends the process directly once everything i
 
 ## Not done yet
 
-- **Ships** (shipyards, pirates): ДС1, ДС2, РК7 and parts of the tutorials are only partly
-  walkable without them.
+- **Ships** are drawn as a placeholder shape (hull and sail), not the original's ship
+  sprites (`Ship-*.ugs` are read but their sheet layout is not decoded). What the "hero
+  ship" type (army byte 72 = 1) means is unknown; such ships sail like friendly armies.
+- The second tutorial's church (building 15) stands in a ring of dense thickets and bog:
+  unreachable unless some thicket sprites are passable in the original.
 - **AI lords' economy** (hiring, shopping, taking back forts), AI-vs-AI battles, army respawn.
 - The 30 **Community-only unit bonuses** are read but do nothing yet; the Community extra
   **event opcodes** are detected but not run (no shipped map uses them).
-- Village alternatives beyond healing and paying the unpaid (blessing, furs, magic ritual).
-- The hero preset's start building; `#HERONAME` shows the class name (no name entry yet).
+- Which of the five village services a village offers is not decoded: all are offered.
 - Soft terrain transitions, a map editor.
 - Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
   credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
@@ -114,6 +123,6 @@ decoders); the cleaned versions of the notes are already in `docs/reference/`.
 ## Next steps I'd suggest
 
 1. Play РК1 end to end and report problems.
-2. Ships, then AI lords' economy.
+2. AI lords' economy.
 3. Community bonuses and event opcodes.
 4. Merge `dt-revival` into `main` once you're happy, and publish for the community.

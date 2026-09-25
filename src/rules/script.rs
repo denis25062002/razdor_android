@@ -212,31 +212,28 @@ impl Game {
         w.armies.iter_mut().chain(w.inactive.iter_mut()).find(|a| a.id == id)
     }
 
-    /// Brings a waiting army onto the map. Returns its index. Ships and armies placed on
-    /// water stay out *(ships are not simulated yet)*.
+    /// Brings a waiting army onto the map. Returns its index. A ship comes onto the water
+    /// (`rules::ships`); a land army with no land near its post stays out.
     fn activate(&mut self, id: ArmyId) -> Option<usize> {
         if let Some(i) = self.army_index(id) {
             return Some(i);
         }
         let k = self.world.inactive.iter().position(|a| a.id == id)?;
         let mut a = self.world.inactive[k].clone();
-        let map = &self.world.map;
-        let tile = if map.passable(a.post) { Some(a.post) } else { map.nearest_passable(a.post, 8) };
-        let tile = tile?;
+        let tile = self.world.placement(&a)?;
         self.world.inactive.remove(k);
-        a.pos = map.center(tile);
+        a.pos = self.world.map.center(tile);
         a.path.clear();
         a.chasing = false;
         self.world.armies.push(a);
         Some(self.world.armies.len() - 1)
     }
 
-    /// A text of the scenario with its escapes filled in: `#HERONAME` (and `#HEROCLASS`)
-    /// become the hero's name, which is his class's name *(the original lets the player name
-    /// the hero; Razdor has no name entry)*.
+    /// A text of the scenario with its escapes filled in: `#HERONAME` becomes the hero's
+    /// name ([`Game::hero_name`]), `#HEROCLASS` his class's name.
     pub fn fill_text(&self, s: &str) -> String {
-        let name = self.hero().name(&self.content);
-        s.replace("#HERONAME", name).replace("#HEROCLASS", name).replace('\r', "")
+        let class = self.hero().name(&self.content);
+        s.replace("#HERONAME", &self.hero_name()).replace("#HEROCLASS", class).replace('\r', "")
     }
 
     /// The name shown for squad member `u`: a named character's own name, else its class.
@@ -841,6 +838,11 @@ mod tests {
         let g = start(&world(vec![]));
         let name = g.hero().name(&g.content).to_string();
         assert_eq!(g.fill_text("Hail, #HERONAME!\r\n"), format!("Hail, {name}!\n"));
+        let mut g = g;
+        g.set_hero_name("  Ivo ");
+        assert_eq!(g.fill_text("#HERONAME the #HEROCLASS"), format!("Ivo the {name}"));
+        g.set_hero_name(" ");
+        assert_eq!(g.hero_name(), name, "an empty name is the class's");
     }
 }
 

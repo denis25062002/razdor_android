@@ -12,6 +12,7 @@ pub mod map;
 pub mod rng;
 pub mod save;
 pub mod script;
+pub mod ships;
 pub mod town;
 pub mod units;
 pub mod world;

@@ -27,6 +27,8 @@ pub enum Tab {
     Sanctuary,
     /// A village's tribute and its alternatives.
     Tribute,
+    /// Rent a ship (`rules::ships`).
+    Shipyard,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ pub enum ServiceError {
 ///   resurrect); villages and altars hire for the AI only;
 /// - the player's castles and forts: the garrison;
 /// - a building with goods: the market; with spells: the sanctuary;
-/// - villages: the tribute.
+/// - villages: the tribute; friendly shipyards: ships for rent.
 ///
 /// Bridges, the demo's camps and a garrison still to be beaten have none.
 pub fn tabs(l: &Location) -> Vec<Tab> {
@@ -80,13 +82,17 @@ pub fn tabs(l: &Location) -> Vec<Tab> {
     if l.kind == LocationKind::Village {
         tabs.push(Tab::Tribute);
     }
+    if l.kind == LocationKind::Shipyard && !l.hostile() {
+        tabs.push(Tab::Shipyard);
+    }
     tabs
 }
 
-/// The tab a building window opens on: a village's tribute, else the main hall.
+/// The tab a building window opens on: a village's tribute, a shipyard's ships, else the
+/// main hall.
 pub fn first_tab(l: &Location) -> Option<Tab> {
     let t = tabs(l);
-    t.iter().copied().find(|&t| t == Tab::Tribute).or_else(|| t.first().copied())
+    t.iter().copied().find(|&t| matches!(t, Tab::Tribute | Tab::Shipyard)).or_else(|| t.first().copied())
 }
 
 impl Game {
