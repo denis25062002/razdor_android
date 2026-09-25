@@ -124,6 +124,24 @@ sight and of attacks on your buildings. A beaten lord who still owns a building 
 there and comes back after three days; armies with a respawn time come back after it (the
 leader alone, or the whole army when the map says so).
 
+## Experience and levels
+Experience follows the original's code (docs/reference/original-mechanics/experience.md,
+`src/rules/experience.rs`). A won battle pays the survivors of your army: the pool is a
+twentieth of the beaten side's strength (computed from the units' stats, not their price),
+shrunk by the hit points you lost; each survivor's share depends on its row and on how many
+of its actions were attacks or spells, and the dead still count in the divisor. Your gain is
+the share × `HeroExpirienceModificator` × the difficulty factor (100 with your "impossible
+difficulty" setting, else 120) × the beaten army's experience correction, at most 5256 per
+battle. A stalemate or a defeat pays nothing. XP needed per level is
+`StartExpirience × (LevelMultipler/100)^(level−1)`; each level adds the class's `d-*` gains
+(protections and regeneration close the gap to 100 instead). Any unit but the hero can be
+promoted once it has gained a level, free, back to level 1. Scenario XP goes to the hero.
+Cards, the battle panel, the army screen, barracks and garrisons show "Lv N · XP a/b" with a
+progress bar; after a win the cards show "XP +N" and "Level up!", and the army screen shows
+the next level, the per-level gains and the upgrade tree. AI armies gain XP in their own
+battles, bank it and take their upgrade tree; the units they hire can start with the XP the
+map gives them.
+
 ## Spells
 Learn spells for gold at a sanctuary (the **Sanctuary** tab of towns and churches; the book
 holds 15). Open the spell book from the map with **Spells (B)** or B: every spell shows its

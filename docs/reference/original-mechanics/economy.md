@@ -12,7 +12,8 @@ Conventions found in the exe that the rules below rely on:
 - **Difficulty factor F** (0x4b8a10): `OptValue10` ("impossible difficulty") = 1 gives F = 100, and
   anything else gives F = 120. The user's ini has it on, so F = 100 there. F makes heal and
   resurrection prices cheaper (÷F/100), item sales dearer (×F/100) and the player's castle
-  income bigger (×F/100). It also scales XP. Nothing in Razdor models F.
+  income bigger (×F/100). It also scales the player's battle XP (experience.md §3); Razdor
+  models F only there.
 - Unit natures (0x48f3de): 0 ordinary, 1 Undead, 2 Elemental, 3 Rogue, 4 Animal.
 - Item types (0x4990cc): 0 BlowWeapon, 1 ShotWeapon, 2 Armor, 3 Helm, 4 Shield, 5 Staff, 6 Amulet, 7 Ring,
   8 Potion (also the default), 9 Item.

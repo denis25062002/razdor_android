@@ -47,8 +47,8 @@ Sources used: `Help/Как Играть.htm`, `Help/Документация к 
 | `GlobalIndex` | Unit type ID (1–102). IDs 1–3 are the three hero classes. | doc |
 | `Name`, `Descript` | Display name and card text. | doc |
 | `IconIndex` | Portrait index into `Graphics/Objects/Persones.ugs` / `Icons.ugs`. | inf |
-| `Cost` | Hire price in gold. It is also the base for wages, healing, resurrection and XP value. | doc/exe |
-| `CostMultipler` | Editor label "Коррекция" next to "Сила" (strength). Percent correction of the unit's **tactical cost** (strength estimate used for AI and XP): `tactical × CostMultipler / 100`. Values 50–100. | exe |
+| `Cost` | Hire price in gold. It is also the base for wages, healing and resurrection (not for XP: the tactical cost comes from the stats). | doc/exe |
+| `CostMultipler` | Editor label "Коррекция" next to "Сила" (strength). Percent correction of the unit's **tactical cost**, a strength computed from its stats (original-mechanics/experience.md §1): `strength × CostMultipler / 100`. Values 50–100. | exe |
 | `CostGoldDiv` | Divisor stored per type (1–5; undead 2–5). Not used by the wage code. Probably divides the unit's personal money, which the winner takes as loot. | inf |
 | `StartExpirience` | XP needed for the first level-up of this class. | exe |
 | `LevelMultipler` | Percent growth of the XP requirement per level (140 for most units, 150/160/170 for heroes). | exe |
@@ -67,7 +67,7 @@ Sources used: `Help/Как Играть.htm`, `Help/Документация к 
 | `Nature` | Creature type. Editor order: Normal(0, default), `Undead`(1), `Elemental`(2), `Rogue`(3), `Animal`(4), `Hero`(5), `People`(6). It changes magic effects (see 3.3). Community Update: `Nature=Elemental` units are **paid in mana** (hire, heal, resurrect, daily wage). | doc/exe |
 | `Bonus` | One special ability (enum, see 1.3). | doc |
 | `Surrender` | Editor label "Плен" (captivity). Present on priests, nuns, mages and townsfolk (10–100). Probably the chance or amount that makes a beaten unit surrender. Surrendered enemies give the victor **mana** ("they pray for you"). | inf |
-| `NextUnitN`, `NextUnitNLevel` (N=1..3) | Upgrade tree: the unit can be promoted to class `NextUnitN` once it reaches level `NextUnitNLevel` (always 1 in vanilla). | doc/inf |
+| `NextUnitN`, `NextUnitNLevel` (N=1..3) | Upgrade tree: the unit can be promoted to class `NextUnitN`. The player may promote any unit that has gained a level; only the AI checks `NextUnitNLevel` (always 1), against its 0-based level (experience.md §4). | exe |
 | `d-<Stat>` | Stat gain per level for Hits, AttackBlow, DefenceBlow, AttackShot, DefenceShot, MagicPower, Initiative, Manevres, Protect*, Regen, Vampirizm. | doc |
 | Community: `Evasion=1..100` | "Неуязвимость": ignores this % of physical damage, applied last: `dmg = max(1, dmg·(100−Evasion)/100)`. | doc/exe |
 | Community: `MinMagicPower`, `ManaDrain` | Per-unit floor and per-turn loss of magic power in battle (they override the globals). | doc |
@@ -119,21 +119,31 @@ Hero class bonuses [doc; knight part also exe]:
 
 ### 1.4 Experience and levels
 
-- XP needed to go from level L to L+1: **`StartExpirience × (LevelMultipler/100)^L`**, rounded.
-  The code builds this as a geometric series and takes the difference of two partial sums. [exe]
-  Example: a Militia unit needs 60, then 84, then 118 …
-- Each level adds the `d-*` values to the stats. [doc]
-- Promotion (`NextUnit*`): a unit with enough XP can instead switch to a class from its
-  upgrade tree. The new class has its own `StartExpirience`. Some classes are final
-  ("will only improve by levels"). Only units at the starting level can be hired. [doc/inf]
-- Community cap: at most 5256 XP gained at once, and the overflow is no longer wiped. [doc]
-- **XP from a battle** [exe, simplified]:
-  - `ratio = enemyTacticalCost / ownTacticalCost`
-  - `k = 1 + (ratio−1)·ExpCorrection/100` when ratio ≥ 1, else `k = 1 − (1−ratio)·ExpCorrection/100`, clamped to [0.25, 4]
-  - `pool ≈ MainExpCorrection/100 · k · (tactical cost of the enemy destroyed)`, plus a smaller term from `enemyTactical/20` and the damage exchanged
-  - The pool is split among the side's units. Weights depend on the row (front row weighs more: `4−row`) and on each unit's contribution. Each unit gets at least 1.
-  - Then `HeroExpirienceModificator` (50% for the player) or `AIExpiriencePercent` (100%) is applied, along with the editor's per-army "XP correction". [doc]
-  - The help confirms: a harder fight gives more XP, and a bigger army means less XP each. [doc]
+The full rules, with the exe's addresses, are in
+[original-mechanics/experience.md](original-mechanics/experience.md). In short [exe]:
+
+- The exe counts levels from 0 and shows them +1; Razdor counts from 1 as the interface does.
+  XP to the next level: **`round(StartExpirience × (LevelMultipler/100)^(level−1))`** (Razdor
+  numbering). Example: a Militia unit needs 60, then 84, then 118 …; a fresh sorceress
+  (580) shows "0 / 580".
+- Each level adds `d-*`; protections, regeneration and vampirism instead close the gap to
+  100 by `d` percent (at most 99). Magic power needs a school. HP is kept as it is (an
+  unhurt unit stays full).
+- **Tactical cost** is a strength computed from the stats (a toughness from HP and
+  exponentials of the defences, an attack value from the best attack, actions and
+  initiative, bonus terms) × `CostMultipler`/100.
+- **Battle XP**: pool = `enemy's starting strength div 20 × share of own starting HP not
+  lost`; a survivor's share is `pool/4/N₀ × ((4 − row) + row × useful actions / all
+  actions)`, at least 1 (N₀ counts the dead too). `MainExpCorrection` and `ExpCorrection`
+  feed a term the exe computes and never uses.
+- The player's units (victory only) gain `share × HeroExpirienceModificator × F × the
+  beaten army's correction / 10⁶`, at most 5256 (Community); F is 120, 100 with
+  "impossible difficulty". AI armies gain `share × AIExpiriencePercent/100` only in
+  battles between AI armies.
+- Promotion: any of the player's units with a level (not the hero), free, back to level 1
+  with no XP. The AI promotes by its own pick after each gain.
+- Event XP goes to the hero only, as it is. The hero preset has no starting XP (offset 8 is
+  gold, 12 mana).
 
 ### 1.5 Wages (daily upkeep) [exe + doc]
 
@@ -548,15 +558,20 @@ see section 8 for the choices Razdor makes where the original is unknown.
 Where the sections above say [unk] or [inf], Razdor (`src/rules/`) makes these choices.
 Each is marked *(guess)* in the code.
 
-- **Levels** start at 1 as hired; XP to the next level is `StartExpirience ×
-  (LevelMultipler/100)^(level−1)`. Promotion starts the new class at level 1 with no XP and
-  the same HP fraction; items the new class cannot wear go to the pack.
+- **Levels** follow original-mechanics/experience.md (`src/rules/experience.rs`,
+  `units.rs`): level 1 as hired (the exe's 0); promotion is open to any non-hero unit with a
+  level, free, back to level 1 with no XP and HP kept; items the new class cannot wear go to
+  the pack *(guess)*. The AI's Militia and Infantry picks that land on an empty slot promote
+  nobody *(guess)*.
 - **Item modifiers**: every worn item's `f-` sets its stat first, then all `d-` are added,
   then all `p-` are summed and applied. An item's `Magic` replaces the unit's school.
   Potions: `f-Hits` heals at once; other modifiers last until the next battle ends.
-- **Tactical cost** (for XP): `Cost × CostMultipler/100`, +10% per level above 1.
-- **XP pool**: as in 1.4 without the damage-exchange term; weight per survivor
-  `(4 − row)·10 + damage dealt + HP healed`; at least 1 each.
+- **Tactical cost** and **battle XP**: as in experience.md §1 and §3, with the whole pool
+  term (the exe's damage-exchange fields are never written, so they are 0). A Razdor "wait"
+  spends the unit's remaining actions as passes. The tactical cost of a type at a level is
+  cached. The difficulty factor F is read from `Rus_DiscordTimes.ini` `[Options]
+  OptValue10` (100 when set, else 120); the demo uses 100 and a player modifier of 100.
+  An army's experience correction of 0 is read as 100 *(guess: no shipped army has 0)*.
 - **Wages**: see the Stage 4 notes below for the two hiring kinds. Medic 15% and Ranger
   20% daily healing do not add up (the larger applies).
 - **Battle turn limit**: `BattleEndTurn` full turns are played, then a stalemate; nobody
@@ -688,8 +703,8 @@ Each is marked *(guess)* in the code.
   one; else, of the buildings flagged as a start for the class (building byte 353), the one
   nearest the preset's cell if within 8 cells *(guess: on "Проклятое озеро" each class's
   preset stands next to its flagged building)*; else the preset's cell (moved to a
-  building's entry if it lies in the walls). Gold, combat experience, troops and artifacts
-  from the preset. Mana starts at 0.
+  building's entry if it lies in the walls). Gold (preset offset 8), mana (offset 12),
+  troops, artifacts and spells from the preset; no starting XP (experience.md §5).
 - **Gates**: a building whose walls cut its entry off from open ground holding a bridge or
   another building gets a passage inside its footprint from the entry to the nearest wall
   cell on the far side *(guess)*; the passage counts as the entry (a garrison still bars the
@@ -779,7 +794,8 @@ events only; texts are read from the scenario at runtime.
   last answer.
 - **Conditions**: signed thresholds mean `≥ n` (positive) or `≤ |n|` (negative); squad count
   and army strength are checked when non-zero, level/gold/mana only with the "current stats"
-  box. Owner code 6 is "not the player" (includes nobody), 0 is read as the player *(guess)*.
+  box; the level is compared 0-based as in the exe (a threshold of 2 means level 3). Owner
+  code 6 is "not the player" (includes nobody), 0 is read as the player *(guess)*.
   Id lists behind a check box are ignored when the box is off. All listed ids must match.
 - **Results order**: flags (`+X`/`-X`), world effects, quest to journal, quest completed,
   relative event, victory/defeat (ends the engine), then the chained event. "Move to hero"
@@ -817,8 +833,8 @@ events only; texts are read from the scenario at runtime.
     spells; spells are per army in Razdor, so a single unit's list goes on its army
     *(guess)*; garrisons hold none.
   - **12** slot `g` becomes named character `m` (its unit type from the scenario's list).
-  - **13** `m` XP to unit `g` (or all): the player's units gain XP; an AI troop, which has
-    no XP, rises the levels the amount pays for *(guess)*.
+  - **13** `m` XP to unit `g` (or every unit, the dead included): the player's units and
+    AI troops bank it towards their levels as the exe does (experience.md §5).
   - **14** (condition) all listed spells last on the holder (order free).
   - **15** records the campaign branch (`x` = map number, `g` = variant); the event's chain
     usually fires the victory event. `Game::next_map()` then names the map: the scenario's
@@ -826,7 +842,9 @@ events only; texts are read from the scenario at runtime.
     "N-V" naming)*, plus what the header's carry-over flags (0x110) keep: gold, mana for
     "gods' favour" *(guess)*, fame (flag only), hero level and XP, personal items (negative
     price), the pack, the living army. Without a branch the scenario's next map is named as
-    it is; `None` before a victory or with no next map. The UI does not offer it yet.
+    it is; `None` before a victory or with no next map. `Game::apply_carry_over` starts the
+    next map's game with it (the hero's level and XP, else level 1; gold added, mana set,
+    items to the pack, the army with its levels and XP). The UI does not offer it yet.
   - **16** the listed spells leave the spell book.
   - **17** model `g` for army `x` (the hero's figure: no-op).
   - **18** flag `RAND` + one character, drawn from codes `x..=g` (cp1251); an existing
@@ -856,7 +874,7 @@ events only; texts are read from the scenario at runtime.
   records "met" for its id, then the events run before the battle; the battle happens only
   if the army is still on the map and hostile. "No meeting" clears it.
 - **Queries** *(guesses)*: squad count = living units, the hero included; army strength =
-  sum of the living units' tactical cost (the XP strength); owners are side codes, the
+  sum of the living units' tactical cost with items (the exe's army strength, experience.md §1); owners are side codes, the
   player 1 and factions 1–4 → 2–5 (green, blue, yellow, red); a neutral building has no
   owner; an army's named character is its `named_character`; "beaten by anyone" = beaten by
   the player or in an AI battle (§8.8; `Game::army_beaten_by_anyone`, the query in
@@ -1106,9 +1124,9 @@ Explored cells stay explored; there is no "seen before" state (the video).
   player or is a peasant. An army reaching a castle or fort it goes for fights its owner if
   he stands at the gate, else its garrison (with the building's extra defence), else takes
   it. The battle engine plays both sides; the attacker has the initiative bonus. Survivors
-  keep their wounds, the leader survives with 1 HP while his army does, XP is
-  `AIExpiriencePercent` of the engine's share times the army's experience correction
-  (byte 71), with level-ups. The winner takes `VictoryGoldDiv` of the loser's gold (none
+  keep their wounds, the leader survives with 1 HP while his army does, each side with
+  strength left gains its shares × `AIExpiriencePercent` (experience.md §3), banked with
+  level-ups and a try at the upgrade tree. The winner takes `VictoryGoldDiv` of the loser's gold (none
   when its units carry no money) and its items. A taken castle or fort changes owner,
   faction and income; the taker leaves its weakest troops as a garrison until it holds
   `garrison_strength`% of what it keeps (the leader stays with him). A stalemate: a
@@ -1141,7 +1159,7 @@ Explored cells stay explored; there is no "seen before" state (the video).
 | MaxDayCountForNewUnit | 10 | Barracks restock speed. |
 | GarrisonAutoHeal | 10 | % HP healed per day in a garrison. |
 | ShotWeaponRange | 60 | Threshold for cannon-type shooters. |
-| MainExpCorrection / ExpCorrection | 30 / 50 | XP pool %, and strength-ratio skew. |
-| AIExpiriencePercent / HeroExpirienceModificator | 100 / 50 | XP scaling for AI / player. |
+| MainExpCorrection / ExpCorrection | 30 / 50 | Feed a strength-ratio XP term the exe never uses (experience.md §3). |
+| AIExpiriencePercent / HeroExpirienceModificator | 100 / 50 | XP scaling for AI-vs-AI battles / all the player's units. |
 | ItemSaleCost | 25 | Item sell %. |
 | `[Costs] ShipCost` | 250 | Ship rent. |

@@ -90,11 +90,11 @@ The following invariants hold for all 15 maps (C):
 |---|---|---|---|
 | 0 | u32 | always 0 in shipped maps. Possibly fame or gods' favour. | U |
 | 4 | u32 | always 0 | U |
-| 8 | u32 | starting combat experience | L |
-| 12 | u32 | starting gold | L |
+| 8 | u32 | starting gold (the exe reads the low 16 bits, signed; the same for every class in the shipped maps) | C |
+| 12 | u32 | starting mana (low 16 bits, signed; largest for the archmage). There is no starting experience (original-mechanics/experience.md §5) | C |
 | 16 | u8 | starting building (1-based building id, 0 = none) | C |
 | 17 | 2 B | always 0 | U |
-| 19 | 6 × (u8 unit, u8 level, u8 count) | starting troops | C (unit ids valid) / L (level vs count) |
+| 19 | 6 × (u8 unit, u8 level, u8 count) | starting troops; the level is 0-based (0 = level 1 as the game shows it) | C |
 | 37 | u16 | start x | C |
 | 39 | u16 | start y | C |
 | 41 | u8[3] | starting artifacts (artifact GlobalIndex) | L |
@@ -198,7 +198,7 @@ Buildings have 1-based ids in file order. Events refer to buildings by that id.
 | 296 | u8[6] | stale u8 copy of the artifact list. Often out of date; ignore it (L). |
 | 302 | 6 B | always 0 (U) |
 | 308 | u8[6] | spells for sale (1-based spell index) |
-| 314 | 6 × (u8 unit, u8 level, u8 count) | garrison |
+| 314 | 6 × (u8 unit, u8 level, u8 count) | garrison (0-based levels) |
 | 332 | u8 | extra garrison defence |
 | 333 | u16 | minimum random-artifact price |
 | 335 | u16 | maximum random-artifact price. For ruins, the treasure gold. |
@@ -242,15 +242,15 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 8 | u8 | 0..3. Possibly the leader archetype. | U |
 | 9 | 4 B | always 0 | U |
 | 13 | i8 | speed correction | C |
-| 14 | u8 | "add experience like the player" flag | C |
+| 14 | u8 | "add experience like the player" flag: units the army hires start with XP from the player's army (experience.md §5) | C |
 | 15 | 2 B | always 0 | U |
 | 17 | u16 | extra daily gold income | C |
-| 19 | u16 | bonus experience given to hired units | C |
+| 19 | u16 | bonus experience given to the units the army hires | C |
 | 21 | 4 B | always 0 | U |
 | 25 | u8 | home building (1-based, 0 = none) | C |
 | 26 | u8 | leader unit id | C |
-| 27 | u8 | leader level | L |
-| 28 | 6 × (u8 unit, u8 level, u8 count) | troops | C / L (level vs count) |
+| 27 | u8 | leader level, 0-based | C |
+| 28 | 6 × (u8 unit, u8 level, u8 count) | troops (0-based levels) | C |
 | 46 | 4 B | always 0 | U |
 | 50 | u8[3] | artifacts carried | C |
 | 53 | 5 B | always 0 | U |
@@ -264,7 +264,7 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 65 | i8[4] | attitude towards the four factions | C |
 | 69 | i8 | aggression | C |
 | 70 | u8 | respawn time in days | C |
-| 71 | u8 | experience correction in percent (100 = normal) | C |
+| 71 | u8 | experience correction in percent (100 = normal): scales the XP the player gains by beating this army | C |
 | 72 | u8 | ship type (0 none, then hero, pirate, merchant) | L |
 | 73 | u8 | always 0 | U |
 | 74 | u16 | tactical cost (editor value 2) | L |
@@ -458,7 +458,7 @@ codec itself is out of scope here (U).
 - **Buildings.** Use type, owner, faction, garrison, barracks, market or treasure contents, income, and local events.
 - **Armies.** Each is placed at `(x, y)`; model 7 (with byte 63 set) keeps it off the map until an event activates it. `home_building` ties
   it to a building, and `named_character` indexes the named-character table.
-- **Hero.** Pick one of the three presets by archetype. It gives the start position, gold, experience, troops,
+- **Hero.** Pick one of the three presets by archetype. It gives the start position, gold, mana, troops,
   artifacts and spells.
 - **Event engine.** On every tick, evaluate the conditions of all eligible events, as the editor manual describes.
   Global events can fire anywhere. Local events fire only in the building or point that lists them. Quests go to the

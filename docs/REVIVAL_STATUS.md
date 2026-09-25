@@ -36,14 +36,14 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Buildings** | All 16 types. Building window with the original's tabs by type: main hall (quests, rumours for 10 gold), barracks (stock that regrows, paid healing, resurrection within 7 days), garrison, market + sell shop (25% sale price, prices by attitude), sanctuary (learn spells), village tribute (gold and mana) or, instead, once a day: priest heal, innkeeper pays the unpaid, a long blessing (a spell for 3× its time), furs (150% of the gold) or a magic ritual (mana), shipyard (rent a ship). Forts at the foot of bridges let you through to the bridge. Capturing forts and castles changes owner and income. Ruins give their treasure. |
 | **Economy** | Gold and mana; building income; wages from unit cost (recruit / mercenary kinds); unpaid units sit out battles and desert after 7 days; loot = loser's gold ÷ 2 (min 25) plus items; mana from surrendered units. |
 | **Battle** | The original's rules: 2×6 formation (Community wide row, as in your install; vanilla 3×4 + reserve supported), deterministic attack − defence (min 1), separate melee/ranged defence, back row +5 vs shots, the real reach rules (front / diagonals at normal damage; long strike halving defence when all three are empty), shooters and mages by row, magic by school with protection % and creature nature, magic power drain, all 21 vanilla unit bonuses and the 31 Community ones (Splash, Flying, Bastion, FateGift, …; see mechanics.md §8), initiative with attacker +1, actions per unit, 25-turn limit, no retreat, hero survives while any unit lives. Cards show the original's stats; hover previews damage or curse effects. |
-| **Units** | XP and levels (`StartExpirience·(LevelMultipler/100)^L`, per-level stat gains), promotions along the upgrade tree, 4 item slots with the one-weapon / one-per-type / class rules, `f-`/`d-`/`p-` modifiers, potions, 40-slot backpack, hero class bonuses (knight −10% physical damage to his army, archmage cheaper faster spells, ranger faster and better healing). |
+| **Units** | Experience as the original's code computes it (docs/reference/original-mechanics/experience.md): unit strength from the stats, the battle pool and shares by row and activity, the player's modifier × difficulty × the beaten army's correction with the Community 5256 cap, victory only; AI-vs-AI XP, AI promotion and XP for AI hires (map bytes 14, 19); levels (`StartExpirience·(LevelMultipler/100)^(level−1)`, `d-*` gains, percent stats), promotions along the upgrade tree (any non-hero unit with a level, free, back to level 1), level-up notices; XP bars and "Lv N · XP a/b" on cards, panels and lists, "Level up!" after a battle, the upgrade tree on the army screen, 4 item slots with the one-weapon / one-per-type / class rules, `f-`/`d-`/`p-` modifiers, potions, 40-slot backpack, hero class bonuses (knight −10% physical damage to his army, archmage cheaper faster spells, ranger faster and better healing). |
 | **Events and quests** | The scenario script engine: global / local / quest / rumour events, time windows and repeats, relative and chained events, all condition and result groups, flags (`%+X -X =X =/X`), yes/no questions, journal, victory and defeat events. The Community extensions: event opcodes 1–20 (editing other events, AI armies' items/units/speed/groups/spells/XP, spell checks, campaign branches with `Game::next_map()`, random flags, AI targets, teleports) and lifting a spell. Story dialogs with pictures and rewards. On РК1 the opening dialog, the first quest and the journal work. |
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for mana and game time; effects last into battles; archmage and Caster discounts; scripted spells use the same path. |
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **AI armies** | The scenario's armies choose goals by behaviour style (feudal / rogue / peasant, army byte 59) and target model with the `_Global.ini` priorities: attack you or hostile armies in view, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. Feudal economy: income, wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles with the battle engine on both sides, captures and income changes (your castles can be lost), reports within sight. Beaten lords retreat into a building and return; armies respawn after their days (leader or whole army). 30 simulated days on every shipped map take 0.01–0.33 s each (release). |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **303 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **368 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -99,6 +99,9 @@ after `main` returned); the game now ends the process directly once everything i
 - Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
   credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
   logs, a decode round trip and quad-snd loading every file at volume 0.
+- **Experience UI not seen**: the XP bars, level labels, "Level up!" badges, the level-up
+  notice on the map and the upgrade tree view were built without opening a window (tests,
+  clippy and a release build only). Check their layout on a small window first.
 - **Not verified by a human**: your screen was locked, so all visual checks used offscreen
   snapshots of real game frames; nobody has clicked through a full scenario yet. Please play
   РК1 first and note anything off.
@@ -115,6 +118,8 @@ formats and rules in our own words. Saves hold only a reference to the map.
 - `docs/superpowers/specs/2026-09-25-dt-revival-design.md` – the design and stages.
 - `docs/reference/dtm-format.md` – the scenario format, byte level.
 - `docs/reference/mechanics.md` – rules and data semantics; §8 lists every Razdor guess.
+- `docs/reference/original-mechanics/` – the original's rules read from the executable
+  (battle, world, economy, experience), each with a "Razdor now → original" table.
 - `docs/reference/graphics-formats.md` – the art formats.
 - `docs/reference/video-notes.md` – observed behaviour from the gameplay video.
 
@@ -130,6 +135,9 @@ git worktree remove .claude/worktrees/agent-adaff433a9427fd72
 git branch -d worktree-agent-a80832d6685e0f106 worktree-agent-adaff433a9427fd72
 # session scratch: research notes, decoded maps, converted art, screenshots (outside the repo)
 rm -rf /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/
+# a HEAD checkout used to compare test timings, and its build directory
+git worktree remove /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9ee4204d-b333-4316-953b-dbb147f5fd94/scratchpad/base
+rm -rf target/basecmp
 # a core dump from an offscreen snapshot run, if systemd kept one
 coredumpctl list razdor
 ```

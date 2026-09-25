@@ -16,10 +16,11 @@ Confidence tags used throughout:
 | [battle.md](battle.md) | Battle model, formation (vanilla 3×4 + reserve; wide row = front 6, back 4, reserve 2), damage formula, buff/curse duration and stacking, magic drain, reserve moves and collapse, mage action choice, battle AI, turn limit and surrender, all Community bonuses, turn order, poison/regen/vampirism, hero survival |
 | [world.md](world.md) | Square 8-neighbour grid, terrain and object movement costs, footprints, speeds, real-time pacing, waits, sight radii and fog, contact, AI view distances and goal choice, day ticks at 00:00 and 12:00, hero start |
 | [economy.md](economy.md) | Wages (recruits, mercenaries, garrisons, desertion), market prices by attitude, restocking, barracks growth, healing and resurrection, the difficulty factor, villages and their options, loot and surrender, spells (costs, timing, stacking, duration), item modifiers, the event engine's edge cases, campaign carry-over |
+| [experience.md](experience.md) | Unit strength (tactical cost) from stats, side strength, the battle XP pool and shares, the player's and the AI's modifiers and the 5256 cap, levels (XP table, per-level gains, percent stats, HP), promotion for the player and the AI, event, opcode and hiring XP, the hero preset (gold and mana, no XP), carry-over |
 
 Each file ends with a **"Razdor now → original"** table listing where the engine still
 differs. Those tables are the work list for bringing Razdor in line.
 
-Not covered here yet: the experience system (next investigation), and the file formats, which
-are in [../dtm-format.md](../dtm-format.md) and [../graphics-formats.md](../graphics-formats.md).
+Not covered here: the file formats, which are in [../dtm-format.md](../dtm-format.md) and
+[../graphics-formats.md](../graphics-formats.md).
 The older overview with the data-file semantics is [../mechanics.md](../mechanics.md).
