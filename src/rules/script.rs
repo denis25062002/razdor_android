@@ -620,11 +620,12 @@ impl EventWorld for Game {
     /// scenario's relations; a building that joins the player's group becomes his *(guess)*.
     fn set_faction(&mut self, holder: Holder, group: u8) {
         let attitude = self.world.relations[(group - 1) as usize][0];
+        let army_attitude = super::world::relation(super::world::player_attitude_to(&self.world.relations, group), attitude);
         match holder {
             Holder::Army(a) => {
                 if let Some(a) = self.army_mut(a) {
                     a.faction = group;
-                    a.attitude = if group == 1 { 3 } else { attitude };
+                    a.attitude = if group == 1 { 3 } else { army_attitude };
                 }
             }
             Holder::Building(b) => {
@@ -648,8 +649,9 @@ impl EventWorld for Game {
         }
         match holder {
             Holder::Army(a) => {
+                let relations = self.world.relations;
                 if let Some(a) = self.army_mut(a) {
-                    a.attitude = value;
+                    a.attitude = super::world::relation(super::world::player_attitude_to(&relations, a.faction), value);
                 }
             }
             Holder::Building(b) => {
@@ -1328,7 +1330,9 @@ mod tests {
         let a = g.world.armies.iter().find(|a| a.id == 2).unwrap();
         assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), vec![UnitId(5), UnitId(3)]);
         assert_eq!(a.speed, Army::speed_for(-3, 5), "5 − (−3) = 8");
-        assert_eq!((a.faction, a.attitude), (4, 2), "enemy group, then relation 2 towards the player");
+        // Its own attitude becomes 2, but the relation (world::relation) is the player's −2
+        // towards the enemy group, as in the original.
+        assert_eq!((a.faction, a.attitude), (4, -2), "enemy group: hostile whatever its own attitude");
         assert_eq!(a.effects, vec![ActiveSpell::new(3, None)]);
         assert_eq!((a.named, a.model), (1, 12));
         assert_eq!(a.post, (14, 10));

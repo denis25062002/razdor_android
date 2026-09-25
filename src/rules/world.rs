@@ -468,7 +468,8 @@ impl Army {
         map.tile_at(self.pos)
     }
 
-    /// Attacks the player on contact and chases him.
+    /// Attacks the player on contact and chases him (its `attitude` is the relation of
+    /// [`relation`], worked out at load and when events change its faction or attitudes).
     pub fn hostile(&self) -> bool {
         self.attitude < HOSTILE_BELOW
     }
@@ -595,6 +596,25 @@ pub fn gang(content: &Content) -> Vec<Troop> {
 
 fn artifact_ids(content: &Content, ids: impl Iterator<Item = u32>) -> Vec<ItemId> {
     ids.map(ItemId).filter(|&i| content.try_item(i).is_some()).collect()
+}
+
+/// The relation between two sides as the original computes it (0x4a0868, world.md §4): `a`
+/// is one side's attitude to the other's faction, `b` the other's to the first. Both ≥ 0 →
+/// their mean (rounded down), `a` < 0 → `a`, else −1. Below 0 means hostile.
+pub fn relation(a: i8, b: i8) -> i8 {
+    if a >= 0 && b >= 0 {
+        ((a as i16 + b as i16) / 2) as i8
+    } else if a < 0 {
+        a
+    } else {
+        -1
+    }
+}
+
+/// The player's attitude to `faction` (1–4) from the scenario's relation matrix; an unset
+/// faction counts as neutral.
+pub fn player_attitude_to(relations: &[[i8; 4]; 4], faction: u8) -> i8 {
+    (faction as usize).checked_sub(1).and_then(|f| relations[0].get(f).copied()).unwrap_or(0)
 }
 
 impl World {
@@ -751,7 +771,12 @@ impl World {
             let tile = placed.unwrap_or(at);
             // Merchant ships trade and never attack (guess; one shipped merchant is marked
             // ill-disposed in its file).
-            let attitude = if a.ship == super::ships::kind::MERCHANT { a.relations[0].max(0) } else { a.relations[0] };
+            // The original's relation (0x4a0868): the player's attitude to the army's faction
+            // and the army's to the player. An army whose own attitudes were left at 0 (РК1's
+            // mage) is hostile through its faction.
+            let towards = player_attitude_to(&world.relations, a.faction);
+            let attitude = relation(towards, a.relations[0]);
+            let attitude = if a.ship == super::ships::kind::MERCHANT { attitude.max(0) } else { attitude };
             let home = (a.home_building as usize).checked_sub(1).filter(|&j| j < world.locations.len());
             let army = Army {
                 id: a.id,
@@ -1164,6 +1189,25 @@ mod tests {
     use crate::rules::game::Game;
     use crate::rules::map::object_class;
 
+
+    #[test]
+    fn an_armys_hostility_follows_the_originals_relation() {
+        // 0x4a0868 (world.md §4): a = the player's attitude to the army's faction (header
+        // matrix), b = the army's to the player; both ≥ 0 → (a + b) / 2, a < 0 → a, else −1.
+        assert_eq!([relation(-2, 0), relation(2, 0), relation(1, -1), relation(3, 1)], [-2, 1, -1, 2]);
+        let mut s = scenario(20, 6);
+        // РК1's "Маг Эктор": faction 4 (enemy), its own attitudes left at 0.
+        let mut mage = army(1, 5, 2, 0, &[troop(4, 0, 1)]);
+        mage.faction = 4;
+        mage.relations = [0, 0, 0, 0];
+        let mut friend = army(2, 12, 2, 0, &[troop(4, 0, 1)]);
+        friend.faction = 2;
+        friend.relations = [0, 0, 0, 0];
+        s.armies = vec![mage, friend];
+        let w = World::from_scenario(&s, &content());
+        assert!(w.armies[0].hostile(), "the player's −2 towards the enemy faction makes it hostile");
+        assert!(!w.armies[1].hostile(), "an ally with no attitudes of its own stays friendly");
+    }
 
     #[test]
     fn standard_world_places_every_location_on_a_passable_tile() {

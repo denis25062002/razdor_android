@@ -633,8 +633,10 @@ Each is marked *(guess)* in the code.
   armies stand at the footprint's centre `(x0 + sx/2, y0 + sy/2)`.
 - **Villages** start with one day's tribute; at midnight it grows by
   `round(income × √(1 − stock/max))`, capped (slower as it fills). Entering the village takes all of it at once (no button; economy.md §3, the footage's "tribute already collected"), unless the village makes an offer: then accepting it empties the village, declining takes the tribute.
-- **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile =
-  the army's own attitude towards the player < 0. Contact on neighbouring cells (diagonals
+- **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile = the original's
+  relation below 0 (0x4a0868, `world::relation`): the player's attitude to the army's faction
+  (header matrix) and the army's own to the player; so an enemy-faction army whose own
+  attitudes were left at 0 (РК1's mage) is hostile. Contact on neighbouring cells (diagonals
   too): hostile ones fight, others greet once. Word 17 is the army's starting gold, byte 80 ×
   10 its daily income. The demo's gangs chase the hero within 6 cells and patrol, resting
   30–180 min between legs *(Razdor's demo rule)*. Everything else is the AI's (§8.8).

@@ -259,7 +259,9 @@ fn rogues_go_back_for_their_lost_fort() {
     let mut fort = building(BuildingType::Fort, 50, 10, (1, 1));
     fort.faction = 2;
     s.buildings = vec![fort];
-    let mut r = army(1, (10, 10), 4, ENEMY, 1, &[troop(6, 0, 2)]);
+    // A neighbour's rogues (an enemy-faction army would be hostile to the player through the
+    // player's −2 towards that faction, world::relation, and go for him instead).
+    let mut r = army(1, (10, 10), 3, ENEMY, 1, &[troop(6, 0, 2)]);
     r.home_building = 1;
     s.armies = vec![r];
     let mut g = start(&s);
@@ -267,7 +269,7 @@ fn rogues_go_back_for_their_lost_fort() {
     // It walks there (40 cells) and takes it (nobody guards it).
     g.wait(48);
     assert_eq!(g.world.locations[0].owner, Owner::Army(1));
-    assert_eq!(g.world.locations[0].faction, 4);
+    assert_eq!(g.world.locations[0].faction, 3, "the taker's faction");
     assert_eq!(g.ai_stats.captures, 1);
 }
 
