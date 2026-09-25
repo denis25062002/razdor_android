@@ -452,16 +452,20 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
             items.push((key, Drawable::Building(i)));
         }
     }
+    // Figures (armies, the waiting ship, the hero) always stand in front of the scenery: they
+    // are sorted among themselves and drawn after every object and building.
+    let mut figures: Vec<(f32, Drawable)> = Vec::new();
     // Armies in the dark keep moving but are not shown.
     for (i, a) in game.world.armies.iter().enumerate().filter(|(_, a)| fog.explored(a.tile(map))) {
-        items.push((game.army_display_pos(a).1 + 0.02, Drawable::Army(i)));
+        figures.push((game.army_display_pos(a).1 + 0.02, Drawable::Army(i)));
     }
     if let Some(ship) = game.ship.filter(|s| !s.aboard && fog.explored(s.tile)) {
-        items.push((map.center(ship.tile).1 + 0.02, Drawable::Ship));
+        figures.push((map.center(ship.tile).1 + 0.02, Drawable::Ship));
     }
-    items.push((game.display_pos().1 + 0.03, Drawable::Hero));
+    figures.push((game.display_pos().1 + 0.03, Drawable::Hero));
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, d) in &items {
+    figures.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, d) in items.iter().chain(&figures) {
         match d {
             Drawable::Object(o) => draw_object(o, art, cam),
             Drawable::Building(i) => draw_building(&game.world.locations[*i], art, cam),
