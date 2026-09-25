@@ -212,9 +212,437 @@ pub fn xp_bar(x: f32, y: f32, w: f32, h: f32, xp: i32, need: i32) {
     draw_rectangle(x, y, w * frac, h, XP_COLOR);
 }
 
+// ------------------------------------------------------------------------------------------
+// Form fields: text, numbers, check boxes, drop-down lists and tabs (the map editor's panels).
+//
+// Immediate mode with a little state kept here: the focused field (typing goes to it) and
+// the open drop-down list, which is drawn last, over everything, by [`draw_popup`]. A
+// screen using them calls [`fields_begin_frame`] first and [`fields_end_frame`] last.
+// ------------------------------------------------------------------------------------------
+
+/// The field that has the keyboard: its id and, for number fields, the digits typed so far.
+struct Focus {
+    id: u64,
+    buf: String,
+}
+
+/// An open drop-down list.
+struct Popup {
+    id: u64,
+    rect: Rect,
+    options: Vec<(i64, String)>,
+    scroll: usize,
+    filter: String,
+}
+
+thread_local! {
+    static FOCUS: RefCell<Option<Focus>> = const { RefCell::new(None) };
+    static POPUP: RefCell<Option<Popup>> = const { RefCell::new(None) };
+    /// A choice made in the popup: (drop-down id, value), taken by that drop-down.
+    static PICKED: std::cell::Cell<Option<(u64, i64)>> = const { std::cell::Cell::new(None) };
+    /// Some field took this frame's click.
+    static CLAIMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// When Backspace went down (for key repeat).
+    static HELD: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+pub const FIELD_BG: Color = Color::new(0.07, 0.07, 0.065, 1.0);
+const POPUP_ROWS: usize = 12;
+const POPUP_ROW_H: f32 = 22.0;
+
+/// A stable id for a field from its key (unique per record and field, e.g. `"b12:name"`).
+pub fn field_id(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
+pub fn fields_begin_frame() {
+    CLAIMED.with(|c| c.set(false));
+}
+
+/// A click nobody claimed takes the keyboard away from the focused field.
+pub fn fields_end_frame() {
+    if is_mouse_button_pressed(MouseButton::Left) && !CLAIMED.with(|c| c.get()) && !popup_open() {
+        FOCUS.with(|f| *f.borrow_mut() = None);
+    }
+}
+
+fn claim() {
+    CLAIMED.with(|c| c.set(true));
+}
+
+/// A text or number field (or the drop-down filter) has the keyboard: screens should not
+/// treat keys as shortcuts.
+pub fn typing() -> bool {
+    FOCUS.with(|f| f.borrow().is_some()) || popup_open()
+}
+
+pub fn clear_focus() {
+    FOCUS.with(|f| *f.borrow_mut() = None);
+}
+
+fn focused(id: u64) -> bool {
+    FOCUS.with(|f| f.borrow().as_ref().is_some_and(|f| f.id == id))
+}
+
+fn set_focus(id: u64, buf: String) {
+    FOCUS.with(|f| *f.borrow_mut() = Some(Focus { id, buf }));
+}
+
+/// Applies typing to `s`: `chars` are added (control characters skipped) up to
+/// `max_chars`, then `backspaces` characters are removed, and `newline` adds a line break
+/// in a multi-line field. True if `s` changed.
+pub fn apply_typing(s: &mut String, chars: &[char], backspaces: usize, newline: bool, multiline: bool, max_chars: usize) -> bool {
+    let before = s.clone();
+    for &c in chars {
+        if !c.is_control() && s.chars().count() < max_chars {
+            s.push(c);
+        }
+    }
+    for _ in 0..backspaces {
+        s.pop();
+    }
+    if newline && multiline && s.chars().count() < max_chars {
+        s.push('\n');
+    }
+    *s != before
+}
+
+/// Parses a typed number, clamped to `min..=max`. Empty or `-` alone gives `None`.
+pub fn parse_number(text: &str, min: i64, max: i64) -> Option<i64> {
+    text.trim().parse::<i64>().ok().map(|v| v.clamp(min, max))
+}
+
+/// Backspace pressed this frame, or held (repeats after 0.4 s, 25 per second).
+fn backspace_repeat() -> usize {
+    if is_key_pressed(KeyCode::Backspace) {
+        HELD.with(|h| h.set(Some(get_time())));
+        return 1;
+    }
+    if !is_key_down(KeyCode::Backspace) {
+        HELD.with(|h| h.set(None));
+        return 0;
+    }
+    let Some(t0) = HELD.with(|h| h.get()) else { return 0 };
+    let t = get_time() - t0 - 0.4;
+    if t < 0.0 {
+        return 0;
+    }
+    let prev = ((t - get_frame_time() as f64) * 25.0).floor().max(-1.0);
+    ((t * 25.0).floor() - prev).max(0.0) as usize
+}
+
+/// This frame's typing for the focused field.
+fn typed() -> (Vec<char>, usize, bool) {
+    let mut chars = Vec::new();
+    while let Some(c) = get_char_pressed() {
+        chars.push(c);
+    }
+    let enter = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
+    (chars, backspace_repeat(), enter)
+}
+
+/// A text field. Click to type (any script the keyboard gives, Cyrillic included); Enter
+/// ends a one-line field or breaks the line in a multi-line one; Esc or a click elsewhere
+/// ends typing. Edits `value` as it is typed; true when it changed.
+pub fn text_field(key: &str, x: f32, y: f32, w: f32, h: f32, value: &mut String, multiline: bool) -> bool {
+    let id = field_id(key);
+    let hover = mouse_in(x, y, w, h);
+    if hover && clicked() {
+        claim();
+        if !focused(id) {
+            set_focus(id, String::new());
+        }
+    }
+    let active = focused(id);
+    let mut changed = false;
+    if active && !input_blocked() {
+        let (chars, back, enter) = typed();
+        changed = apply_typing(value, &chars, back, enter, multiline, 2000);
+        if (enter && !multiline) || is_key_pressed(KeyCode::Escape) {
+            clear_focus();
+        }
+    }
+    draw_rectangle(x, y, w, h, FIELD_BG);
+    draw_rectangle_lines(x, y, w, h, if active { 2.0 } else { 1.0 }, if active { ACCENT } else if hover { INK } else { DIM });
+    let size = 17.0;
+    let caret = if active && (get_time() * 2.0) as i64 % 2 == 0 { "|" } else { "" };
+    if multiline {
+        let lines = wrap(&format!("{value}{caret}"), w - 10.0, size);
+        let fit = ((h - 6.0) / 19.0).floor().max(1.0) as usize;
+        let skip = if active { lines.len().saturating_sub(fit) } else { 0 };
+        for (i, line) in lines.iter().skip(skip).take(fit).enumerate() {
+            text(line, x + 5.0, y + 17.0 + i as f32 * 19.0, size, INK);
+        }
+    } else {
+        // Show the end of a long line.
+        let mut shown: String = format!("{value}{caret}");
+        while measure(&shown, size).width > w - 10.0 && !shown.is_empty() {
+            shown.remove(0);
+        }
+        text(&shown, x + 5.0, y + (h + 12.0) / 2.0, size, INK);
+    }
+    changed
+}
+
+/// A whole number between `min` and `max`: − and + step it (Shift: by 10), the wheel over
+/// it too, and a click on the number lets you type one (Enter or a click elsewhere takes
+/// it). Returns the new value when it changed.
+pub fn number_field(key: &str, x: f32, y: f32, w: f32, value: i64, min: i64, max: i64) -> Option<i64> {
+    let id = field_id(key);
+    let h = 24.0;
+    let bw = 22.0;
+    let step = if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) { 10 } else { 1 };
+    let mut out = None;
+    let clamp = |v: i64| v.clamp(min, max);
+    if small_button(x, y, bw, h, "-", value > min) {
+        claim();
+        out = Some(clamp(value - step));
+    }
+    if small_button(x + w - bw, y, bw, h, "+", value < max) {
+        claim();
+        out = Some(clamp(value + step));
+    }
+    let (tx, tw) = (x + bw + 2.0, w - 2.0 * bw - 4.0);
+    let hover = mouse_in(tx, y, tw, h);
+    if hover {
+        let wh = wheel();
+        if wh != 0.0 {
+            out = Some(clamp(value + if wh > 0.0 { step } else { -step }));
+        }
+        if clicked() {
+            claim();
+            if !focused(id) {
+                set_focus(id, String::new());
+            }
+        }
+    }
+    let active = focused(id);
+    let mut shown = value.to_string();
+    if active && !input_blocked() {
+        let (chars, back, enter) = typed();
+        let mut buf = FOCUS.with(|f| f.borrow().as_ref().map(|f| f.buf.clone()).unwrap_or_default());
+        let digits: Vec<char> = chars.into_iter().filter(|c| c.is_ascii_digit() || (*c == '-' && min < 0)).collect();
+        apply_typing(&mut buf, &digits, back, false, false, 7);
+        let away = clicked() && !hover;
+        if enter || away {
+            if let Some(v) = parse_number(&buf, min, max) {
+                out = Some(v);
+            }
+            clear_focus();
+        } else if is_key_pressed(KeyCode::Escape) {
+            clear_focus();
+        } else {
+            FOCUS.with(|f| {
+                if let Some(f) = f.borrow_mut().as_mut() {
+                    f.buf = buf.clone();
+                }
+            });
+            let caret = if (get_time() * 2.0) as i64 % 2 == 0 { "|" } else { "" };
+            shown = format!("{buf}{caret}");
+        }
+    }
+    draw_rectangle(tx, y, tw, h, FIELD_BG);
+    draw_rectangle_lines(tx, y, tw, h, if active { 2.0 } else { 1.0 }, if active { ACCENT } else if hover { INK } else { DIM });
+    let d = measure(&shown, 17.0);
+    text(&shown, tx + (tw - d.width) / 2.0, y + 17.0, 17.0, INK);
+    out.filter(|v| *v != value)
+}
+
+/// A compact button (no sound, for steppers and list rows).
+pub fn small_button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> bool {
+    let hover = enabled && mouse_in(x, y, w, h);
+    let bg = match (enabled, hover) {
+        (false, _) => Color::new(0.16, 0.16, 0.16, 1.0),
+        (true, true) => Color::new(0.45, 0.35, 0.2, 1.0),
+        (true, false) => Color::new(0.26, 0.21, 0.14, 1.0),
+    };
+    draw_rectangle(x, y, w, h, bg);
+    draw_rectangle_lines(x, y, w, h, 1.0, if enabled { DIM } else { Color::new(0.3, 0.3, 0.3, 1.0) });
+    let d = measure(label, 17.0);
+    text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, 17.0, if enabled { INK } else { DIM });
+    hover && clicked()
+}
+
+/// A button that stays lit while `on` (tool and mode pickers). True when clicked.
+pub fn toggle_button(x: f32, y: f32, w: f32, h: f32, label: &str, on: bool) -> bool {
+    let hover = mouse_in(x, y, w, h);
+    let bg = if on { Color::new(0.55, 0.42, 0.18, 1.0) } else if hover { Color::new(0.36, 0.28, 0.18, 1.0) } else { Color::new(0.22, 0.18, 0.12, 1.0) };
+    draw_rectangle(x, y, w, h, bg);
+    draw_rectangle_lines(x, y, w, h, 1.0, if on { ACCENT } else { DIM });
+    let size = if measure(label, 17.0).width > w - 6.0 { 14.0 } else { 17.0 };
+    let d = measure(label, size);
+    text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, size, INK);
+    let pressed = hover && clicked();
+    if pressed {
+        claim();
+    }
+    pressed
+}
+
+/// A check box with its label; returns the new state when clicked.
+pub fn checkbox(x: f32, y: f32, label: &str, value: bool) -> Option<bool> {
+    let w = 22.0 + measure(label, 17.0).width + 6.0;
+    let hover = mouse_in(x, y, w, 22.0);
+    draw_rectangle(x, y + 2.0, 18.0, 18.0, FIELD_BG);
+    draw_rectangle_lines(x, y + 2.0, 18.0, 18.0, 1.0, if hover { INK } else { DIM });
+    if value {
+        draw_line(x + 4.0, y + 11.0, x + 8.0, y + 16.0, 2.5, ACCENT);
+        draw_line(x + 8.0, y + 16.0, x + 15.0, y + 5.0, 2.5, ACCENT);
+    }
+    text(label, x + 24.0, y + 16.0, 17.0, INK);
+    if hover && clicked() {
+        claim();
+        return Some(!value);
+    }
+    None
+}
+
+/// A drop-down list: shows the option with value `current` (or its number) and opens a list
+/// to pick from (type to filter, wheel to scroll). Returns the value picked.
+pub fn dropdown(key: &str, x: f32, y: f32, w: f32, current: i64, options: &[(i64, String)]) -> Option<i64> {
+    let id = field_id(key);
+    let picked = PICKED.with(|p| match p.get() {
+        Some((pid, v)) if pid == id => {
+            p.set(None);
+            Some(v)
+        }
+        _ => None,
+    });
+    let h = 24.0;
+    let hover = mouse_in(x, y, w, h);
+    let label = options.iter().find(|o| o.0 == current).map_or(format!("#{current}"), |o| o.1.clone());
+    draw_rectangle(x, y, w, h, FIELD_BG);
+    draw_rectangle_lines(x, y, w, h, 1.0, if hover { INK } else { DIM });
+    let mut shown = label;
+    while measure(&shown, 16.0).width > w - 24.0 && !shown.is_empty() {
+        shown.pop();
+    }
+    text(&shown, x + 5.0, y + 17.0, 16.0, INK);
+    draw_triangle(vec2(x + w - 15.0, y + 9.0), vec2(x + w - 5.0, y + 9.0), vec2(x + w - 10.0, y + 16.0), DIM);
+    if hover && clicked() {
+        claim();
+        clear_focus();
+        let rows = options.len().min(POPUP_ROWS) as f32;
+        let ph = rows * POPUP_ROW_H + 30.0;
+        let py = if y + h + ph > screen_height() { (y - ph).max(0.0) } else { y + h };
+        let pw = w.max(220.0);
+        let px = x.min(screen_width() - pw).max(0.0);
+        let at = options.iter().position(|o| o.0 == current).unwrap_or(0);
+        POPUP.with(|p| {
+            *p.borrow_mut() = Some(Popup { id, rect: Rect::new(px, py, pw, ph), options: options.to_vec(), scroll: at.saturating_sub(POPUP_ROWS / 2), filter: String::new() })
+        });
+    }
+    picked.filter(|v| *v != current)
+}
+
+pub fn popup_open() -> bool {
+    POPUP.with(|p| p.borrow().is_some())
+}
+
+/// Draws the open drop-down list over everything and handles it. Call last in the frame,
+/// with input not blocked.
+pub fn draw_popup() {
+    let mut close = false;
+    POPUP.with(|p| {
+        let mut p = p.borrow_mut();
+        let Some(pop) = p.as_mut() else { return };
+        let r = pop.rect;
+        // Typing filters; Backspace deletes from the filter.
+        let (chars, back, _) = typed();
+        apply_typing(&mut pop.filter, &chars, back, false, false, 40);
+        let needle = pop.filter.to_lowercase();
+        let shown: Vec<&(i64, String)> = pop.options.iter().filter(|o| needle.is_empty() || o.1.to_lowercase().contains(&needle) || o.0.to_string() == needle).collect();
+        let max_scroll = shown.len().saturating_sub(POPUP_ROWS);
+        if r.contains(Vec2::from(mouse_position())) {
+            let wh = mouse_wheel().1;
+            if wh > 0.0 {
+                pop.scroll = pop.scroll.saturating_sub(3);
+            } else if wh < 0.0 {
+                pop.scroll += 3;
+            }
+        }
+        pop.scroll = pop.scroll.min(max_scroll);
+        draw_rectangle(r.x + 4.0, r.y + 4.0, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.4));
+        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.1, 0.09, 0.08, 0.98));
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, ACCENT);
+        let hint = if pop.filter.is_empty() { "type to filter".to_string() } else { format!("filter: {}", pop.filter) };
+        text(&hint, r.x + 8.0, r.y + 19.0, 15.0, DIM);
+        for (i, (v, label)) in shown.iter().skip(pop.scroll).take(POPUP_ROWS).enumerate() {
+            let ry = r.y + 26.0 + i as f32 * POPUP_ROW_H;
+            let hover = Rect::new(r.x, ry, r.w, POPUP_ROW_H).contains(Vec2::from(mouse_position()));
+            if hover {
+                draw_rectangle(r.x + 2.0, ry, r.w - 4.0, POPUP_ROW_H, Color::new(0.4, 0.3, 0.15, 1.0));
+            }
+            let mut l = label.clone();
+            while measure(&l, 16.0).width > r.w - 16.0 && !l.is_empty() {
+                l.pop();
+            }
+            text(&l, r.x + 8.0, ry + 16.0, 16.0, INK);
+            if hover && is_mouse_button_pressed(MouseButton::Left) {
+                PICKED.with(|k| k.set(Some((pop.id, *v))));
+                close = true;
+            }
+        }
+        if shown.len() > POPUP_ROWS {
+            let frac = pop.scroll as f32 / max_scroll.max(1) as f32;
+            let track = r.h - 30.0;
+            draw_rectangle(r.x + r.w - 5.0, r.y + 26.0 + frac * (track - 20.0), 3.0, 20.0, DIM);
+        }
+        let outside = is_mouse_button_pressed(MouseButton::Left) && !r.contains(Vec2::from(mouse_position()));
+        if outside || is_key_pressed(KeyCode::Escape) {
+            close = true;
+        }
+    });
+    if close {
+        POPUP.with(|p| *p.borrow_mut() = None);
+        claim();
+    }
+}
+
+/// A row of tabs; the clicked one becomes `selected`. Returns the height used.
+pub fn tabs(x: f32, y: f32, w: f32, labels: &[&str], selected: &mut usize) -> f32 {
+    let n = labels.len().max(1) as f32;
+    let tw = w / n;
+    for (i, l) in labels.iter().enumerate() {
+        if toggle_button(x + i as f32 * tw, y, tw - 2.0, 26.0, l, *selected == i) {
+            *selected = i;
+        }
+    }
+    30.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typing_edits_text() {
+        let mut s = String::from("Ка");
+        assert!(apply_typing(&mut s, &['м', 'е', 'н', 'ь'], 0, false, false, 100));
+        assert_eq!(s, "Камень");
+        assert!(apply_typing(&mut s, &[], 2, false, false, 100));
+        assert_eq!(s, "Каме");
+        // Control characters are not text; Enter breaks lines only in multi-line fields.
+        assert!(!apply_typing(&mut s, &['\u{8}', '\r'], 0, true, false, 100));
+        assert!(apply_typing(&mut s, &[], 0, true, true, 100));
+        assert_eq!(s, "Каме\n");
+        let mut t = String::new();
+        apply_typing(&mut t, &['a', 'b', 'c'], 0, false, false, 2);
+        assert_eq!(t, "ab");
+    }
+
+    #[test]
+    fn numbers_parse_and_clamp() {
+        assert_eq!(parse_number("42", 0, 100), Some(42));
+        assert_eq!(parse_number("420", 0, 100), Some(100));
+        assert_eq!(parse_number("-5", -3, 3), Some(-3));
+        assert_eq!(parse_number("", 0, 9), None);
+        assert_eq!(parse_number("-", -9, 9), None);
+        assert_ne!(field_id("b1:name"), field_id("b2:name"));
+    }
 
     #[test]
     fn transliterates_russian() {

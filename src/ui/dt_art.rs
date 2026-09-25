@@ -139,7 +139,8 @@ impl DtArt {
         })
     }
 
-    fn objects(&self) -> &ObjectSprites {
+    /// The decoded `Objects.ugs` (the editor's palette).
+    pub fn objects(&self) -> &ObjectSprites {
         self.objects.get_or_init(|| or_log("map objects", self.install.map_objects()))
     }
 

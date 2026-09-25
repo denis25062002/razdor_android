@@ -124,6 +124,18 @@ pub struct ObjectSprite {
 impl ObjectSprite {
     pub const DECORATIONS: u32 = 0;
     pub const BUILDINGS: u32 = 1;
+
+    /// A building sprite's footprint in cells (x, y): the two u32 of its extra field. Every
+    /// building of the 15 shipped maps has exactly this size (bytes 289, 290), so it is the
+    /// size an editor gives a new building of this picture.
+    pub fn footprint(&self) -> Option<(u8, u8)> {
+        if self.section != ObjectSprite::BUILDINGS || self.extra.len() != 8 {
+            return None;
+        }
+        let a = u32::from_le_bytes(self.extra[0..4].try_into().ok()?);
+        let b = u32::from_le_bytes(self.extra[4..8].try_into().ok()?);
+        Some((u8::try_from(a).ok()?, u8::try_from(b).ok()?))
+    }
 }
 
 /// `Objects/Objects.ugs`: a slot table. A slot is a u32 0 (empty) or
@@ -782,6 +794,17 @@ mod tests {
     }
 
     #[test]
+    fn building_sprite_footprint() {
+        let image = Image { width: 1, height: 1, rgba: vec![0; 4] };
+        let mut extra = 4u32.to_le_bytes().to_vec();
+        extra.extend(3u32.to_le_bytes());
+        let s = ObjectSprite { section: ObjectSprite::BUILDINGS, cat: 9, idx: 0, cell: 1, extra, image };
+        assert_eq!(s.footprint(), Some((4, 3)));
+        let deco = ObjectSprite { section: ObjectSprite::DECORATIONS, extra: vec![1, 2, 3, 4], ..s.clone() };
+        assert_eq!(deco.footprint(), None);
+    }
+
+    #[test]
     fn real_every_graphics_file_decodes() {
         let Some(dt) = install() else { return };
         let mut files = Vec::new();
@@ -886,6 +909,8 @@ mod tests {
             for b in &s.buildings {
                 let sprite = objects.building(b.picture_type, b.picture_variant);
                 assert!(sprite.is_some(), "{}: building picture {} {}", m.name, b.picture_type, b.picture_variant);
+                // The footprint of every building is its sprite's.
+                assert_eq!(sprite.unwrap().footprint(), Some((b.size_x, b.size_y)), "{}: building footprint", m.name);
             }
         }
     }

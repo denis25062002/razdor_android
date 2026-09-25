@@ -1,0 +1,1072 @@
+//! The document being edited: a [`Scenario`], its file, and the undo history.
+//!
+//! Undo model: before a command runs, the scenario parts it may change ([`Sections`]) are
+//! copied into an undo entry. Undo swaps those copies with the current parts (the swapped-out
+//! parts become the redo entry), so undo and redo are exact and cheap. Commands that change
+//! nothing leave no entry. A *group* (one brush stroke, one drag) collects many commands
+//! into one entry; a *merge key* folds successive edits of the same field (typing a name)
+//! into one entry.
+
+use std::path::{Path, PathBuf};
+
+use crate::dt::container;
+use crate::dt::dtm::{Army, Building, Event, MapObject, Point, Scenario, CONTAINER_VERSION};
+use crate::dt::DtError;
+
+use super::command::{Command, ObjectFilter, Sections, Settings};
+use super::defaults::{new_army, new_building, new_point, new_scenario, NewMap};
+use super::geometry::{brush_indices, flood_region, is_massif, rect_indices, CellRect, Footprint};
+use super::refs;
+use super::validate::{has_errors, self_check, validate, Issue, MAX_RECORDS};
+use super::{Names, Palette};
+
+/// Where the document came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// Made with "new map".
+    New,
+    /// A map of the game's folder (never saved back there by default).
+    Game(PathBuf),
+    /// Any other file (the user's own maps).
+    File(PathBuf),
+}
+
+/// Why an edit was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditError {
+    OutOfMap { x: i64, y: i64 },
+    /// A building's footprint would reach outside the map.
+    FootprintOutside,
+    NoSuchBuilding(u16),
+    NoSuchArmy(u8),
+    NoSuchPoint(u8),
+    NoSuchNamedCharacter(u8),
+    /// The record list is full (ids are single bytes).
+    Full(&'static str),
+    /// Settings may not change the map size.
+    Resize,
+    /// A record's id must stay its position.
+    IdChanged,
+}
+
+impl std::fmt::Display for EditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EditError::OutOfMap { x, y } => write!(f, "({x}, {y}) is outside the map"),
+            EditError::FootprintOutside => write!(f, "the building would reach outside the map"),
+            EditError::NoSuchBuilding(id) => write!(f, "there is no building {id}"),
+            EditError::NoSuchArmy(id) => write!(f, "there is no army {id}"),
+            EditError::NoSuchPoint(id) => write!(f, "there is no point {id}"),
+            EditError::NoSuchNamedCharacter(id) => write!(f, "there is no named character {id}"),
+            EditError::Full(what) => write!(f, "no room for more {what} (at most {MAX_RECORDS})"),
+            EditError::Resize => write!(f, "the map size cannot change here"),
+            EditError::IdChanged => write!(f, "a record's id is its position and cannot change"),
+        }
+    }
+}
+
+/// Why saving failed.
+#[derive(Debug)]
+pub enum SaveError {
+    /// Validation found errors (all issues are listed).
+    Invalid(Vec<Issue>),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::Invalid(issues) => {
+                let n = issues.iter().filter(|i| i.severity == super::Severity::Error).count();
+                write!(f, "the map has {n} error(s); fix them first")
+            }
+            SaveError::Io(e) => write!(f, "cannot write the map: {e}"),
+        }
+    }
+}
+
+/// What a successful command made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The id of a placed record.
+    pub new_id: Option<u32>,
+    /// Whether anything changed.
+    pub changed: bool,
+}
+
+/// A copy of one part of the scenario.
+#[derive(Clone, Debug, PartialEq)]
+enum Snap {
+    Terrain(Vec<u8>),
+    Objects(Vec<MapObject>),
+    Buildings(Vec<Building>),
+    Armies(Vec<Army>),
+    Points(Vec<Point>),
+    Events(Vec<Event>),
+    Meta(Box<Settings>),
+}
+
+impl Snap {
+    fn section(&self) -> Sections {
+        match self {
+            Snap::Terrain(_) => Sections::TERRAIN,
+            Snap::Objects(_) => Sections::OBJECTS,
+            Snap::Buildings(_) => Sections::BUILDINGS,
+            Snap::Armies(_) => Sections::ARMIES,
+            Snap::Points(_) => Sections::POINTS,
+            Snap::Events(_) => Sections::EVENTS,
+            Snap::Meta(_) => Sections::META,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Entry {
+    label: String,
+    merge_key: Option<String>,
+    /// Unique, for the "saved" marker.
+    serial: u64,
+    snaps: Vec<Snap>,
+}
+
+/// An open map.
+pub struct EditorDoc {
+    pub scenario: Scenario,
+    pub origin: Origin,
+    /// The file this document was last saved to (the user's folder or, by explicit action,
+    /// the game's), used by "save" without a dialog.
+    pub saved_path: Option<PathBuf>,
+    container_version: u16,
+    undo: Vec<Entry>,
+    redo: Vec<Entry>,
+    group: Option<Entry>,
+    next_serial: u64,
+    saved_serial: u64,
+    /// Bumped by every change, undo and redo (for views that cache what they draw).
+    pub revision: u64,
+}
+
+/// Undo steps kept.
+pub const UNDO_LIMIT: usize = 200;
+
+fn settings_of(s: &Scenario) -> Settings {
+    Settings {
+        header: s.header.clone(),
+        title: s.title.clone(),
+        description: s.description.clone(),
+        campaign_name: s.campaign_name.clone(),
+        next_map: s.next_map.clone(),
+        named_characters: s.named_characters.clone(),
+    }
+}
+
+fn put_settings(s: &mut Scenario, m: Settings) {
+    s.header = m.header;
+    s.title = m.title;
+    s.description = m.description;
+    s.campaign_name = m.campaign_name;
+    s.next_map = m.next_map;
+    s.named_characters = m.named_characters;
+}
+
+impl EditorDoc {
+    fn with(scenario: Scenario, origin: Origin, container_version: u16) -> EditorDoc {
+        EditorDoc {
+            scenario,
+            origin,
+            saved_path: None,
+            container_version,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            group: None,
+            next_serial: 1,
+            saved_serial: 0,
+            revision: 0,
+        }
+    }
+
+    /// A new, empty map.
+    pub fn new_map(o: NewMap) -> EditorDoc {
+        let mut d = EditorDoc::with(new_scenario(o), Origin::New, CONTAINER_VERSION);
+        // A new map is unsaved.
+        d.saved_serial = u64::MAX;
+        d
+    }
+
+    /// Opens a `.DTm` file. `game_dir` is the install's maps folder: a map from there is
+    /// marked as a game map so saving goes to the user's folder.
+    pub fn open(path: &Path, game_dir: Option<&Path>) -> Result<EditorDoc, DtError> {
+        let bytes = std::fs::read(path).map_err(|source| DtError::Io { path: path.to_path_buf(), source })?;
+        let (payload, version) = if bytes.starts_with(crate::dt::dtm::PAYLOAD_MAGIC) {
+            (bytes, CONTAINER_VERSION)
+        } else {
+            let c = container::decode(&bytes)?;
+            (c.payload, c.version)
+        };
+        let scenario = Scenario::parse_payload(&payload)?;
+        let from_game = game_dir.is_some_and(|g| super::files::is_inside(path, g));
+        let origin = if from_game { Origin::Game(path.to_path_buf()) } else { Origin::File(path.to_path_buf()) };
+        let mut d = EditorDoc::with(scenario, origin, version);
+        if !from_game {
+            d.saved_path = Some(path.to_path_buf());
+        }
+        Ok(d)
+    }
+
+    /// The name to offer in "save as": the file's stem, else the title.
+    pub fn suggested_name(&self) -> String {
+        let path = match &self.origin {
+            Origin::Game(p) | Origin::File(p) => Some(p),
+            Origin::New => None,
+        };
+        let stem = self.saved_path.as_ref().or(path).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned());
+        stem.unwrap_or_else(|| if self.scenario.title.trim().is_empty() { "New map".into() } else { self.scenario.title.trim().to_string() })
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Saving
+    // ---------------------------------------------------------------------------------
+
+    /// All validation issues.
+    pub fn issues(&self, names: Option<&Names>, palette: Option<&Palette>) -> Vec<Issue> {
+        validate(&self.scenario, names, palette)
+    }
+
+    /// The file bytes (`AIpf` container around the payload), if the map has no errors.
+    pub fn file_bytes(&self, names: Option<&Names>, palette: Option<&Palette>) -> Result<Vec<u8>, SaveError> {
+        let issues = self.issues(names, palette);
+        if has_errors(&issues) {
+            return Err(SaveError::Invalid(issues));
+        }
+        let payload = self_check(&self.scenario).map_err(|_| SaveError::Invalid(issues))?;
+        Ok(container::encode(self.container_version, &payload))
+    }
+
+    /// Validates and writes the map to `path` (chosen by [`super::files::plan_save`]).
+    pub fn save_to(&mut self, path: &Path, names: Option<&Names>, palette: Option<&Palette>) -> Result<(), SaveError> {
+        let bytes = self.file_bytes(names, palette)?;
+        super::files::write_atomically(path, &bytes).map_err(SaveError::Io)?;
+        self.saved_path = Some(path.to_path_buf());
+        self.saved_serial = self.current_serial();
+        Ok(())
+    }
+
+    fn current_serial(&self) -> u64 {
+        self.undo.last().map_or(0, |e| e.serial)
+    }
+
+    /// Changed since the last save (or never saved).
+    pub fn dirty(&self) -> bool {
+        self.group.is_some() || self.current_serial() != self.saved_serial
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Undo
+    // ---------------------------------------------------------------------------------
+
+    fn snapshot(&self, sections: Sections) -> Vec<Snap> {
+        let s = &self.scenario;
+        Sections::ALL
+            .into_iter()
+            .filter(|x| sections.contains(*x))
+            .map(|x| match x {
+                Sections::TERRAIN => Snap::Terrain(s.terrain.clone()),
+                Sections::OBJECTS => Snap::Objects(s.objects.clone()),
+                Sections::BUILDINGS => Snap::Buildings(s.buildings.clone()),
+                Sections::ARMIES => Snap::Armies(s.armies.clone()),
+                Sections::POINTS => Snap::Points(s.points.clone()),
+                Sections::EVENTS => Snap::Events(s.events.clone()),
+                _ => Snap::Meta(Box::new(settings_of(s))),
+            })
+            .collect()
+    }
+
+    /// Puts `snap` into the scenario and returns what it replaced.
+    fn swap_in(&mut self, snap: Snap) -> Snap {
+        let s = &mut self.scenario;
+        match snap {
+            Snap::Terrain(v) => Snap::Terrain(std::mem::replace(&mut s.terrain, v)),
+            Snap::Objects(v) => Snap::Objects(std::mem::replace(&mut s.objects, v)),
+            Snap::Buildings(v) => Snap::Buildings(std::mem::replace(&mut s.buildings, v)),
+            Snap::Armies(v) => Snap::Armies(std::mem::replace(&mut s.armies, v)),
+            Snap::Points(v) => Snap::Points(std::mem::replace(&mut s.points, v)),
+            Snap::Events(v) => Snap::Events(std::mem::replace(&mut s.events, v)),
+            Snap::Meta(m) => {
+                let old = settings_of(s);
+                put_settings(s, *m);
+                Snap::Meta(Box::new(old))
+            }
+        }
+    }
+
+    /// The snaps that differ from the current scenario.
+    fn changed(&self, snaps: Vec<Snap>) -> Vec<Snap> {
+        snaps.into_iter().filter(|snap| self.snapshot(snap.section()).first() != Some(snap)).collect()
+    }
+
+    fn push(&mut self, mut entry: Entry) {
+        entry.serial = self.next_serial;
+        self.next_serial += 1;
+        self.undo.push(entry);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// Label of the step undo would revert.
+    pub fn undo_label(&self) -> Option<&str> {
+        self.undo.last().map(|e| e.label.as_str())
+    }
+
+    pub fn redo_label(&self) -> Option<&str> {
+        self.redo.last().map(|e| e.label.as_str())
+    }
+
+    fn step(&mut self, from_undo: bool) -> bool {
+        self.end_group();
+        let entry = if from_undo { self.undo.pop() } else { self.redo.pop() };
+        let Some(mut entry) = entry else { return false };
+        let snaps = std::mem::take(&mut entry.snaps);
+        entry.snaps = snaps.into_iter().map(|s| self.swap_in(s)).collect();
+        entry.merge_key = None;
+        if from_undo {
+            self.redo.push(entry);
+        } else {
+            self.undo.push(entry);
+        }
+        self.revision += 1;
+        true
+    }
+
+    pub fn undo(&mut self) -> bool {
+        self.step(true)
+    }
+
+    pub fn redo(&mut self) -> bool {
+        self.step(false)
+    }
+
+    /// Starts collecting commands into one undo step (a brush stroke, a drag).
+    pub fn begin_group(&mut self, label: &str) {
+        self.end_group();
+        self.group = Some(Entry { label: label.to_string(), merge_key: None, serial: 0, snaps: Vec::new() });
+    }
+
+    /// Ends the group; it becomes one undo step if anything changed.
+    pub fn end_group(&mut self) {
+        if let Some(mut g) = self.group.take() {
+            g.snaps = self.changed(g.snaps);
+            if !g.snaps.is_empty() {
+                self.push(g);
+            }
+        }
+    }
+
+    pub fn in_group(&self) -> bool {
+        self.group.is_some()
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Commands
+    // ---------------------------------------------------------------------------------
+
+    /// Runs a command as its own undo step (or inside the open group).
+    pub fn apply(&mut self, cmd: Command) -> Result<Applied, EditError> {
+        self.apply_merging(cmd, None)
+    }
+
+    /// Runs a command; if the last undo step has the same `merge_key` (and nothing came
+    /// between), the two become one step.
+    pub fn apply_merging(&mut self, cmd: Command, merge_key: Option<&str>) -> Result<Applied, EditError> {
+        let sections = cmd.sections();
+        let label = cmd.label();
+        // Parts not yet copied into the open group.
+        let before = match &self.group {
+            Some(g) => {
+                let have = g.snaps.iter().fold(Sections(0), |acc, s| acc | s.section());
+                self.snapshot(Sections(sections.0 & !have.0))
+            }
+            None => self.snapshot(sections),
+        };
+        let mut applied = match self.execute(cmd) {
+            Ok(a) => a,
+            Err(e) => {
+                for s in before {
+                    self.swap_in(s);
+                }
+                return Err(e);
+            }
+        };
+        if let Some(g) = self.group.as_mut() {
+            g.snaps.extend(before);
+            applied.changed = true;
+            self.revision += 1;
+            return Ok(applied);
+        }
+        let before = self.changed(before);
+        if before.is_empty() {
+            return Ok(Applied { changed: false, ..applied });
+        }
+        applied.changed = true;
+        self.revision += 1;
+        let top_matches = merge_key.is_some() && self.redo.is_empty() && self.undo.last().is_some_and(|e| e.merge_key.as_deref() == merge_key);
+        if top_matches {
+            let top = self.undo.last_mut().expect("checked");
+            let have = top.snaps.iter().fold(Sections(0), |acc, s| acc | s.section());
+            top.snaps.extend(before.into_iter().filter(|s| !have.contains(s.section())));
+            // A merged step is a new state: it is not the saved one any more.
+            top.serial = self.next_serial;
+            self.next_serial += 1;
+            return Ok(applied);
+        }
+        self.push(Entry { label: label.to_string(), merge_key: merge_key.map(str::to_string), serial: 0, snaps: before });
+        Ok(applied)
+    }
+
+    fn check_cell(&self, x: i64, y: i64) -> Result<(), EditError> {
+        let s = &self.scenario;
+        if x < 0 || y < 0 || x >= s.width() as i64 || y >= s.height() as i64 {
+            return Err(EditError::OutOfMap { x, y });
+        }
+        Ok(())
+    }
+
+    fn check_footprint(&self, x: u16, y: u16, size: (u8, u8)) -> Result<(), EditError> {
+        self.check_cell(x as i64, y as i64)?;
+        if !Footprint::of(x as i32, y as i32, size.0, size.1).inside(self.scenario.width(), self.scenario.height()) {
+            return Err(EditError::FootprintOutside);
+        }
+        Ok(())
+    }
+
+    fn building_index(&self, id: u16) -> Result<usize, EditError> {
+        (id as usize).checked_sub(1).filter(|i| *i < self.scenario.buildings.len()).ok_or(EditError::NoSuchBuilding(id))
+    }
+
+    fn army_index(&self, id: u8) -> Result<usize, EditError> {
+        (id as usize).checked_sub(1).filter(|i| *i < self.scenario.armies.len()).ok_or(EditError::NoSuchArmy(id))
+    }
+
+    fn point_index(&self, id: u8) -> Result<usize, EditError> {
+        (id as usize).checked_sub(1).filter(|i| *i < self.scenario.points.len()).ok_or(EditError::NoSuchPoint(id))
+    }
+
+    fn execute(&mut self, cmd: Command) -> Result<Applied, EditError> {
+        let (w, h) = (self.scenario.width(), self.scenario.height());
+        let mut out = Applied::default();
+        match cmd {
+            Command::PaintTerrain { x, y, size, code } => {
+                for i in brush_indices(w, h, x, y, size) {
+                    self.scenario.terrain[i] = code.min(15);
+                }
+            }
+            Command::FillTerrain { x, y, code } => {
+                self.check_cell(x as i64, y as i64)?;
+                for i in flood_region(&self.scenario.terrain, w, h, x, y) {
+                    self.scenario.terrain[i] = code.min(15);
+                }
+            }
+            Command::RectTerrain { from, to, code } => {
+                for i in rect_indices(w, h, CellRect::spanning(from, to)) {
+                    self.scenario.terrain[i] = code.min(15);
+                }
+            }
+            Command::PlaceObjects { x, y, size, class, sprite } => {
+                let Some(r) = CellRect::brush(x, y, size).clip(w, h) else { return Err(EditError::OutOfMap { x: x as i64, y: y as i64 }) };
+                for (cx, cy) in r.cells() {
+                    let o = MapObject { x: cx as u16, y: cy as u16, sprite, class };
+                    if !self.scenario.objects.contains(&o) {
+                        insert_object(&mut self.scenario.objects, o);
+                    }
+                }
+            }
+            Command::EraseObjects { x, y, size, filter } => {
+                let r = CellRect::brush(x, y, size);
+                self.scenario.objects.retain(|o| {
+                    let hit = r.contains(o.x as i32, o.y as i32);
+                    let kind = match filter {
+                        ObjectFilter::All => true,
+                        ObjectFilter::Massifs => is_massif(o.class),
+                        ObjectFilter::Plants => !is_massif(o.class),
+                    };
+                    !(hit && kind)
+                });
+            }
+            Command::PlaceBuilding { x, y, kind, picture_type, variant, size } => {
+                if self.scenario.buildings.len() >= MAX_RECORDS {
+                    return Err(EditError::Full("buildings"));
+                }
+                self.check_footprint(x, y, size)?;
+                let b = new_building(&self.scenario.header, x, y, kind, picture_type, variant, size);
+                self.scenario.buildings.push(b);
+                out.new_id = Some(self.scenario.buildings.len() as u32);
+            }
+            Command::MoveBuilding { id, x, y } => {
+                let i = self.building_index(id)?;
+                let b = &self.scenario.buildings[i];
+                self.check_footprint(x, y, (b.size_x, b.size_y))?;
+                let b = &mut self.scenario.buildings[i];
+                (b.x, b.y) = (x, y);
+            }
+            Command::DeleteBuilding { id } => {
+                self.building_index(id)?;
+                refs::remove_building(&mut self.scenario, id);
+            }
+            Command::SetBuilding { id, building } => {
+                let i = self.building_index(id)?;
+                self.scenario.buildings[i] = *building;
+            }
+            Command::PlaceArmy { x, y } => {
+                if self.scenario.armies.len() >= MAX_RECORDS {
+                    return Err(EditError::Full("armies"));
+                }
+                self.check_cell(x as i64, y as i64)?;
+                let id = self.scenario.armies.len() as u8 + 1;
+                let a = new_army(&self.scenario.header, id, x, y);
+                self.scenario.armies.push(a);
+                out.new_id = Some(id as u32);
+            }
+            Command::MoveArmy { id, x, y } => {
+                let i = self.army_index(id)?;
+                self.check_cell(x as i64, y as i64)?;
+                let a = &mut self.scenario.armies[i];
+                (a.x, a.y) = (x, y);
+            }
+            Command::DeleteArmy { id } => {
+                self.army_index(id)?;
+                refs::remove_army(&mut self.scenario, id);
+            }
+            Command::SetArmy { id, army } => {
+                let i = self.army_index(id)?;
+                if army.id != id {
+                    return Err(EditError::IdChanged);
+                }
+                self.scenario.armies[i] = *army;
+            }
+            Command::PlacePoint { x, y, lantern } => {
+                if self.scenario.points.len() >= MAX_RECORDS {
+                    return Err(EditError::Full("points"));
+                }
+                self.check_cell(x as i64, y as i64)?;
+                let id = self.scenario.points.len() as u8 + 1;
+                let serial = self.scenario.points.iter().map(|p| p.serial).max().unwrap_or(0).saturating_add(1);
+                self.scenario.points.push(new_point(id, serial, x, y, lantern));
+                out.new_id = Some(id as u32);
+            }
+            Command::MovePoint { id, x, y } => {
+                let i = self.point_index(id)?;
+                self.check_cell(x as i64, y as i64)?;
+                let p = &mut self.scenario.points[i];
+                (p.x, p.y) = (x, y);
+            }
+            Command::DeletePoint { id } => {
+                self.point_index(id)?;
+                refs::remove_point(&mut self.scenario, id);
+            }
+            Command::SetPoint { id, point } => {
+                let i = self.point_index(id)?;
+                if point.id != id {
+                    return Err(EditError::IdChanged);
+                }
+                self.scenario.points[i] = *point;
+            }
+            Command::SetSettings(m) => {
+                let hd = &self.scenario.header;
+                if (m.header.width, m.header.height) != (hd.width, hd.height) {
+                    return Err(EditError::Resize);
+                }
+                put_settings(&mut self.scenario, *m);
+            }
+            Command::AddNamedCharacter { unit, name } => {
+                if self.scenario.named_characters.len() >= 32 {
+                    return Err(EditError::Full("named characters (32)"));
+                }
+                let k = self.scenario.named_characters.len();
+                self.scenario.header.named_character_slots[k] = unit;
+                self.scenario.named_characters.push(crate::dt::dtm::NamedCharacter { unit, name });
+                out.new_id = Some(k as u32 + 1);
+            }
+            Command::RemoveNamedCharacter { index } => {
+                if !refs::remove_named_character(&mut self.scenario, index) {
+                    return Err(EditError::NoSuchNamedCharacter(index));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The scenario settings, to edit and apply with [`Command::SetSettings`].
+    pub fn settings(&self) -> Settings {
+        settings_of(&self.scenario)
+    }
+
+    /// What stands on a cell, top first: an army, a point, a building covering it.
+    pub fn hit(&self, x: i32, y: i32) -> Option<Target> {
+        let s = &self.scenario;
+        if let Some(a) = s.armies.iter().rposition(|a| (a.x as i32, a.y as i32) == (x, y)) {
+            return Some(Target::Army(a as u8 + 1));
+        }
+        if let Some(p) = s.points.iter().rposition(|p| (p.x as i32, p.y as i32) == (x, y)) {
+            return Some(Target::Point(p as u8 + 1));
+        }
+        s.buildings
+            .iter()
+            .rposition(|b| Footprint::of(b.x as i32, b.y as i32, b.size_x, b.size_y).contains(x, y))
+            .map(|b| Target::Building(b as u16 + 1))
+    }
+
+    /// Objects on a cell, in file order.
+    pub fn objects_at(&self, x: u16, y: u16) -> impl Iterator<Item = &MapObject> + '_ {
+        self.scenario.objects.iter().filter(move |o| o.x == x && o.y == y)
+    }
+}
+
+/// A selectable record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Building(u16),
+    Army(u8),
+    Point(u8),
+}
+
+/// Inserts `o` keeping the (y, x) order, after the objects already on its cell.
+fn insert_object(objects: &mut Vec<MapObject>, o: MapObject) {
+    let at = objects.partition_point(|p| (p.y, p.x) <= (o.y, o.x));
+    objects.insert(at, o);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::files::tests::temp_dir;
+    use crate::dt::dtm::{ARMY_SIZE, BUILDING_SIZE, POINT_SIZE};
+    use crate::editor::palette::Names;
+
+    fn doc() -> EditorDoc {
+        EditorDoc::new_map(NewMap { width: 20, height: 20, fill: 6 })
+    }
+
+    fn cell(d: &EditorDoc, x: u32, y: u32) -> u8 {
+        d.scenario.terrain_at(x, y).unwrap()
+    }
+
+    #[test]
+    fn paint_undo_redo() {
+        let mut d = doc();
+        assert!(!d.can_undo());
+        let a = d.apply(Command::PaintTerrain { x: 5, y: 5, size: 3, code: 1 }).unwrap();
+        assert!(a.changed);
+        assert_eq!(d.scenario.terrain.iter().filter(|c| **c == 1).count(), 9);
+        assert_eq!(d.undo_label(), Some("Paint terrain"));
+        assert!(d.undo());
+        assert!(d.scenario.terrain.iter().all(|c| *c == 6));
+        assert!(d.redo());
+        assert_eq!(cell(&d, 4, 4), 1);
+        assert!(!d.redo());
+        // Painting the same again changes nothing and leaves no step.
+        let a = d.apply(Command::PaintTerrain { x: 5, y: 5, size: 1, code: 1 }).unwrap();
+        assert!(!a.changed);
+        assert!(d.undo());
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn a_new_command_clears_redo() {
+        let mut d = doc();
+        d.apply(Command::PaintTerrain { x: 1, y: 1, size: 1, code: 2 }).unwrap();
+        d.undo();
+        assert!(d.can_redo());
+        d.apply(Command::PaintTerrain { x: 2, y: 2, size: 1, code: 3 }).unwrap();
+        assert!(!d.can_redo());
+    }
+
+    #[test]
+    fn strokes_are_one_step() {
+        let mut d = doc();
+        d.begin_group("Paint terrain");
+        for x in 0..10 {
+            d.apply(Command::PaintTerrain { x, y: 0, size: 1, code: 4 }).unwrap();
+        }
+        d.end_group();
+        assert_eq!(d.scenario.terrain.iter().filter(|c| **c == 4).count(), 10);
+        d.undo();
+        assert!(d.scenario.terrain.iter().all(|c| *c == 6));
+        assert!(!d.can_undo());
+        // An empty stroke leaves nothing.
+        d.begin_group("nothing");
+        d.end_group();
+        assert!(!d.can_undo());
+    }
+
+    #[test]
+    fn fill_and_rectangle() {
+        let mut d = doc();
+        // A road across the map splits it; filling the top half leaves the bottom.
+        d.apply(Command::RectTerrain { from: (0, 10), to: (19, 10), code: 4 }).unwrap();
+        d.apply(Command::FillTerrain { x: 0, y: 0, code: 1 }).unwrap();
+        assert_eq!((cell(&d, 19, 9), cell(&d, 5, 10), cell(&d, 5, 11)), (1, 4, 6));
+        assert_eq!(d.scenario.terrain.iter().filter(|c| **c == 1).count(), 200);
+        assert!(d.apply(Command::FillTerrain { x: 20, y: 0, code: 1 }).is_err());
+        // Rectangles clip to the map; corners in any order.
+        d.apply(Command::RectTerrain { from: (25, 25), to: (18, 18), code: 10 }).unwrap();
+        assert_eq!(d.scenario.terrain.iter().filter(|c| **c == 10).count(), 4);
+    }
+
+    #[test]
+    fn objects_stack_and_erase() {
+        let mut d = doc();
+        d.apply(Command::PlaceObjects { x: 3, y: 3, size: 1, class: 9, sprite: 1 }).unwrap();
+        d.apply(Command::PlaceObjects { x: 3, y: 3, size: 1, class: 5, sprite: 20 }).unwrap();
+        d.apply(Command::PlaceObjects { x: 1, y: 1, size: 3, class: 9, sprite: 2 }).unwrap();
+        // The same object twice on a cell is not stacked.
+        let again = d.apply(Command::PlaceObjects { x: 3, y: 3, size: 1, class: 9, sprite: 1 }).unwrap();
+        assert!(!again.changed);
+        assert_eq!(d.objects_at(3, 3).count(), 2);
+        assert_eq!(d.scenario.objects.len(), 11);
+        // Sorted by (y, x); a cell's stack keeps its order.
+        let keys: Vec<(u16, u16)> = d.scenario.objects.iter().map(|o| (o.y, o.x)).collect();
+        assert!(keys.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(d.objects_at(3, 3).map(|o| o.class).collect::<Vec<_>>(), [9, 5]);
+        d.apply(Command::EraseObjects { x: 3, y: 3, size: 1, filter: ObjectFilter::Plants }).unwrap();
+        assert_eq!(d.objects_at(3, 3).map(|o| o.class).collect::<Vec<_>>(), [5]);
+        d.apply(Command::EraseObjects { x: 1, y: 1, size: 9, filter: ObjectFilter::All }).unwrap();
+        assert!(d.scenario.objects.is_empty());
+        d.undo();
+        d.undo();
+        assert_eq!(d.objects_at(3, 3).count(), 2);
+    }
+
+    #[test]
+    fn buildings_place_move_delete() {
+        let mut d = doc();
+        let a = d.apply(Command::PlaceBuilding { x: 5, y: 5, kind: 3, picture_type: 3, variant: 1, size: (4, 4) }).unwrap();
+        assert_eq!(a.new_id, Some(1));
+        // Footprints must fit: 4x4 anchored at (2, 5) reaches x = -1.
+        assert_eq!(d.apply(Command::PlaceBuilding { x: 2, y: 5, kind: 3, picture_type: 3, variant: 0, size: (4, 4) }), Err(EditError::FootprintOutside));
+        assert_eq!(d.apply(Command::PlaceBuilding { x: 30, y: 5, kind: 3, picture_type: 3, variant: 0, size: (1, 1) }), Err(EditError::OutOfMap { x: 30, y: 5 }));
+        d.apply(Command::PlaceBuilding { x: 12, y: 12, kind: 2, picture_type: 2, variant: 0, size: (3, 3) }).unwrap();
+        d.apply(Command::MoveBuilding { id: 1, x: 8, y: 8 }).unwrap();
+        assert_eq!((d.scenario.buildings[0].x, d.scenario.buildings[0].y), (8, 8));
+        assert_eq!(d.apply(Command::MoveBuilding { id: 1, x: 1, y: 1 }), Err(EditError::FootprintOutside));
+        assert_eq!(d.apply(Command::MoveBuilding { id: 9, x: 8, y: 8 }), Err(EditError::NoSuchBuilding(9)));
+        assert_eq!(d.hit(6, 6), Some(Target::Building(1)));
+        assert_eq!(d.hit(10, 10), Some(Target::Building(2)));
+        assert_eq!(d.hit(0, 0), None);
+        // Deleting building 1 renumbers building 2 and remaps the preset's start building.
+        let mut st = d.settings();
+        st.header.heroes[0].start_building = 2;
+        d.apply(Command::SetSettings(Box::new(st))).unwrap();
+        d.apply(Command::DeleteBuilding { id: 1 }).unwrap();
+        assert_eq!(d.scenario.buildings.len(), 1);
+        assert_eq!(d.scenario.header.heroes[0].start_building, 1);
+        d.undo();
+        assert_eq!(d.scenario.buildings.len(), 2);
+        assert_eq!(d.scenario.header.heroes[0].start_building, 2);
+    }
+
+    #[test]
+    fn armies_and_points() {
+        let mut d = doc();
+        assert_eq!(d.apply(Command::PlaceArmy { x: 3, y: 4 }).unwrap().new_id, Some(1));
+        assert_eq!(d.apply(Command::PlaceArmy { x: 5, y: 4 }).unwrap().new_id, Some(2));
+        d.apply(Command::PlaceBuilding { x: 12, y: 12, kind: 3, picture_type: 3, variant: 0, size: (2, 2) }).unwrap();
+        let mut b = d.scenario.buildings[0].clone();
+        b.owner_army = 2;
+        d.apply(Command::SetBuilding { id: 1, building: Box::new(b) }).unwrap();
+        d.apply(Command::MoveArmy { id: 2, x: 6, y: 6 }).unwrap();
+        assert_eq!(d.hit(6, 6), Some(Target::Army(2)));
+        d.apply(Command::DeleteArmy { id: 1 }).unwrap();
+        assert_eq!(d.scenario.armies.len(), 1);
+        assert_eq!(d.scenario.armies[0].id, 1);
+        assert_eq!(d.scenario.buildings[0].owner_army, 1);
+        let mut a = d.scenario.armies[0].clone();
+        a.id = 5;
+        assert_eq!(d.apply(Command::SetArmy { id: 1, army: Box::new(a) }), Err(EditError::IdChanged));
+        assert_eq!(d.apply(Command::PlacePoint { x: 1, y: 1, lantern: true }).unwrap().new_id, Some(1));
+        d.apply(Command::PlacePoint { x: 2, y: 1, lantern: false }).unwrap();
+        assert_eq!(d.scenario.points.iter().map(|p| (p.id, p.serial, p.model)).collect::<Vec<_>>(), [(1, 1, 8), (2, 2, 9)]);
+        d.apply(Command::DeletePoint { id: 1 }).unwrap();
+        assert_eq!(d.scenario.points[0].id, 1);
+        assert_eq!(d.hit(2, 1), Some(Target::Point(1)));
+        assert_eq!(d.apply(Command::MovePoint { id: 3, x: 1, y: 1 }), Err(EditError::NoSuchPoint(3)));
+    }
+
+    #[test]
+    fn typing_merges_into_one_step() {
+        let mut d = doc();
+        d.apply(Command::PlaceBuilding { x: 5, y: 5, kind: 5, picture_type: 5, variant: 0, size: (2, 2) }).unwrap();
+        for name in ["T", "Ta", "Tav"] {
+            let mut b = d.scenario.buildings[0].clone();
+            b.name = name.into();
+            d.apply_merging(Command::SetBuilding { id: 1, building: Box::new(b) }, Some("b1:name")).unwrap();
+        }
+        let mut b = d.scenario.buildings[0].clone();
+        b.gold_per_day = 10;
+        d.apply_merging(Command::SetBuilding { id: 1, building: Box::new(b) }, Some("b1:gold")).unwrap();
+        assert_eq!(d.scenario.buildings[0].name, "Tav");
+        d.undo();
+        assert_eq!((d.scenario.buildings[0].name.as_str(), d.scenario.buildings[0].gold_per_day), ("Tav", 0));
+        d.undo();
+        assert_eq!(d.scenario.buildings[0].name, "");
+        assert_eq!(d.undo_label(), Some("Place building"));
+    }
+
+    #[test]
+    fn settings_and_named_characters() {
+        let mut d = doc();
+        let mut st = d.settings();
+        st.title = "Поход".into();
+        st.header.victory_event = 0;
+        d.apply(Command::SetSettings(Box::new(st.clone()))).unwrap();
+        assert_eq!(d.scenario.title, "Поход");
+        st.header.width = 30;
+        assert_eq!(d.apply(Command::SetSettings(Box::new(st))), Err(EditError::Resize));
+        d.apply(Command::AddNamedCharacter { unit: 7, name: "A".into() }).unwrap();
+        d.apply(Command::AddNamedCharacter { unit: 8, name: "B".into() }).unwrap();
+        d.apply(Command::PlaceArmy { x: 1, y: 1 }).unwrap();
+        let mut a = d.scenario.armies[0].clone();
+        a.named_character = 2;
+        d.apply(Command::SetArmy { id: 1, army: Box::new(a) }).unwrap();
+        d.apply(Command::RemoveNamedCharacter { index: 1 }).unwrap();
+        assert_eq!(d.scenario.armies[0].named_character, 1);
+        assert_eq!(d.scenario.named_characters[0].name, "B");
+        assert_eq!(d.apply(Command::RemoveNamedCharacter { index: 5 }), Err(EditError::NoSuchNamedCharacter(5)));
+    }
+
+    #[test]
+    fn dirty_tracking() {
+        let dir = temp_dir("dirty");
+        let mut d = doc();
+        assert!(d.dirty(), "a new map is unsaved");
+        let path = dir.join("m.DTm");
+        d.save_to(&path, None, None).unwrap();
+        assert!(!d.dirty());
+        d.apply(Command::PaintTerrain { x: 0, y: 0, size: 1, code: 3 }).unwrap();
+        assert!(d.dirty());
+        d.undo();
+        assert!(!d.dirty(), "back at the saved state");
+        d.redo();
+        assert!(d.dirty());
+    }
+
+    #[test]
+    fn save_open_roundtrip() {
+        let dir = temp_dir("roundtrip");
+        let mut d = doc();
+        d.apply(Command::PaintTerrain { x: 5, y: 5, size: 5, code: 12 }).unwrap();
+        d.apply(Command::PlaceObjects { x: 5, y: 5, size: 1, class: 5, sprite: 20 }).unwrap();
+        d.apply(Command::PlaceBuilding { x: 10, y: 10, kind: 3, picture_type: 3, variant: 0, size: (4, 4) }).unwrap();
+        d.apply(Command::PlaceArmy { x: 15, y: 15 }).unwrap();
+        let mut a = d.scenario.armies[0].clone();
+        (a.leader_unit, a.name) = (1, "Отряд".into());
+        d.apply(Command::SetArmy { id: 1, army: Box::new(a) }).unwrap();
+        d.apply(Command::PlacePoint { x: 2, y: 2, lantern: true }).unwrap();
+        let path = dir.join("Новая.DTm");
+        d.save_to(&path, None, None).unwrap();
+        let back = EditorDoc::open(&path, None).unwrap();
+        assert_eq!(back.scenario, d.scenario);
+        assert_eq!(back.origin, Origin::File(path.clone()));
+        assert_eq!(back.saved_path.as_deref(), Some(path.as_path()));
+        assert!(std::fs::read(&path).unwrap().starts_with(container::MAGIC));
+        // The game reads the same bytes back.
+        let s = Scenario::load(&path).unwrap();
+        assert_eq!(s.armies[0].name, "Отряд");
+    }
+
+    #[test]
+    fn invalid_maps_are_not_saved() {
+        let dir = temp_dir("invalid");
+        let mut d = doc();
+        d.scenario.header.victory_event = 3;
+        let path = dir.join("bad.DTm");
+        match d.save_to(&path, None, None) {
+            Err(SaveError::Invalid(issues)) => assert!(issues.iter().any(|i| i.message.contains("victory event"))),
+            other => panic!("{other:?}"),
+        }
+        assert!(!path.exists());
+        // Content checks when names are given.
+        let names = Names::from_content(&crate::rules::content::Content::builtin());
+        d.scenario.header.victory_event = 0;
+        d.scenario.header.heroes[2].artifacts[0] = 250;
+        assert!(d.file_bytes(Some(&names), None).is_err());
+        assert!(d.file_bytes(None, None).is_ok());
+    }
+
+    #[test]
+    fn opening_marks_game_maps() {
+        let game = temp_dir("gamefolder");
+        let mut d = doc();
+        let p = game.join("Shipped.DTm");
+        d.save_to(&p, None, None).unwrap();
+        let g = EditorDoc::open(&p, Some(&game)).unwrap();
+        assert_eq!(g.origin, Origin::Game(p.clone()));
+        assert_eq!(g.saved_path, None, "a game map has no save path of its own");
+        assert_eq!(g.suggested_name(), "Shipped");
+        assert_eq!(doc().suggested_name(), "New scenario");
+    }
+
+    /// Offsets of the sections in a payload: (buildings, armies, points).
+    fn section_offsets(p: &[u8]) -> (usize, usize, usize) {
+        let u32_at = |o: usize| u32::from_le_bytes(p[o..o + 4].try_into().unwrap()) as usize;
+        let b = crate::dt::dtm::HEADER_SIZE + u32_at(0x1C) + u32_at(0x20);
+        let a = b + u32_at(0x24);
+        (b, a, a + u32_at(0x28))
+    }
+
+    #[test]
+    fn property_edits_land_at_documented_offsets() {
+        let mut d = doc();
+        d.apply(Command::PlaceBuilding { x: 10, y: 10, kind: 3, picture_type: 3, variant: 2, size: (4, 4) }).unwrap();
+        d.apply(Command::PlaceBuilding { x: 16, y: 16, kind: 2, picture_type: 2, variant: 0, size: (3, 3) }).unwrap();
+        d.apply(Command::PlaceArmy { x: 3, y: 4 }).unwrap();
+        d.apply(Command::PlacePoint { x: 7, y: 8, lantern: true }).unwrap();
+        let mut b = d.scenario.buildings[1].clone();
+        b.gold_per_day = 0x1234;
+        b.gold_max = 700;
+        b.owner_army = 1;
+        b.linked_building = 1;
+        b.garrison[1] = crate::dt::dtm::Troop { unit: 12, level: 2, count: 5 };
+        b.barracks[0] = crate::dt::dtm::RecruitSlot { unit: 6, start_count: 3, max_count: 9 };
+        b.garrison_extra_defence = 15;
+        b.price_min = 25;
+        b.price_max = 1500;
+        b.faction = 2;
+        b.relations = [3, -1, 0, -3];
+        b.mana_per_day = 40;
+        b.mana_max = 200;
+        b.start_for = [0, 1, 0];
+        b.recruit_all_types = 1;
+        b.garrison_ai_only = 1;
+        b.random_artifacts_for_sale = 6;
+        b.spells_for_sale = [4, 9, 0, 0, 0, 0];
+        b.artifact_slots[0] = 146;
+        b.event_count = 1;
+        b.event_slots[0] = 0x0102;
+        d.apply(Command::SetBuilding { id: 2, building: Box::new(b) }).unwrap();
+        let mut a = d.scenario.armies[0].clone();
+        a.speed_correction = -2;
+        a.leader_unit = 5;
+        a.leader_level = 3;
+        a.troops[0] = crate::dt::dtm::Troop { unit: 7, level: 1, count: 4 };
+        a.home_building = 2;
+        a.artifacts = [11, 0, 12];
+        a.named_character = 0;
+        a.behaviour = 1;
+        a.patrols = 1;
+        a.patrol_radius = 12;
+        a.no_money = 1;
+        a.inactive = 1;
+        a.faction = 3;
+        a.relations = [1, -2, 3, 0];
+        a.aggression = -25;
+        a.respawn_days = 4;
+        a.exp_correction = 130;
+        a.ship = 2;
+        a.ignored_by_ai = 1;
+        a.hunts_player_only = 1;
+        a.no_random_targets = 1;
+        a.no_socialising = 1;
+        a.no_building_interest = 1;
+        a.garrison_strength = 60;
+        a.respawn_all = 1;
+        a.spell = 3;
+        a.target_model = 4;
+        a.gold_income = 300;
+        a.hire_bonus_exp = 50;
+        a.exp_like_player = 1;
+        d.apply(Command::SetArmy { id: 1, army: Box::new(a) }).unwrap();
+        let mut p = d.scenario.points[0].clone();
+        p.radius = 9;
+        p.active = 0;
+        p.event_count = 2;
+        p.event_slots[..2].copy_from_slice(&[3, 0x0405]);
+        d.apply(Command::SetPoint { id: 1, point: Box::new(p) }).unwrap();
+
+        let pay = d.scenario.to_payload();
+        let (bo, ao, po) = section_offsets(&pay);
+        let b = &pay[bo + BUILDING_SIZE..bo + 2 * BUILDING_SIZE];
+        assert_eq!(&b[0..7], &[16, 0, 16, 0, 0, 2, 2]);
+        assert_eq!(&b[8..10], &[0x02, 0x01]);
+        assert_eq!(&b[136..138], &146u16.to_le_bytes());
+        assert_eq!(&b[264..267], &[6, 3, 9]);
+        assert_eq!(&b[282..286], &[0x34, 0x12, 0xBC, 0x02]);
+        assert_eq!(&b[288..291], &[1, 3, 3]);
+        assert_eq!(&b[292..296], &[1, 1, 0, 6]);
+        assert_eq!(&b[308..310], &[4, 9]);
+        assert_eq!(&b[317..320], &[12, 2, 5]);
+        assert_eq!(b[332], 15);
+        assert_eq!(&b[333..337], &[25, 0, 0xDC, 0x05]);
+        assert_eq!(&b[337..342], &[2, 3, 0xFF, 0, 0xFD]);
+        assert_eq!(&b[350..352], &[40, 200]);
+        assert_eq!(&b[353..358], &[0, 1, 0, 1, 1]);
+        let a = &pay[ao..ao + ARMY_SIZE];
+        assert_eq!(&a[0..6], &[3, 0, 4, 0, 1, 4]);
+        assert_eq!(a[13], 0xFE);
+        assert_eq!(a[14], 1);
+        assert_eq!(&a[17..21], &[0x2C, 0x01, 50, 0]);
+        assert_eq!(&a[25..31], &[2, 5, 3, 7, 1, 4]);
+        assert_eq!(&a[50..53], &[11, 0, 12]);
+        assert_eq!(&a[58..72], &[0, 1, 1, 12, 1, 1, 3, 1, 0xFE, 3, 0, 0xE7, 4, 130]);
+        assert_eq!(a[72], 2);
+        assert_eq!(&a[76..80], &[1, 1, 1, 1]);
+        assert_eq!(&a[81..86], &[1, 60, 1, 3, 4]);
+        let p = &pay[po..po + POINT_SIZE];
+        assert_eq!(&p[0..6], &[7, 0, 8, 0, 1, 8]);
+        assert_eq!(&p[8..12], &[3, 0, 0x05, 0x04]);
+        assert_eq!(&p[38..41], &[9, 2, 0]);
+        // And the file reads back to the same records.
+        let back = Scenario::parse_payload(&pay).unwrap();
+        assert_eq!((back.buildings, back.armies, back.points), (d.scenario.buildings.clone(), d.scenario.armies.clone(), d.scenario.points.clone()));
+    }
+
+    #[test]
+    fn settings_land_in_the_header() {
+        let mut d = doc();
+        let mut st = d.settings();
+        st.header.heroes[2].gold = 1234;
+        st.header.heroes[2].x = 17;
+        st.header.heroes[2].start_building = 0;
+        st.header.heroes[2].troops[0] = crate::dt::dtm::Troop { unit: 3, level: 1, count: 2 };
+        st.header.heroes[2].artifacts = [5, 6, 7];
+        st.header.heroes[2].spells[0] = 8;
+        st.header.relations[3] = [-3, -2, -1, 0];
+        st.header.victory_event = 0;
+        st.header.scenario_kind = 1;
+        st.header.carry_over = [1, 0, 1, 0, 1, 0, 1];
+        st.campaign_name = "Кампания".into();
+        st.next_map = "next.DTm".into();
+        d.apply(Command::SetSettings(Box::new(st))).unwrap();
+        d.apply(Command::AddNamedCharacter { unit: 42, name: "Имя".into() }).unwrap();
+        let pay = d.scenario.to_payload();
+        let h = 0x3C + 2 * 50;
+        assert_eq!(&pay[h + 8..h + 12], &1234u32.to_le_bytes());
+        assert_eq!(&pay[h + 19..h + 22], &[3, 1, 2]);
+        assert_eq!(&pay[h + 37..h + 39], &[17, 0]);
+        assert_eq!(&pay[h + 41..h + 45], &[5, 6, 7, 8]);
+        assert_eq!(&pay[0xDE + 12..0xDE + 16], &[0xFD, 0xFE, 0xFF, 0]);
+        assert_eq!((pay[0xEE], pay[0xEF], pay[0x10F]), (1, 42, 1));
+        assert_eq!(&pay[0x110..0x117], &[1, 0, 1, 0, 1, 0, 1]);
+        let back = Scenario::parse_payload(&pay).unwrap();
+        assert_eq!((back.campaign_name.as_str(), back.next_map.as_str(), back.named_characters[0].name.as_str()), ("Кампания", "next.DTm", "Имя"));
+    }
+
+    #[test]
+    fn a_new_map_plays() {
+        // The in-memory scenario builds a game as the test-play button does.
+        let mut d = doc();
+        d.apply(Command::PlaceBuilding { x: 12, y: 12, kind: 3, picture_type: 3, variant: 0, size: (2, 2) }).unwrap();
+        let content = std::sync::Arc::new(crate::rules::content::Content::builtin());
+        let g = crate::rules::game::Game::from_scenario(content, &d.scenario, crate::rules::content::HeroClass::Knight, 1);
+        assert_eq!(g.world.locations.len(), 1);
+        assert_eq!(g.tile(), (10, 10));
+    }
+}

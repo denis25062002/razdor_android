@@ -5,6 +5,7 @@ pub mod battle_view;
 pub mod building_view;
 pub mod dialog;
 pub mod dt_art;
+pub mod editor;
 pub mod items_view;
 pub mod jukebox;
 pub mod minimap;
@@ -57,6 +58,8 @@ pub enum Screen {
     Load(saves::LoadView),
     GameOver,
     Victory,
+    /// The map editor (`ui::editor`).
+    Editor,
 }
 
 /// A scenario of the player's install, loaded for the select screen.
@@ -91,6 +94,10 @@ pub struct App {
     last_screen: Option<std::mem::Discriminant<Screen>>,
     /// Gold at the end of the last frame of this game (`None` right after a new game or load).
     last_gold: Option<i32>,
+    /// The map editor, kept while a test play runs.
+    editor: Option<Box<editor::EditorScreen>>,
+    /// The game is a test play of the editor's map: leaving it returns to the editor.
+    test_play: bool,
 }
 
 impl App {
@@ -124,6 +131,42 @@ impl App {
             audio,
             last_screen: None,
             last_gold: None,
+            editor: None,
+            test_play: false,
+        }
+    }
+
+    /// Opens the map editor (the title screen's button and `--editor`).
+    pub fn open_editor(&mut self) {
+        if self.editor.is_none() {
+            self.editor = Some(Box::new(editor::EditorScreen::new(&self.assets, self.dt_content.clone(), self.demo.clone())));
+        }
+        self.screen = Screen::Editor;
+    }
+
+    /// A frame of the editor; test play starts a game on the edited map.
+    fn editor_frame(&mut self) {
+        let Some(ed) = self.editor.as_mut() else {
+            self.open_editor();
+            return;
+        };
+        match ed.frame(&self.assets) {
+            editor::EditorAction::None => {}
+            editor::EditorAction::Exit => {
+                self.editor = None;
+                self.screen = Screen::ScenarioSelect;
+            }
+            editor::EditorAction::TestPlay { scenario, content, class } => {
+                let mut game = Game::from_scenario(content, &scenario, class, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64));
+                game.set_hero_name("");
+                self.dialogs.clear();
+                self.message = Some("Test play: Esc > Main menu returns to the editor.".into());
+                self.map_view.reset();
+                self.last_gold = None;
+                self.game = Some(game);
+                self.test_play = true;
+                self.screen = Screen::WorldMap;
+            }
         }
     }
 
@@ -160,7 +203,7 @@ impl App {
     /// The music the current screen wants.
     fn mood(&self) -> Mood {
         match &self.screen {
-            Screen::ScenarioSelect | Screen::ClassSelect { .. } => Mood::Menu,
+            Screen::ScenarioSelect | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
             Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
             Screen::Battle(_) => Mood::Battle,
             Screen::GameOver => Mood::Lost,
@@ -210,6 +253,10 @@ impl App {
 
     pub fn frame(&mut self) {
         self.sounds();
+        if matches!(self.screen, Screen::Editor) {
+            self.editor_frame();
+            return;
+        }
         // A dialog on top: the screen below is drawn but takes no input.
         widgets::set_input_blocked(!self.dialogs.is_empty());
         let mut next = match (&mut self.screen, &mut self.game) {
@@ -237,6 +284,7 @@ impl App {
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
             (Screen::GameOver, game) => screens::game_over(game),
             (Screen::Victory, game) => screens::victory(game),
+            (Screen::Editor, _) => None,
             (_, None) => Some(Screen::ScenarioSelect),
         };
         widgets::set_input_blocked(false);
@@ -268,6 +316,15 @@ impl App {
         }
         if let Some(path) = self.pending_load.take() {
             self.load(&path);
+            return;
+        }
+        // Leaving a test play (main menu, or "new game" on an end screen) returns to the editor.
+        if self.test_play && matches!(next, Some(Screen::ScenarioSelect)) {
+            self.test_play = false;
+            self.game = None;
+            self.dialogs.clear();
+            self.message = None;
+            self.screen = Screen::Editor;
             return;
         }
         if let Some(next) = next {

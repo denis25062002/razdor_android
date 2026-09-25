@@ -41,9 +41,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for mana and game time; effects last into battles; archmage and Caster discounts; scripted spells use the same path. |
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **AI armies** | The scenario's armies choose goals by behaviour style (feudal / rogue / peasant, army byte 59) and target model with the `_Global.ini` priorities: attack you or hostile armies in view, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. Feudal economy: income, wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles with the battle engine on both sides, captures and income changes (your castles can be lost), reports within sight. Beaten lords retreat into a building and return; armies respawn after their days (leader or whole army). 30 simulated days on every shipped map take 0.01–0.33 s each (release). |
+| **Map editor (step 1)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms except events; undo/redo; checks before saving; test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **368 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **429 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -95,7 +96,8 @@ after `main` returned); the game now ends the process directly once everything i
   victory screen, `NoHeal` blocking the world's healing, opcode 8 on the hero's own speed,
   `set_in_building` for garrisons without extra defence (one line in `game.rs`). AI units
   carry no own items or spells, so opcodes 6 and 11 act on whole armies.
-- Soft terrain transitions, a map editor.
+- Soft terrain transitions.
+- **Map editor step 2**: the event editor and the random map generator (described in the editor spec, not built). **The editor window was not seen**: layout, panels, drop-downs and the canvas were built with tests, clippy and a release build only; check them on a real screen first.
 - Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
   credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
   logs, a decode round trip and quad-snd loading every file at volume 0.
@@ -140,6 +142,10 @@ git worktree remove /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9e
 rm -rf target/basecmp
 # a core dump from an offscreen snapshot run, if systemd kept one
 coredumpctl list razdor
+# temp folders left by the editor's tests (never the repo or the game folder)
+rm -rf /tmp/razdor-editor-*
+# the DFM parser venv used to read the original editor's forms
+rm -rf /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9ee4204d-b333-4316-953b-dbb147f5fd94/scratchpad/editor
 ```
 
 Keep the scratch folder if you want the research notes (`RULES.md`, `DTM_FORMAT.md`, the Python

@@ -59,8 +59,8 @@ The decoder finds it by searching for the repeated `(u16 w, u16 h)`:
   cat 1 = grass hills, 2/4 = single green/yellow hill (idx 23), 3 = rocky hills, 5 = mountains,
   6 = dark mountains, 8 = stones/boulders, 9 = small trees and bushes (deciduous, autumn, fir, snowy,
   grass tufts, palms…), 10 = dead trees, 11 = big trees. idx is sparse, grouped in tens by size/variant.
-- **Section B (buildings, 8-byte extra = u32 a, u32 b):** a,b are 1–9 and scale with sprite size, so
-  probably a footprint in hexes (M/L). cat 1 = cities (4), 2 = villages (8), 3 = castles (6), 4 = forts/towers,
+- **Section B (buildings, 8-byte extra = u32 a, u32 b):** a,b are the building's footprint in cells (H: every building of the 15 shipped maps
+  has exactly its picture's (a, b) as its size, bytes 289/290). cat 1 = cities (4), 2 = villages (8), 3 = castles (6), 4 = forts/towers,
   5 = tavern, 6 = market stalls, 7 = churches, 8 = misc (smithy, huts, standing stones, ruined city),
   9 = harbours/lighthouses and piers, 10 = altars/stone circles, 11 = cave, 12 = ruins,
   13 = stone road/bridge pieces, 14 = wooden bridges.

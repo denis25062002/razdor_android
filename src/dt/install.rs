@@ -66,7 +66,7 @@ fn find(dir: &Path, name: &str) -> Result<PathBuf, DtError> {
 }
 
 /// `dir/a/b/c` from a `/`-separated relative path, matching each component ignoring case.
-pub(crate) fn find_path(dir: &Path, rel: &str) -> Result<PathBuf, DtError> {
+pub fn find_path(dir: &Path, rel: &str) -> Result<PathBuf, DtError> {
     rel.split('/').filter(|c| !c.is_empty()).try_fold(dir.to_path_buf(), |p, c| find(&p, c))
 }
 

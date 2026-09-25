@@ -192,6 +192,36 @@ equipped or drunk (by type) and gold coming in.
   and PulseAudio provide the `default` device). `cargo build --no-default-features` builds
   without sound.
 
+## Map editor
+Razdor has a scenario editor that writes `.DTm` maps the original game and Razdor both load.
+Start it with **Map editor** on the title screen or `cargo run --release -- --editor`. With
+`RAZDOR_DT_DIR` set it draws the original art, offers the game's object and building pictures
+and names units, artefacts and spells from your install; without one it uses placeholders.
+
+- **Toolbar**: New (50/100/200 or custom size, one surface), Open (the game's maps, your maps
+  or a path), Save (Ctrl+S), Save as (Ctrl+Shift+S), Save to game folder, Undo (Ctrl+Z), Redo
+  (Ctrl+Y / Ctrl+Shift+Z), Settings (title, description, start date, victory/defeat event,
+  the three hero starts, faction relations, campaign, named characters), Check (the list of
+  problems; errors block saving; click one to go there), Test play, Exit.
+- **Tools** (right column, keys in brackets): Select and move (V), Terrain (T: 16 surfaces,
+  brush 1/3/5/9, flood fill, rectangle), Objects (O: hills, mountains, stones, trees by class
+  and picture; several per cell), Erase (E), Building (B: type and picture; the cell you click
+  is the bottom-right corner, the preview is red if it does not fit), Army (A), Point (P:
+  lantern or event point).
+- **Panels**: click a building, army or point to edit every field (names and descriptions in
+  any script, garrison, barracks, goods, spells, incomes, factions and attitudes, AI settings,
+  local events by id). Delete removes it; later ids and references are renumbered.
+- **View**: wheel zooms, right or middle drag and the arrow keys move, Home shows the whole
+  map, the minimap moves the view; G grid, H hill and mountain cover, R patrol radii.
+- **Test play** plays the map as it is in the editor; Esc > Main menu returns to it.
+
+Where maps go: your maps folder, `RAZDOR_MAPS_DIR` or `~/.local/share/razdor/maps`
+(`razdor/maps` in the platform data folder elsewhere). A map opened from the game's
+`Maps_Rus` is saved there too, never back over the game's copy. Only **Save to game folder**
+writes into `Maps_Rus`, after a confirmation, and replacing a map that is already there (such
+as a shipped one) asks a second time. Events and the random map generator come in step 2
+(`docs/superpowers/specs/2026-09-25-map-editor-design.md`).
+
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after the units' and items'
 `Key=` in `data/units.ini` / `data/items.ini` (`knight.png`, `archmage.png`, `ranger.png`,
@@ -207,5 +237,6 @@ RAZDOR_ASSETS=./assets-local cargo run --release
 ## Layout
 - `src/dt/` — readers for the original's files (ini data, `.DTm` maps). Pure, no macroquad.
 - `src/rules/` — pure game logic (no macroquad), unit-tested.
+- `src/editor/` — the map editor's model (documents, commands, undo, validation, saving). Pure, unit-tested.
 - `src/ui/` — macroquad screens; `assets.rs` is the only place that draws units and items.
 - Design: `docs/superpowers/specs/2026-09-24-razdor-prototype-design.md`.

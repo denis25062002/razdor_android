@@ -47,6 +47,10 @@ async fn main() {
     ui::widgets::load_font().await;
     let content = Arc::new(Content::builtin());
     let mut app = App::new(Assets::load(content.clone()).await, content);
+    // `--editor`: start in the map editor.
+    if std::env::args().skip(1).any(|a| a == "--editor") {
+        app.open_editor();
+    }
     let quit_after = quit_after();
     let mut frames = 0u64;
     loop {

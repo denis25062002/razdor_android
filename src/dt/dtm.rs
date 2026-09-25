@@ -930,6 +930,13 @@ pub struct Point {
     pub unknown_41: [u8; 58],
 }
 
+impl Default for Point {
+    /// An all-zero record, for building scenarios in code.
+    fn default() -> Point {
+        Point::read(&Rec(&[0; POINT_SIZE]))
+    }
+}
+
 impl Point {
     fn read(r: &Rec) -> Point {
         Point {

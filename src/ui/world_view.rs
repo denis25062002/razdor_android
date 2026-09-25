@@ -88,7 +88,7 @@ pub(super) fn surface_color(code: u8) -> Color {
 }
 
 /// Faction colour (player green, ally blue, neighbour yellow, enemy red, as the editor).
-fn faction_color(faction: u8) -> Color {
+pub(super) fn faction_color(faction: u8) -> Color {
     match faction {
         1 => rgb(70, 200, 90),
         2 => rgb(70, 130, 230),
@@ -179,7 +179,7 @@ impl Camera {
 
 /// Draws `tex` into `dest`, sampling it from world pixel `src` (unscaled) with wrap-around,
 /// so neighbouring cells continue the texture seamlessly.
-fn draw_wrapped(tex: &Texture2D, dest: Rect, src: Vec2, src_size: Vec2) {
+pub(super) fn draw_wrapped(tex: &Texture2D, dest: Rect, src: Vec2, src_size: Vec2) {
     let (tw, th) = (tex.width(), tex.height());
     let u0 = src.x.rem_euclid(tw);
     let v0 = src.y.rem_euclid(th);
@@ -331,7 +331,7 @@ fn draw_building(l: &Location, art: Option<&DtArt>, cam: &Camera) {
 }
 
 /// `Graphics/Units/*.ugs` figure for an army's map model or the hero's class.
-fn figure_stem(model: u8) -> &'static str {
+pub(super) fn figure_stem(model: u8) -> &'static str {
     match model {
         1 => "Hero-Knight",
         2 => "Hero-Mage",
