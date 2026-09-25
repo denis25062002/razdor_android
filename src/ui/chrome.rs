@@ -126,6 +126,19 @@ pub fn art(rel: &str, fx: Fx) -> Option<Texture2D> {
     })
 }
 
+/// A spell's picture as the original composes it: its `Icon1..3` layers from
+/// `Graphics/Spells`, each tinted by its `ColorC`, the backgrounds (`_` names) first, all
+/// glowing (black adds nothing). Draws nothing without an install.
+pub fn spell_icon(icons: &[razdor::dt::data::SpellIcon], r: Rect) {
+    let mut layers: Vec<(&str, Option<[i32; 3]>)> = icons.iter().filter_map(|i| Some((i.image.as_deref()?, i.tint))).collect();
+    layers.sort_by_key(|(name, _)| !name.starts_with('_'));
+    for (name, tint) in layers {
+        let Some(t) = art(&format!("Spells/{name}.lit"), Fx::Glow) else { continue };
+        let c = tint.map_or(WHITE, |[r, g, b]| Color::from_rgba(r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8, 255));
+        draw_texture_ex(&t, r.x, r.y, c, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
+    }
+}
+
 /// Windows art (`Graphics/Windows/<name>.lit`).
 pub fn win(name: &str) -> Option<Texture2D> {
     art(&format!("Windows/{name}.lit"), Fx::Plain)

@@ -111,12 +111,16 @@ pub fn frame(
         let hover = mouse_in(cx, cy, cw, ch);
         let edge = if *selected == k { ACCENT } else if hover { INK } else { MARBLE_EDGE };
         draw_rectangle_lines(cx, cy, cw, ch, if *selected == k { 3.0 } else { 2.0 }, edge);
-        for (i, line) in wrap(&s.name, cw - 16.0, 18.0).iter().take(2).enumerate() {
-            text(line, cx + 8.0, cy + 22.0 + i as f32 * 20.0, 18.0, INK);
+        // The spell's own picture on the left, as in the original's book.
+        let icon = ch - 12.0;
+        super::chrome::spell_icon(&s.icons, Rect::new(cx + 6.0, cy + 6.0, icon, icon));
+        let tx = cx + icon + 14.0;
+        for (i, line) in wrap(&s.name, cx + cw - tx - 6.0, 18.0).iter().take(2).enumerate() {
+            text(line, tx, cy + 22.0 + i as f32 * 20.0, 18.0, INK);
         }
         let cost = game.cast_cost(s);
         let color = if game.mana >= cost.mana { MANA } else { Color::new(0.9, 0.4, 0.35, 1.0) };
-        text(&format!("{} mana, {}", cost.mana, duration_label(cost.minutes as f64)), cx + 8.0, cy + ch - 10.0, 16.0, color);
+        text(&format!("{} mana, {}", cost.mana, duration_label(cost.minutes as f64)), tx, cy + ch - 10.0, 16.0, color);
         if hover && clicked() {
             *selected = k;
         }

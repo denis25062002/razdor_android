@@ -515,14 +515,18 @@ impl DtInstall {
         decode_ugs(&self.read(UNIT_FIGURES)?)
     }
 
-    /// All artefact icons, indexed by [`item_icon_frame`].
+    /// All artefact icons, indexed by [`DtInstall::artefact_icon_frame`] (`GlobalIndex − 1`).
     pub fn item_icons(&self) -> Result<Vec<Image>, DtError> {
         decode_ugs(&self.read(ITEM_ICONS)?)
     }
 
-    /// Frame of [`ITEM_ICONS`] for an artefact `GlobalIndex`.
+    /// Frame of [`ITEM_ICONS`] for an artefact `GlobalIndex`: `GlobalIndex − 1`, one frame per
+    /// artefact in file order, as the unit portraits (checked against the sheet: the helmets
+    /// A43–A48 are frames 42–47). The `Icon=Axxx.Tga` field names the original's separate
+    /// picture files and is not a frame of the sheet (A030 there would be a pair of arrows).
     pub fn artefact_icon_frame(&self, artefact_id: u32) -> Option<usize> {
-        item_icon_frame(&self.artefact(artefact_id)?.icon)
+        self.artefact(artefact_id)?;
+        (artefact_id as usize).checked_sub(1)
     }
 
     /// Map decorations and building sprites.
@@ -887,10 +891,15 @@ mod tests {
         assert_eq!(figures.len(), dt.units.len());
         let items = dt.item_icons().unwrap();
         assert_eq!(items.len(), 167);
+        // One frame per artefact, in GlobalIndex order (as the unit portraits): the helmets
+        // A43–A48 are frames 42–47. Their `Icon=` numbers (A030 …) point elsewhere: frame 30
+        // is a pair of arrows.
         for a in &dt.artefacts {
             let f = dt.artefact_icon_frame(a.id).unwrap_or_else(|| panic!("artefact {} icon {:?}", a.id, a.icon));
+            assert_eq!(f, a.id as usize - 1, "artefact {}", a.id);
             assert!(f < items.len());
         }
+        assert_eq!(dt.artefact_icon_frame(43), Some(42));
         for code in 0..16 {
             let t = dt.terrain_texture(code).unwrap();
             assert_eq!((t.width, t.height), (256, 242), "terrain {code}");

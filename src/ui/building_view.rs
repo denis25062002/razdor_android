@@ -690,6 +690,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     let chosen = view.pick.and_then(|k| spells.get(k));
     match chosen {
         Some(s) => {
+            chrome::spell_icon(&s.icons, Rect::new(x + 14.0, y + 14.0, 96.0, 96.0));
             text_centered(&s.name, x + dw / 2.0, y + 30.0, 21.0, BOX_INK);
             for (i, line) in super::spellbook::spell_lines(game, s).iter().enumerate() {
                 text_centered(line, x + dw / 2.0, y + 60.0 + i as f32 * 22.0, 16.0, MANA);
