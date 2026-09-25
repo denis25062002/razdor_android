@@ -263,6 +263,9 @@ N+1 is the noon report, N+2 the village offer, N+3 another dialog.
 2. If none: the local events of the **event point** the hero stands on, in that point's list order.
 3. If none: the local events of the **building** the hero is in, in the building's list order.
    - Only type-2 (local) events count here. **In villages and shipyards every listed event counts.**
+   - At an event point every listed event counts, whatever its type.
+   - Quests and rumours (types 3 and 4) of other buildings are listed in the main hall (0x4beaac)
+     when they pass the check; taking one fires it.
    - A building's events are not checked again while that building's window is open (`0x4ed434`).
 4. A silent event (no question and no message, 0x4a7a40) is applied at once, and the scan starts over.
    An event with a dialog stops the scan, and the scan resumes after the dialog.
@@ -282,6 +285,38 @@ duration +0x8 (hours), class +0xa, done +0x8c, once +0x8d, last fired +0x9c, tim
   - Duration > 0: the event may fire again **on any later check** while the window is open and the conditions hold.
   - Duration 0: it may fire again only 60 minutes after the last firing.
 - Class: 0 means any; otherwise it must equal hero type + 1.
+
+**Chained events** (byte 138, 0x4ab1ec end): H. The chained event is run as it is: silent
+(0x4a7a40: no question, no message, no spell, battle, lanterns, shown army or delay) it is applied
+at once, else its dialog opens (0x4a8ae8). **Its conditions, window, place and once flag are not
+checked** (no call to 0x4a7b80). With a spell, a delay or a battle in the parent, the chain waits
+for them (a timed callback, 0x4af658) and then runs the same way.
+
+**Meeting** (0x68dc7c): H. When the hero meets an army (0x4adccf, 0x4adfe6, 0x4ae1cd), its index goes
+into 0x68dc7c and the scan runs. "Meet army" (+0x4a) holds only for that army. The scan resets
+0x68dc7c to 0 once nothing more fires (0x4ac3a0); an event with "no meeting" (+0x94) resets it when
+it fires (0x4ab286), so later meeting events of the same scan fail. Passing all other conditions
+also marks the army (+0x3826) as having a meeting event waiting (0x4a801a), which the map code uses
+when the hero comes near.
+
+**Armies in conditions** (army record 0x3827 bytes at 0x75a940 + id·0x3827): H.
+- +0x16a1 on the map, +0x16a2 destroyed, +0x16a7 who beat it (1 = the player, else the winner's
+  index + 1), set by 0x496834.
+- "Defeated by the player" (+0x35): +0x16a7 = 1. "Beaten by anyone" (+0x42): destroyed or +0x16a7 ≠ 0.
+  "Active" (+0x4b): on the map and not destroyed; "inactive" (+0xf) the opposite.
+- An event that activates an army not on the map (0x4969b8) clears destroyed and +0x16a7: a beaten
+  army brought back by an event is no longer "beaten". (Razdor: a beaten army is not brought back
+  by an event.)
+
+**Building owners** (+0x1d check, 0x4a815d): H. A slot counts only when both its building id and
+its owner code are non-zero. Code 1: the building's owner army is 0 (the player). Code 6: it is
+not. Codes 2–5: the building's faction (+0x151, file byte 337) equals code − 1, whoever owns it.
+
+**Units** (+0x24 check, 0x4a8237): H. Per slot (unit id, named character, owner code 1 or 6), the
+player's army is searched for a living unit not taken by an earlier slot: the type must match when
+the slot names no character; a named character matches whatever his type; type 0xFF with no name
+matches a unit an event added (wage kind 3). Code 1 needs one; code 6 fails when one is found.
+Codes 2–5 search the AI armies of faction code − 1 the same way.
 
 **Answers** (No: 0x4c23ce): H.
 - **No** sets answer = 1, last fired = now + 1 and times fired += 1, and applies nothing.
@@ -314,6 +349,13 @@ The header bytes 0x110..0x116 decide:
 - [5] **the whole pack**.
 - [6] **the whole army**: every unit is marked paid, with last paid = now.
 - The next map is the header's next-map name. Community opcode 15 can change it.
+- **The flags carry over**: 0x4b5ef8 stashes the flag string (0x68ed00) with the army record, the
+  hero type (0x68dccc) and the pack; 0x4b5ff8 restores them when the next map starts. A new game
+  clears the flags (0x4c1000).
+- The check (0x4ab9ee): the current event is the victory or defeat event (header 0xD2 / 0xD8); if
+  `Maps_Rus\<next name>` exists, the campaign flag (header 0x10F) is set and it is the victory,
+  0x4b5b64 hands over; otherwise the end screen (0x4bfb34). A victory or defeat ends the event's
+  processing: its chained event does not run.
 
 ---
 

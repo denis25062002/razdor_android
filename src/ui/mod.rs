@@ -283,7 +283,7 @@ impl App {
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
             (Screen::GameOver, game) => screens::game_over(game),
-            (Screen::Victory, game) => screens::victory(game),
+            (Screen::Victory, game) => screens::victory(game, &self.scenarios, self.dt_content.clone()),
             (Screen::Editor, _) => None,
             (_, None) => Some(Screen::ScenarioSelect),
         };

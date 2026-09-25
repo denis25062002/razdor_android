@@ -720,9 +720,11 @@ a pending question); the game implements `EventWorld` (queries and effects). Out
 events only; texts are read from the scenario at runtime.
 
 - **Scope**: global events are checked anywhere; local events and quests only while the player
-  stands at a building or point that lists them; rumours only when the player picks one from
-  `rumours()`; subordinate events only through a chain. An unlisted local event never fires on
-  its own *(guess)*.
+  stands at a building or point that lists them; in a **village or shipyard every listed event
+  fires on entering, a rumour too** (exe 4ac1a1); elsewhere rumours only when the player picks
+  one from `rumours()`; subordinate events only through a chain. An unlisted local event never
+  fires on its own *(guess)*. Quests listed in other buildings fire on entering too (the
+  original offers them in the main hall with "take the quest"; not built).
 - **Window** (economy.md §6): never before the start; with a repeat of R minutes, on every
   (R/1440)-th day since the start, for `max(duration, 1)` **hours** from the start's time of
   day; without one, until `start + max(duration, 1)` hours, or with no end for duration 0
@@ -730,8 +732,11 @@ events only; texts are read from the scenario at runtime.
   (a far-future "never" in the files) is moved to `now + delay hours`.
 - **Repeats**: an event without "once" fires again on every later check (not twice in the same
   minute; a duration-0 event not within 60 minutes) while its window is open and its
-  conditions hold. A once-event is done once it fired, a No answer included. A chained event
-  ignores window and place but not its conditions or "once".
+  conditions hold. A once-event is done once it fired, a No answer included. **A chained event
+  fires as it is**: its conditions, window, place and "once" are not checked (exe: 4ab1ec hands
+  the chained id to the dialog 4a8ae8 or applies it at once, never through the check 4a7b80).
+  РК1's ending relies on it: on the "No" path the inn's event chains the victory event, whose
+  own condition is the Yes.
 - **Loop**: fire the first eligible event (global events in file order, then the local events
   of the point or building the hero stands on, in its list order; a building's only on
   entering it), start over, until none fires; at most 256 firings per run (then `LoopGuard`).
@@ -745,8 +750,23 @@ events only; texts are read from the scenario at runtime.
 - **Conditions**: signed thresholds mean `≥ n` (positive) or `≤ |n|` (negative); squad count
   and army strength are checked when non-zero, level/gold/mana only with the "current stats"
   box; the level is compared 0-based as in the exe (a threshold of 2 means level 3). Owner
-  code 6 is "not the player" (includes nobody), 0 is read as the player *(guess)*.
-  Id lists behind a check box are ignored when the box is off. All listed ids must match.
+  code 6 is "not the player" (includes nobody). **Buildings** (exe 4a815d): a slot counts only
+  with an owner code; 1 = the player's, 6 = not his, 2–5 = the building's faction is code − 1
+  (1 the player's side … 4 enemy), whoever holds it, so code 2 also matches the player's own
+  buildings (a captured building takes faction 1). **Units** (4a8237): each slot takes a unit
+  of the player's army that no earlier slot took, so three alike need three units (РК2's
+  mines want three peasants); "not the player's" holds while no such unit is left over; the
+  match is the unit type when no named character is asked for, else that named character
+  whatever his type (0xFF with no name: a unit an event added); other owners look in an army
+  of that side. For units and artifacts owner code 0 is read as the player *(guess; no map
+  uses it)*. Id lists behind a check box are ignored when the box is off. All listed ids must
+  match.
+- **Meeting** (exe 0x68dc7c): "meet army" holds only for the army being met right now: it is
+  set when the hero meets an army (`EventEngine::meet`), and cleared when the run that followed
+  ends (0x4ac39e) or by a "no meeting" result (0x4ab286), for the rest of that run too. A
+  meeting event therefore fires once per meeting; before, a meeting counted for good, and
+  every repeatable meeting event (РК3's "+Talk" on each lord, РК1's suzerain) fired again on
+  every step after the first meeting.
 - **Results order**: flags (`+X`/`-X`), world effects, quest to journal, quest completed,
   relative event, victory/defeat (ends the engine), then the chained event. "Move to hero"
   moves the army the removed units go to (else the one added units come from) *(guess)*.
@@ -794,7 +814,13 @@ events only; texts are read from the scenario at runtime.
     hero's worn items, the pack, the living army (paid as of the new start). Without a branch the scenario's next map is named as
     it is; `None` before a victory or with no next map. `Game::apply_carry_over` starts the
     next map's game with it (the hero's level, XP and book, else level 1 and the new map's
-    book; his worn items; gold added, mana set, the pack; the army with its levels and XP). The UI does not offer it yet.
+    book; his worn items; gold added, mana set, the pack; the army with its levels and XP).
+    **The flags always carry over** (the exe stashes its flag string with the army, 4b5ef8,
+    and puts it back on the next map, 4b5ff8): РК3's king rewards the band and the "swamp
+    king" beaten in РК2 by their flags. The hero's class, name and unit type go too.
+    `Game::from_campaign` starts the next map with all that **before its opening events run**
+    (РК2 checks at once that the herald came along). The victory screen offers "Next map" when
+    the named file is in the install.
   - **16** the listed spells leave the spell book.
   - **17** model `g` for army `x` (the hero's figure: no-op).
   - **18** flag `RAND` + one character, drawn from codes `x..=g` (cp1251); an existing
@@ -821,12 +847,18 @@ events only; texts are read from the scenario at runtime.
 - **Place**: the building the hero stands in (its 1-based scenario id), else the event point
   on his cell.
 - **Meetings**: meeting an army on the road (friendly greeting, or a hostile army's attack)
-  records "met" for its id, then the events run before the battle; the battle happens only
-  if the army is still on the map and hostile. "No meeting" clears it.
+  runs the events with that meeting in force before the battle; the battle happens only if
+  the army is still on the map and hostile. A friendly army greets once until it has been
+  away (a repeatable meeting event fires once per greeting).
+- **A building taken from its garrison is entered**: its events are checked right after the
+  won battle, as when the hero walks in (the original opens the building's window, 4bbc84,
+  which runs the scan). Before, РК2's mine forts asked for the peasants only on a second
+  visit.
 - **Queries** *(guesses)*: squad count = living units, the hero included; army strength =
-  sum of the living units' tactical cost with items (the exe's army strength, experience.md §1); owners are side codes, the
-  player 1 and factions 1–4 → 2–5 (green, blue, yellow, red); a neutral building has no
-  owner; an army's named character is its `named_character`; "beaten by anyone" = beaten by
+  sum of the living units' tactical cost with items (the exe's army strength, experience.md §1); a building's owner is
+  the player or not, plus its faction (a neutral building keeps its faction from the file);
+  a named unit's holder is a side code (the player 1, factions 1–4 → 2–5); an army's named
+  character is its `named_character`; "beaten by anyone" = beaten by
   the player or in an AI battle (§8.8; `Game::army_beaten_by_anyone`, the query in
   `script.rs` switches to it once the event-opcode work there is merged); an army waiting off the map is "at home", one on the map
   is at home within a cell of its home building's entry.

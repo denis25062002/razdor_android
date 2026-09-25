@@ -9,7 +9,7 @@
 //! Choices where the sources are silent are marked *(guess)*; they are listed in
 //! `mechanics.md` §8.
 
-use crate::dt::dtm::{Event, EventKind, Scenario};
+use crate::dt::dtm::{BuildingType, Event, EventKind, Scenario};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
@@ -286,10 +286,15 @@ pub trait EventWorld {
     /// Squads in the player's army.
     fn squad_count(&self) -> i64;
     fn army_strength(&self) -> i64;
-    /// `building` is the 1-based index of the scenario's building.
-    fn building_owner(&self, building: u16) -> Option<u8>;
+    /// Building `building` (the 1-based index of the scenario's building): whether the player owns it, and its faction (1–4: the player's
+    /// side, ally, neighbour, enemy); `None` if there is no such building.
+    fn building_state(&self, building: u16) -> Option<(bool, u8)>;
     /// Who has the named character `named` (of unit type `unit`) in an army.
     fn named_unit_holder(&self, unit: u8, named: u8) -> Option<u8>;
+    /// How many living units of the player's army fit a unit condition (the original's
+    /// match, 4a82c2): of type `unit` when no named character is asked for, else the named
+    /// character `named` whatever his type; type 0xFF with no name: a unit an event added.
+    fn player_units(&self, unit: u8, named: u8) -> usize;
     fn artifact_holder(&self, artifact: u8) -> Option<u8>;
     /// The player beat this army.
     fn player_defeated(&self, army: ArmyId) -> bool;
@@ -297,8 +302,6 @@ pub trait EventWorld {
     fn army_beaten(&self, army: ArmyId) -> bool;
     fn army_active(&self, army: ArmyId) -> bool;
     fn army_at_home(&self, army: ArmyId) -> bool;
-    /// The player met this army and the meeting has not been cleared.
-    fn met_army(&self, army: ArmyId) -> bool;
     fn place(&self) -> Option<Place>;
 
     // Effects.
@@ -318,8 +321,6 @@ pub trait EventWorld {
     fn deactivate_army(&mut self, army: ArmyId);
     fn show_army(&mut self, army: ArmyId);
     fn move_army_to_hero(&mut self, army: ArmyId);
-    /// Clear the meeting with this army ("no meeting with army").
-    fn forget_meeting(&mut self, army: ArmyId);
     /// Light a lantern (point id): reveal its area.
     fn light_lantern(&mut self, point: u16);
     fn change_patrol(&mut self, army: ArmyId, delta: i8);
@@ -388,6 +389,9 @@ pub struct EventEngine {
     state: Vec<EventState>,
     #[serde(skip)]
     places: HashMap<Place, Vec<EventId>>,
+    /// Villages and shipyards: every event they list fires on entering, whatever its kind.
+    #[serde(skip)]
+    every_kind: BTreeSet<Place>,
     flags: BTreeSet<String>,
     journal: Vec<EventId>,
     completed: Vec<EventId>,
@@ -401,6 +405,10 @@ pub struct EventEngine {
     /// only (the original does not check them again while the building's window is open).
     #[serde(default)]
     fresh_visit: bool,
+    /// The army the hero is meeting ([`EventEngine::meet`]): "meet army" holds for it until
+    /// the run that followed the meeting ends or a "no meeting" result clears it.
+    #[serde(default)]
+    meeting: Option<ArmyId>,
     ended: Option<EventOutcome>,
     #[serde(skip)]
     extensions: Vec<(EventId, Extension)>,
@@ -493,6 +501,11 @@ impl EventEngine {
             places.push((Place::Point(p.id), p.events().collect()));
         }
         let mut g = EventEngine::from_parts(s.events.clone(), places, s.header.victory_event, s.header.defeat_event);
+        for (i, b) in s.buildings.iter().enumerate() {
+            if matches!(b.building_type(), Some(BuildingType::Village | BuildingType::Shipyard)) {
+                g.set_every_kind(Place::Building(i as u16 + 1));
+            }
+        }
         g.named_units = s.named_characters.iter().map(|n| n.unit).collect();
         g.next_map = s.next_map.clone();
         g.carry_over = s.header.carry_over;
@@ -521,6 +534,7 @@ impl EventEngine {
             state: vec![EventState::default(); n],
             events,
             places: map,
+            every_kind: BTreeSet::new(),
             flags: BTreeSet::new(),
             journal: Vec::new(),
             completed: Vec::new(),
@@ -529,6 +543,7 @@ impl EventEngine {
             pending: None,
             last_place: None,
             fresh_visit: false,
+            meeting: None,
             ended: None,
             extensions,
             edits: Vec::new(),
@@ -537,6 +552,12 @@ impl EventEngine {
             next_map: String::new(),
             carry_over: [0; 7],
         }
+    }
+
+    /// In building `place` every listed event fires on entering, whatever its kind, as in
+    /// the original's villages and shipyards (4ac1a1).
+    pub fn set_every_kind(&mut self, place: Place) {
+        self.every_kind.insert(place);
     }
 
     /// Unit types of the scenario's named characters, in order (hand-made engines).
@@ -598,6 +619,7 @@ impl EventEngine {
         }
         self.events = fresh.events;
         self.places = fresh.places;
+        self.every_kind = fresh.every_kind;
         self.victory = fresh.victory;
         self.defeat = fresh.defeat;
         self.named_units = fresh.named_units;
@@ -651,6 +673,11 @@ impl EventEngine {
     /// Whether flag `name` is set: exactly (`X2`, `RAND5`), or as a counter `name` + digit.
     pub fn flag(&self, name: &str) -> bool {
         self.flags.contains(name) || self.counter(name).is_some()
+    }
+
+    /// Sets the flags as stored (a campaign map starts with the last map's flags).
+    pub fn set_flags(&mut self, flags: impl IntoIterator<Item = String>) {
+        self.flags = flags.into_iter().collect();
     }
 
     /// The flags as stored: counters carry their digit (`Foo1`).
@@ -747,6 +774,18 @@ impl EventEngine {
         self.fresh_visit = matches!(place, Place::Building(_));
     }
 
+    /// The hero meets army `army` (on the road, or it caught him): the events run with the
+    /// meeting in force (the original's current meeting, 0x68dc7c).
+    pub fn meet(&mut self, w: &mut dyn EventWorld, army: ArmyId) -> Vec<EventOutcome> {
+        self.meeting = Some(army);
+        self.tick(w)
+    }
+
+    /// The army being met, while the run after the meeting goes on.
+    pub fn meeting(&self) -> Option<ArmyId> {
+        self.meeting
+    }
+
     /// Answer the pending question, then run the events on.
     pub fn answer(&mut self, w: &mut dyn EventWorld, yes: bool) -> Vec<EventOutcome> {
         let mut out = Vec::new();
@@ -801,6 +840,8 @@ impl EventEngine {
         }
         if self.pending.is_none() {
             self.fresh_visit = false;
+            // The run is over: so is the meeting (0x4ac39e).
+            self.meeting = None;
         }
     }
 
@@ -840,12 +881,66 @@ impl EventEngine {
             Some(Place::Building(_)) if !self.fresh_visit => None,
             p => p.and_then(|p| self.places.get(&p)),
         };
+        let every_kind = place.is_some_and(|p| self.every_kind.contains(&p));
         for &id in here.into_iter().flatten() {
-            if own(&id) && matches!(self.events[id as usize - 1].kind(), Some(EventKind::Local | EventKind::Quest)) {
+            let kind = self.events[id as usize - 1].kind();
+            if own(&id) && (every_kind || matches!(kind, Some(EventKind::Local | EventKind::Quest))) {
                 ids.push(id);
             }
         }
         ids
+    }
+
+    /// The unit condition (4a8237): each slot takes a unit of the player's army no earlier
+    /// slot took, so three alike need three units; "not the player's" holds while no such
+    /// unit is left over; other owners look for the unit in an army of that side.
+    fn units_hold(&self, c: &crate::dt::dtm::EventConditions, w: &dyn EventWorld) -> bool {
+        let mut taken: HashMap<(u8, u8), usize> = HashMap::new();
+        (0..3).all(|i| {
+            let key = (c.units[i], c.units_named[i]);
+            if key.0 == 0 {
+                return true;
+            }
+            let used = taken.entry(key).or_default();
+            let left = w.player_units(key.0, key.1) > *used;
+            match c.units_owner[i] {
+                SIDE_PLAYER if left => {
+                    *used += 1;
+                    true
+                }
+                SIDE_PLAYER => false,
+                OWNER_NOT_PLAYER => !left,
+                code => owner_matches(code, w.named_unit_holder(key.0, key.1)),
+            }
+        })
+    }
+
+    /// Why event `id` does not fire now where the player stands (a debugging aid): used up,
+    /// out of scope (a subordinate event, a rumour, a local event elsewhere), its window
+    /// closed, the firing guard, or the first failing condition. `None`: it would fire.
+    pub fn why_not(&self, id: EventId, w: &dyn EventWorld) -> Option<String> {
+        let e = self.event(id)?;
+        let now = w.now();
+        if self.done(id) {
+            return Some("done (once, fired)".into());
+        }
+        if !self.candidates(w.place()).contains(&id) {
+            let why = match e.kind() {
+                _ if e.subordinate != 0 => "subordinate: fires only through a chain",
+                Some(EventKind::Rumour) => "rumour: heard in the main hall",
+                Some(EventKind::Global) => "global event out of scope",
+                _ => "not here (a local event of another place, or the building was not just entered)",
+            };
+            return Some(why.into());
+        }
+        if !self.is_open(id, now) {
+            let start = self.start_time(id).unwrap_or(0);
+            return Some(format!("window closed (start {start}, now {now})"));
+        }
+        if !self.may_refire(id, now) {
+            return Some("firing guard".into());
+        }
+        self.failing_condition(id, w).map(|c| format!("condition: {c}"))
     }
 
     /// The first event that may fire: in scope, not done, its window open, past its firing
@@ -885,6 +980,10 @@ impl EventEngine {
         }
         let e = self.events[id as usize - 1].clone();
         out.push(EventOutcome::Fired { event: id, message: !e.message.is_empty() });
+        // "No meeting": the meeting ends here, for the rest of the run too (0x4ab286).
+        if e.results.no_meeting != 0 {
+            self.meeting = None;
+        }
         if let Some(f) = &e.flags {
             if let Some(x) = &f.set {
                 self.raise_flag(x);
@@ -915,11 +1014,11 @@ impl EventEngine {
             return;
         }
         let next = e.results.chained_event;
-        if depth < CHAIN_DEPTH && self.event(next).is_some() && !self.done(next) {
-            // A chained event ignores its window and place, but not its conditions.
-            if self.conditions_hold(next, w) {
-                self.start(next, w, out, depth + 1);
-            }
+        if depth < CHAIN_DEPTH && self.event(next).is_some() {
+            // A chained event runs as it is: the original checks neither its conditions, nor
+            // its window or place, nor whether a once-event already fired (4ab1ec hands it
+            // to the dialog or applies it at once, never through the check 4a7b80).
+            self.start(next, w, out, depth + 1);
         }
     }
 
@@ -1009,9 +1108,6 @@ impl EventEngine {
         }
         if r.hero_one_hp != 0 {
             w.hero_to_one_hp();
-        }
-        if r.no_meeting != 0 && e.conditions.meet_army != 0 {
-            w.forget_meeting(e.conditions.meet_army);
         }
         if op != 0 {
             self.run_opcode(id, op, e, w);
@@ -1160,81 +1256,92 @@ impl EventEngine {
 
     /// All conditions except the time window, the place and the question.
     fn conditions_hold(&self, id: EventId, w: &dyn EventWorld) -> bool {
+        self.failing_condition(id, w).is_none()
+    }
+
+    /// The first condition of event `id` that does not hold (the time window, the place and
+    /// the question aside), named by its field; `None` when they all hold.
+    pub fn failing_condition(&self, id: EventId, w: &dyn EventWorld) -> Option<&'static str> {
         let e = &self.events[id as usize - 1];
         if !self.opcode_conditions_hold(id, e, w) {
-            return false;
+            return Some("opcode condition");
         }
         let c = &e.conditions;
         if e.archetype != 0 && e.archetype != w.hero_archetype() {
-            return false;
+            return Some("archetype");
         }
         if let Some(f) = &e.flags {
             if f.require_set.as_ref().is_some_and(|x| !self.flag(x)) {
-                return false;
+                return Some("flag required set");
             }
             if f.require_unset.as_ref().is_some_and(|x| self.flag(x)) {
-                return false;
+                return Some("flag required unset");
             }
         }
         // Opcodes 1–5 and 19 use these fields as arguments.
         if !matches!(extension(e), Some(Extension::Opcode(_))) {
             // The army's strength is dear to compute: only when the event asks for it.
             if !compare(w.squad_count(), c.squad_count) || (c.army_strength != 0 && !compare(w.army_strength(), c.army_strength)) {
-                return false;
+                return Some("squad count / army strength");
             }
             if c.stats_check != 0
                 && !(compare(w.hero_level(), c.level)
                     && compare(w.gold(), c.gold)
                     && compare(w.mana(), c.holiness_mana))
             {
-                return false;
+                return Some("level / gold / mana");
             }
         }
         let owned = |ids: &[u8; 3], owners: &[u8; 3], holder: &dyn Fn(usize) -> Option<u8>| {
             (0..3).all(|i| ids[i] == 0 || owner_matches(owners[i], holder(i)))
         };
-        if c.buildings_check != 0
-            && !owned(&c.buildings, &c.buildings_owner, &|i| w.building_owner(c.buildings[i] as u16))
-        {
-            return false;
+        // A building slot counts only with an owner code (4a815d): 1 the player's, 6 not
+        // his, 2–5 a building of that faction (code − 1), whoever holds it.
+        let building_ok = |i: usize| match (c.buildings_owner[i], w.building_state(c.buildings[i] as u16)) {
+            (0, _) => true,
+            (_, None) => false,
+            (1, Some((mine, _))) => mine,
+            (OWNER_NOT_PLAYER, Some((mine, _))) => !mine,
+            (code, Some((_, faction))) => faction + 1 == code,
+        };
+        if c.buildings_check != 0 && !(0..3).all(|i| c.buildings[i] == 0 || building_ok(i)) {
+            return Some("buildings");
         }
-        if c.units_check != 0
-            && !owned(&c.units, &c.units_owner, &|i| w.named_unit_holder(c.units[i], c.units_named[i]))
-        {
-            return false;
+        if c.units_check != 0 && !self.units_hold(c, w) {
+            return Some("named units");
         }
         if c.artifacts_check != 0 && !owned(&c.artifacts, &c.artifacts_owner, &|i| w.artifact_holder(c.artifacts[i])) {
-            return false;
+            return Some("artifacts");
         }
         if c.defeated_check != 0 && !nonzero(&c.defeated_armies).all(|a| w.player_defeated(a)) {
-            return false;
+            return Some("defeated by the player");
         }
         if c.beaten_check != 0 && !nonzero(&c.beaten_armies).all(|a| w.army_beaten(a)) {
-            return false;
+            return Some("beaten by anyone");
         }
         let answered = |id: EventId, a: Answer| self.happened(id) == Some(a);
         if c.happened_yes_check != 0 && !nonzero(&c.happened_yes).all(|id| answered(id, Answer::Yes)) {
-            return false;
+            return Some("happened with Yes");
         }
         if c.happened_no_check != 0 && !nonzero(&c.happened_no).all(|id| answered(id, Answer::No)) {
-            return false;
+            return Some("happened with No");
         }
         if c.not_happened_check != 0 && !nonzero(&c.not_happened).all(|id| self.happened(id).is_none()) {
-            return false;
+            return Some("not happened");
         }
-        if c.meet_army != 0 && !w.met_army(c.meet_army) {
-            return false;
+        if c.meet_army != 0 && self.meeting != Some(c.meet_army) {
+            return Some("meet army");
         }
         if c.army_active != 0 && !w.army_active(c.army_active) {
-            return false;
+            return Some("army active");
         }
         if c.army_inactive != 0 && w.army_active(c.army_inactive) {
-            return false;
+            return Some("army inactive");
         }
         if c.army_at_home != 0 && !w.army_at_home(c.army_at_home) {
-            return false;
+            return Some("army at home");
         }
-        true
+        None
     }
 }
 
@@ -1260,7 +1367,6 @@ pub(crate) mod mock {
         Deactivate(ArmyId),
         Show(ArmyId),
         MoveToHero(ArmyId),
-        ForgetMeeting(ArmyId),
         Lantern(u16),
         Patrol(ArmyId, i8),
         Class(u8),
@@ -1294,12 +1400,13 @@ pub(crate) mod mock {
         pub building_owner: HashMap<u16, u8>,
         /// (unit, named) → holder.
         pub named: HashMap<(u8, u8), u8>,
+        /// (unit, named) → how many the player has (else 1 when `named` gives him one).
+        pub counts: HashMap<(u8, u8), usize>,
         pub artifacts: HashMap<u8, u8>,
         pub defeated: HashSet<ArmyId>,
         pub beaten: HashSet<ArmyId>,
         pub active: HashSet<ArmyId>,
         pub home: HashSet<ArmyId>,
-        pub met: HashSet<ArmyId>,
         pub place: Option<Place>,
         /// Lasting spells by holder (opcodes 11 and 14).
         pub spells_on: HashMap<Holder, Vec<u8>>,
@@ -1338,8 +1445,17 @@ pub(crate) mod mock {
         fn army_strength(&self) -> i64 {
             self.strength
         }
-        fn building_owner(&self, building: u16) -> Option<u8> {
-            self.building_owner.get(&building).copied()
+        /// Side codes: 1 the player's (faction 1), 2–5 a faction's (code − 1); none: a
+        /// neutral building of faction 3.
+        fn building_state(&self, building: u16) -> Option<(bool, u8)> {
+            Some(match self.building_owner.get(&building).copied() {
+                Some(SIDE_PLAYER) => (true, 1),
+                Some(code) => (false, code - 1),
+                None => (false, 3),
+            })
+        }
+        fn player_units(&self, unit: u8, named: u8) -> usize {
+            self.counts.get(&(unit, named)).copied().unwrap_or((self.named.get(&(unit, named)) == Some(&SIDE_PLAYER)) as usize)
         }
         fn named_unit_holder(&self, unit: u8, named: u8) -> Option<u8> {
             self.named.get(&(unit, named)).copied()
@@ -1358,9 +1474,6 @@ pub(crate) mod mock {
         }
         fn army_at_home(&self, army: ArmyId) -> bool {
             self.home.contains(&army)
-        }
-        fn met_army(&self, army: ArmyId) -> bool {
-            self.met.contains(&army)
         }
         fn place(&self) -> Option<Place> {
             self.place
@@ -1417,10 +1530,6 @@ pub(crate) mod mock {
         }
         fn move_army_to_hero(&mut self, army: ArmyId) {
             self.log.push(Fx::MoveToHero(army));
-        }
-        fn forget_meeting(&mut self, army: ArmyId) {
-            self.met.remove(&army);
-            self.log.push(Fx::ForgetMeeting(army));
         }
         fn light_lantern(&mut self, point: u16) {
             self.log.push(Fx::Lantern(point));
@@ -1635,6 +1744,33 @@ mod tests {
                 |w| _ = w.building_owner.insert(8, 1),
             ),
             (
+                "building of green: the player's side, his own buildings too (faction 1)",
+                |e| {
+                    let c = &mut e.conditions;
+                    (c.buildings_check, c.buildings, c.buildings_owner) = (1, [8, 0, 0], [2, 0, 0]);
+                },
+                |w| _ = w.building_owner.insert(8, 1),
+                |w| _ = w.building_owner.insert(8, 4),
+            ),
+            (
+                "three alike with the player: three units",
+                |e| {
+                    let c = &mut e.conditions;
+                    (c.units_check, c.units, c.units_owner) = (1, [60, 60, 60], [1, 1, 1]);
+                },
+                |w| _ = w.counts.insert((60, 0), 3),
+                |w| _ = w.counts.insert((60, 0), 2),
+            ),
+            (
+                "none alike with the player",
+                |e| {
+                    let c = &mut e.conditions;
+                    (c.units_check, c.units, c.units_owner) = (1, [60, 60, 60], [6, 6, 6]);
+                },
+                |_| {},
+                |w| _ = w.counts.insert((60, 0), 1),
+            ),
+            (
                 "building not the player's",
                 |e| {
                     let c = &mut e.conditions;
@@ -1673,7 +1809,6 @@ mod tests {
                 |w| _ = w.beaten.insert(3),
                 |_| {},
             ),
-            ("meet army", |e| e.conditions.meet_army = 14, |w| _ = w.met.insert(14), |_| {}),
             ("army active", |e| e.conditions.army_active = 4, |w| _ = w.active.insert(4), |_| {}),
             ("army inactive", |e| e.conditions.army_inactive = 4, |_| {}, |w| _ = w.active.insert(4)),
             ("army at home", |e| e.conditions.army_at_home = 13, |w| _ = w.home.insert(13), |_| {}),
@@ -1692,6 +1827,39 @@ mod tests {
                 assert_eq!(!tick_at(&mut g, &mut w, 0).is_empty(), expect, "{name}");
             }
         }
+    }
+
+    /// Owner code 0 (the list's empty first entry) leaves its building out (4a815d: only a
+    /// slot with an owner is checked).
+    #[test]
+    fn a_building_without_an_owner_code_is_not_checked() {
+        let mut e = global();
+        let c = &mut e.conditions;
+        (c.buildings_check, c.buildings, c.buildings_owner) = (1, [8, 9, 0], [0, 1, 0]);
+        let mut g = engine(vec![e]);
+        let mut w = MockWorld::new();
+        w.building_owner.insert(9, 1);
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1]);
+    }
+
+    /// In villages and shipyards every event the building lists fires on entering, a rumour
+    /// too (4ac1a1); elsewhere a rumour waits in the main hall.
+    #[test]
+    fn villages_fire_every_listed_event() {
+        let rumour = with_message(ev(EventKind::Rumour));
+        let mut g = EventEngine::from_parts(
+            vec![rumour.clone(), rumour],
+            vec![(Place::Building(2), vec![1]), (Place::Building(3), vec![2])],
+            0,
+            0,
+        );
+        g.set_every_kind(Place::Building(2));
+        let mut w = MockWorld::new();
+        w.place = Some(Place::Building(3));
+        assert!(tick_at(&mut g, &mut w, 0).is_empty());
+        assert_eq!(g.rumours(&w), vec![2]);
+        w.place = Some(Place::Building(2));
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1]);
     }
 
     #[test]
@@ -1753,19 +1921,97 @@ mod tests {
         (sub.conditions.happened_yes_check, sub.conditions.happened_yes) = (1, [1, 0]);
         sub.results.gold = 50;
         sub.results.chained_event = 3;
-        // 3 is chained but its conditions fail: it does not fire.
-        let mut blocked = global();
-        blocked.subordinate = 1;
-        blocked.conditions.meet_army = 9;
-        let mut g = engine(vec![parent, sub, blocked]);
+        // 3 is chained although its own conditions fail: the original runs a chained event
+        // without checking it (4ab1ec hands it to the dialog or applies it at once).
+        let mut unchecked = global();
+        unchecked.subordinate = 1;
+        unchecked.conditions.meet_army = 9;
+        unchecked.results.gold = 7;
+        let mut g = engine(vec![parent, sub, unchecked]);
         let mut w = MockWorld::new();
         assert!(tick_at(&mut g, &mut w, 0).is_empty(), "a subordinate event never fires on its own");
         w.now = 100;
         let out = g.tick(&mut w);
-        assert_eq!(fired(&out), vec![1, 2]);
+        assert_eq!(fired(&out), vec![1, 2, 3]);
         assert!(out.contains(&EventOutcome::Fired { event: 2, message: true }));
-        assert_eq!(w.log, vec![Fx::Gold(50)]);
-        assert_eq!(g.times_fired(3), 0);
+        assert_eq!(w.log, vec![Fx::Gold(50), Fx::Gold(7)]);
+    }
+
+    /// РК1's ending on the "No" path: a local event chains the victory event, whose own
+    /// conditions (a Yes to the herald) do not hold. It still fires, and so does a used-up
+    /// once-event chained again.
+    #[test]
+    fn a_chained_event_fires_whatever_its_conditions_and_once_flag() {
+        let mut ask = global();
+        ask.conditions.confirm_question = 1;
+        let mut arrive = global();
+        (arrive.conditions.happened_no_check, arrive.conditions.happened_no) = (1, [1, 0]);
+        arrive.results.chained_event = 3;
+        let mut leave = global();
+        (leave.conditions.happened_yes_check, leave.conditions.happened_yes) = (1, [1, 0]);
+        let mut g = EventEngine::from_parts(vec![ask, arrive, leave], Vec::new(), 3, 0);
+        let mut w = MockWorld::new();
+        w.now = 5;
+        let out = g.tick(&mut w);
+        assert_eq!(out, vec![EventOutcome::Question(1)]);
+        let out = g.answer(&mut w, false);
+        assert_eq!(fired(&out), vec![2, 3]);
+        assert_eq!(g.ended(), Some(&EventOutcome::Victory(3)));
+
+        let mut once = global();
+        once.subordinate = 1;
+        once.results.gold = 3;
+        let mut again = many(global());
+        again.results.chained_event = 1;
+        let mut g = engine(vec![once, again]);
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![2, 1]);
+        assert_eq!(tick_at(&mut g, &mut w, 20), vec![2, 1], "chained again although fired once");
+    }
+
+    /// The original's "meet army" is the army met right now (0x68dc7c): set when the hero
+    /// meets it, cleared when the run that followed ends (0x4ac39e) or by a "no meeting"
+    /// result (0x4ab286). A meeting event does not fire again later without a new meeting.
+    #[test]
+    fn a_meeting_holds_for_the_run_it_starts_only() {
+        let mut talk = with_message(many(global()));
+        talk.conditions.meet_army = 1;
+        let mut greet = many(global());
+        (greet.conditions.meet_army, greet.results.gold) = (1, 5);
+        let mut g = engine(vec![talk, greet]);
+        let mut w = MockWorld::new();
+        assert!(tick_at(&mut g, &mut w, 0).is_empty());
+        w.now = 10;
+        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2]);
+        assert!(tick_at(&mut g, &mut w, 20).is_empty(), "no meeting now");
+        w.now = 30;
+        assert!(fired(&g.meet(&mut w, 2)).is_empty(), "another army");
+        w.now = 40;
+        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2], "met again");
+
+        // "No meeting" ends the meeting: later events of the same run do not see it.
+        let mut first = many(global());
+        (first.conditions.meet_army, first.results.no_meeting) = (1, 1);
+        let mut second = many(global());
+        second.conditions.meet_army = 1;
+        let mut g = engine(vec![first, second]);
+        let mut w = MockWorld::new();
+        w.now = 10;
+        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1]);
+    }
+
+    /// A question asked at a meeting keeps the meeting for the rest of the run.
+    #[test]
+    fn a_meeting_lasts_through_its_question() {
+        let mut ask = global();
+        (ask.conditions.meet_army, ask.conditions.confirm_question) = (4, 1);
+        let mut then = global();
+        (then.conditions.meet_army, then.conditions.happened_yes_check, then.conditions.happened_yes) = (4, 1, [1, 0]);
+        let mut g = engine(vec![ask, then]);
+        let mut w = MockWorld::new();
+        w.now = 10;
+        assert_eq!(g.meet(&mut w, 4), vec![EventOutcome::Question(1)]);
+        assert_eq!(fired(&g.answer(&mut w, true)), vec![1, 2]);
     }
 
     #[test]
@@ -2035,33 +2281,32 @@ mod tests {
     }
 
     #[test]
-    fn meeting_repeats_after_no_meeting_clears_it() {
+    fn meeting_repeats_at_every_new_meeting() {
         let mut talk = many(global());
         talk.conditions.meet_army = 1;
         talk.results.no_meeting = 1;
         let mut g = engine(vec![talk]);
         let mut w = MockWorld::new();
         for n in 1..=3 {
-            w.met.insert(1);
-            tick_at(&mut g, &mut w, n * 10);
+            w.now = n * 10;
+            g.meet(&mut w, 1);
             assert_eq!(g.times_fired(1), n as u32);
         }
     }
 
     #[test]
     fn community_extensions_are_listed_and_run() {
+        let mut vanilla = global();
+        (vanilla.results.no_meeting, vanilla.conditions.meet_army) = (1, 1);
         let mut edit = global();
         (edit.results.no_meeting, edit.results.patrol_delta, edit.results.gold) = (1, 2, 85);
         let mut unspell = global();
         (unspell.results.no_meeting, unspell.results.cast_spell) = (1, 13);
-        let mut vanilla = global();
-        (vanilla.results.no_meeting, vanilla.conditions.meet_army) = (1, 1);
-        let mut g = engine(vec![edit, unspell, vanilla]);
-        assert_eq!(g.extensions(), &[(1, Extension::Opcode(2)), (2, Extension::RemoveSpell)]);
+        let mut g = engine(vec![vanilla, edit, unspell]);
+        assert_eq!(g.extensions(), &[(2, Extension::Opcode(2)), (3, Extension::RemoveSpell)]);
         let mut w = MockWorld::new();
-        w.met.insert(1);
-        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2, 3]);
-        assert_eq!(w.log, vec![Fx::Unspell(13), Fx::ForgetMeeting(1)], "the spell is lifted, not cast; no gold");
+        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2, 3]);
+        assert_eq!(w.log, vec![Fx::Unspell(13)], "the spell is lifted, not cast; no gold");
     }
 
     /// A Community opcode event: "no meeting", patrol value `code`, resources (XP, gold, mana).
@@ -2276,9 +2521,13 @@ mod real_maps {
             }
             for slot in 0..12 {
                 w.now = start + day * 1440 + slot * 120;
-                w.met.extend(w.active.iter().copied());
                 w.place = places.get((day * 12 + slot) as usize).copied();
                 let mut out = g.tick(&mut w);
+                for a in w.active.clone() {
+                    if g.pending_question().is_none() {
+                        out.extend(g.meet(&mut w, a));
+                    }
+                }
                 for r in g.rumours(&w) {
                     run.rumours += 1;
                     out.extend(g.hear_rumour(&mut w, r));

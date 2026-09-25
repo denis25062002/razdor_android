@@ -370,6 +370,19 @@ impl Game {
 
     /// A new game on an original scenario, with the hero preset of `hero`.
     pub fn from_scenario(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
+        let mut g = Game::unstarted(content, scenario, hero, seed);
+        g.start_script();
+        g
+    }
+
+    /// The scenario's opening events (they wait in [`Game::drain_events`]).
+    pub(crate) fn start_script(&mut self) {
+        let opening = self.run_script();
+        self.pending.extend(opening);
+    }
+
+    /// A game on a scenario whose opening events have not run yet.
+    pub(crate) fn unstarted(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
         let mut world = World::from_scenario(scenario, &content);
         let start = world.hero_start(scenario, &content, hero);
         for &l in &start.owned {
@@ -393,9 +406,6 @@ impl Game {
         g.spells = start.spells;
         g.archetype = archetype_of(hero);
         g.script = Some(Box::new(EventEngine::new(scenario)));
-        // The scenario's opening events.
-        let opening = g.run_script();
-        g.pending.extend(opening);
         g
     }
 
@@ -1036,7 +1046,18 @@ impl Game {
     /// Then the scenario's events run (an army beaten); what they do waits in
     /// [`Game::drain_events`].
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
+        let garrison = match self.foe {
+            Some(Foe::Garrison(l)) => Some(self.world.locations[l].id),
+            _ => None,
+        };
         let result = self.settle_battle(battle);
+        // A building taken from its garrison is entered: its events are checked now, as
+        // when the hero walks into it (the original opens its window, 4bbc84, which scans).
+        if let (Some(id), BattleResult::Victory { .. }) = (garrison, &result) {
+            if let Some(engine) = self.script.as_mut().filter(|_| id != 0) {
+                engine.visit(super::events::Place::Building(id));
+            }
+        }
         let after = self.run_script();
         self.pending.extend(after);
         result
@@ -1248,7 +1269,7 @@ impl Game {
 
 
 /// The event engine's archetype code of a hero class.
-fn archetype_of(hero: HeroClass) -> u8 {
+pub(crate) fn archetype_of(hero: HeroClass) -> u8 {
     match hero {
         HeroClass::Knight => 1,
         HeroClass::Archmage => 2,

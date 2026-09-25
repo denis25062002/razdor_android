@@ -9,7 +9,7 @@
 //!
 //! Choices where the sources are silent are marked *(guess)* and listed in mechanics.md §8.1.
 
-use super::content::{ItemId, UnitId, WageKind};
+use super::content::{HeroClass, ItemId, UnitId, WageKind};
 use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitPick, SIDE_PLAYER};
 use super::magic::ActiveSpell;
 use super::game::{troop_unit, Event, Foe, Game, PACK_SIZE, SPELL_BOOK_SIZE};
@@ -172,7 +172,14 @@ impl Game {
             return;
         }
         self.met_armies.insert(id);
-        let after = self.run_script();
+        let after = match self.script.take() {
+            Some(mut engine) => {
+                let out = engine.meet(self, id);
+                self.script = Some(engine);
+                self.script_events(out)
+            }
+            None => Vec::new(),
+        };
         let now = self.world.armies.iter().position(|a| a.id == id);
         match e {
             // A battle the events started instead comes with `after`.
@@ -284,15 +291,19 @@ impl EventWorld for Game {
         self.squad.iter().filter(|u| u.alive()).map(|u| u.tactical(&self.content, 0) as i64).sum()
     }
 
-    /// The player's buildings are his; a building held by an army is its faction's; a
-    /// neutral one nobody's *(guess)*.
-    fn building_owner(&self, building: u16) -> Option<u8> {
+    /// Whether it is the player's, and its faction (a captured building takes faction 1).
+    fn building_state(&self, building: u16) -> Option<(bool, u8)> {
         let l = self.world.locations.iter().find(|l| l.id == building)?;
-        match l.owner {
-            super::world::Owner::Player => Some(SIDE_PLAYER),
-            super::world::Owner::Army(_) => side(l.faction),
-            super::world::Owner::Neutral => None,
-        }
+        Some((l.owner == super::world::Owner::Player, l.faction))
+    }
+
+    fn player_units(&self, unit: u8, named: u8) -> usize {
+        let fits = |u: &Unit| match (unit, named) {
+            (0xFF, 0) => u.from_event && u.named == 0,
+            (_, 0) => u.def == UnitId(unit as u32),
+            (_, n) => u.named == n,
+        };
+        self.squad.iter().filter(|u| u.alive() && fits(u)).count()
     }
 
     fn named_unit_holder(&self, unit: u8, named: u8) -> Option<u8> {
@@ -338,10 +349,6 @@ impl EventWorld for Game {
             return a.home.is_some_and(|h| map.distance(a.tile(map), self.world.locations[h].tile) <= 1);
         }
         self.world.inactive.iter().any(|a| a.id == army)
-    }
-
-    fn met_army(&self, army: ArmyId) -> bool {
-        self.met_armies.contains(&army)
     }
 
     fn place(&self) -> Option<Place> {
@@ -494,13 +501,6 @@ impl EventWorld for Game {
             let a = &mut self.world.armies[i];
             a.pos = map.center(t);
             a.path.clear();
-        }
-    }
-
-    fn forget_meeting(&mut self, army: ArmyId) {
-        self.met_armies.remove(&army);
-        if let Some(a) = self.army_mut(army) {
-            a.met = false;
         }
     }
 
@@ -816,6 +816,15 @@ pub struct NextMap {
     pub inventory: Vec<ItemId>,
     /// The squad without the hero, living units only.
     pub army: Vec<Unit>,
+    /// The scenario's flags as stored (counters with their digit): they always carry over,
+    /// as the original stashes its flag string with the army (4b5ef8) and puts it back on
+    /// the next map (4b5ff8).
+    pub flags: Vec<String>,
+    /// The hero's class (his preset on the next map) and name; the hero's unit type too,
+    /// should an event have changed it (the original always carries the hero's record).
+    pub class: HeroClass,
+    pub hero_name: Option<String>,
+    pub hero_unit: UnitId,
 }
 
 /// The name of branch (map, variant) for a next-map name such as "0-0 …".
@@ -861,7 +870,25 @@ impl Game {
             hero_items: carry[4].then_some(hero.items),
             inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
             army: if carry[6] { self.squad.iter().skip(1).filter(|u| u.alive()).cloned().collect() } else { Vec::new() },
+            flags: engine.flags().map(str::to_string).collect(),
+            class: match self.archetype {
+                2 => HeroClass::Archmage,
+                3 => HeroClass::Ranger,
+                _ => HeroClass::Knight,
+            },
+            hero_name: self.hero_name.clone(),
+            hero_unit: hero.def,
         })
+    }
+
+    /// The next map of a campaign, started with what the last one carries over
+    /// ([`Game::apply_carry_over`]) before its opening events run: they may look for the
+    /// carried army (РК2 checks the herald at once) or the last map's flags.
+    pub fn from_campaign(content: std::sync::Arc<crate::rules::content::Content>, scenario: &crate::dt::dtm::Scenario, prev: &NextMap, seed: u64) -> Game {
+        let mut g = Game::unstarted(content, scenario, prev.class, seed);
+        g.apply_carry_over(prev);
+        g.start_script();
+        g
     }
 
     /// Squad member `k` gains `xp` outside battle; a new level is reported on the map.
@@ -882,7 +909,16 @@ impl Game {
     pub fn apply_carry_over(&mut self, prev: &NextMap) {
         let c = self.content.clone();
         let now = self.clock.total_minutes() as u64;
+        if let Some(engine) = self.script.as_mut() {
+            engine.set_flags(prev.flags.iter().cloned());
+        }
+        if prev.hero_name.is_some() {
+            self.hero_name = prev.hero_name.clone();
+        }
         let hero = &mut self.squad[0];
+        if c.try_unit(prev.hero_unit).is_some() {
+            hero.def = prev.hero_unit;
+        }
         (hero.level, hero.xp) = prev.hero.unwrap_or((1, 0));
         if let Some(items) = prev.hero_items {
             hero.items = items;
@@ -1357,6 +1393,10 @@ mod tests {
             hero_items: Some([Some(ItemId(7)), None, None, None]),
             inventory: vec![ItemId(7)],
             army: vec![Unit { unpaid: true, last_paid: 0, ..g.squad[1].clone() }],
+            flags: Vec::new(),
+            class: HeroClass::Knight,
+            hero_name: None,
+            hero_unit: g.squad[0].def,
         };
         let mut fresh = start(&world(vec![]));
         fresh.squad.truncate(1);
@@ -1378,6 +1418,79 @@ mod tests {
         again.apply_carry_over(&NextMap { hero: None, spells: None, hero_items: None, army: Vec::new(), inventory: Vec::new(), gold: None, mana: None, ..next });
         assert_eq!((again.squad[0].level, again.squad[0].xp), (1, 0));
         assert_eq!((again.spells.clone(), again.squad[0].items), (book, [None; 4]));
+    }
+
+    /// РК2's mines: a fort's own event asks for the peasants once the fort is the player's.
+    /// Beating its garrison takes it and enters it, so the event is checked then.
+    #[test]
+    fn a_building_taken_from_its_garrison_runs_its_own_events() {
+        let mut mine = ev(EventKind::Local);
+        let c = &mut mine.conditions;
+        (c.buildings_check, c.buildings, c.buildings_owner) = (1, [1, 0, 0], [1, 0, 0]);
+        mine.results.gold = 9;
+        let mut s = world(vec![mine]);
+        let mut fort = building(BuildingType::Fort, 5, 2, (1, 1));
+        fort.garrison[0] = troop(4, 0, 1);
+        (fort.faction, fort.relations) = (4, [-3, 0, 0, 0]);
+        fort.event_slots[0] = 1;
+        fort.event_count = 1;
+        s.buildings = vec![fort];
+        let mut g = start(&s);
+        g.drain_events();
+        let gold = g.gold;
+        assert!(g.set_destination((5, 2)));
+        walk(&mut g);
+        assert!(matches!(g.foe, Some(Foe::Garrison(_))), "the garrison fights");
+        let mut b = g.start_battle();
+        b.begin();
+        for f in b.fighters.iter_mut().filter(|f| f.team == crate::rules::battle::Team::Enemy) {
+            f.hp = 0;
+        }
+        g.resolve_battle(&b);
+        assert_eq!(fired(&g.drain_events()), vec![1]);
+        assert!(g.gold >= gold + 9);
+    }
+
+    /// РК1 → РК2 → РК3: the next map starts with the carried army and the flags (the
+    /// original stashes the flag string with the army, 4b5ef8, and puts it back, 4b5ff8)
+    /// before its opening events run. РК2 opens with "the herald died" unless he came along,
+    /// and РК3's king rewards the band beaten in РК2 by its flag.
+    #[test]
+    fn a_campaign_map_starts_with_the_carried_army_and_flags() {
+        let mut band = ev(EventKind::Global);
+        band.title = "Band%+Band".into();
+        band.flags = crate::dt::dtm::FlagScript::from_title(&band.title);
+        band.results.units_add = [4, 0, 0, 0];
+        band.results.units_add_named = [1, 0, 0, 0];
+        band.results.chained_event = 2;
+        let mut win = ev(EventKind::Global);
+        win.subordinate = 1;
+        let mut s = world(vec![band, win]);
+        s.header.victory_event = 2;
+        s.next_map = "Next.DTm".into();
+        s.header.carry_over = [1, 1, 1, 1, 1, 1, 1];
+        s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Herald".into() }];
+        let g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage, 1);
+        let next = g.next_map().expect("a victory with a next map");
+        assert_eq!(next.flags, vec!["Band1".to_string()]);
+        assert_eq!(next.class, HeroClass::Archmage);
+
+        let mut died = ev(EventKind::Global);
+        died.conditions.units_check = 1;
+        (died.conditions.units, died.conditions.units_named, died.conditions.units_owner) = ([4, 0, 0], [1, 0, 0], [6, 0, 0]);
+        let mut reward = ev(EventKind::Global);
+        reward.title = "Reward%=Band".into();
+        reward.flags = crate::dt::dtm::FlagScript::from_title(&reward.title);
+        reward.results.gold = 5;
+        let mut s2 = world(vec![died, reward]);
+        s2.header.defeat_event = 1;
+        s2.named_characters = s.named_characters.clone();
+        let mut g2 = Game::from_campaign(Arc::new(content()), &s2, &next, 1);
+        assert_eq!(fired(&g2.drain_events()), vec![2], "the herald came along; the band's flag holds");
+        assert_eq!(g2.script_end(), None);
+        assert!(g2.script().unwrap().flag("Band"));
+        assert_eq!(g2.archetype, 2);
+        assert!(g2.squad.iter().any(|u| u.named == 1));
     }
 
     #[test]

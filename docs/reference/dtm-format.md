@@ -338,8 +338,8 @@ condition next to it. The editor holds at most 5000 events.
 | 25 | i16 holiness / mana |
 | 29 | check: building ownership |
 | 30 | u8[3] building ids |
-| 33 | u8[3] owners: 0 none (the list's empty first entry), 1 player, 2–5 green, blue, yellow, red, 6 "not the player"; the same codes at 43 and 50 |
-| 36 | check: named squad in some army |
+| 33 | u8[3] owners: 0 none (the list's empty first entry), 1 player, 2–5 green, blue, yellow, red, 6 "not the player"; the same codes at 43 and 50. For buildings the game (0x4a815d) skips a slot with code 0, reads 1 as "owned by the player", 6 as "not", and 2–5 as "the building's faction (byte 337) is code − 1", whoever holds it |
+| 36 | check: named squad in some army. Each slot needs its own unit (three alike: three units); see economy.md §6 |
 | 37 | u8[3] unit ids |
 | 40 | u8[3] named characters |
 | 43 | u8[3] owners |
@@ -356,7 +356,7 @@ condition next to it. The editor holds at most 5000 events.
 | 67 | u8[2] army ids |
 | 69 | check: event happened, answer no |
 | 70 | u16[2] event ids |
-| 74 | u8 meet army |
+| 74 | u8 meet army: the army being met right now (the game's 0x68dc7c, cleared after the scan that followed the meeting) |
 | 75 | u8 army is active |
 | 76 | u8 ask a confirming yes/no question. It correlates with a non-empty question text. |
 | 146 | u8 army is in its home building |
@@ -386,15 +386,15 @@ condition next to it. The editor holds at most 5000 events.
 | 128 | u16[4] lanterns lit (point ids) |
 | 136 | u8 army that removed units go to |
 | 137 | u8 new hero class (unit id) |
-| 138 | u16 chained (subordinate) event, executed immediately |
-| 140 | u8 "subordinate event" flag |
+| 138 | u16 chained (subordinate) event, executed immediately, without checking its conditions, window or once flag (0x4ab1ec) |
+| 140 | u8 "subordinate event" flag. In memory this byte is the "done" flag (+0x8c): the check 0x4a7b80 skips the event, so it fires only through a chain |
 | 141 | u8 **0 = may fire many times, 1 = once** (the inverse of the editor's "many times" box) |
 | 142 | u8 army that added units are taken from |
 | 143 | u8 move that army to the hero |
 | 144 | u8 show army |
 | 145 | u8 hero has only 1 HP |
 | 147 | u8 start a battle with this army |
-| 148 | u8 "no meeting with army" (also a community opcode switch) |
+| 148 | u8 "no meeting with army" (also a community opcode switch): firing the event ends the current meeting (0x4ab286) |
 | 149 | u8 repeat after a yes answer |
 | 150 | u8 generate the battle army to match the player (the check box next to "start a battle with army"; always 0 in the shipped maps; the game's use is not traced) |
 

@@ -314,10 +314,34 @@ pub fn game_over(game: &mut Option<Game>) -> Option<Screen> {
     }
 }
 
-pub fn victory(game: &mut Option<Game>) -> Option<Screen> {
+/// The victory screen. After a campaign map whose next map is in the install, "Next map"
+/// starts it with what carries over (header 0x110) and the flags, as the original does.
+pub fn victory(game: &mut Option<Game>, scenarios: &[ScenarioEntry], content: Option<Arc<Content>>) -> Option<Screen> {
     let days = days_played(game);
-    match end_event(game) {
+    let next = game.as_ref().and_then(Game::next_map);
+    let entry = next.as_ref().and_then(|n| {
+        let stem = n.name.trim();
+        let stem = stem.strip_suffix(".DTm").or_else(|| stem.strip_suffix(".dtm")).unwrap_or(stem).to_lowercase();
+        scenarios.iter().find(|e| e.file.to_lowercase() == stem)
+    });
+    let shown = match end_event(game) {
         Some(title) => end_screen("Victory!", &format!("{title}, after {days} days."), ACCENT, game),
         None => end_screen("The bandits are broken", &format!("Peace returns to the land after {days} days."), ACCENT, game),
+    };
+    if shown.is_some() {
+        return shown;
     }
+    if let (Some(prev), Some(e), Some(c)) = (next, entry, content) {
+        if button(screen_width() / 2.0 - 160.0, 450.0, 320.0, 50.0, &format!("Next map: {}", e.scenario.title), true) {
+            cue(Cue::MenuPress);
+            let mut g = Game::from_campaign(c, &e.scenario, &prev, seed());
+            match ScenarioRef::of_map(&e.path, &e.file) {
+                Ok(origin) => g.set_origin(origin),
+                Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
+            }
+            *game = Some(g);
+            return Some(Screen::WorldMap);
+        }
+    }
+    None
 }
