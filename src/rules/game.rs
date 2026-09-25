@@ -18,7 +18,7 @@ use super::ships::Ship;
 use super::map::{step_minutes, Tile, TileMap, ROAD};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
-use super::world::{Army, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
+use super::world::{Army, LocationKind, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
 
 /// Real seconds each hero step and each wait tick plays over: the original's
 /// `WalkDelay = 150 + (100 − WalkSpeed) × 2.5` ms at the shipped `WalkSpeed=100` (world.md
@@ -1084,7 +1084,9 @@ impl Game {
                 let reward = std::mem::take(&mut loc.treasure_gold) + std::mem::take(&mut loc.tribute_gold) + loc.gold_income.max(0);
                 let treasure = std::mem::take(&mut loc.treasure);
                 let rolls = std::mem::take(&mut loc.loot_rolls);
-                let captured = loc.kind.capturable().then(|| {
+                // Whatever it is (castle, fort, ruins…), a place whose garrison is beaten is
+                // the hero's now; only the demo's bandit camps burn instead.
+                let captured = (loc.kind != LocationKind::Camp).then(|| {
                     loc.owner = Owner::Player;
                     loc.faction = 1;
                     loc.attitude = 3;
@@ -1956,6 +1958,27 @@ mod tests {
         assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 48, mana: 5, .. })]), "{events:?}");
         assert_eq!(g.mana, mana + 5);
         assert!(g.gold >= gold + 48 - g.daily_wages());
+    }
+
+    #[test]
+    fn beating_any_garrison_makes_the_place_the_heros() {
+        // Ruins (like castles and forts): once their guards are beaten the place is his.
+        let mut s = strip();
+        let mut ruins = building(BuildingType::Ruins, 16, 3, (2, 2));
+        ruins.faction = 4;
+        ruins.relations = [-2, 0, 0, 0];
+        ruins.garrison[0] = troop(4, 0, 2);
+        s.buildings = vec![ruins];
+        let mut g = start(&s);
+        g.set_destination(g.world.locations[0].tile);
+        walk_until_stopped(&mut g);
+        assert_eq!(g.foe, Some(Foe::Garrison(0)));
+        let mut b = g.start_battle();
+        b.begin();
+        wipe_enemies(&mut b);
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { captured: Some(0), .. }));
+        let ruins = &g.world.locations[0];
+        assert!(ruins.owned() && !ruins.defended() && !ruins.hostile(), "the ruins are his now");
     }
 
     #[test]

@@ -628,7 +628,7 @@ Each is marked *(guess)* in the code.
   Only castles and forts of attitude ≤ 0 (not his) and ruins not yet his bar the hero's
   route, unless clicked or the one he stands in; stationary guards (patrol radius 0) bar it
   too, except the one clicked; at sea he does not pass under bridges. A garrison fights when
-  he enters (its extra defence counts); winning takes a castle or fort (owner = player,
+  he enters (its extra defence counts); winning takes the place, whatever it is (castle, fort, ruins; owner = player,
   faction 1, its income and mana count from the next noon) and gives ruins' treasure. AI
   armies stand at the footprint's centre `(x0 + sx/2, y0 + sy/2)`.
 - **Villages** start with one day's tribute; at midnight it grows by
