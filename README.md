@@ -129,6 +129,29 @@ Windows, or wherever `RAZDOR_SAVE_DIR` points. A save of a scenario stores the m
 name and a hash of its bytes, not the map: loading reads the map again from
 `RAZDOR_DT_DIR` and refuses if it is missing or has changed. Demo saves need no install.
 
+## Sounds and music
+With an install, Razdor plays the original's sounds and music, read at runtime from
+`_Sounds.ini` and the `Sounds/` folder (nothing is copied; the `.raw` music is wrapped in a
+WAV header in memory). The menu theme plays on the title, scenario and class screens; the
+seven map themes rotate in random order on the world map and its windows; one of the two
+battle themes in battle; the triumph piece after a won battle (then the map music again) and
+at the scenario's victory; the defeat piece when the hero falls. Effects: buttons, windows
+opening, the battle horn, melee, shots (cannon for shooters with ranged attack of at least
+`ShotWeaponRange`), heals, blessings, curses and magic strikes, cards moving, event chords,
+level-ups and promotions, casting a spell (good or evil by the target), items bought,
+equipped or drunk (by type) and gold coming in.
+
+- **N** turns the music off and on (anywhere except while typing a save name).
+- The **Esc menu** has music and sound volume (**−** / **+**, keys **+** / **−** for the
+  music) and **Off** / **On** for each. They are kept in `audio.json` in the save folder.
+- The `.raw` files do not store their sample rate; Razdor plays them at 22050 Hz. If the
+  music sounds too low or slow, try `RAZDOR_MUSIC_RATE=44100`.
+- `RAZDOR_NO_AUDIO=1` turns sound off; `RAZDOR_AUDIO_LOG=1` prints each sound as it plays.
+  The demo (no install) is silent.
+- On Linux the sound goes through ALSA (`libasound.so.2`, present on any desktop; PipeWire
+  and PulseAudio provide the `default` device). `cargo build --no-default-features` builds
+  without sound.
+
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after the units' and items'
 `Key=` in `data/units.ini` / `data/items.ini` (`knight.png`, `archmage.png`, `ranger.png`,

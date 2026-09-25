@@ -10,6 +10,7 @@ pub mod dtm;
 pub mod gfx;
 pub mod ini;
 pub mod install;
+pub mod sound;
 pub mod text;
 
 use std::fmt;
@@ -48,6 +49,8 @@ pub enum DtError {
     Missing { section: String, key: String },
     /// An image record is malformed (bad size, or it runs past the end of the data).
     Image { what: &'static str, offset: usize },
+    /// A sound file is malformed or in a format Razdor does not play.
+    Sound(String),
 }
 
 impl fmt::Display for DtError {
@@ -74,6 +77,7 @@ impl fmt::Display for DtError {
             DtError::BadValue { section, key, value } => write!(f, "[{section}] {key}={value}: bad value"),
             DtError::Missing { section, key } => write!(f, "[{section}] {key} is missing"),
             DtError::Image { what, offset } => write!(f, "bad {what} at offset {offset:#x}"),
+            DtError::Sound(e) => write!(f, "sound: {e}"),
         }
     }
 }

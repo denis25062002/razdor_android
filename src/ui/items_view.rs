@@ -8,6 +8,7 @@ use razdor::rules::items::{describe, EquipError, SLOTS};
 use razdor::rules::units::Unit;
 
 use super::assets::Assets;
+use super::audio::{cue, cued, Cue};
 use super::building_view::{service_error, BuildingView};
 use super::screens::{attack_line, message_line, top_bar};
 use super::widgets::*;
@@ -157,7 +158,7 @@ pub fn squad(
         let label = format!("Promote to {}", c.unit(to).name);
         if button(x, by, 380.0, 36.0, &label, true) {
             *message = Some(match game.promote(sel, to) {
-                Ok(()) => format!("{} is now a {}.", u.name(&c), c.unit(to).name),
+                Ok(()) => cued(Cue::Upgrade, format!("{} is now a {}.", u.name(&c), c.unit(to).name)),
                 Err(_) => "Not possible.".into(),
             });
         }
@@ -214,14 +215,19 @@ pub fn squad(
     }
     if let Some(i) = use_item {
         let item = game.pack[i];
-        *message = if c.item(item).kind == ArtefactType::Potion {
+        let kind = c.item(item).kind;
+        *message = if kind == ArtefactType::Potion {
             Some(match game.drink(sel, i) {
-                Ok(healed) if healed > 0 => format!("{} drinks it: +{healed} hits.", u.name(&c)),
-                Ok(_) => format!("{} drinks it. The effect lasts until the next battle ends.", u.name(&c)),
+                Ok(healed) if healed > 0 => cued(Cue::Item(kind), format!("{} drinks it: +{healed} hits.", u.name(&c))),
+                Ok(_) => cued(Cue::Item(kind), format!("{} drinks it. The effect lasts until the next battle ends.", u.name(&c))),
                 Err(e) => equip_error(e),
             })
         } else {
-            game.equip(sel, i).err().map(equip_error)
+            let done = game.equip(sel, i);
+            if done.is_ok() {
+                cue(Cue::Item(kind));
+            }
+            done.err().map(equip_error)
         };
     }
 

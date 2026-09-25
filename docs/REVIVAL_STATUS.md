@@ -19,7 +19,7 @@ scenario's presets. Unset `RAZDOR_DT_DIR` to play the demo only.
 
 Controls: click the map to walk (a dotted route shows the travel time); right click / Space
 stops; wheel or +/− zooms; 1 / 4 wait 1 or 4 hours; M minimap; J journal; B spell book;
-Esc menu (save, load, quit). In battle: click a framed card to attack or cast (right click picks
+N music off/on; Esc menu (save, load, main menu, music and sound volume). In battle: click a framed card to attack or cast (right click picks
 the other action), a lit cell to step there, Space to end the unit's turn.
 
 ## What is in
@@ -37,9 +37,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Units** | XP and levels (`StartExpirience·(LevelMultipler/100)^L`, per-level stat gains), promotions along the upgrade tree, 4 item slots with the one-weapon / one-per-type / class rules, `f-`/`d-`/`p-` modifiers, potions, 40-slot backpack, hero class bonuses (knight −10% physical damage to his army, archmage cheaper faster spells, ranger faster and better healing). |
 | **Events and quests** | The scenario script engine: global / local / quest / rumour events, time windows and repeats, relative and chained events, all condition and result groups, flags (`%+X -X =X =/X`), yes/no questions, journal, victory and defeat events. Story dialogs with pictures and rewards. On РК1 the opening dialog, the first quest and the journal work. |
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for mana and game time; effects last into battles; archmage and Caster discounts; scripted spells use the same path. |
+| **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **255 library + 5 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **263 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -56,6 +57,9 @@ files run only when it is set. `cargo clippy --all-targets` is clean.
   `docs/reference/mechanics.md` §8 (terrain costs, buff duration of 3 turns, sight radius 7.5
   cells, backpack of 40, spell book of 15, reserve moves, level numbering, …).
 
+Closing the window used to end in a segmentation fault (a native library's exit handler,
+after `main` returned); the game now ends the process directly once everything is written.
+
 ## Not done yet
 
 - **Ships** (shipyards, pirates): ДС1, ДС2, РК7 and parts of the tutorials are only partly
@@ -65,7 +69,10 @@ files run only when it is set. `cargo clippy --all-targets` is clean.
   **event opcodes** are detected but not run (no shipped map uses them).
 - Village alternatives beyond healing and paying the unpaid (blessing, furs, magic ritual).
 - The hero preset's start building; `#HERONAME` shows the class name (no name entry yet).
-- Soft terrain transitions, sounds and music, a map editor.
+- Soft terrain transitions, a map editor.
+- Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
+  credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
+  logs, a decode round trip and quad-snd loading every file at volume 0.
 - **Not verified by a human**: your screen was locked, so all visual checks used offscreen
   snapshots of real game frames; nobody has clicked through a full scenario yet. Please play
   РК1 first and note anything off.

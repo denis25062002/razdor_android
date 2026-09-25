@@ -151,7 +151,11 @@ pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> boo
     draw_rectangle_lines(x, y, w, h, 2.0, if enabled { ACCENT } else { DIM });
     let dim = measure(label, 22.0);
     text(label, x + (w - dim.width) / 2.0, y + (h + dim.offset_y) / 2.0 - 2.0, 22.0, if enabled { INK } else { DIM });
-    hover && clicked()
+    let pressed = hover && clicked();
+    if pressed {
+        super::audio::cue(super::audio::Cue::Button);
+    }
+    pressed
 }
 
 pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {

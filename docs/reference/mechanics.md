@@ -847,6 +847,37 @@ Explored cells stay explored; there is no "seen before" state (the video).
   "Load a game" button on the title screen. The load window has the original's two tabs,
   saves and autosaves, newest first, with the scenario, the hero and the in-game date.
 
+### 8.5 Sounds and music (`src/dt/sound.rs`, `src/ui/audio.rs`, `src/ui/jukebox.rs`)
+
+- **Files**: `_Sounds.ini` `[Backgrounds]` (music) and `[SFX-Effects]` name files in
+  `Sounds/`, matched ignoring case. `.wav` files are 8-bit mono PCM (22050 Hz, one at
+  11025 Hz). `.raw` files are headerless signed 16-bit little-endian mono; their rate is not
+  stored. **22050 Hz** *(guess: the ini's comment says all PCM is 22050 Hz, and the spectrum
+  of the music rolls off just below 11 kHz, as a 22050 Hz recording would)*;
+  `RAZDOR_MUSIC_RATE` overrides it. An odd trailing byte is dropped.
+- **Music by screen** *(guess, the footage has no sound)*: `BkgMenuMain` on the title,
+  scenario and class screens and the title's load window, looped; `BkgMap1..7` on the world
+  map and every window over it, shuffled, all seven before any repeats and never the same
+  twice in a row; `BkgBattle1/2` in battle, a random one first, then alternating;
+  `BkgTriumph` once after a won battle (the map music follows) and once on the victory
+  screen; `BkgDefeat` once on the defeat screen. A new battle cuts the triumph short.
+  `BkgAuthors` is unused (no credits screen). Tracks follow each other by their length from
+  the sample count; there is no crossfade.
+- **Effects** *(guess where the ini's name leaves it open)*: `InterfaceButtonDown` on every
+  button; `InterfacePanelDown` when a window (building, army, journal, spell book, menu,
+  save, load) or a non-event dialog opens; `Global-Event-1..3` in turn for scenario event
+  windows; `MainMenuPress` on picking a scenario or class; `Global-Battle` when a battle
+  begins; `Battle-Fight` for melee and long strikes, `Battle-Shoot` for shots,
+  `Battle-Strike` for shots of units with ranged attack ≥ `ShotWeaponRange` (cannon),
+  `Battle-Cure`, `Battle-Bless`, `Battle-Sorcery` for curses and magic strikes; `Card-Move`
+  for deployment moves and steps in battle; `Unit-Upgrade` for level-ups and promotions;
+  `InterfaceCastSpell` then `Spell-Good` (own army) or `Spell-Evil` (enemy army) for a world
+  spell; `Item-<Type>` when an item is bought, equipped or drunk; `Item-Gold` whenever gold
+  goes up (loot, income, tribute, sales, events). `MainMenuSelect-*` (hover bells) and
+  `InterfaceBarScroll` are not used yet.
+- **Settings**: music 60%, effects 80% by default; steps of 10%; N mutes the music. Kept in
+  `audio.json` in the save folder.
+
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 
 | Key | Value | Use |

@@ -17,6 +17,7 @@ use razdor::rules::town::{ServiceError, Tab};
 use razdor::rules::units::Unit;
 
 use super::assets::Assets;
+use super::audio::{cue, Cue};
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
 use super::items_view::unit_stat_lines;
 use super::screens::stat_lines;
@@ -571,7 +572,10 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
             }
         } else {
             match game.buy(k) {
-                Ok(item) => format!("Bought {}. It is in your pack.", c.item(item).name),
+                Ok(item) => {
+                    cue(Cue::Item(c.item(item).kind));
+                    format!("Bought {}. It is in your pack.", c.item(item).name)
+                }
                 Err(e) => trade_error(e),
             }
         });

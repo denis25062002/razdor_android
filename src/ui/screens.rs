@@ -11,6 +11,7 @@ use razdor::rules::script::ScriptEnd;
 use razdor::rules::units::Stats;
 
 use super::assets::Assets;
+use super::audio::{cue, Cue};
 use super::widgets::*;
 use super::{ScenarioEntry, Screen};
 
@@ -81,6 +82,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
         if hover {
             hovered = Some((*idx, desc.clone()));
             if clicked() {
+                cue(Cue::MenuPress);
                 return Some(Screen::ClassSelect { scenario: *idx });
             }
         }
@@ -151,6 +153,7 @@ pub fn class_select(
             None => text_centered(&format!("{} gold", content.start_gold(hero)), x + w / 2.0, y + 300.0, 24.0, ACCENT),
         }
         if hover && clicked() {
+            cue(Cue::MenuPress);
             *game = Some(match &scenario {
                 Some((e, c)) => {
                     let mut g = Game::from_scenario(c.clone(), &e.scenario, hero, seed());

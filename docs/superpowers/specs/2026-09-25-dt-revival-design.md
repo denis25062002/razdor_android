@@ -61,8 +61,9 @@ Data flow: `dt::install::load(dir) -> DtInstall` → `rules::content::Content::f
 and `rules::world::World::from_scenario(&scenario, &content)`. The built-in demo builds the same
 `Content` and `World` from `data/`.
 
-Crates added: `bzip2` (pure-Rust backend), `encoding_rs`. No other runtime dependencies without
-need.
+Crates added: `bzip2` (pure-Rust backend), `encoding_rs`; later `libc` (for `_exit` on quit)
+and macroquad's `audio` feature (quad-snd, behind Razdor's default `audio` feature). No other
+runtime dependencies without need.
 
 ## Rules to implement (summary; full detail in mechanics.md)
 

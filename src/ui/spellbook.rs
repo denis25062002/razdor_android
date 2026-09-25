@@ -12,6 +12,7 @@ use razdor::rules::content::SpellDef;
 use razdor::rules::game::{Game, SPELL_BOOK_SIZE};
 use razdor::rules::magic::{self, CastError, CastOutcome, CastTarget, Duration, CAST_RANGE};
 
+use super::audio::{cue, Cue};
 use super::dialog::{Dialog, MANA};
 use super::widgets::*;
 use super::world_view;
@@ -170,6 +171,10 @@ pub fn frame(
         if let Some(t) = target {
             match game.cast(s.id, t) {
                 Ok(cast) => {
+                    cue(Cue::CastSpell);
+                    if matches!(cast.outcome, CastOutcome::Done { .. }) {
+                        cue(if matches!(t, CastTarget::Own) { Cue::SpellGood } else { Cue::SpellEvil });
+                    }
                     *message = Some(match cast.outcome {
                         CastOutcome::Done { hits, killed, destroyed } => {
                             let mut m = s.name.clone();

@@ -58,6 +58,8 @@ pub struct Dialog {
     /// Units that joined / left the army.
     pub joined: Vec<UnitId>,
     pub left: Vec<UnitId>,
+    /// Its opening sound has played.
+    pub cued: bool,
 }
 
 impl Dialog {
@@ -73,6 +75,7 @@ impl Dialog {
             picture: None,
             joined: Vec::new(),
             left: Vec::new(),
+            cued: false,
         }
     }
 

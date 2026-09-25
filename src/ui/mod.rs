@@ -1,10 +1,12 @@
 //! macroquad presentation layer. Reads rules state and calls rules methods.
 pub mod assets;
+pub mod audio;
 pub mod battle_view;
 pub mod building_view;
 pub mod dialog;
 pub mod dt_art;
 pub mod items_view;
+pub mod jukebox;
 pub mod minimap;
 pub mod saves;
 pub mod screens;
@@ -14,6 +16,8 @@ pub mod widgets;
 pub mod world_view;
 
 use std::collections::VecDeque;
+
+use macroquad::prelude::{is_key_pressed, KeyCode};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -25,6 +29,7 @@ use razdor::rules::save::{self, Install};
 use razdor::rules::script::ScriptEnd;
 
 use assets::Assets;
+use audio::{Audio, Cue, Mood};
 use battle_view::BattleView;
 use building_view::BuildingView;
 use dialog::{Close, Dialog};
@@ -81,6 +86,11 @@ pub struct App {
     pub pending_load: Option<PathBuf>,
     /// Why the last load failed (shown in the load window).
     pub load_error: Option<String>,
+    pub audio: Audio,
+    /// The screen of the last frame, to hear windows open and battles begin.
+    last_screen: Option<std::mem::Discriminant<Screen>>,
+    /// Gold at the end of the last frame of this game (`None` right after a new game or load).
+    last_gold: Option<i32>,
 }
 
 impl App {
@@ -98,6 +108,7 @@ impl App {
                 }
             })
             .collect();
+        let audio = Audio::new(assets.dt.as_ref().map(|d| &d.install));
         App {
             assets,
             demo,
@@ -110,6 +121,9 @@ impl App {
             map_view: MapView::default(),
             pending_load: None,
             load_error: None,
+            audio,
+            last_screen: None,
+            last_gold: None,
         }
     }
 
@@ -123,6 +137,7 @@ impl App {
                 self.message = None;
                 self.load_error = None;
                 self.map_view.reset();
+                self.last_gold = None;
                 if let Some(q) = game.pending_question() {
                     story::show(&game, &EventOutcome::Question(q), &mut self.message, &mut self.dialogs);
                 }
@@ -137,7 +152,64 @@ impl App {
         }
     }
 
+    /// Before the process ends: the music stops and the settings are written.
+    pub fn shutdown(&mut self) {
+        self.audio.shutdown();
+    }
+
+    /// The music the current screen wants.
+    fn mood(&self) -> Mood {
+        match &self.screen {
+            Screen::ScenarioSelect | Screen::ClassSelect { .. } => Mood::Menu,
+            Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
+            Screen::Battle(_) => Mood::Battle,
+            Screen::GameOver => Mood::Lost,
+            Screen::Victory => Mood::Won,
+            _ if self.game.is_some() => Mood::Map,
+            _ => Mood::Menu,
+        }
+    }
+
+    /// Sounds that follow from what changed this frame (a window opened, a battle began, gold
+    /// came in, a dialog appeared), then the audio frame.
+    fn sounds(&mut self) {
+        let now = std::mem::discriminant(&self.screen);
+        if self.last_screen != Some(now) {
+            match self.screen {
+                Screen::Battle(_) => audio::cue(Cue::BattleHorn),
+                Screen::Building(_)
+                | Screen::Squad { .. }
+                | Screen::Journal { .. }
+                | Screen::Spellbook { .. }
+                | Screen::Menu
+                | Screen::Save(_)
+                | Screen::Load(_) => audio::cue(Cue::Panel),
+                _ => {}
+            }
+        }
+        self.last_screen = Some(now);
+        let new_game = matches!(self.screen, Screen::ScenarioSelect | Screen::ClassSelect { .. });
+        let gold = self.game.as_ref().filter(|_| !new_game).map(|g| g.gold);
+        if let (Some(before), Some(after)) = (self.last_gold, gold) {
+            if after > before {
+                audio::cue(Cue::Gold);
+            }
+        }
+        self.last_gold = gold;
+        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
+            d.cued = true;
+            audio::cue(if d.event.is_some() { Cue::Event } else { Cue::Panel });
+        }
+        // N: music on/off (not while typing a save name or answering a question).
+        if self.dialogs.is_empty() && !matches!(self.screen, Screen::Save(_)) && is_key_pressed(KeyCode::N) {
+            self.audio.settings.music_muted = !self.audio.settings.music_muted;
+        }
+        let mood = self.mood();
+        self.audio.frame(mood);
+    }
+
     pub fn frame(&mut self) {
+        self.sounds();
         // A dialog on top: the screen below is drawn but takes no input.
         widgets::set_input_blocked(!self.dialogs.is_empty());
         let mut next = match (&mut self.screen, &mut self.game) {
@@ -160,7 +232,7 @@ impl App {
             (Screen::Spellbook { selected }, Some(game)) => {
                 spellbook::frame(game, &self.assets, selected, &mut self.message, &mut self.dialogs)
             }
-            (Screen::Menu, Some(game)) => saves::menu(game, &self.assets),
+            (Screen::Menu, Some(game)) => saves::menu(game, &self.assets, &mut self.audio.settings),
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
             (Screen::GameOver, game) => screens::game_over(game),

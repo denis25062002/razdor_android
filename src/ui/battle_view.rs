@@ -16,6 +16,7 @@ use razdor::rules::game::{BattleResult, Game};
 use razdor::rules::units::Stats;
 
 use super::assets::{team_color, Assets};
+use super::audio::{cue, Cue};
 use super::dialog::Dialog;
 use super::widgets::*;
 use super::Screen;
@@ -162,6 +163,19 @@ fn preview_text(p: Preview, kind: ActionKind, hp: i32) -> String {
     }
 }
 
+/// The sound of `actor`'s action `kind`: shooters with a ranged attack of at least
+/// `ShotWeaponRange` fire cannon.
+fn action_cue(battle: &Battle, actor: usize, kind: ActionKind) -> Cue {
+    match kind {
+        ActionKind::Melee | ActionKind::LongStrike => Cue::Fight,
+        ActionKind::Shot if battle.fighters[actor].stats[Stat::AttackShot] >= battle.content().options.shot_weapon_range => Cue::Cannon,
+        ActionKind::Shot => Cue::Shoot,
+        ActionKind::Heal => Cue::Cure,
+        ActionKind::Bless => Cue::Bless,
+        ActionKind::Strike | ActionKind::Curse => Cue::Sorcery,
+    }
+}
+
 impl BattleView {
     pub fn new(battle: Battle) -> Self {
         BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None }
@@ -200,8 +214,12 @@ impl BattleView {
                     if self.ai_timer >= AI_DELAY {
                         self.ai_timer = 0.0;
                         self.fx = match self.battle.ai_step() {
-                            Some(Step::Act { actor, hit }) => Some(Fx { actor, kind: FxKind::Act { hit }, t: 0.0 }),
+                            Some(Step::Act { actor, hit }) => {
+                                cue(action_cue(&self.battle, actor, hit.kind));
+                                Some(Fx { actor, kind: FxKind::Act { hit }, t: 0.0 })
+                            }
                             Some(Step::Move { actor, from, to }) => {
+                                cue(Cue::CardMove);
                                 let team = self.battle.fighters[actor].team;
                                 let kind = FxKind::Move { from: l.cell_pos(team, from), to: l.cell_pos(team, to) };
                                 Some(Fx { actor, kind, t: 0.0 })
@@ -246,7 +264,9 @@ impl BattleView {
         };
         match self.selected.take() {
             Some(from) if from != slot => {
-                let _ = self.battle.move_card(from, slot);
+                if self.battle.move_card(from, slot).is_ok() {
+                    cue(Cue::CardMove);
+                }
             }
             Some(_) => {}
             None if self.battle.at(Team::Player, slot).is_some() => self.selected = Some(slot),
@@ -268,12 +288,14 @@ impl BattleView {
             let kind = if right { opts.get(1) } else { opts.first() };
             if let Some(&kind) = kind {
                 if let Ok(hit) = self.battle.act_with(t, kind) {
+                    cue(action_cue(&self.battle, active, kind));
                     self.fx = Some(Fx { actor: active, kind: FxKind::Act { hit }, t: 0.0 });
                 }
             }
         } else if let Some((Team::Player, to)) = self.cell_under_mouse(l) {
             let from = self.battle.fighters[active].slot;
             if !right && self.battle.move_active(to).is_ok() {
+                cue(Cue::CardMove);
                 let kind = FxKind::Move { from: l.cell_pos(Team::Player, from), to: l.cell_pos(Team::Player, to) };
                 self.fx = Some(Fx { actor: active, kind, t: 0.0 });
             }
@@ -621,6 +643,16 @@ impl BattleView {
         }
         let losses = |lost: usize| if lost > 0 { format!(", {lost} fell") } else { String::new() };
         let result = game.resolve_battle(&self.battle);
+        match &result {
+            BattleResult::Victory { level_ups, .. } => {
+                cue(Cue::Triumph);
+                if !level_ups.is_empty() {
+                    cue(Cue::Upgrade);
+                }
+            }
+            BattleResult::Withdrew { level_ups, .. } if !level_ups.is_empty() => cue(Cue::Upgrade),
+            _ => {}
+        }
         let levels = |ups: &[(usize, i32)]| -> String {
             ups.iter().map(|&(i, lvl)| format!(", {} reaches level {lvl}", game.squad[i].name(&game.content))).collect()
         };

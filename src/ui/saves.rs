@@ -11,6 +11,7 @@ use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, SaveEntry, SaveKind};
 
 use super::assets::Assets;
+use super::audio::Settings;
 use super::battle_view::BattleView;
 use super::widgets::*;
 use super::world_view;
@@ -285,10 +286,28 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
 }
 
 /// The Esc menu over the map: resume, save, load, the main menu.
-pub fn menu(game: &Game, assets: &Assets) -> Option<Screen> {
+/// One volume row of the menu: label, value, `-` / `+` and a mute toggle.
+fn volume_row(label: &str, volume: f32, muted: bool, x: f32, y: f32, w: f32) -> (i32, bool) {
+    let value = if muted { "off".to_string() } else { format!("{:.0}%", volume * 100.0) };
+    text(&format!("{label} {value}"), x, y + 26.0, 20.0, if muted { DIM } else { INK });
+    let bx = x + w - 170.0;
+    let mut steps = 0;
+    if button(bx, y, 40.0, 38.0, "-", !muted && volume > 0.0) {
+        steps -= 1;
+    }
+    if button(bx + 46.0, y, 40.0, 38.0, "+", !muted && volume < 1.0) {
+        steps += 1;
+    }
+    let toggle = button(bx + 92.0, y, 78.0, 38.0, if muted { "On" } else { "Off" }, true);
+    (steps, toggle)
+}
+
+/// The Esc menu: back, save, load, main menu, and the music and sound volumes (+/- keys
+/// change the music volume; N anywhere turns the music off and on).
+pub fn menu(game: &Game, assets: &Assets, audio: &mut Settings) -> Option<Screen> {
     world_view::backdrop(game, assets);
     let (sw, sh) = (screen_width(), screen_height());
-    let (w, h) = (340.0, 330.0);
+    let (w, h) = (380.0, 440.0);
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0 - 30.0);
     draw_rectangle(x, y, w, h, MARBLE);
     draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
@@ -307,6 +326,16 @@ pub fn menu(game: &Game, assets: &Assets) -> Option<Screen> {
     if button(bx, y + 250.0, bw, 44.0, "Main menu", true) {
         return Some(Screen::ScenarioSelect);
     }
+    let (steps, toggle) = volume_row("Music", audio.music_volume, audio.music_muted, bx, y + 320.0, bw);
+    let keys = [KeyCode::Equal, KeyCode::KpAdd].iter().any(|&k| key(k)) as i32
+        - [KeyCode::Minus, KeyCode::KpSubtract].iter().any(|&k| key(k)) as i32;
+    if !audio.music_muted {
+        audio.step_music(steps + keys);
+    }
+    audio.music_muted ^= toggle;
+    let (steps, toggle) = volume_row("Sounds", audio.sfx_volume, audio.sfx_muted, bx, y + 370.0, bw);
+    audio.step_sfx(steps);
+    audio.sfx_muted ^= toggle;
     None
 }
 
