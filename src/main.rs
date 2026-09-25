@@ -83,16 +83,20 @@ async fn main() {
         let started = std::time::Instant::now();
         let before = app.screen_name();
         app.frame();
-        if profile {
-            let ms = started.elapsed().as_secs_f32() * 1000.0;
-            if ms > 40.0 {
-                eprintln!("slow frame: {ms:.0} ms ({before} -> {})", app.screen_name());
-            }
-        }
+        let work = started.elapsed();
         frames += 1;
         if is_quit_requested() || quit_after.is_some_and(|n| frames >= n) {
             exit_now(&mut app);
         }
         next_frame().await;
+        if profile {
+            // The whole frame: the game's work, then drawing and the GPU (textures and font
+            // atlases go up there), vsync included (~16 ms). Over 100 ms is a visible hitch.
+            let total = started.elapsed();
+            if total.as_millis() > 100 {
+                let (w, r) = (work.as_secs_f32() * 1000.0, (total - work).as_secs_f32() * 1000.0);
+                eprintln!("slow frame: {:.0} ms = work {w:.0} + render {r:.0} ({before} -> {})", w + r, app.screen_name());
+            }
+        }
     }
 }
