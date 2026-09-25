@@ -117,6 +117,8 @@ pub struct BattleView {
     selected: Option<Slot>,
     /// XP shares, computed once the battle is over.
     xp: Option<Vec<XpAward>>,
+    /// The result box has shown and its music started (once).
+    result_cued: bool,
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -177,7 +179,7 @@ fn action_cue(battle: &Battle, actor: usize, kind: ActionKind) -> Cue {
 
 impl BattleView {
     pub fn new(battle: Battle) -> Self {
-        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None }
+        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false }
     }
 
     fn cell_under_mouse(&self, l: &Layout) -> Option<(Team, Slot)> {
@@ -245,6 +247,14 @@ impl BattleView {
         }
 
         if over {
+            if !self.result_cued {
+                // The triumph plays as soon as the victory box appears, and carries on over the
+                // map afterwards (a sting is not cut by the move to the map).
+                self.result_cued = true;
+                if outcome == Outcome::Victory {
+                    cue(Cue::Triumph);
+                }
+            }
             return self.result_overlay(&l, game, message, dialogs, outcome);
         }
         None
@@ -682,7 +692,6 @@ impl BattleView {
         let losses = |lost: usize| if lost > 0 { format!(", {lost} fell") } else { String::new() };
         let result = game.resolve_battle(&self.battle);
         if let BattleResult::Victory { level_ups, .. } = &result {
-            cue(Cue::Triumph);
             if !level_ups.is_empty() {
                 cue(Cue::Upgrade);
             }
