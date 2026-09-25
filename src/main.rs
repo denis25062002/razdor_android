@@ -8,7 +8,31 @@ use razdor::rules::content::Content;
 use ui::assets::Assets;
 use ui::App;
 
+/// Only one Razdor at a time: an exclusive lock on `razdor.lock` in the runtime folder, held
+/// until the process ends (the OS drops it on exit or crash). A second copy says so and quits
+/// before opening a window. `conf` runs before the window exists, so the check lives there.
+#[cfg(unix)]
+fn single_instance() {
+    use std::os::unix::io::AsRawFd;
+    static LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let path = dir.join("razdor.lock");
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path) else {
+        return; // No lock file possible: do not stand in the way.
+    };
+    // SAFETY: flock on a descriptor we own; it only takes an advisory lock.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        eprintln!("Razdor is already running ({}).", path.display());
+        std::process::exit(0);
+    }
+    let _ = LOCK.set(file);
+}
+
+#[cfg(not(unix))]
+fn single_instance() {}
+
 fn conf() -> Conf {
+    single_instance();
     Conf {
         window_title: "Razdor".to_owned(),
         window_width: 1280,
@@ -53,8 +77,18 @@ async fn main() {
     }
     let quit_after = quit_after();
     let mut frames = 0u64;
+    // RAZDOR_PROFILE=1: frames whose work takes over 40 ms are logged with their screen.
+    let profile = std::env::var_os("RAZDOR_PROFILE").is_some();
     loop {
+        let started = std::time::Instant::now();
+        let before = app.screen_name();
         app.frame();
+        if profile {
+            let ms = started.elapsed().as_secs_f32() * 1000.0;
+            if ms > 40.0 {
+                eprintln!("slow frame: {ms:.0} ms ({before} -> {})", app.screen_name());
+            }
+        }
         frames += 1;
         if is_quit_requested() || quit_after.is_some_and(|n| frames >= n) {
             exit_now(&mut app);

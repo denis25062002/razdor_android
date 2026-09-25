@@ -254,6 +254,26 @@ impl App {
         self.audio.frame(mood);
     }
 
+    /// The current screen's name, for the frame timer (`RAZDOR_PROFILE`).
+    pub fn screen_name(&self) -> &'static str {
+        match self.screen {
+            Screen::ScenarioSelect => "scenario select",
+            Screen::ClassSelect { .. } => "class select",
+            Screen::WorldMap => "world map",
+            Screen::Building(_) => "building",
+            Screen::Squad { .. } => "army",
+            Screen::Battle(_) => "battle",
+            Screen::Journal { .. } => "journal",
+            Screen::Spellbook { .. } => "spell book",
+            Screen::Menu => "menu",
+            Screen::Save(_) => "save",
+            Screen::Load(_) => "load",
+            Screen::GameOver => "game over",
+            Screen::Victory => "victory",
+            Screen::Editor => "editor",
+        }
+    }
+
     pub fn frame(&mut self) {
         self.sounds();
         if matches!(self.screen, Screen::Editor) {
