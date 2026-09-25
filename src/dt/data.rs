@@ -156,8 +156,9 @@ impl Nature {
     }
 }
 
-/// A unit's special ability. The 21 vanilla bonuses, in UI order (`BonusN` index 1..=21),
-/// then any other token (Community Update bonuses such as `Splash` or `Flying`).
+/// A unit's special ability. The 21 vanilla bonuses in UI order (`BonusN` index 1..=21), then
+/// the 31 Community Update bonuses (index 22..=52, in the order the executable lists their
+/// tokens), then any other token.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Bonus {
     SpearDefense,
@@ -183,7 +184,70 @@ pub enum Bonus {
     FastDead,
     Counterblow,
     FlankStrike,
-    /// A token outside the vanilla 21, kept verbatim.
+    // Community Update (mechanics.md 1.3 and 8).
+    /// Kills heal it to full HP.
+    Hunger,
+    /// More damage the more it is wounded.
+    Berserk,
+    /// Its hostile magic lowers the target's magic protection, cumulatively.
+    Exhaustion,
+    /// Its hostile magic also takes a share of the target's max HP, ignoring protection.
+    Drying,
+    /// Poisons whoever strikes it.
+    CtrPoison,
+    /// Dies after its own attack.
+    Suicide,
+    /// Global spells of its army cost less mana and time (world map).
+    Caster,
+    /// Hits the target for 80% and its row neighbours for 40%.
+    Splash,
+    /// Physical defence grows every battle turn.
+    Fortify,
+    /// Undocumented; see mechanics.md 8.
+    Dominate,
+    /// Strong poison: 25% of max HP per turn.
+    PoisonS,
+    /// Magic power grows during the battle.
+    Concentration,
+    /// Its magic ignores protection.
+    Potent,
+    /// Its hits lower the target's initiative by 25%.
+    Stun,
+    /// Gets the very first move of the battle.
+    FirstShot,
+    /// In a castle or fort: stats x3, half physical damage, army defence +10.
+    Bastion,
+    /// Can attack any enemy from any row.
+    Flying,
+    /// Its hits make the target bleed.
+    Bleed,
+    /// Strikes an attacker first.
+    PreventiveStrike,
+    /// Damage +-25% by army size against the enemy's.
+    Flock,
+    /// Its hits lower the target's defence by 30%.
+    ArmorBreaker,
+    /// Targets it wounds heal no more.
+    NoHeal,
+    /// +1 action on the first two battle turns.
+    FasterAttack,
+    /// Piercing (building defence still counts) and a 10% poison.
+    PoisonArmorIgnore,
+    /// Documented as not working; no effect.
+    HoldLine,
+    /// Its hits strip the target's bonuses.
+    Neutralize,
+    /// Finishes a target left below 25% HP.
+    KillingStrike,
+    /// A kill gives back one action.
+    BloodThrist,
+    /// Storming a building: stats x2, physical damage taken x0.7.
+    Assault,
+    /// Its blessings and curses last the whole battle.
+    EternalGift,
+    /// Once per battle survives a lethal blow, healed and stronger.
+    FateGift,
+    /// Any other token, kept verbatim.
     Other(String),
 }
 
@@ -213,10 +277,49 @@ impl Bonus {
         Bonus::FlankStrike,
     ];
 
-    /// Parse an ini token; unknown tokens become [`Bonus::Other`].
+    /// The Community Update bonuses; `COMMUNITY[i]` has index `i + 22` [exe: token table order].
+    pub const COMMUNITY: [Bonus; 31] = [
+        Bonus::Hunger,
+        Bonus::Berserk,
+        Bonus::Exhaustion,
+        Bonus::Drying,
+        Bonus::CtrPoison,
+        Bonus::Suicide,
+        Bonus::Caster,
+        Bonus::Splash,
+        Bonus::Fortify,
+        Bonus::Dominate,
+        Bonus::PoisonS,
+        Bonus::Concentration,
+        Bonus::Potent,
+        Bonus::Stun,
+        Bonus::FirstShot,
+        Bonus::Bastion,
+        Bonus::Flying,
+        Bonus::Bleed,
+        Bonus::PreventiveStrike,
+        Bonus::Flock,
+        Bonus::ArmorBreaker,
+        Bonus::NoHeal,
+        Bonus::FasterAttack,
+        Bonus::PoisonArmorIgnore,
+        Bonus::HoldLine,
+        Bonus::Neutralize,
+        Bonus::KillingStrike,
+        Bonus::BloodThrist,
+        Bonus::Assault,
+        Bonus::EternalGift,
+        Bonus::FateGift,
+    ];
+
+    /// Every known bonus, by index.
+    pub fn known() -> impl Iterator<Item = &'static Bonus> {
+        Bonus::VANILLA.iter().chain(Bonus::COMMUNITY.iter())
+    }
+
+    /// Parse an ini token (ignoring case); unknown tokens become [`Bonus::Other`].
     pub fn parse(s: &str) -> Bonus {
-        Bonus::VANILLA
-            .iter()
+        Bonus::known()
             .find(|b| b.token().eq_ignore_ascii_case(s))
             .cloned()
             .unwrap_or_else(|| Bonus::Other(s.to_string()))
@@ -246,6 +349,37 @@ impl Bonus {
             Bonus::FastDead => "FastDead",
             Bonus::Counterblow => "Counterblow",
             Bonus::FlankStrike => "FlankStrike",
+            Bonus::Hunger => "Hunger",
+            Bonus::Berserk => "Berserk",
+            Bonus::Exhaustion => "Exhaustion",
+            Bonus::Drying => "Drying",
+            Bonus::CtrPoison => "CtrPoison",
+            Bonus::Suicide => "Suicide",
+            Bonus::Caster => "Caster",
+            Bonus::Splash => "Splash",
+            Bonus::Fortify => "Fortify",
+            Bonus::Dominate => "Dominate",
+            Bonus::PoisonS => "PoisonS",
+            Bonus::Concentration => "Concentration",
+            Bonus::Potent => "Potent",
+            Bonus::Stun => "Stun",
+            Bonus::FirstShot => "FirstShot",
+            Bonus::Bastion => "Bastion",
+            Bonus::Flying => "Flying",
+            Bonus::Bleed => "Bleed",
+            Bonus::PreventiveStrike => "PreventiveStrike",
+            Bonus::Flock => "Flock",
+            Bonus::ArmorBreaker => "ArmorBreaker",
+            Bonus::NoHeal => "NoHeal",
+            Bonus::FasterAttack => "FasterAttack",
+            Bonus::PoisonArmorIgnore => "PoisonArmorIgnore",
+            Bonus::HoldLine => "HoldLine",
+            Bonus::Neutralize => "Neutralize",
+            Bonus::KillingStrike => "KillingStrike",
+            Bonus::BloodThrist => "BloodThrist",
+            Bonus::Assault => "Assault",
+            Bonus::EternalGift => "EternalGift",
+            Bonus::FateGift => "FateGift",
             Bonus::Other(s) => s,
         }
     }
@@ -253,6 +387,16 @@ impl Bonus {
     /// UI index 1..=21 for vanilla bonuses, `None` for community tokens.
     pub fn vanilla_index(&self) -> Option<u8> {
         Bonus::VANILLA.iter().position(|b| b == self).map(|i| i as u8 + 1)
+    }
+
+    /// Index 1..=52 of a known bonus (vanilla 1..=21, Community 22..=52), `None` for others.
+    pub fn index(&self) -> Option<u8> {
+        Bonus::known().position(|b| b == self).map(|i| i as u8 + 1)
+    }
+
+    /// A Community Update bonus.
+    pub fn is_community(&self) -> bool {
+        Bonus::COMMUNITY.contains(self)
     }
 }
 
@@ -1048,7 +1192,7 @@ Evasion=15\r\n";
         assert_eq!(s.magic, Some(MagicSchool::Death));
         assert_eq!(s.magic_direction, Some(MagicDirection::ToAlly));
         assert_eq!(s.nature, Nature::Undead);
-        assert_eq!(s.bonus, Some(Bonus::Other("Splash".into())));
+        assert_eq!(s.bonus, Some(Bonus::Splash));
         assert_eq!(s.evasion, Some(15));
         assert!(s.extra.is_empty());
     }
@@ -1069,6 +1213,20 @@ Evasion=15\r\n";
         assert_eq!(Bonus::parse("GodStrike").vanilla_index(), Some(8));
         assert_eq!(Bonus::parse("Berserk").vanilla_index(), None);
         assert_eq!(Bonus::parse("Berserk").token(), "Berserk");
+        assert_eq!(Bonus::parse("berserk"), Bonus::Berserk);
+        assert_eq!(Bonus::COMMUNITY.len(), 31);
+        assert_eq!(Bonus::Hunger.index(), Some(22));
+        assert_eq!(Bonus::PoisonS.index(), Some(32));
+        assert_eq!(Bonus::PoisonArmorIgnore.index(), Some(45));
+        assert_eq!(Bonus::HoldLine.index(), Some(46));
+        assert_eq!(Bonus::Assault.index(), Some(50));
+        assert_eq!(Bonus::FateGift.index(), Some(52));
+        assert!(Bonus::Flying.is_community() && !Bonus::Poison.is_community());
+        for b in Bonus::known() {
+            assert_eq!(&Bonus::parse(b.token()), b);
+        }
+        assert_eq!(Bonus::parse("Telepathy"), Bonus::Other("Telepathy".into()));
+        assert_eq!(Bonus::parse("Telepathy").index(), None);
         assert_eq!(Nature::People.index(), 6);
     }
 
@@ -1174,5 +1332,32 @@ Generated=1\r\n";
         assert_eq!(o.army_generation, vec![("Normal".to_string(), vec![4, 5, 6]), ("Undead".to_string(), vec![43])]);
         let bad = Ini::parse("[GlobalOptions]\nMinRandomTarget=1,2\n");
         assert!(GlobalOptions::from_ini(&bad).is_err());
+    }
+}
+
+#[cfg(test)]
+mod real_install {
+    //! The player's install; skipped without `RAZDOR_DT_DIR`. Numbers only.
+    use super::*;
+    use crate::dt::install::{DtInstall, ENV_VAR};
+
+    #[test]
+    fn every_bonus_token_of_the_install_is_known() {
+        let Some(dir) = std::env::var_os(ENV_VAR) else { return };
+        let dt = DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
+        let bonuses = dt.units.iter().filter_map(|u| u.bonus.as_ref()).chain(dt.artefacts.iter().filter_map(|a| a.bonus.as_ref()));
+        let (mut known, mut community, mut unknown) = (0, 0, Vec::new());
+        for b in bonuses {
+            match b {
+                Bonus::Other(t) => unknown.push(t.clone()),
+                b => {
+                    known += 1;
+                    community += usize::from(b.is_community());
+                }
+            }
+        }
+        println!("{known} bonuses on units and items ({community} Community), {} unknown tokens", unknown.len());
+        assert!(unknown.is_empty(), "{} unknown bonus tokens", unknown.len());
+        assert!(known > 0);
     }
 }

@@ -16,8 +16,27 @@ use super::units::{Stats, Unit};
 /// How many turns a blessing or curse lasts, the turn it is cast included *(guess: the
 /// original's duration is unknown)*.
 pub const EFFECT_TURNS: u32 = 3;
-/// Share of max HP a poisoned unit loses each turn (bonus `Poison`).
+/// Share of max HP a poisoned unit loses each turn (bonus `Poison`; `CtrPoison` too).
 const POISON_PERCENT: i32 = 15;
+/// Community `PoisonS` (strong poison) and `PoisonArmorIgnore` poison per turn.
+const STRONG_POISON_PERCENT: i32 = 25;
+const PIERCING_POISON_PERCENT: i32 = 10;
+/// Community `Exhaustion`: magic protection lost per hostile spell, in points.
+const EXHAUSTION_POINTS: i32 = 15;
+/// Community `Drying`: extra damage of hostile magic, % of the target's max HP.
+const DRYING_PERCENT: i32 = 8;
+/// Community `Fortify`: physical defence +25% per turn, up to +125%.
+const FORTIFY_STEP: i32 = 25;
+const FORTIFY_MAX: i32 = 125;
+/// Community `Splash`: attack on the target and on its row neighbours, %.
+const SPLASH_MAIN: i32 = 80;
+const SPLASH_SIDE: i32 = 40;
+/// Community `KillingStrike`: a target left below this % of max HP dies.
+const KILLING_STRIKE_PERCENT: i32 = 25;
+/// Community `Bleed`: share of a wound that bleeds again at the next turn *(guess)*.
+const BLEED_PERCENT: i32 = 50;
+/// Community `FateGift`: attack and defence gain when the gift saves the unit *(guess)*.
+const FATE_GIFT_PERCENT: i32 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Team {
@@ -154,7 +173,17 @@ pub struct Fighter {
     pub power: i32,
     blessing: Option<Timed>,
     curse: Option<Timed>,
+    /// Poisoned: `poison` % of max HP lost every turn.
     pub poisoned: bool,
+    pub poison: i32,
+    /// Community `Bleed`: HP lost at the start of the next turn.
+    pub bleeding: i32,
+    /// Community `Stun`: initiative already cut.
+    pub stunned: bool,
+    /// Community `NoHeal`: wounded by a crippling weapon, heals no more this battle.
+    pub crippled: bool,
+    /// Community `FateGift` used up.
+    pub fate_used: bool,
     /// Damage dealt plus HP healed, for the XP split.
     pub dealt: i32,
     /// Strength estimate at the start, for XP.
@@ -181,6 +210,11 @@ impl Fighter {
             blessing: None,
             curse: None,
             poisoned: false,
+            poison: 0,
+            bleeding: 0,
+            stunned: false,
+            crippled: false,
+            fate_used: false,
             dealt: 0,
             tactical: content.tactical_cost(unit.def, unit.level),
             deployed: unit.slot,
@@ -218,10 +252,19 @@ pub struct Hit {
     /// Blessing or curse applied.
     pub buff: Buff,
     pub killed: bool,
-    /// Counterblow damage taken by the actor.
+    /// Counterblow (after) or PreventiveStrike (before) damage taken by the actor.
     pub counter: Option<i32>,
-    /// The actor died: killed a `DeathCurse`/`Ghost` unit, or fell to the counterblow.
+    /// The actor died: killed a `DeathCurse`/`Ghost` unit, fell to the counterblow or the
+    /// preventive strike, or it is a `Suicide` unit.
     pub actor_died: bool,
+    /// Community `Splash`: damage to the target's row neighbours (fighter, damage).
+    pub splash: Vec<(usize, i32)>,
+}
+
+impl Hit {
+    fn new(target: usize, kind: ActionKind) -> Hit {
+        Hit { target, kind, amount: 0, buff: Buff::default(), killed: false, counter: None, actor_died: false, splash: Vec::new() }
+    }
 }
 
 /// One AI action, for the UI to animate.
@@ -265,6 +308,9 @@ pub struct Battle {
     /// The side that started the fight: +1 initiative.
     pub attacker: Team,
     building_defence: [i32; 2],
+    /// The side fights inside a building (a garrison): `Bastion` works there, `Assault`
+    /// against it.
+    in_building: [bool; 2],
     order: Vec<usize>,
     turn: usize,
     actions_left: i32,
@@ -273,7 +319,8 @@ pub struct Battle {
 }
 
 /// Bonuses whose attacks ignore the target's defence.
-const PIERCING: [Bonus; 4] = [Bonus::ArmorIgnore, Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::Artillery];
+const PIERCING: [Bonus; 5] =
+    [Bonus::ArmorIgnore, Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::Artillery, Bonus::PoisonArmorIgnore];
 /// Bonuses that give +1 action on the first turn.
 const FAST_START: [Bonus; 3] = [Bonus::HorseAtack, Bonus::OldVampirsGist, Bonus::FastDead];
 
@@ -306,6 +353,7 @@ impl Battle {
             log: Vec::new(),
             attacker,
             building_defence: [0; 2],
+            in_building: [false; 2],
             order: Vec::new(),
             turn: 0,
             actions_left: 0,
@@ -338,8 +386,16 @@ impl Battle {
     }
 
     /// Extra defence of the building `team` fights in (garrisons). Set before [`Battle::begin`].
+    /// It also puts `team` inside a building ([`Battle::set_in_building`]).
     pub fn set_building_defence(&mut self, team: Team, defence: i32) {
         self.building_defence[team.index()] = defence;
+        self.in_building[team.index()] = true;
+    }
+
+    /// `team` fights inside a building (a castle or fort garrison), even one without extra
+    /// defence. Set before [`Battle::begin`].
+    pub fn set_in_building(&mut self, team: Team) {
+        self.in_building[team.index()] = true;
     }
 
     pub fn is_deploying(&self) -> bool {
@@ -373,15 +429,36 @@ impl Battle {
             return;
         }
         self.deploying = false;
+        const COMBAT: [Stat; 4] = [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot];
+        // Community Bastion: the whole army inside gets +10 defence (once per army *(guess)*).
+        let bastion = |team: Team| {
+            self.in_building[team.index()] && self.fighters.iter().any(|f| f.team == team && f.alive() && f.base.has(&Bonus::Bastion))
+        };
+        let bastions = [bastion(Team::Player), bastion(Team::Enemy)];
         for f in &mut self.fighters {
             f.deployed = f.slot;
+            let inside = self.in_building[f.team.index()];
+            let storming = self.in_building[f.team.other().index()];
             // Garrison: stats ×2 inside a strong building (mechanics.md 1.3).
+            let mut factor = 1;
             if f.base.has(&Bonus::Garrison) && self.building_defence[f.team.index()] >= 10 {
-                for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-                    f.base[st] *= 2;
-                }
-                f.stats = f.base.clone();
+                factor *= 2;
             }
+            // Community: Bastion ×3 inside a castle or fort, Assault ×2 storming one.
+            if f.base.has(&Bonus::Bastion) && inside {
+                factor *= 3;
+            }
+            if f.base.has(&Bonus::Assault) && storming {
+                factor *= 2;
+            }
+            for st in COMBAT {
+                f.base[st] *= factor;
+            }
+            if bastions[f.team.index()] {
+                f.base[Stat::DefenceBlow] += 10;
+                f.base[Stat::DefenceShot] += 10;
+            }
+            f.stats = f.base.clone();
         }
         self.collapse(Team::Player);
         self.collapse(Team::Enemy);
@@ -425,11 +502,13 @@ impl Battle {
         self.order.iter().skip(self.turn).copied().filter(|&i| self.fighters[i].alive())
     }
 
-    /// Turn order key: `Artillery` first, then initiative (attacker +1), attacker on ties.
-    fn order_key(&self, i: usize) -> (bool, i32, bool, usize) {
+    /// Turn order key: on turn 1 `FirstShot` first (Community), then `Artillery`, then
+    /// initiative (attacker +1), attacker on ties.
+    fn order_key(&self, i: usize) -> (bool, bool, i32, bool, usize) {
         let f = &self.fighters[i];
         let ini = f.stats[Stat::Initiative] + i32::from(f.team == self.attacker);
-        (!f.stats.has(&Bonus::Artillery), -ini, f.team != self.attacker, i)
+        let first = self.round == 1 && f.stats.has(&Bonus::FirstShot);
+        (!first, !f.stats.has(&Bonus::Artillery), -ini, f.team != self.attacker, i)
     }
 
     /// Starts the next battle turn; false once `BattleEndTurn` is reached.
@@ -476,22 +555,35 @@ impl Battle {
             if f.curse.is_some_and(|t| t.until < round) {
                 f.curse = None;
             }
-            // Magic power drains to the floor, never below (or up to) it.
-            if f.power > floor {
+            if f.base.has(&Bonus::Concentration) {
+                // Community Concentration: power grows by a tenth of its base every turn, up
+                // to twice the base, instead of draining *(guess: the rate is not documented)*.
+                let base = f.base[Stat::MagicPower];
+                if f.power < 2 * base {
+                    f.power = (f.power + (base / 10).max(1)).min(2 * base);
+                }
+            } else if f.power > floor {
+                // Magic power drains to the floor, never below (or up to) it.
                 f.power = (f.power - dec).max(floor);
             }
             let max = f.base.max_hp();
             // Regen: percent of max HP per turn (guess: the original's timing is unverified).
             let regen = f.base[Stat::Regen];
-            if regen > 0 && f.hp < max {
+            if regen > 0 && f.hp < max && !f.crippled {
                 let healed = (max * regen / 100).max(1).min(max - f.hp);
                 f.hp += healed;
                 self.log.push(format!("{} regenerates +{healed}", f.name));
             }
             if f.poisoned {
-                let loss = (max * POISON_PERCENT / 100).max(1).min(f.hp);
+                let loss = (max * f.poison.max(1) / 100).max(1).min(f.hp);
                 f.hp -= loss;
                 self.log.push(format!("{} suffers {loss} from poison", f.name));
+            }
+            if f.bleeding > 0 && f.alive() {
+                let loss = f.bleeding.min(f.hp);
+                f.hp -= loss;
+                f.bleeding = 0;
+                self.log.push(format!("{} bleeds for {loss}", f.name));
             }
             self.refresh(i);
         }
@@ -499,10 +591,13 @@ impl Battle {
         self.collapse(Team::Enemy);
     }
 
-    /// Actions `id` gets this turn: `Manevres`, +1 on turn 1 for the fast-start bonuses.
+    /// Actions `id` gets this turn: `Manevres`, +1 on turn 1 for the fast-start bonuses,
+    /// +1 on turns 1 and 2 for the Community `FasterAttack`.
     fn turn_actions(&self, id: usize) -> i32 {
         let f = &self.fighters[id];
-        f.stats[Stat::Manevres] + i32::from(self.round == 1 && f.stats.has_any(&FAST_START))
+        f.stats[Stat::Manevres]
+            + i32::from(self.round == 1 && f.stats.has_any(&FAST_START))
+            + i32::from(self.round <= 2 && f.stats.has(&Bonus::FasterAttack))
     }
 
     /// Moves on to the next fighter able to act, starting new turns as needed.
@@ -625,17 +720,21 @@ impl Battle {
             let near = self.front_near(t.team, from.col);
             let blocked = !near.is_empty();
             let adjacent = t.slot.row == Row::Front && near.contains(&t.slot.col);
-            if s.is_warrior() && from.row == Row::Front && t.slot.row == Row::Front {
+            // Community Flying: any enemy (front or back row) from any row, as a normal strike.
+            let flying = s.has(&Bonus::Flying);
+            if s.is_warrior() && flying {
+                v.push(Melee);
+            } else if s.is_warrior() && from.row == Row::Front && t.slot.row == Row::Front {
                 if adjacent {
                     v.push(Melee);
                 } else if !blocked && self.long_strike_targets(t.team, from.col).contains(&target) {
                     v.push(LongStrike);
                 }
             }
-            if s.is_shooter() && (from.row == Row::Back || !blocked || adjacent) {
+            if s.is_shooter() && (flying || from.row == Row::Back || !blocked || adjacent) {
                 v.push(Shot);
             }
-            if s.is_mage() && s.magic_direction().hits_enemies() && (from.row == Row::Back || !blocked) {
+            if s.is_mage() && s.magic_direction().hits_enemies() && (flying || from.row == Row::Back || !blocked) {
                 let pair = if s.magic == Some(MagicSchool::Life) { [Strike, Curse] } else { [Curse, Strike] };
                 for k in pair {
                     let useful = match k {
@@ -713,14 +812,31 @@ impl Battle {
         self.fighters.iter().any(|f| f.team == team && f.is_hero && HeroClass::of_unit(f.unit) == Some(HeroClass::Knight))
     }
 
+    /// Living units of `team`.
+    fn head_count(&self, team: Team) -> usize {
+        self.living(team).count()
+    }
+
     /// Physical damage of `a` on `t`, before capping at the target's HP. Deterministic.
+    /// A `Splash` unit's attack counts 80% on its target.
     pub fn physical_damage(&self, a: usize, t: usize, kind: ActionKind) -> i32 {
+        let pct = if self.fighters[a].stats.has(&Bonus::Splash) { SPLASH_MAIN } else { 100 };
+        self.physical_damage_at(a, t, kind, pct)
+    }
+
+    /// Physical damage with `pct`% of the attacker's attack.
+    fn physical_damage_at(&self, a: usize, t: usize, kind: ActionKind, pct: i32) -> i32 {
         let (af, tf) = (&self.fighters[a], &self.fighters[t]);
         let (s, ts) = (&af.stats, &tf.stats);
         let shot = kind == ActionKind::Shot;
         let building = self.building_defence[tf.team.index()];
-        let mut atk = if shot { s[Stat::AttackShot] } else { s[Stat::AttackBlow] };
-        let mut def = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] } + building;
+        let mut atk = if shot { s[Stat::AttackShot] } else { s[Stat::AttackBlow] } * pct / 100;
+        let mut own = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] };
+        if ts.has(&Bonus::Fortify) {
+            // Community Fortify: +25% of its own defence per turn (turn 1 included *(guess)*).
+            own = own * (100 + (FORTIFY_STEP * self.round.max(1) as i32).min(FORTIFY_MAX)) / 100;
+        }
+        let mut def = own + building;
         if shot && tf.slot.row == Row::Back {
             def += self.opt().row2_def;
         }
@@ -734,15 +850,40 @@ impl Battle {
             }
         }
         // Piercing ignores the unit's defence; the building's still counts.
-        if s.has_any(&PIERCING) || s.has(&Bonus::Other("PoisonArmorIgnore".into())) {
+        if s.has_any(&PIERCING) {
             def = building;
         }
         let mut dmg = (atk - def).max(1);
+        // Community: Berserk up to ×2 as its HP falls *(guess: linear in the HP lost)*.
+        if s.has(&Bonus::Berserk) {
+            let max = af.max_hp().max(1);
+            dmg = dmg * (2 * max - af.hp.clamp(0, max)) / max;
+        }
+        // Community: Flock ±25% by head count against the other army.
+        if s.has(&Bonus::Flock) {
+            let (own, other) = (self.head_count(af.team), self.head_count(tf.team));
+            if own > other {
+                dmg = dmg * 125 / 100;
+            } else if own < other {
+                dmg = dmg * 75 / 100;
+            }
+        }
+        // Community: Dominate +25% on a target with less max HP *(guess: undocumented)*.
+        if s.has(&Bonus::Dominate) && tf.max_hp() < af.max_hp() {
+            dmg = dmg * 125 / 100;
+        }
         if ts.has_any(&[Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::Evasive]) {
             dmg = dmg * 2 / 3;
         }
         if ts.has(&Bonus::Garrison) && building >= 10 {
             dmg = dmg * 2 / 3;
+        }
+        // Community: Bastion takes half inside, Assault 70% while storming.
+        if ts.has(&Bonus::Bastion) && self.in_building[tf.team.index()] {
+            dmg /= 2;
+        }
+        if ts.has(&Bonus::Assault) && self.in_building[af.team.index()] {
+            dmg = dmg * 7 / 10;
         }
         if shot && ts.has_any(&[Bonus::Dead, Bonus::FastDead]) {
             dmg = dmg * 3 / 10;
@@ -761,9 +902,13 @@ impl Battle {
         self.fighters[a].stats.magic.unwrap_or(MagicSchool::Elemental)
     }
 
-    /// Caster power against `t` for hostile magic: reduced by the target's protection %.
+    /// Caster power against `t` for hostile magic: reduced by the target's protection %,
+    /// except for a Community `Potent` caster.
     fn hostile_power(&self, a: usize, t: usize) -> i32 {
         let p = self.fighters[a].stats[Stat::MagicPower];
+        if self.fighters[a].stats.has(&Bonus::Potent) {
+            return p;
+        }
         let prot = self.fighters[t].stats.protection(self.school(a)).clamp(0, 100);
         (p * (100 - prot) + 50) / 100
     }
@@ -779,8 +924,15 @@ impl Battle {
             (MagicSchool::Elemental, _) | (_, Nature::Elemental) => p * 3 / 4,
             _ => p,
         };
-        if dmg > 0 {
-            dmg + god_bonus(&self.fighters[a].stats)
+        let dmg = if dmg > 0 { dmg + god_bonus(&self.fighters[a].stats) } else { 0 };
+        dmg + self.drying(a, t)
+    }
+
+    /// Community `Drying`: 8% of the target's max HP on every hostile spell, ignoring
+    /// protection (at least 1).
+    fn drying(&self, a: usize, t: usize) -> i32 {
+        if self.fighters[a].stats.has(&Bonus::Drying) {
+            (self.fighters[t].max_hp() * DRYING_PERCENT / 100).max(1)
         } else {
             0
         }
@@ -791,6 +943,9 @@ impl Battle {
     fn heal_power(&self, a: usize, t: usize) -> i32 {
         let p = self.fighters[a].stats[Stat::MagicPower];
         let nature = self.fighters[t].stats.nature;
+        if self.fighters[t].crippled {
+            return 0;
+        }
         match self.school(a) {
             MagicSchool::Life if matches!(nature, Nature::Undead | Nature::Elemental) => 0,
             MagicSchool::Life => p,
@@ -881,53 +1036,249 @@ impl Battle {
         if !self.options(id, target).contains(&kind) {
             return Err(ActionError::InvalidTarget);
         }
-        let mut hit = Hit { target, kind, amount: 0, buff: Buff::default(), killed: false, counter: None, actor_died: false };
+        let mut hit = Hit::new(target, kind);
         let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
-        match kind {
-            ActionKind::Heal => {
-                let t = &self.fighters[target];
-                let healed = self.heal_power(id, target).min(t.max_hp() - t.hp);
-                self.fighters[target].hp += healed;
-                self.fighters[id].dealt += healed;
-                hit.amount = healed;
-                self.log.push(format!("{name} heals {tname} +{healed}"));
+        if kind.is_physical() {
+            self.preventive_strike(id, target, &mut hit);
+        }
+        if self.fighters[id].alive() {
+            match kind {
+                ActionKind::Heal => {
+                    let t = &self.fighters[target];
+                    let healed = self.heal_power(id, target).min(t.max_hp() - t.hp);
+                    self.fighters[target].hp += healed;
+                    self.fighters[id].dealt += healed;
+                    hit.amount = healed;
+                    self.log.push(format!("{name} heals {tname} +{healed}"));
+                }
+                ActionKind::Bless | ActionKind::Curse => {
+                    let buff = if kind == ActionKind::Bless { self.bless_buff(id, target) } else { self.curse_buff(id, target) };
+                    // Community EternalGift: the whole battle.
+                    let until = if self.fighters[id].stats.has(&Bonus::EternalGift) { u32::MAX } else { self.round + EFFECT_TURNS - 1 };
+                    let timed = Some(Timed { buff, until });
+                    if kind == ActionKind::Bless {
+                        self.fighters[target].blessing = timed;
+                    } else {
+                        self.fighters[target].curse = timed;
+                    }
+                    self.refresh(target);
+                    hit.buff = buff;
+                    let verb = if kind == ActionKind::Bless { "blesses" } else { "curses" };
+                    self.log.push(format!("{name} {verb} {tname}: {}", buff.describe()));
+                    if kind == ActionKind::Curse {
+                        let dry = self.drying(id, target);
+                        if dry > 0 {
+                            self.deal(id, target, dry, &mut hit);
+                        }
+                        self.exhaust(id, target);
+                    }
+                }
+                _ => {
+                    let raw = if kind == ActionKind::Strike { self.magic_strike(id, target) } else { self.physical_damage(id, target, kind) };
+                    self.deal(id, target, raw, &mut hit);
+                    self.on_hit(id, target, &mut hit);
+                    if kind.is_physical() {
+                        self.splash(id, target, &mut hit);
+                    }
+                    let melee = matches!(kind, ActionKind::Melee | ActionKind::LongStrike);
+                    let t = &self.fighters[target];
+                    // Counterblow: a warrior struck in melee hits back once.
+                    if melee && t.alive() && t.stats.has(&Bonus::Counterblow) && t.stats.is_warrior() && self.fighters[id].alive() {
+                        let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp);
+                        self.fighters[id].hp -= dmg;
+                        self.fighters[target].dealt += dmg;
+                        hit.counter = Some(dmg);
+                        self.log.push(format!("{tname} hits back for {dmg}"));
+                        hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
+                    }
+                    // Community CtrPoison: striking it in melee poisons the striker *(guess:
+                    // shots and spells do not)*.
+                    if melee && self.fighters[target].base.has(&Bonus::CtrPoison) && self.fighters[id].alive() {
+                        self.poison(id, POISON_PERCENT);
+                    }
+                }
             }
-            ActionKind::Bless | ActionKind::Curse => {
-                let buff = if kind == ActionKind::Bless { self.bless_buff(id, target) } else { self.curse_buff(id, target) };
-                let timed = Some(Timed { buff, until: self.round + EFFECT_TURNS - 1 });
-                if kind == ActionKind::Bless {
-                    self.fighters[target].blessing = timed;
-                } else {
-                    self.fighters[target].curse = timed;
-                }
-                self.refresh(target);
-                hit.buff = buff;
-                let verb = if kind == ActionKind::Bless { "blesses" } else { "curses" };
-                self.log.push(format!("{name} {verb} {tname}: {}", buff.describe()));
-            }
-            _ => {
-                let raw = if kind == ActionKind::Strike { self.magic_strike(id, target) } else { self.physical_damage(id, target, kind) };
-                self.deal(id, target, raw, &mut hit);
-                if kind.is_physical() && self.fighters[id].stats.has(&Bonus::Poison) && hit.amount > 1 && !hit.killed {
-                    self.fighters[target].poisoned = true;
-                }
-                // Counterblow: a warrior struck in melee hits back once.
-                let melee = matches!(kind, ActionKind::Melee | ActionKind::LongStrike);
-                let t = &self.fighters[target];
-                if melee && t.alive() && t.stats.has(&Bonus::Counterblow) && t.stats.is_warrior() && self.fighters[id].alive() {
-                    let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp);
-                    self.fighters[id].hp -= dmg;
-                    self.fighters[target].dealt += dmg;
-                    hit.counter = Some(dmg);
-                    self.log.push(format!("{tname} hits back for {dmg}"));
-                    hit.actor_died |= !self.fighters[id].alive();
-                }
+            // Community Suicide: dies after its own attack.
+            if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].stats.has(&Bonus::Suicide) {
+                self.fighters[id].hp = 0;
+                hit.actor_died = true;
+                self.log.push(format!("{name} gives its life"));
             }
         }
         self.collapse(Team::Player);
         self.collapse(Team::Enemy);
         self.spend_action(id);
         Ok(hit)
+    }
+
+    /// A fighter at 0 HP: true if it dies, false if the Community `FateGift` saves it (once
+    /// a battle: full HP and attack and defence +25% *(guess: the size of the gain)*).
+    fn lethal(&mut self, i: usize) -> bool {
+        let f = &mut self.fighters[i];
+        if f.alive() || f.fate_used || !f.base.has(&Bonus::FateGift) {
+            return !f.alive();
+        }
+        f.fate_used = true;
+        for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
+            f.base[st] = f.base[st] * (100 + FATE_GIFT_PERCENT) / 100;
+        }
+        f.hp = f.base.max_hp();
+        self.log.push(format!("{} is spared by fate", f.name));
+        self.refresh(i);
+        false
+    }
+
+    /// Poisons `i` for `percent`% of max HP a turn (the strongest poison counts).
+    fn poison(&mut self, i: usize, percent: i32) {
+        let f = &mut self.fighters[i];
+        if f.alive() {
+            f.poisoned = true;
+            f.poison = f.poison.max(percent);
+        }
+    }
+
+    /// Community `Exhaustion`: the target loses 15 points of every magic protection for the
+    /// battle (cumulative; all three schools *(guess)*).
+    fn exhaust(&mut self, a: usize, t: usize) {
+        if !self.fighters[a].stats.has(&Bonus::Exhaustion) || !self.fighters[t].alive() {
+            return;
+        }
+        let f = &mut self.fighters[t];
+        for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
+            f.base[st] = (f.base[st] - EXHAUSTION_POINTS).max(0);
+        }
+        self.refresh(t);
+    }
+
+    /// Community `PreventiveStrike`: a unit about to be struck by an enemy strikes (or
+    /// shoots) the attacker first, whatever the reach *(guess)*.
+    fn preventive_strike(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        let t = &self.fighters[target];
+        if !t.alive() || t.team == self.fighters[id].team || !t.stats.has(&Bonus::PreventiveStrike) {
+            return;
+        }
+        let kind = if t.stats.is_warrior() {
+            ActionKind::Melee
+        } else if t.stats.is_shooter() {
+            ActionKind::Shot
+        } else {
+            return;
+        };
+        let dmg = self.physical_damage(target, id, kind).min(self.fighters[id].hp);
+        self.fighters[id].hp -= dmg;
+        self.fighters[target].dealt += dmg;
+        hit.counter = Some(dmg);
+        self.log.push(format!("{} strikes first for {dmg}", self.fighters[target].name));
+        hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
+    }
+
+    /// Community `Splash`: 40% of the attack on each living neighbour of the target in its
+    /// row.
+    fn splash(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        if !self.fighters[id].stats.has(&Bonus::Splash) {
+            return;
+        }
+        let (team, slot) = (self.fighters[target].team, self.fighters[target].slot);
+        let near: Vec<usize> = (0..self.fighters.len())
+            .filter(|&n| {
+                let f = &self.fighters[n];
+                n != target && f.alive() && f.team == team && f.slot.row == slot.row && f.slot.col.abs_diff(slot.col) == 1
+            })
+            .collect();
+        for n in near {
+            if !self.fighters[id].alive() {
+                break;
+            }
+            let raw = self.physical_damage_at(id, n, hit.kind, SPLASH_SIDE);
+            let mut side = Hit::new(n, hit.kind);
+            self.deal(id, n, raw, &mut side);
+            hit.splash.push((n, side.amount));
+            hit.actor_died |= side.actor_died;
+        }
+    }
+
+    /// Community effects of a damaging hit (physical or a magic strike) on its target.
+    fn on_hit(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        let a = self.fighters[id].stats.clone();
+        let physical = hit.kind.is_physical();
+        if hit.killed {
+            // Hunger: a kill heals to full HP [exe: HP set to max HP].
+            if a.has(&Bonus::Hunger) && self.fighters[id].alive() && !self.fighters[id].crippled {
+                let f = &mut self.fighters[id];
+                f.hp = f.max_hp();
+            }
+            // BloodThrist: a kill gives the action back.
+            if a.has(&Bonus::BloodThrist) && self.fighters[id].alive() && self.order.get(self.turn) == Some(&id) {
+                self.actions_left += 1;
+            }
+            return;
+        }
+        if !self.fighters[target].alive() {
+            return;
+        }
+        // Poisons: after a solid hit (more than 1). Poison works for mages too (Community).
+        if hit.amount > 1 {
+            let mut pct = 0;
+            if a.has(&Bonus::Poison) {
+                pct = pct.max(POISON_PERCENT);
+            }
+            if a.has(&Bonus::PoisonS) {
+                pct = pct.max(STRONG_POISON_PERCENT);
+            }
+            if physical && a.has(&Bonus::PoisonArmorIgnore) {
+                pct = pct.max(PIERCING_POISON_PERCENT);
+            }
+            if pct > 0 {
+                self.poison(target, pct);
+            }
+        }
+        if physical && hit.amount > 0 {
+            let t = &mut self.fighters[target];
+            if a.has(&Bonus::Bleed) {
+                t.bleeding += (hit.amount * BLEED_PERCENT / 100).max(1);
+            }
+            if a.has(&Bonus::ArmorBreaker) {
+                t.base[Stat::DefenceBlow] = t.base[Stat::DefenceBlow] * 7 / 10;
+                t.base[Stat::DefenceShot] = t.base[Stat::DefenceShot] * 7 / 10;
+            }
+            if a.has(&Bonus::NoHeal) {
+                t.crippled = true;
+            }
+        }
+        let t = &mut self.fighters[target];
+        if a.has(&Bonus::Stun) && !t.stunned {
+            t.stunned = true;
+            t.base[Stat::Initiative] = t.base[Stat::Initiative] * 3 / 4;
+        }
+        if a.has(&Bonus::Neutralize) {
+            t.base.bonuses.clear();
+        }
+        self.refresh(target);
+        if hit.kind == ActionKind::Strike {
+            self.exhaust(id, target);
+        }
+        let t = &self.fighters[target];
+        if a.has(&Bonus::KillingStrike) && t.hp * 100 < t.max_hp() * KILLING_STRIKE_PERCENT {
+            let (name, tname, left) = (self.fighters[id].name.clone(), t.name.clone(), t.hp);
+            hit.amount += left;
+            self.fighters[id].dealt += left;
+            self.fighters[target].hp = 0;
+            self.log.push(format!("{name} finishes {tname}"));
+            if self.lethal(target) {
+                hit.killed = true;
+                self.death_curse(id, target, hit);
+            }
+        }
+    }
+
+    /// The killer of a `DeathCurse` or `Ghost` unit dies.
+    fn death_curse(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        if self.fighters[target].stats.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) && self.fighters[id].alive() {
+            self.fighters[id].hp = 0;
+            hit.actor_died = true;
+            let msg = format!("{} dies by {}'s curse", self.fighters[id].name, self.fighters[target].name);
+            self.log.push(msg);
+        }
     }
 
     /// Applies `raw` damage (capped at HP), vampirism and the killer-dies bonuses.
@@ -938,23 +1289,19 @@ impl Battle {
         let a = &mut self.fighters[id];
         a.dealt += dmg;
         let vamp = a.stats[Stat::Vampirizm];
-        if vamp > 0 {
+        if vamp > 0 && !a.crippled {
             a.hp = (a.hp + dmg * vamp / 100).min(a.max_hp());
         }
-        hit.amount = dmg;
-        hit.killed = !self.fighters[target].alive();
+        hit.amount += dmg;
         let how = match hit.kind {
             ActionKind::LongStrike => " with a long strike",
             ActionKind::Strike => " with magic",
             _ => "",
         };
-        if hit.killed {
+        if !self.fighters[target].alive() && self.lethal(target) {
+            hit.killed = true;
             self.log.push(format!("{name} kills {tname}{how} ({dmg})"));
-            if self.fighters[target].stats.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) {
-                self.fighters[id].hp = 0;
-                hit.actor_died = true;
-                self.log.push(format!("{name} dies by {tname}'s curse"));
-            }
+            self.death_curse(id, target, hit);
         } else {
             self.log.push(format!("{name} hits {tname}{how} for {dmg}"));
         }
@@ -1540,6 +1887,386 @@ mod tests {
         assert_eq!(seen[0], vec![35, 18, 28, 10, 31]);
         assert_eq!(seen[1], vec![30, 16, 26, 10, 30]);
         assert_eq!(seen[4], vec![15, 15, 20, 10, 30], "floors: 15, 15, community override 30; 10 is below the floor and stays");
+    }
+
+    // --- Community bonuses --------------------------------------------------------------------
+
+    /// A battle where `inside` fights in a building (a castle or fort garrison, no extra
+    /// defence).
+    fn battle_inside(extra: Vec<UnitDef>, player: &[(u32, Slot)], enemies: &[(u32, Slot)], inside: Team) -> Battle {
+        let c = content_with(extra, Formation::WIDE);
+        let squad: Vec<Unit> = player.iter().map(|&(id, s)| Unit::new(&c, UnitId(id), s)).collect();
+        let p: Vec<_> = squad.iter().enumerate().collect();
+        let e: Vec<Unit> = enemies.iter().map(|&(id, s)| Unit::new(&c, UnitId(id), s)).collect();
+        let mut bt = Battle::new(c.clone(), &p, &e, inside.other());
+        bt.set_in_building(inside);
+        bt.begin();
+        bt
+    }
+
+    fn to_round(bt: &mut Battle, round: u32) {
+        while bt.round < round {
+            bt.skip();
+        }
+    }
+
+    /// 69: a heavy hitter, attack 100.
+    fn hammer() -> UnitDef {
+        warrior(69, 100, 0)
+    }
+
+    /// 84: armour 20, 300 HP.
+    fn armour() -> UnitDef {
+        UnitDef { hits: 300, ..warrior(84, 1, 20) }
+    }
+
+    #[test]
+    fn hunger_heals_to_full_on_a_kill() {
+        let hungry = bonus(60, Bonus::Hunger, warrior(60, 30, 0));
+        let mut bt = with(vec![hungry], &[(60, f(2))], &[(10, f(2)), (10, f(3))]);
+        bt.fighters[0].hp = 10;
+        bt.fighters[1].hp = 1;
+        turn_of(&mut bt, 0);
+        assert!(bt.act(1).unwrap().killed);
+        assert_eq!(bt.fighters[0].hp, 50);
+    }
+
+    #[test]
+    fn berserk_hits_harder_when_wounded() {
+        let berserk = bonus(61, Bonus::Berserk, warrior(61, 30, 0));
+        let mut bt = with(vec![berserk], &[(61, f(2))], &[(18, f(2))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30, "full HP: ×1");
+        bt.fighters[0].hp = 25;
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 45, "half HP: ×1.5");
+        bt.fighters[0].hp = 1;
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 59);
+    }
+
+    #[test]
+    fn exhaustion_wears_down_magic_protection() {
+        let tired = bonus(62, Bonus::Exhaustion, mage(62, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+        let warded = UnitDef { protect_life: 50, hits: 300, ..warrior(39, 1, 0) };
+        let mut bt = with(vec![tired, warded], &[(62, b(0)), (10, f(5))], &[(39, f(0))]);
+        assert_eq!(bt.magic_strike(0, 2), 15);
+        turn_of(&mut bt, 0);
+        assert_eq!(bt.act(2).unwrap().amount, 15);
+        assert_eq!((bt.fighters[2].stats[Stat::ProtectLife], bt.fighters[2].stats[Stat::ProtectDeath]), (35, 0));
+        assert_eq!(bt.magic_strike(0, 2), 20, "30 × 65%");
+        turn_of(&mut bt, 0);
+        bt.act(2).unwrap();
+        assert_eq!(bt.fighters[2].stats[Stat::ProtectLife], 20, "cumulative");
+    }
+
+    #[test]
+    fn drying_takes_eight_percent_of_max_hp_through_any_protection() {
+        let dry = bonus(63, Bonus::Drying, mage(63, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+        let curser = bonus(64, Bonus::Drying, mage(64, 30, MagicSchool::Death, MagicDirection::ToEnemy));
+        let warded = UnitDef { protect_life: 100, hits: 300, ..warrior(39, 1, 0) };
+        let target = UnitDef { hits: 100, ..warrior(46, 1, 0) };
+        let mut bt = with(vec![dry, curser, warded, target], &[(63, b(0)), (64, b(1)), (10, f(5))], &[(39, f(0)), (46, f(1))]);
+        assert_eq!(bt.magic_strike(0, 3), 24, "0 + 8% of 300");
+        assert_eq!(bt.options(0, 3), vec![ActionKind::Strike]);
+        turn_of(&mut bt, 1);
+        let hit = bt.act(4).unwrap();
+        assert_eq!((hit.kind, hit.amount, bt.fighters[4].hp), (ActionKind::Curse, 8, 92), "a curse dries too");
+    }
+
+    #[test]
+    fn ctr_poison_poisons_whoever_strikes_it_in_melee() {
+        let toad = bonus(65, Bonus::CtrPoison, UnitDef { hits: 300, ..warrior(65, 1, 0) });
+        let mut bt = with(vec![toad], &[(10, f(2)), (11, b(2))], &[(65, f(2))]);
+        turn_of(&mut bt, 0);
+        bt.act(2).unwrap();
+        assert!(bt.fighters[0].poisoned);
+        assert_eq!(bt.fighters[0].poison, 15);
+        turn_of(&mut bt, 1);
+        bt.act(2).unwrap();
+        assert!(!bt.fighters[1].poisoned, "a shot does not touch it");
+    }
+
+    #[test]
+    fn suicide_unit_dies_after_its_attack() {
+        let bomber = bonus(66, Bonus::Suicide, warrior(66, 30, 0));
+        let mut bt = with(vec![bomber], &[(66, f(2)), (10, f(3))], &[(18, f(2))]);
+        turn_of(&mut bt, 0);
+        let hit = bt.act(2).unwrap();
+        assert_eq!((hit.amount, hit.actor_died, bt.fighters[0].hp), (30, true, 0));
+    }
+
+    #[test]
+    fn splash_hits_the_target_for_80_and_its_row_neighbours_for_40() {
+        let sweep = bonus(67, Bonus::Splash, warrior(67, 50, 0));
+        let mut bt = with(vec![sweep], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(5)), (18, b(2))]);
+        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 40);
+        turn_of(&mut bt, 0);
+        let hit = bt.act(2).unwrap();
+        assert_eq!(hit.amount, 40);
+        assert_eq!(hit.splash, vec![(1, 20), (3, 20)], "the same row only");
+        assert_eq!([bt.fighters[4].hp, bt.fighters[5].hp], [200, 200]);
+    }
+
+    #[test]
+    fn fortify_adds_a_quarter_of_defence_per_turn_up_to_125_percent() {
+        let wall = bonus(68, Bonus::Fortify, UnitDef { hits: 3000, ..warrior(68, 1, 20) });
+        let mut bt = with(vec![wall, hammer()], &[(69, f(2))], &[(68, f(2))]);
+        let mut seen = Vec::new();
+        for round in 1..=6 {
+            to_round(&mut bt, round);
+            seen.push(bt.physical_damage(0, 1, ActionKind::Melee));
+        }
+        assert_eq!(seen, vec![75, 70, 65, 60, 55, 55]);
+    }
+
+    #[test]
+    fn dominate_hits_smaller_units_harder() {
+        let lord = bonus(70, Bonus::Dominate, UnitDef { hits: 100, ..warrior(70, 30, 0) });
+        let bt = with(vec![lord], &[(70, f(2))], &[(18, f(2)), (10, f(3))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30, "the bag has more HP");
+        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 31, "(30 − 5) × 1.25");
+    }
+
+    #[test]
+    fn strong_poison_takes_a_quarter_and_poison_works_for_mages() {
+        let viper = bonus(71, Bonus::PoisonS, warrior(71, 30, 0));
+        let witch = bonus(72, Bonus::Poison, mage(72, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+        let mut bt = with(vec![viper, witch], &[(71, f(2)), (72, b(0))], &[(18, f(2)), (18, f(3))]);
+        turn_of(&mut bt, 0);
+        bt.act(2).unwrap();
+        turn_of(&mut bt, 1);
+        bt.act(3).unwrap();
+        assert_eq!((bt.fighters[2].poison, bt.fighters[3].poison), (25, 15));
+        to_round(&mut bt, 2);
+        assert_eq!((bt.fighters[2].hp, bt.fighters[3].hp), (200 - 30 - 50, 200 - 30 - 30));
+    }
+
+    #[test]
+    fn concentration_grows_magic_power_instead_of_draining() {
+        let focus = bonus(73, Bonus::Concentration, mage(73, 30, MagicSchool::Elemental, MagicDirection::ToEnemy));
+        let mut bt = with(vec![focus], &[(73, b(0)), (12, b(1))], &[(18, f(0))]);
+        to_round(&mut bt, 2);
+        assert_eq!((bt.fighters[0].stats[Stat::MagicPower], bt.fighters[1].stats[Stat::MagicPower]), (33, 35));
+        to_round(&mut bt, 15);
+        assert_eq!(bt.fighters[0].stats[Stat::MagicPower], 60, "capped at twice the base");
+    }
+
+    #[test]
+    fn potent_magic_ignores_protection() {
+        let potent = bonus(74, Bonus::Potent, mage(74, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+        let warded = UnitDef { protect_life: 100, hits: 300, ..warrior(39, 1, 0) };
+        let bt = with(vec![potent, warded], &[(74, b(0)), (15, b(1))], &[(39, f(0))]);
+        assert_eq!((bt.magic_strike(0, 2), bt.magic_strike(1, 2)), (30, 0));
+    }
+
+    #[test]
+    fn stun_cuts_initiative_by_a_quarter_once() {
+        let mace = bonus(75, Bonus::Stun, warrior(75, 30, 0));
+        let mut bt = with(vec![mace], &[(75, f(2))], &[(18, f(2))]);
+        turn_of(&mut bt, 0);
+        bt.act(1).unwrap();
+        assert_eq!(bt.fighters[1].stats[Stat::Initiative], 7);
+        turn_of(&mut bt, 0);
+        bt.act(1).unwrap();
+        assert_eq!(bt.fighters[1].stats[Stat::Initiative], 7);
+    }
+
+    #[test]
+    fn first_shot_moves_first_on_turn_one_only() {
+        let quick = bonus(76, Bonus::FirstShot, UnitDef { initiative: 1, ..warrior(76, 10, 0) });
+        let gun = bonus(24, Bonus::Artillery, UnitDef { initiative: 1, ..shooter(24, 10) });
+        let mut bt = with(vec![quick, gun], &[(10, f(0))], &[(76, f(0)), (24, b(0))]);
+        assert_eq!(bt.queue().collect::<Vec<_>>(), vec![1, 2, 0]);
+        to_round(&mut bt, 2);
+        assert_eq!(bt.queue().collect::<Vec<_>>(), vec![2, 0, 1], "then Artillery, then initiative");
+    }
+
+    #[test]
+    fn bastion_in_a_building() {
+        let tower = bonus(77, Bonus::Bastion, UnitDef { hits: 300, ..warrior(77, 10, 5) });
+        let bt = battle_inside(vec![tower.clone(), hammer()], &[(69, f(2))], &[(77, f(2)), (18, f(3))], Team::Enemy);
+        let t = &bt.fighters[1].stats;
+        assert_eq!((t[Stat::AttackBlow], t[Stat::DefenceBlow]), (30, 25), "×3, then +10 for the army");
+        assert_eq!(bt.fighters[2].stats[Stat::DefenceBlow], 10, "the whole army +10");
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 37, "(100 − 25) / 2");
+        // In the open: nothing.
+        let bt = with(vec![tower, hammer()], &[(69, f(2))], &[(77, f(2))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 95);
+    }
+
+    #[test]
+    fn assault_when_storming_a_building() {
+        let sapper = bonus(78, Bonus::Assault, UnitDef { hits: 300, ..warrior(78, 20, 5) });
+        let bt = battle_inside(vec![sapper.clone(), hammer()], &[(78, f(2))], &[(69, f(2))], Team::Enemy);
+        let s = &bt.fighters[0].stats;
+        assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow]), (40, 10));
+        assert_eq!(bt.physical_damage(1, 0, ActionKind::Melee), 63, "(100 − 10) × 0.7");
+        let bt = with(vec![sapper, hammer()], &[(78, f(2))], &[(69, f(2))]);
+        assert_eq!(bt.physical_damage(1, 0, ActionKind::Melee), 95);
+    }
+
+    #[test]
+    fn flying_attacks_any_enemy_from_any_row() {
+        let bird = bonus(79, Bonus::Flying, warrior(79, 30, 0));
+        let bt = with(vec![bird.clone()], &[(79, b(0)), (10, f(0))], &[(18, f(5)), (18, b(3))]);
+        assert_eq!(bt.targets(0), vec![2, 3]);
+        assert_eq!(bt.options(0, 3), vec![ActionKind::Melee]);
+        let c = content_with(vec![bird], Formation::VANILLA);
+        let bt = battle_in(&c, &[(79, r(0)), (10, f(0))], &[(18, f(3))]);
+        assert!(bt.targets(0).is_empty(), "not from the reserve");
+    }
+
+    #[test]
+    fn flock_by_head_count() {
+        let wolf = bonus(80, Bonus::Flock, warrior(80, 40, 0));
+        let bt = with(vec![wolf.clone()], &[(80, f(2)), (18, f(3))], &[(18, f(2))]);
+        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 50);
+        let bt = with(vec![wolf.clone()], &[(80, f(2))], &[(18, f(2)), (18, f(3))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30);
+        let bt = with(vec![wolf], &[(80, f(2))], &[(18, f(2))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 40);
+    }
+
+    #[test]
+    fn bleed_takes_half_the_wound_again_next_turn() {
+        let knife = bonus(81, Bonus::Bleed, warrior(81, 30, 0));
+        let mut bt = with(vec![knife], &[(81, f(2))], &[(18, f(2))]);
+        turn_of(&mut bt, 0);
+        bt.act(1).unwrap();
+        assert_eq!(bt.fighters[1].bleeding, 15);
+        to_round(&mut bt, 2);
+        assert_eq!((bt.fighters[1].hp, bt.fighters[1].bleeding), (155, 0));
+    }
+
+    #[test]
+    fn hold_line_does_nothing() {
+        let line = bonus(82, Bonus::HoldLine, warrior(82, 30, 5));
+        let bt = with(vec![line], &[(82, f(2)), (82, f(3))], &[(10, f(2))]);
+        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 25);
+        assert_eq!(bt.physical_damage(2, 0, ActionKind::Melee), 25);
+    }
+
+    #[test]
+    fn armor_breaker_cuts_defence_by_30_percent_per_hit() {
+        let breaker = bonus(83, Bonus::ArmorBreaker, warrior(83, 30, 0));
+        let mut bt = with(vec![breaker, armour()], &[(83, f(2))], &[(84, f(2))]);
+        turn_of(&mut bt, 0);
+        assert_eq!(bt.act(1).unwrap().amount, 10);
+        assert_eq!(bt.fighters[1].stats[Stat::DefenceBlow], 14);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 16);
+    }
+
+    #[test]
+    fn poison_armor_ignore_pierces_and_poisons_ten_percent() {
+        let sting = bonus(85, Bonus::PoisonArmorIgnore, warrior(85, 30, 0));
+        let c = content_with(vec![sting, armour()], Formation::WIDE);
+        let squad = [Unit::new(&c, UnitId(85), f(2))];
+        let p: Vec<_> = squad.iter().enumerate().collect();
+        let mut bt = Battle::new(c.clone(), &p, &[Unit::new(&c, UnitId(84), f(2))], Team::Player);
+        bt.set_building_defence(Team::Enemy, 6);
+        bt.begin();
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 24, "the building still counts");
+        bt.act(1).unwrap();
+        assert_eq!(bt.fighters[1].poison, 10);
+    }
+
+    #[test]
+    fn faster_attack_gives_an_extra_action_on_the_first_two_turns() {
+        let fast = bonus(86, Bonus::FasterAttack, UnitDef { initiative: 30, ..warrior(86, 10, 0) });
+        let mut bt = with(vec![fast], &[(86, f(0))], &[(18, f(5))]);
+        let mut seen = Vec::new();
+        for round in 1..=3 {
+            to_round(&mut bt, round);
+            turn_of(&mut bt, 0);
+            seen.push(bt.actions_left());
+            bt.skip();
+        }
+        assert_eq!(seen, vec![2, 2, 1]);
+    }
+
+    #[test]
+    fn no_heal_stops_heals_and_regeneration() {
+        let cripple = bonus(87, Bonus::NoHeal, warrior(87, 30, 0));
+        let troll = UnitDef { regen: 10, hits: 200, ..warrior(88, 1, 0) };
+        let mut bt = with(vec![cripple, troll], &[(87, f(2))], &[(88, f(2)), (13, b(0))]);
+        turn_of(&mut bt, 0);
+        bt.act(1).unwrap();
+        assert!(bt.fighters[1].crippled);
+        assert!(!bt.options(2, 1).contains(&ActionKind::Heal));
+        to_round(&mut bt, 2);
+        assert_eq!(bt.fighters[1].hp, 170, "no regeneration");
+    }
+
+    #[test]
+    fn preventive_strike_hits_the_attacker_first() {
+        let guard = bonus(89, Bonus::PreventiveStrike, UnitDef { hits: 100, ..warrior(89, 60, 0) });
+        let archer = bonus(47, Bonus::PreventiveStrike, UnitDef { hits: 100, ..shooter(47, 20) });
+        let mut bt = with(vec![guard, archer], &[(10, f(2)), (1, f(3))], &[(89, f(2)), (47, f(3))]);
+        turn_of(&mut bt, 0);
+        let hit = bt.act(2).unwrap();
+        assert_eq!((hit.counter, hit.actor_died, hit.amount, bt.fighters[2].hp), (Some(50), true, 0, 100), "55 kills the 50-HP striker first");
+        turn_of(&mut bt, 1);
+        let hit = bt.act(3).unwrap();
+        assert_eq!((hit.counter, hit.amount), (Some(15), 30), "the archer shoots first: 20 − 5; then 30 − 0");
+    }
+
+    #[test]
+    fn neutralize_strips_the_targets_bonuses() {
+        let null = bonus(90, Bonus::Neutralize, UnitDef { hits: 300, ..warrior(90, 30, 0) });
+        let chief = bonus(91, Bonus::Counterblow, UnitDef { hits: 300, ..warrior(91, 25, 0) });
+        let mut bt = with(vec![null, chief], &[(90, f(2)), (10, f(3))], &[(91, f(2))]);
+        turn_of(&mut bt, 1);
+        assert_eq!(bt.act(2).unwrap().counter, Some(20), "a plain strike is answered: 25 − 5");
+        turn_of(&mut bt, 0);
+        assert_eq!(bt.act(2).unwrap().counter, None, "stripped before it can answer");
+        assert!(bt.fighters[2].stats.bonuses.is_empty());
+    }
+
+    #[test]
+    fn killing_strike_finishes_a_target_below_a_quarter() {
+        let axe = bonus(92, Bonus::KillingStrike, warrior(92, 30, 0));
+        let mut bt = with(vec![axe], &[(92, f(2))], &[(18, f(2)), (18, f(3))]);
+        bt.fighters[1].hp = 70;
+        bt.fighters[2].hp = 100;
+        turn_of(&mut bt, 0);
+        let hit = bt.act(1).unwrap();
+        assert_eq!((hit.killed, hit.amount), (true, 70), "40 left of 200 is below 25%");
+        turn_of(&mut bt, 0);
+        let hit = bt.act(2).unwrap();
+        assert_eq!((hit.killed, bt.fighters[2].hp), (false, 70));
+    }
+
+    #[test]
+    fn blood_thirst_gets_its_action_back_after_a_kill() {
+        let fang = bonus(93, Bonus::BloodThrist, warrior(93, 30, 0));
+        let mut bt = with(vec![fang], &[(93, f(2))], &[(10, f(2)), (10, f(3))]);
+        bt.fighters[1].hp = 1;
+        turn_of(&mut bt, 0);
+        assert!(bt.act(1).unwrap().killed);
+        assert_eq!((bt.active(), bt.actions_left()), (Some(0), 1));
+        assert!(!bt.act(2).unwrap().killed);
+        assert_ne!(bt.active(), Some(0));
+    }
+
+    #[test]
+    fn eternal_gift_blessings_last_the_whole_battle() {
+        let saint = bonus(94, Bonus::EternalGift, mage(94, 36, MagicSchool::Life, MagicDirection::ToAll));
+        let mut bt = with(vec![saint], &[(94, b(0)), (10, f(0))], &[(18, f(5))]);
+        turn_of(&mut bt, 0);
+        assert_eq!(bt.act_with(1, ActionKind::Bless).unwrap().kind, ActionKind::Bless);
+        to_round(&mut bt, 20);
+        assert!(bt.fighters[1].blessing().is_some());
+    }
+
+    #[test]
+    fn fate_gift_saves_once_and_makes_stronger() {
+        let lucky = bonus(95, Bonus::FateGift, UnitDef { hits: 40, ..warrior(95, 20, 4) });
+        let mut bt = with(vec![lucky, hammer()], &[(69, f(2))], &[(95, f(2))]);
+        turn_of(&mut bt, 0);
+        let hit = bt.act(1).unwrap();
+        assert!(!hit.killed);
+        let t = &bt.fighters[1];
+        assert_eq!((t.hp, t.stats[Stat::AttackBlow], t.stats[Stat::DefenceBlow]), (40, 25, 5));
+        turn_of(&mut bt, 0);
+        assert!(bt.act(1).unwrap().killed, "only once");
     }
 
     // --- outcome, hero, XP ---------------------------------------------------------------------

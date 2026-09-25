@@ -31,6 +31,13 @@ pub const PICTURE_VICTORY: u8 = 201;
 pub const LOOP_GUARD: usize = 256;
 /// Chains of subordinate events deeper than this are cut.
 const CHAIN_DEPTH: usize = 32;
+/// Community opcode 18: the random flag is this name plus one character.
+pub const RANDOM_FLAG: &str = "RAND";
+
+/// A flag opcode 18 made: `RAND` and one character.
+fn is_random_flag(f: &str) -> bool {
+    f.strip_prefix(RANDOM_FLAG).is_some_and(|rest| rest.chars().count() == 1)
+}
 
 /// Where the player stands: in a building (1-based index in the scenario) or on an event point
 /// (its point id).
@@ -58,16 +65,190 @@ pub enum Answer {
     No,
 }
 
-/// A Community Update extension found in an event. None is carried out; the event fires
-/// without the extension's part.
+/// A Community Update extension found in an event (mechanics.md §6, §8.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Extension {
-    /// "No meeting" + patrol value 1–20 (event editing, AI armies, teleports, …).
+    /// "No meeting" + patrol value 1–20 (event editing, AI armies, teleports, …); the
+    /// resource fields (and some condition fields) are its arguments.
     Opcode(u8),
     /// "No meeting" + a spell: remove that spell from the player instead of casting it.
     RemoveSpell,
     /// "No meeting" + named squads: also check the named unit's class.
     NamedUnitClass,
+}
+
+/// The target of a Community opcode's first argument: the player's army (0), a scenario army
+/// (its id, 1–255) or a building (a negative number: minus its 1-based index).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Holder {
+    Player,
+    Army(ArmyId),
+    Building(u16),
+}
+
+impl Holder {
+    pub fn from_code(v: i16) -> Option<Holder> {
+        match v {
+            0 => Some(Holder::Player),
+            1..=255 => Some(Holder::Army(v as u8)),
+            v if v < 0 => Some(Holder::Building(v.unsigned_abs())),
+            _ => None,
+        }
+    }
+}
+
+/// Opcode 8's speed code as the editor's speed correction: 1 → +5 … 5 → +1, 6 → −1 … 8 → −3
+/// and slower beyond; 0 → 0 *(guess: the guide gives only 1 → +5 and 8 → −3, so the code
+/// skips 0)*.
+pub fn speed_correction(code: i16) -> i8 {
+    match code {
+        ..=0 => 0,
+        1..=5 => (6 - code) as i8,
+        c => (5 - c as i32).max(-100) as i8,
+    }
+}
+
+/// One "event editing" setting of opcodes 1–5: what to do (1 add, 2 set, 3–5 compare), to
+/// which event (relative to the current one), which field (its byte offset in the record)
+/// and the value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventEdit {
+    pub action: i16,
+    pub shift: i16,
+    pub field: i16,
+    pub value: i16,
+}
+
+/// The event editing settings of an opcode 1–5 event: the first from the patrol value and
+/// the resources (XP = shift, gold = field, mana = value), the second, when its action (the
+/// squad count condition) is 1–5, from the conditions (gold = shift, level = field,
+/// holiness and mana = value).
+pub fn event_edits(e: &Event) -> Vec<EventEdit> {
+    let Some(Extension::Opcode(op @ 1..=5)) = extension(e) else { return Vec::new() };
+    let (r, c) = (&e.results, &e.conditions);
+    let mut v = vec![EventEdit { action: op as i16, shift: r.experience, field: r.gold, value: r.mana }];
+    if (1..=5).contains(&c.squad_count) {
+        v.push(EventEdit { action: c.squad_count, shift: c.gold, field: c.level, value: c.holiness_mana });
+    }
+    v
+}
+
+/// A field of an event record, addressed by its byte offset (dtm-format.md §9).
+enum Field<'a> {
+    U8(&'a mut u8),
+    I8(&'a mut i8),
+    U16(&'a mut u16),
+    I16(&'a mut i16),
+    U32(&'a mut u32),
+}
+
+impl Field<'_> {
+    fn get(&self) -> i64 {
+        match self {
+            Field::U8(v) => **v as i64,
+            Field::I8(v) => **v as i64,
+            Field::U16(v) => **v as i64,
+            Field::I16(v) => **v as i64,
+            Field::U32(v) => **v as i64,
+        }
+    }
+
+    /// Sets the value, clamped to the field's range.
+    fn set(&mut self, x: i64) {
+        match self {
+            Field::U8(v) => **v = x.clamp(0, u8::MAX as i64) as u8,
+            Field::I8(v) => **v = x.clamp(i8::MIN as i64, i8::MAX as i64) as i8,
+            Field::U16(v) => **v = x.clamp(0, u16::MAX as i64) as u16,
+            Field::I16(v) => **v = x.clamp(i16::MIN as i64, i16::MAX as i64) as i16,
+            Field::U32(v) => **v = x.clamp(0, u32::MAX as i64) as u32,
+        }
+    }
+}
+
+/// The field starting at byte `off` of the event record; `None` inside a multi-byte field,
+/// for unknown bytes and for the texts.
+fn field(e: &mut Event, off: u16) -> Option<Field<'_>> {
+    use Field::*;
+    let (c, r) = (&mut e.conditions, &mut e.results);
+    let o = off as usize;
+    Some(match off {
+        0 => U8(&mut e.group_colour),
+        1 => U8(&mut e.kind),
+        2 => U32(&mut e.start_time),
+        6 => U16(&mut e.repeat),
+        8 => U16(&mut e.duration),
+        10 => U8(&mut e.archetype),
+        11 => I16(&mut c.squad_count),
+        13 => I16(&mut c.army_strength),
+        15 => U8(&mut c.army_inactive),
+        16 => U8(&mut r.patrol_army),
+        17 => I8(&mut r.patrol_delta),
+        18 => U8(&mut c.stats_check),
+        19 => I16(&mut c.level),
+        21 => I16(&mut c.gold),
+        25 => I16(&mut c.holiness_mana),
+        29 => U8(&mut c.buildings_check),
+        30..=32 => U8(&mut c.buildings[o - 30]),
+        33..=35 => U8(&mut c.buildings_owner[o - 33]),
+        36 => U8(&mut c.units_check),
+        37..=39 => U8(&mut c.units[o - 37]),
+        40..=42 => U8(&mut c.units_named[o - 40]),
+        43..=45 => U8(&mut c.units_owner[o - 43]),
+        46 => U8(&mut c.artifacts_check),
+        47..=49 => U8(&mut c.artifacts[o - 47]),
+        50..=52 => U8(&mut c.artifacts_owner[o - 50]),
+        53 => U8(&mut c.defeated_check),
+        54..=55 => U8(&mut c.defeated_armies[o - 54]),
+        56 => U8(&mut c.happened_yes_check),
+        57 | 59 => U16(&mut c.happened_yes[(o - 57) / 2]),
+        61 => U8(&mut c.not_happened_check),
+        62 | 64 => U16(&mut c.not_happened[(o - 62) / 2]),
+        66 => U8(&mut c.beaten_check),
+        67..=68 => U8(&mut c.beaten_armies[o - 67]),
+        69 => U8(&mut c.happened_no_check),
+        70 | 72 => U16(&mut c.happened_no[(o - 70) / 2]),
+        74 => U8(&mut c.meet_army),
+        75 => U8(&mut c.army_active),
+        76 => U8(&mut c.confirm_question),
+        77 => U16(&mut r.relative_event),
+        79 => U16(&mut r.relative_delay_hours),
+        81 => U8(&mut r.cast_spell),
+        82 => U8(&mut r.picture),
+        83 => I16(&mut r.experience),
+        85 => I16(&mut r.gold),
+        89 => I16(&mut r.mana),
+        93..=96 => U8(&mut r.spells_learned[o - 93]),
+        97..=100 => U8(&mut r.units_add[o - 97]),
+        101..=104 => U8(&mut r.units_add_named[o - 101]),
+        105..=108 => U8(&mut r.units_remove[o - 105]),
+        109..=112 => U8(&mut r.units_remove_named[o - 109]),
+        113..=116 => U8(&mut r.artifacts_add[o - 113]),
+        117..=120 => U8(&mut r.artifacts_remove[o - 117]),
+        121..=122 => U8(&mut r.activate_armies[o - 121]),
+        123 => U8(&mut r.deactivate_army),
+        124 => U16(&mut r.completes_quest),
+        126 => U16(&mut r.delay_hours),
+        128 | 130 | 132 | 134 => U16(&mut r.light_lanterns[(o - 128) / 2]),
+        136 => U8(&mut r.removed_units_to_army),
+        137 => U8(&mut r.new_hero_class),
+        138 => U16(&mut r.chained_event),
+        140 => U8(&mut e.subordinate),
+        141 => U8(&mut e.once),
+        142 => U8(&mut r.units_from_army),
+        143 => U8(&mut r.move_to_hero),
+        144 => U8(&mut r.show_army),
+        145 => U8(&mut r.hero_one_hp),
+        146 => U8(&mut c.army_at_home),
+        147 => U8(&mut r.start_battle_with),
+        148 => U8(&mut r.no_meeting),
+        149 => U8(&mut r.repeat_after_yes),
+        _ => return None,
+    })
+}
+
+/// The value of the field at byte `off` of an event record (see [`EventEngine::event_field`]).
+pub fn event_field(e: &Event, off: u16) -> Option<i64> {
+    field(&mut e.clone(), off).map(|f| f.get())
 }
 
 /// What the game has to show or do after the engine ran. World effects (gold, units, armies,
@@ -147,6 +328,42 @@ pub trait EventWorld {
     fn start_battle(&mut self, army: ArmyId);
     fn delay_player(&mut self, minutes: u64);
     fn hero_to_one_hp(&mut self);
+
+    // Community Update extensions. `unit` is a member of the holder's army in joining order
+    // (0 = its leader, the hero for the player); `None` means everyone.
+    /// "No meeting" + a spell: lift that lasting spell from the player's army.
+    fn remove_army_spell(&mut self, spell: u8);
+    /// Opcode 6: the unit wears exactly `items` (0 = an empty slot), fitting or not.
+    fn equip_unit(&mut self, holder: Holder, unit: u8, items: [u8; 4]);
+    /// Opcode 7: the unit becomes unit type `with`.
+    fn replace_unit(&mut self, holder: Holder, unit: u8, with: u8);
+    /// Opcode 8: the army's speed correction (the editor's −3..5).
+    fn set_army_speed(&mut self, holder: Holder, correction: i8);
+    /// Opcode 9: the army or building joins group 1 player, 2 ally, 3 neighbour, 4 enemy.
+    fn set_faction(&mut self, holder: Holder, group: u8);
+    /// Opcode 10: its relation (−3..3) towards group 0 player, 1 ally, 2 neighbour, 3 enemy.
+    fn set_relation(&mut self, holder: Holder, group: u8, value: i8);
+    /// Opcode 11: these spells last for good on the unit(s), replacing the lasting ones.
+    fn set_spells(&mut self, holder: Holder, unit: Option<u8>, spells: &[u8]);
+    /// Opcode 12: the unit becomes the scenario's named character `named` (1-based) of unit
+    /// type `class` (0: keep its type).
+    fn set_named_unit(&mut self, holder: Holder, unit: u8, named: u8, class: u8);
+    /// Opcode 13: experience for the unit(s).
+    fn give_unit_xp(&mut self, holder: Holder, unit: Option<u8>, xp: i64);
+    /// Opcode 14: all these spells last on the unit(s).
+    fn has_spells(&self, holder: Holder, unit: Option<u8>, spells: &[u8]) -> bool;
+    /// Opcode 16: the spell leaves the hero's spell book.
+    fn forget_spell(&mut self, spell: u8);
+    /// Opcode 17: the army's figure on the map (model 0–12).
+    fn set_army_model(&mut self, holder: Holder, model: u8);
+    /// Opcode 18: a random number in `lo..=hi`.
+    fn random(&mut self, lo: i64, hi: i64) -> i64;
+    /// Opcode 19: the AI army heads for cell (x, y).
+    fn set_army_target(&mut self, army: ArmyId, x: i32, y: i32);
+    /// Opcode 19 (condition): the army stands on cell (x, y).
+    fn army_at(&self, army: ArmyId, x: i32, y: i32) -> bool;
+    /// Opcode 20: the player's army moves to cell (x, y) and looks around.
+    fn teleport_player(&mut self, x: i32, y: i32);
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -184,6 +401,21 @@ pub struct EventEngine {
     ended: Option<EventOutcome>,
     #[serde(skip)]
     extensions: Vec<(EventId, Extension)>,
+    /// Community opcodes 1–2: fields of events changed by other events (event, byte offset,
+    /// value), put back into the events when a save is loaded.
+    #[serde(default)]
+    edits: Vec<(EventId, u16, i64)>,
+    /// Community opcode 15: the campaign branch chosen (map number, variant).
+    #[serde(default)]
+    branch: Option<(i16, i16)>,
+    /// The unit type of each named character (1-based), for opcode 12.
+    #[serde(skip)]
+    named_units: Vec<u8>,
+    /// The scenario's next map (campaigns) and what carries over to it (header 0x110).
+    #[serde(skip)]
+    next_map: String,
+    #[serde(skip)]
+    carry_over: [u8; 7],
 }
 
 /// `Some(occurrence)` while the window is open at `now`. Duration 0 means "no end" *(guess)*.
@@ -243,7 +475,11 @@ impl EventEngine {
         for p in &s.points {
             places.push((Place::Point(p.id), p.events().collect()));
         }
-        EventEngine::from_parts(s.events.clone(), places, s.header.victory_event, s.header.defeat_event)
+        let mut g = EventEngine::from_parts(s.events.clone(), places, s.header.victory_event, s.header.defeat_event);
+        g.named_units = s.named_characters.iter().map(|n| n.unit).collect();
+        g.next_map = s.next_map.clone();
+        g.carry_over = s.header.carry_over;
+        g
     }
 
     /// The engine for hand-made events. `places` lists the local events of each place.
@@ -263,8 +499,7 @@ impl EventEngine {
                 }
             }
         }
-        let extensions =
-            events.iter().enumerate().filter_map(|(i, e)| Some((i as EventId + 1, extension(e)?))).collect();
+        let extensions = Self::extensions_of(&events);
         EventEngine {
             state: vec![EventState { armed: true, ..EventState::default() }; n],
             events,
@@ -278,7 +513,63 @@ impl EventEngine {
             last_place: None,
             ended: None,
             extensions,
+            edits: Vec::new(),
+            branch: None,
+            named_units: Vec::new(),
+            next_map: String::new(),
+            carry_over: [0; 7],
         }
+    }
+
+    /// Unit types of the scenario's named characters, in order (hand-made engines).
+    pub fn set_named_units(&mut self, units: Vec<u8>) {
+        self.named_units = units;
+    }
+
+    /// The next map of a campaign, as the scenario names it (may be empty).
+    pub fn next_map_name(&self) -> &str {
+        &self.next_map
+    }
+
+    /// Sets the scenario's next map and carry-over flags (hand-made engines).
+    pub fn set_next_map(&mut self, name: &str, carry_over: [u8; 7]) {
+        self.next_map = name.to_string();
+        self.carry_over = carry_over;
+    }
+
+    /// What carries over to the next map (header 0x110, in UI order: gold, gods' favour,
+    /// fame, experience/level, personal artifacts, whole inventory, whole army).
+    pub fn carry_over(&self) -> [u8; 7] {
+        self.carry_over
+    }
+
+    /// The campaign branch an opcode 15 event chose: (map number, variant).
+    pub fn campaign_branch(&self) -> Option<(i16, i16)> {
+        self.branch
+    }
+
+    /// The value of the field at byte `off` of event `id` as it stands now (Community
+    /// opcodes 1–5 read and change these).
+    pub fn event_field(&self, id: EventId, off: u16) -> Option<i64> {
+        event_field(self.event(id)?, off)
+    }
+
+    /// Sets the field at byte `off` of event `id` (clamped to its range) and records it for
+    /// saves.
+    fn set_event_field(&mut self, id: EventId, off: u16, v: i64) {
+        let Some(e) = (id as usize).checked_sub(1).and_then(|i| self.events.get_mut(i)) else { return };
+        let Some(mut f) = field(e, off) else { return };
+        f.set(v);
+        let now = f.get();
+        match self.edits.iter_mut().find(|(i, o, _)| (*i, *o) == (id, off)) {
+            Some(edit) => edit.2 = now,
+            None => self.edits.push((id, off, now)),
+        }
+        self.extensions = Self::extensions_of(&self.events);
+    }
+
+    fn extensions_of(events: &[Event]) -> Vec<(EventId, Extension)> {
+        events.iter().enumerate().filter_map(|(i, e)| Some((i as EventId + 1, extension(e)?))).collect()
     }
 
     /// Puts back what a save leaves out (the events, places, victory and defeat events)
@@ -291,7 +582,13 @@ impl EventEngine {
         self.places = fresh.places;
         self.victory = fresh.victory;
         self.defeat = fresh.defeat;
-        self.extensions = fresh.extensions;
+        self.named_units = fresh.named_units;
+        self.next_map = fresh.next_map;
+        self.carry_over = fresh.carry_over;
+        for (id, off, v) in std::mem::take(&mut self.edits) {
+            self.set_event_field(id, off, v);
+        }
+        self.extensions = Self::extensions_of(&self.events);
         Ok(())
     }
 
@@ -353,7 +650,7 @@ impl EventEngine {
         self.ended.as_ref()
     }
 
-    /// Community extensions in the scenario (not carried out).
+    /// Community extensions in the scenario.
     pub fn extensions(&self) -> &[(EventId, Extension)] {
         &self.extensions
     }
@@ -413,7 +710,7 @@ impl EventEngine {
                 e.kind() == Some(EventKind::Rumour)
                     && !self.done(id)
                     && (e.subordinate != 0 || self.window_of(id, now).is_some())
-                    && self.conditions_hold(e, w)
+                    && self.conditions_hold(id, w)
             })
             .collect()
     }
@@ -489,7 +786,7 @@ impl EventEngine {
                 st.window = Some(occurrence);
                 st.armed = true;
             }
-            let holds = self.conditions_hold(&self.events[id as usize - 1], w);
+            let holds = self.conditions_hold(id, w);
             if !holds {
                 // Re-armed: a repeatable event fires again once its conditions hold again.
                 self.st_mut(id).armed = true;
@@ -537,7 +834,7 @@ impl EventEngine {
                 self.flags.remove(x);
             }
         }
-        self.apply(&e, w);
+        self.apply(id, &e, w);
         if e.kind() == Some(EventKind::Quest) && !self.journal.contains(&id) && !self.completed.contains(&id) {
             self.journal.push(id);
             out.push(EventOutcome::QuestAdded(id));
@@ -564,17 +861,22 @@ impl EventEngine {
         let next = e.results.chained_event;
         if depth < CHAIN_DEPTH && self.event(next).is_some() && !self.done(next) {
             // A chained event ignores its window and place, but not its conditions.
-            if self.conditions_hold(&self.events[next as usize - 1], w) {
+            if self.conditions_hold(next, w) {
                 self.start(next, w, out, depth + 1);
             }
         }
     }
 
     /// The world effects of an event's results.
-    fn apply(&self, e: &Event, w: &mut dyn EventWorld) {
+    fn apply(&mut self, id: EventId, e: &Event, w: &mut dyn EventWorld) {
         let r = &e.results;
         let ext = extension(e);
         let opcode = matches!(ext, Some(Extension::Opcode(_)));
+        // Opcodes 6, 11, 14 and 16 take their items or spells from these lists.
+        let op = match ext {
+            Some(Extension::Opcode(op)) => op,
+            _ => 0,
+        };
         if !opcode {
             // Opcodes use the resource fields as their arguments.
             if r.experience != 0 {
@@ -590,11 +892,17 @@ impl EventEngine {
                 w.change_patrol(r.patrol_army, r.patrol_delta);
             }
         }
-        if r.cast_spell != 0 && ext != Some(Extension::RemoveSpell) {
-            w.apply_spell(r.cast_spell);
+        if r.cast_spell != 0 {
+            if ext == Some(Extension::RemoveSpell) {
+                w.remove_army_spell(r.cast_spell);
+            } else {
+                w.apply_spell(r.cast_spell);
+            }
         }
-        for s in nonzero(&r.spells_learned) {
-            w.learn_spell(s);
+        if !matches!(op, 11 | 14 | 16) {
+            for s in nonzero(&r.spells_learned) {
+                w.learn_spell(s);
+            }
         }
         let from = (r.units_from_army != 0).then_some(r.units_from_army);
         for (i, u) in r.units_add.iter().enumerate() {
@@ -612,8 +920,10 @@ impl EventEngine {
             };
             w.remove_unit(pick, r.units_remove_named[i], to);
         }
-        for a in nonzero(&r.artifacts_add) {
-            w.give_item(a);
+        if op != 6 {
+            for a in nonzero(&r.artifacts_add) {
+                w.give_item(a);
+            }
         }
         for a in nonzero(&r.artifacts_remove) {
             w.take_item(a);
@@ -647,8 +957,144 @@ impl EventEngine {
         if r.no_meeting != 0 && e.conditions.meet_army != 0 {
             w.forget_meeting(e.conditions.meet_army);
         }
+        if op != 0 {
+            self.run_opcode(id, op, e, w);
+        }
         if r.start_battle_with != 0 {
             w.start_battle(r.start_battle_with);
+        }
+    }
+
+    /// The effect of a Community opcode (mechanics.md §6; arguments: XP `x`, gold `g`, mana
+    /// `m`).
+    fn run_opcode(&mut self, id: EventId, op: u8, e: &Event, w: &mut dyn EventWorld) {
+        let r = &e.results;
+        let (x, g, m) = (r.experience, r.gold, r.mana);
+        let holder = Holder::from_code(x);
+        // −1 (any negative) means the whole army; slots past 255 do not exist.
+        let units = |v: i16| if v < 0 { None } else { Some(v.min(255) as u8) };
+        let unit = u8::try_from(g).ok();
+        let spells: Vec<u8> = nonzero(&r.spells_learned).collect();
+        match op {
+            1..=5 => {
+                for ed in event_edits(e) {
+                    let (Some(target), Ok(off)) = (self.shifted(id, ed.shift), u16::try_from(ed.field)) else { continue };
+                    let Some(old) = self.event_field(target, off) else { continue };
+                    match ed.action {
+                        1 => self.set_event_field(target, off, old + ed.value as i64),
+                        2 => self.set_event_field(target, off, ed.value as i64),
+                        _ => {}
+                    }
+                }
+            }
+            6 => {
+                if let (Some(h), Some(u)) = (holder, unit) {
+                    w.equip_unit(h, u, r.artifacts_add);
+                }
+            }
+            7 => {
+                if let (Some(h), Some(u), Ok(with)) = (holder, unit, u8::try_from(m)) {
+                    w.replace_unit(h, u, with);
+                }
+            }
+            8 => {
+                if let Some(h) = holder {
+                    w.set_army_speed(h, speed_correction(g));
+                }
+            }
+            9 => {
+                if let (Some(h), Some(group)) = (holder, unit.filter(|u| (1..=4).contains(u))) {
+                    w.set_faction(h, group);
+                }
+            }
+            10 => {
+                if let (Some(h), Some(group)) = (holder, unit.filter(|u| *u <= 3)) {
+                    w.set_relation(h, group, m.clamp(-3, 3) as i8);
+                }
+            }
+            11 => {
+                if let Some(h) = holder {
+                    w.set_spells(h, units(g), &spells);
+                }
+            }
+            12 => {
+                if let (Some(h), Some(u), Ok(named)) = (holder, unit, u8::try_from(m)) {
+                    let class = (named as usize).checked_sub(1).and_then(|k| self.named_units.get(k)).copied().unwrap_or(0);
+                    w.set_named_unit(h, u, named, class);
+                }
+            }
+            13 => {
+                if let Some(h) = holder {
+                    w.give_unit_xp(h, units(g), m as i64);
+                }
+            }
+            15 => self.branch = Some((x, g)),
+            16 => {
+                for s in spells {
+                    w.forget_spell(s);
+                }
+            }
+            17 => {
+                if let (Some(h @ (Holder::Player | Holder::Army(_))), Some(model)) = (holder, unit) {
+                    w.set_army_model(h, model);
+                }
+            }
+            18 => {
+                // A flag RAND<c>, c a random character between the two codes (cp1251); an
+                // existing RAND flag is drawn anew.
+                let (lo, hi) = (x.clamp(0, 255) as i64, g.clamp(0, 255) as i64);
+                let code = w.random(lo.min(hi), lo.max(hi)).clamp(0, 255) as u8;
+                let name = format!("{RANDOM_FLAG}{}", crate::dt::text::decode(&[code]));
+                self.flags.retain(|f| !is_random_flag(f));
+                self.flags.insert(name);
+            }
+            19 => {
+                if let Ok(army @ 1..=255) = u8::try_from(x) {
+                    w.set_army_target(army, g as i32, m as i32);
+                }
+            }
+            20 => w.teleport_player(x as i32, g as i32),
+            _ => {}
+        }
+    }
+
+    /// Event `id` moved by `shift` places, if it exists.
+    fn shifted(&self, id: EventId, shift: i16) -> Option<EventId> {
+        let t = EventId::try_from(id as i32 + shift as i32).ok()?;
+        self.event(t).map(|_| t)
+    }
+
+    /// The conditions Community opcodes add: comparisons with other events' fields (3–5),
+    /// spells on an army (14) and an AI army's position (19). A comparison with an event or
+    /// field that does not exist is ignored *(guess)*.
+    fn opcode_conditions_hold(&self, id: EventId, e: &Event, w: &dyn EventWorld) -> bool {
+        let Some(Extension::Opcode(op)) = extension(e) else { return true };
+        let (r, c) = (&e.results, &e.conditions);
+        match op {
+            1..=5 => event_edits(e).iter().all(|ed| {
+                let Some(target) = self.shifted(id, ed.shift) else { return true };
+                let Some(have) = u16::try_from(ed.field).ok().and_then(|off| self.event_field(target, off)) else { return true };
+                let v = ed.value as i64;
+                match ed.action {
+                    3 => have <= v,
+                    4 => have == v,
+                    5 => have >= v,
+                    _ => true,
+                }
+            }),
+            14 => {
+                let spells: Vec<u8> = nonzero(&r.spells_learned).collect();
+                let units = if r.gold < 0 { None } else { u8::try_from(r.gold).ok() };
+                match Holder::from_code(r.experience) {
+                    Some(h) => w.has_spells(h, units, &spells),
+                    None => false,
+                }
+            }
+            19 => match u8::try_from(c.army_strength) {
+                Ok(army @ 1..=255) => w.army_at(army, c.gold as i32, c.holiness_mana as i32),
+                _ => true,
+            },
+            _ => true,
         }
     }
 
@@ -657,7 +1103,11 @@ impl EventEngine {
     // ---------------------------------------------------------------------------------------
 
     /// All conditions except the time window, the place and the question.
-    fn conditions_hold(&self, e: &Event, w: &dyn EventWorld) -> bool {
+    fn conditions_hold(&self, id: EventId, w: &dyn EventWorld) -> bool {
+        let e = &self.events[id as usize - 1];
+        if !self.opcode_conditions_hold(id, e, w) {
+            return false;
+        }
         let c = &e.conditions;
         if e.archetype != 0 && e.archetype != w.hero_archetype() {
             return false;
@@ -760,6 +1210,19 @@ pub(crate) mod mock {
         Battle(ArmyId),
         Delay(u64),
         OneHp,
+        Unspell(u8),
+        Equip(Holder, u8, [u8; 4]),
+        Replace(Holder, u8, u8),
+        Speed(Holder, i8),
+        Faction(Holder, u8),
+        Relation(Holder, u8, i8),
+        SetSpells(Holder, Option<u8>, Vec<u8>),
+        Named(Holder, u8, u8, u8),
+        UnitXp(Holder, Option<u8>, i64),
+        Forget(u8),
+        Model(Holder, u8),
+        Target(ArmyId, i32, i32),
+        Teleport(i32, i32),
     }
 
     #[derive(Clone, Debug, Default)]
@@ -781,6 +1244,12 @@ pub(crate) mod mock {
         pub home: HashSet<ArmyId>,
         pub met: HashSet<ArmyId>,
         pub place: Option<Place>,
+        /// Lasting spells by holder (opcodes 11 and 14).
+        pub spells_on: HashMap<Holder, Vec<u8>>,
+        /// Army cells (opcode 19).
+        pub army_cells: HashMap<ArmyId, (i32, i32)>,
+        /// What `random` returns, in turn (else the low end).
+        pub rolls: Vec<i64>,
         pub log: Vec<Fx>,
     }
 
@@ -914,6 +1383,60 @@ pub(crate) mod mock {
         }
         fn hero_to_one_hp(&mut self) {
             self.log.push(Fx::OneHp);
+        }
+        fn remove_army_spell(&mut self, spell: u8) {
+            self.log.push(Fx::Unspell(spell));
+        }
+        fn equip_unit(&mut self, holder: Holder, unit: u8, items: [u8; 4]) {
+            self.log.push(Fx::Equip(holder, unit, items));
+        }
+        fn replace_unit(&mut self, holder: Holder, unit: u8, with: u8) {
+            self.log.push(Fx::Replace(holder, unit, with));
+        }
+        fn set_army_speed(&mut self, holder: Holder, correction: i8) {
+            self.log.push(Fx::Speed(holder, correction));
+        }
+        fn set_faction(&mut self, holder: Holder, group: u8) {
+            self.log.push(Fx::Faction(holder, group));
+        }
+        fn set_relation(&mut self, holder: Holder, group: u8, value: i8) {
+            self.log.push(Fx::Relation(holder, group, value));
+        }
+        fn set_spells(&mut self, holder: Holder, unit: Option<u8>, spells: &[u8]) {
+            self.spells_on.insert(holder, spells.to_vec());
+            self.log.push(Fx::SetSpells(holder, unit, spells.to_vec()));
+        }
+        fn set_named_unit(&mut self, holder: Holder, unit: u8, named: u8, class: u8) {
+            self.log.push(Fx::Named(holder, unit, named, class));
+        }
+        fn give_unit_xp(&mut self, holder: Holder, unit: Option<u8>, xp: i64) {
+            self.log.push(Fx::UnitXp(holder, unit, xp));
+        }
+        fn has_spells(&self, holder: Holder, _unit: Option<u8>, spells: &[u8]) -> bool {
+            let on = self.spells_on.get(&holder).cloned().unwrap_or_default();
+            spells.iter().all(|s| on.contains(s))
+        }
+        fn forget_spell(&mut self, spell: u8) {
+            self.log.push(Fx::Forget(spell));
+        }
+        fn set_army_model(&mut self, holder: Holder, model: u8) {
+            self.log.push(Fx::Model(holder, model));
+        }
+        fn random(&mut self, lo: i64, hi: i64) -> i64 {
+            if self.rolls.is_empty() {
+                lo
+            } else {
+                self.rolls.remove(0).clamp(lo, hi)
+            }
+        }
+        fn set_army_target(&mut self, army: ArmyId, x: i32, y: i32) {
+            self.log.push(Fx::Target(army, x, y));
+        }
+        fn army_at(&self, army: ArmyId, x: i32, y: i32) -> bool {
+            self.army_cells.get(&army) == Some(&(x, y))
+        }
+        fn teleport_player(&mut self, x: i32, y: i32) {
+            self.log.push(Fx::Teleport(x, y));
         }
     }
 }
@@ -1403,7 +1926,7 @@ mod tests {
     }
 
     #[test]
-    fn community_extensions_are_reported_not_run() {
+    fn community_extensions_are_listed_and_run() {
         let mut edit = global();
         (edit.results.no_meeting, edit.results.patrol_delta, edit.results.gold) = (1, 2, 85);
         let mut unspell = global();
@@ -1414,8 +1937,178 @@ mod tests {
         assert_eq!(g.extensions(), &[(1, Extension::Opcode(2)), (2, Extension::RemoveSpell)]);
         let mut w = MockWorld::new();
         w.met.insert(1);
-        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2, 3], "the rest of the event still runs");
-        assert_eq!(w.log, vec![Fx::ForgetMeeting(1)]);
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2, 3]);
+        assert_eq!(w.log, vec![Fx::Unspell(13), Fx::ForgetMeeting(1)], "the spell is lifted, not cast; no gold");
+    }
+
+    /// A Community opcode event: "no meeting", patrol value `code`, resources (XP, gold, mana).
+    fn op(code: i8, x: i16, g: i16, m: i16) -> Event {
+        let mut e = global();
+        (e.results.no_meeting, e.results.patrol_delta) = (1, code);
+        (e.results.experience, e.results.gold, e.results.mana) = (x, g, m);
+        e
+    }
+
+    /// An event only a chain fires, giving 5 gold.
+    fn target_event() -> Event {
+        let mut e = global();
+        e.subordinate = 1;
+        e.results.gold = 5;
+        e
+    }
+
+    #[test]
+    fn opcodes_1_and_2_add_to_and_set_other_events_fields() {
+        let mut second = op(1, 0, 0, 0);
+        // Second setting: action 1 (add), shift −3, field 83 (XP), value 100.
+        (second.conditions.squad_count, second.conditions.gold, second.conditions.level, second.conditions.holiness_mana) = (1, -3, 83, 100);
+        let events = vec![target_event(), op(1, -1, 85, 2), op(2, -2, 89, 40), second];
+        let mut g = engine(events.clone());
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![2, 3, 4]);
+        assert_eq!([g.event_field(1, 85), g.event_field(1, 89), g.event_field(1, 83)], [Some(7), Some(40), Some(100)]);
+        assert_eq!(g.event_field(1, 86), None, "inside a field");
+        assert!(w.log.is_empty() && w.gold == 0, "the resources are arguments: {:?}", w.log);
+        // A save keeps the edits.
+        let saved: EventEngine = serde_json::from_str(&serde_json::to_string(&g).unwrap()).unwrap();
+        let mut loaded = saved;
+        loaded.restore_statics(engine(events)).unwrap();
+        assert_eq!(loaded.event_field(1, 85), Some(7));
+        // The edited event gives 7 gold when chained.
+        let mut chain = global();
+        chain.results.chained_event = 1;
+        let mut g = engine(vec![target_event(), op(1, -1, 85, 2), chain]);
+        tick_at(&mut g, &mut w, 0);
+        assert_eq!(w.log, vec![Fx::Gold(7)]);
+    }
+
+    #[test]
+    fn opcodes_3_to_5_compare_other_events_fields() {
+        let mut second = op(1, 0, 0, 0);
+        (second.conditions.squad_count, second.conditions.gold, second.conditions.level, second.conditions.holiness_mana) = (5, -7, 85, 6);
+        let events = vec![
+            target_event(),
+            op(3, -1, 85, 4), // 5 > 4: no
+            op(3, -2, 85, 5), // yes
+            op(4, -3, 85, 5), // equal: yes
+            op(4, -4, 85, 6), // no
+            op(5, -5, 85, 6), // 5 < 6: no
+            op(5, -6, 85, 5), // yes
+            second,           // second setting: 5 < 6: no
+            op(3, 40, 85, 0), // no such event: ignored, fires
+        ];
+        let mut g = engine(events);
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![3, 4, 7, 9]);
+    }
+
+    #[test]
+    fn opcodes_6_to_20_act_through_the_world() {
+        let mut equip = op(6, 3, 1, 0);
+        equip.results.artifacts_add = [7, 0, 9, 0];
+        let mut spells = op(11, 2, -1, 0);
+        spells.results.spells_learned = [4, 5, 0, 0];
+        let mut forget = op(16, 0, 0, 0);
+        forget.results.spells_learned = [3, 0, 0, 0];
+        let events = vec![
+            equip,
+            op(6, -2, 0, 0),
+            op(7, 0, 4, 12),
+            op(8, 0, 1, 0),
+            op(8, 5, 8, 0),
+            op(9, -1, 4, 0),
+            op(10, 2, 0, -3),
+            spells,
+            op(12, 4, 7, 2),
+            op(13, 2, -1, 2000),
+            forget,
+            op(17, 9, 12, 0),
+            op(19, 6, 19, 11),
+            op(20, 30, 10, 0),
+        ];
+        let n = events.len() as u16;
+        let mut g = engine(events);
+        g.set_named_units(vec![0, 42]);
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 0), (1..=n).collect::<Vec<_>>());
+        use Holder::*;
+        assert_eq!(
+            w.log,
+            vec![
+                Fx::Equip(Army(3), 1, [7, 0, 9, 0]),
+                Fx::Equip(Building(2), 0, [0; 4]),
+                Fx::Replace(Player, 4, 12),
+                Fx::Speed(Player, 5),
+                Fx::Speed(Army(5), -3),
+                Fx::Faction(Building(1), 4),
+                Fx::Relation(Army(2), 0, -3),
+                Fx::SetSpells(Army(2), None, vec![4, 5]),
+                Fx::Named(Army(4), 7, 2, 42),
+                Fx::UnitXp(Army(2), None, 2000),
+                Fx::Forget(3),
+                Fx::Model(Army(9), 12),
+                Fx::Target(6, 19, 11),
+                Fx::Teleport(30, 10),
+            ],
+            "no items given, spells learned, XP or gold"
+        );
+    }
+
+    #[test]
+    fn opcode_8_speed_codes() {
+        assert_eq!([1, 5, 6, 8, 0].map(speed_correction), [5, 1, -1, -3, 0]);
+    }
+
+    #[test]
+    fn opcode_14_checks_lasting_spells() {
+        let mut check = op(14, 2, -1, 0);
+        check.results.spells_learned = [4, 5, 0, 0];
+        let mut g = engine(vec![many(check)]);
+        let mut w = MockWorld::new();
+        w.spells_on.insert(Holder::Army(2), vec![4]);
+        assert!(tick_at(&mut g, &mut w, 0).is_empty(), "spell 5 missing");
+        w.spells_on.insert(Holder::Army(2), vec![5, 1, 4]);
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1], "order does not matter");
+        assert!(w.log.is_empty(), "no spells learned");
+    }
+
+    #[test]
+    fn opcode_15_records_the_campaign_branch() {
+        let mut branch = op(15, 3, 2, 0);
+        branch.results.chained_event = 2;
+        let mut win = global();
+        win.subordinate = 1;
+        let mut g = EventEngine::from_parts(vec![branch, win], Vec::new(), 2, 0);
+        let mut w = MockWorld::new();
+        let out = g.tick(&mut w);
+        assert!(out.contains(&EventOutcome::Victory(2)));
+        assert_eq!(g.campaign_branch(), Some((3, 2)));
+    }
+
+    #[test]
+    fn opcode_18_draws_a_random_flag() {
+        let roll = many(op(18, 49, 57, 0));
+        let wants = titled(global(), "=RAND2");
+        let mut g = engine(vec![roll, wants]);
+        let mut w = MockWorld::new();
+        w.rolls = vec![53, 50];
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1]);
+        assert_eq!(g.flags().collect::<Vec<_>>(), vec!["RAND5"]);
+        assert_eq!(tick_at(&mut g, &mut w, DAY), vec![1, 2], "drawn anew: RAND2");
+        assert_eq!(g.flags().collect::<Vec<_>>(), vec!["RAND2"]);
+    }
+
+    #[test]
+    fn opcode_19_checks_an_army_position_and_sets_its_target() {
+        let mut e = many(op(19, 6, 19, 11));
+        (e.conditions.army_strength, e.conditions.gold, e.conditions.holiness_mana) = (6, 30, 10);
+        let mut g = engine(vec![e]);
+        let mut w = MockWorld::new();
+        w.army_cells.insert(6, (29, 10));
+        assert!(tick_at(&mut g, &mut w, 0).is_empty());
+        w.army_cells.insert(6, (30, 10));
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1]);
+        assert_eq!(w.log, vec![Fx::Target(6, 19, 11)]);
     }
 }
 
@@ -1499,7 +2192,7 @@ mod real_maps {
             let quests = g.journal().len() + g.completed_quests().len();
             println!(
                 "{}: {} events, {fired} fired ({} firings), {} questions, {} rumours, {quests} quests \
-                 ({} completed), {} loop guards, ended {:?}, {} unsupported extensions",
+                 ({} completed), {} loop guards, ended {:?}, {} Community extensions",
                 m.name,
                 s.events.len(),
                 g.total_fired(),
@@ -1515,6 +2208,6 @@ mod real_maps {
                 assert!(quests > 0);
             }
         }
-        println!("unsupported extensions in all maps: {extensions}");
+        println!("Community extensions in all maps: {extensions}");
     }
 }
