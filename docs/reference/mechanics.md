@@ -1,5 +1,11 @@
 # Discord Times — mechanics and data-file notes for the Razdor remake
 
+> **Superseded in part:** the rules read directly from the executable are in
+> [original-mechanics/](original-mechanics/README.md) (battle, world and AI, economy, spells,
+> events). Where they disagree with this file, they win; §8 below still lists what Razdor
+> does today.
+
+
 Written in our own words from the game's shipped help, the editor manual, the Community
 Update notes and, where those say nothing, a reading of `DiscordTimes.exe`
 (Delphi, Community Update 1.2 / game 1.8.1, `.mod` patch section included).
