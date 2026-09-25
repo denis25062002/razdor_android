@@ -1000,8 +1000,8 @@ Explored cells stay explored; there is no "seen before" state (the video).
   cell lands. Clicking water sails there (boarding first), clicking land while at sea
   lands. No speed of its own: a step at sea takes the water's cost × the hero's speed
   (coastal 5 minutes, shallows 10; the ranger 4 and 8). Planned at sea, land costs 5× and
-  footprints 6 (the MIXED map), and bridges are closed. **On landing the ship is gone**: the
-  original's route map returns to land only (world.md, M).
+  footprints 6 (the MIXED map), and bridges are closed. **On landing the ship waits** on the last water cell, where the
+  hero stepped ashore, and he boards it again by walking onto it (as in the original).
 - **Start at sea**: a preset on the water ("Тихая пристань") starts the hero aboard a ship
   *(guess)*.
 - **Fog**: the hero sees as far at sea as on land; routes need explored water as they need

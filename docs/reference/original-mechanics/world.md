@@ -244,7 +244,7 @@ unless noted. "Before" is what Razdor did until then.
 | Barracks | deterministic progress | random per night, p = 1/(10 div max) | done (`Recruit::regrow`) |
 | Garrison heal | at noon | at 00:00 | done (`Game::midnight`, `ai_midnight`) |
 | Army word 17 | extra income | starting gold; income = byte 80 × 10 | done (`AiProfile::extra_income`) |
-| Ship after landing | waits, re-boardable | route map returns to land-only on landing (M) | done: landing dismisses the ship |
+| Ship after landing | waits, re-boardable | route map returns to land-only on landing (M) | the ship waits at the last water cell and can be re-boarded (confirmed by the player's knowledge of the original; the M reading of the route map does not mean the ship is removed) |
 
 Also done from §2/§5: real-time pacing (`STEP_SECONDS` = 150 ms per step or wait tick), the
 AI clock (banked minutes, cap 200), respawn at the home building's centre (feudal fallbacks,

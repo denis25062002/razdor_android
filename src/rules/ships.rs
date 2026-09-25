@@ -223,14 +223,15 @@ impl Game {
     }
 
     /// After a step: on water the hero is aboard and the ship under him; stepping ashore
-    /// from it he lands and the ship is gone (the original's route map returns to land only;
-    /// world.md, M). A ship waiting at its mooring stays until he boards it.
+    /// from it he lands and the ship waits on the last water cell, where he left it, until he
+    /// walks back onto it (as in the original). A ship at its mooring stays until boarded.
     pub(crate) fn update_ship(&mut self) {
         let t = self.tile();
         let sea = self.world.is_sea(t);
         match self.ship {
             Some(_) if sea => self.ship = Some(Ship { tile: t, aboard: true }),
-            Some(s) if s.aboard => self.ship = None,
+            // `tile` still holds the water cell he stepped ashore from.
+            Some(s) if s.aboard => self.ship = Some(Ship { tile: s.tile, aboard: false }),
             _ => {}
         }
     }
@@ -360,8 +361,15 @@ mod tests {
         assert_eq!(g.tile(), (25, 5));
         let spent = g.clock.total_minutes() - before;
         assert!((spent - expected as f64).abs() < 1.0, "{spent} vs {expected}");
-        assert_eq!(g.ship, None, "landed: the route map is land only again, the ship is gone");
-        assert!(!g.can_sail_to((15, 5)));
+        // The ship waits on the last water cell, where he stepped ashore, and takes him back.
+        let moored = path[lands];
+        assert_eq!(g.ship, Some(Ship { tile: moored, aboard: false }), "landed: the ship waits where he left it");
+        assert!(g.can_sail_to((15, 5)));
+        assert!(g.set_destination((15, 5)), "back to sea from the shore");
+        let boards = g.path.iter().position(|&t| g.world.is_sea(t)).unwrap();
+        assert_eq!(g.path[boards], moored, "boards it where it waits");
+        walk_until_stopped(&mut g);
+        assert_eq!(g.ship, Some(Ship { tile: (15, 5), aboard: true }));
     }
 
     #[test]
@@ -424,9 +432,10 @@ mod tests {
         assert!(g.set_destination((4, 10)));
         let lands = g.path.iter().position(|&t| !g.world.is_sea(t)).unwrap();
         assert!(g.path[lands..].iter().all(|&t| !g.world.is_sea(t)), "sails, lands, then walks");
+        let moored = g.path[lands - 1];
         walk_until_stopped(&mut g);
         assert_eq!(g.tile(), (4, 10));
-        assert_eq!(g.ship, None);
+        assert_eq!(g.ship, Some(Ship { tile: moored, aboard: false }), "the ship waits at the shore");
     }
 
     #[test]
@@ -601,6 +610,6 @@ mod real_maps {
         }
         assert_eq!(g.location, Some(target));
         assert!(events.contains(&Event::Arrived(target)) || g.foe.is_some());
-        assert!(g.ship.is_none(), "landed: the ship is gone");
+        assert!(g.ship.is_none_or(|s| !s.aboard), "landed: the ship waits, not boarded");
     }
 }
