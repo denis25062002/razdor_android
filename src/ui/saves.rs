@@ -17,8 +17,6 @@ use super::widgets::*;
 use super::world_view;
 use super::Screen;
 
-const MARBLE: Color = Color::new(0.10, 0.20, 0.16, 0.98);
-const MARBLE_EDGE: Color = Color::new(0.38, 0.58, 0.46, 1.0);
 const ROW: Color = Color::new(0.16, 0.12, 0.10, 1.0);
 const ROWS: usize = 10;
 
@@ -131,11 +129,8 @@ fn window(title: &str) -> (f32, f32, f32, f32) {
     let (sw, sh) = (screen_width(), screen_height());
     let (w, h) = (1000.0f32.min(sw - 20.0), 600.0f32.min(sh - 40.0));
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0);
-    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.45));
-    draw_rectangle(x, y, w, h, MARBLE);
-    draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
-    draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
-    text_centered(title, x + w / 2.0, y + 22.0, 20.0, INK);
+    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.3));
+    super::chrome::window(Rect::new(x, y, w, h), title, super::chrome::Skin::Marble, false);
     (x, y, w, h)
 }
 
@@ -305,13 +300,11 @@ fn volume_row(label: &str, volume: f32, muted: bool, x: f32, y: f32, w: f32) -> 
 /// The Esc menu: back, save, load, main menu, and the music and sound volumes (+/- keys
 /// change the music volume; N anywhere turns the music off and on).
 pub fn menu(game: &Game, assets: &Assets, audio: &mut Settings) -> Option<Screen> {
-    world_view::backdrop(game, assets);
+    world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Menu));
     let (sw, sh) = (screen_width(), screen_height());
     let (w, h) = (380.0, 440.0);
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0 - 30.0);
-    draw_rectangle(x, y, w, h, MARBLE);
-    draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
-    text_centered("Menu", x + w / 2.0, y + 34.0, 26.0, ACCENT);
+    super::chrome::window(Rect::new(x, y, w, h), "Game menu", super::chrome::Skin::Marble, false);
     let bx = x + 40.0;
     let bw = w - 80.0;
     if button(bx, y + 60.0, bw, 44.0, "Back to the game", true) || key(KeyCode::Escape) {

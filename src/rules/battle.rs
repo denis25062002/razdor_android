@@ -461,6 +461,30 @@ const FAST_START: [Bonus; 3] = [Bonus::HorseAtack, Bonus::OldVampirsGist, Bonus:
 const PIERCE_MELEE: [Bonus; 4] = [Bonus::ArmorIgnore, Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::PoisonArmorIgnore];
 const PIERCE_SHOT: [Bonus; 3] = [Bonus::ArmorIgnore, Bonus::Artillery, Bonus::PoisonArmorIgnore];
 
+/// A blessing of power `p` in `school` on a unit that has an attack (before the target's
+/// nature and attack are taken into account).
+pub fn bless_effect(o: &super::content::GlobalOptions, school: MagicSchool, p: i32) -> Buff {
+    let (bm, bn, w) = (o.bless_main_spell.max(1), o.bless_next_spell.max(1), o.wizard_main_spell.max(1));
+    match school {
+        MagicSchool::Life => Buff { defence: 3 * p / (2 * bm) + 1, attack: 3 * p / (2 * bn), ..Buff::default() },
+        MagicSchool::Elemental => Buff { actions: actions_of_power(p), initiative: p / w + 1, ..Buff::default() },
+        MagicSchool::Death => Buff { attack: p / bm + 1, defence: p / bn, ..Buff::default() },
+    }
+}
+
+/// A curse of hostile power `p` (already reduced by the target's protection) in `school`,
+/// on a unit that has an attack.
+pub fn curse_effect(o: &super::content::GlobalOptions, school: MagicSchool, p: i32) -> Buff {
+    let (cm, cn, w) = (o.curse_main_spell.max(1), o.curse_next_spell.max(1), o.wizard_main_spell.max(1));
+    // Life divides by the integer ⅔ of CurseMainSpell (4ed3a8) and a fixed 10 (4ed3b0).
+    let life = (2 * cm / 3).max(1);
+    match school {
+        MagicSchool::Life => Buff { defence: -(p / life + 1), attack: -(p / 10), ..Buff::default() },
+        MagicSchool::Elemental => Buff { actions: -actions_of_power(p), initiative: -(1 + p / w), ..Buff::default() },
+        MagicSchool::Death => Buff { attack: -(1 + p / cm), defence: -(p / cn), ..Buff::default() },
+    }
+}
+
 /// `f(P)` of mechanics.md 3.3: actions added or removed by Elemental magic.
 fn actions_of_power(p: i32) -> i32 {
     match p {
@@ -587,6 +611,11 @@ impl Battle {
                 f.hp = (f.hp + (after - before).max(0)).min(after);
             }
         }
+    }
+
+    /// The defence bonus `team` has from standing in its own building (0 in the open).
+    pub fn building_defence(&self, team: Team) -> i32 {
+        self.building_defence[team.index()]
     }
 
     /// Extra defence of the building `team` fights in (garrisons). Set before [`Battle::begin`].
@@ -1290,14 +1319,10 @@ impl Battle {
 
     /// Blessing of power `p` by school (friendly: power not reduced).
     fn bless_of(&self, a: usize, t: usize, p: i32) -> Buff {
-        let o = self.opt();
-        let (bm, bn, w) = (o.bless_main_spell.max(1), o.bless_next_spell.max(1), o.wizard_main_spell.max(1));
         let target = &self.fighters[t];
         let mut b = match self.school(a) {
             MagicSchool::Life if matches!(target.stats.nature, Nature::Undead | Nature::Elemental) => Buff::default(),
-            MagicSchool::Life => Buff { defence: 3 * p / (2 * bm) + 1, attack: 3 * p / (2 * bn), ..Buff::default() },
-            MagicSchool::Elemental => Buff { actions: actions_of_power(p), initiative: p / w + 1, ..Buff::default() },
-            MagicSchool::Death => Buff { attack: p / bm + 1, defence: p / bn, ..Buff::default() },
+            school => bless_effect(self.opt(), school, p),
         };
         if !target.has_attack() {
             b.attack = 0;
@@ -1307,15 +1332,7 @@ impl Battle {
 
     /// Curse of hostile power `p` by school.
     fn curse_of(&self, a: usize, t: usize, p: i32) -> Buff {
-        let o = self.opt();
-        let (cm, cn, w) = (o.curse_main_spell.max(1), o.curse_next_spell.max(1), o.wizard_main_spell.max(1));
-        // Life divides by the integer ⅔ of CurseMainSpell (4ed3a8) and a fixed 10 (4ed3b0).
-        let life = (2 * cm / 3).max(1);
-        let mut b = match self.school(a) {
-            MagicSchool::Life => Buff { defence: -(p / life + 1), attack: -(p / 10), ..Buff::default() },
-            MagicSchool::Elemental => Buff { actions: -actions_of_power(p), initiative: -(1 + p / w), ..Buff::default() },
-            MagicSchool::Death => Buff { attack: -(1 + p / cm), defence: -(p / cn), ..Buff::default() },
-        };
+        let mut b = curse_effect(self.opt(), self.school(a), p);
         if !self.fighters[t].has_attack() {
             b.attack = 0;
         }

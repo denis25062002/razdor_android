@@ -11,7 +11,6 @@ use macroquad::prelude::*;
 use razdor::rules::battle::Team;
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
-use razdor::rules::formation::{Row, Slot};
 use razdor::rules::game::{Event, Foe, Game};
 use razdor::rules::town::first_tab;
 use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
@@ -22,6 +21,7 @@ use super::audio::{cue, Cue};
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
+use super::game_bar::{self, BarButton, Look};
 use super::minimap;
 use super::saves::{self, Back, LoadView, SaveView};
 use super::screens::squad_panel;
@@ -34,7 +34,9 @@ const PX: f32 = 32.0;
 const PANEL_W: f32 = 270.0;
 /// Sail colour of the hero's own ship.
 const HERO_SAIL: Color = Color::new(0.35, 0.8, 0.45, 1.0);
-const BAR_H: f32 = 84.0;
+fn bar_h() -> f32 {
+    super::chrome::bar_height()
+}
 use super::dialog::MANA;
 
 /// World-map view state kept between frames.
@@ -108,13 +110,13 @@ struct Camera {
 }
 
 impl Camera {
-    fn follow(game: &Game, zoom: f32) -> Camera {
-        Camera::looking_at(game, zoom, game.display_pos())
+    /// Centred on world position `at` (clamped to the map), in the map view left of the
+    /// side panel.
+    fn looking_at(game: &Game, zoom: f32, at: (f32, f32)) -> Camera {
+        Camera::looking_in(game, zoom, at, Rect::new(0.0, 0.0, screen_width() - PANEL_W, screen_height() - bar_h()))
     }
 
-    /// Centred on world position `at` (clamped to the map).
-    fn looking_at(game: &Game, zoom: f32, at: (f32, f32)) -> Camera {
-        let view = Rect::new(0.0, 0.0, screen_width() - PANEL_W, screen_height() - BAR_H);
+    fn looking_in(game: &Game, zoom: f32, at: (f32, f32), view: Rect) -> Camera {
         let map = &game.world.map;
         let scale = PX * zoom;
         let rh = map.grid.row_height();
@@ -498,17 +500,25 @@ fn draw_route(game: &Game, path: &[Tile], minutes: f32, cam: &Camera, color: Col
     let _ = game;
 }
 
-/// A 2×6 (or 3×4) mini formation of portraits.
+/// A 2×6 (or 3×4) mini formation of portraits, the front row at the bottom as the enemy's
+/// in battle; empty cells show their row's icon.
 fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x: f32, y: f32, cell: f32) -> f32 {
     let f = game.content.formation;
-    for r in 0..f.display_lines() {
+    let lines = f.display_lines();
+    for r in 0..lines {
         for col in 0..f.cols {
-            let Some(Slot { row, .. }) = f.at_display(r, col) else { continue };
-            let (cx, cy) = (x + col as f32 * (cell + 3.0), y + r as f32 * (cell + 3.0));
-            draw_rectangle(cx, cy, cell, cell, Color::new(0.0, 0.0, 0.0, 0.35));
-            draw_rectangle_lines(cx, cy, cell, cell, 1.0, if row == Row::Front { DIM } else { Color::new(0.4, 0.4, 0.4, 1.0) });
-            if let Some(t) = troops.iter().find(|t| f.display(t.slot) == (r, col)) {
-                assets.draw_unit(t.unit, team, cx + cell / 2.0, cy + cell / 2.0, cell);
+            let Some(slot) = f.at_display(r, col) else { continue };
+            let (cx, cy) = (x + col as f32 * (cell + 3.0), y + (lines - 1 - r) as f32 * (cell + 3.0));
+            let sq = Rect::new(cx, cy, cell, cell);
+            draw_rectangle(cx, cy, cell, cell, Color::new(0.0, 0.0, 0.0, 0.45));
+            draw_rectangle_lines(cx, cy, cell, cell, 1.0, Color::new(0.6, 0.6, 0.62, 0.8));
+            let troop = troops.iter().find(|t| f.display(t.slot) == (r, col));
+            if troop.is_none() {
+                super::chrome::cell_icon(super::chrome::CellIcon::of(f, slot), sq);
+            }
+            if let Some(t) = troop {
+                assets.draw_portrait(t.unit, team, sq);
+                draw_rectangle_lines(cx, cy, cell, cell, 1.0, Color::new(0.8, 0.8, 0.8, 0.9));
                 // The troop's level in the corner.
                 let lv = t.level.to_string();
                 let tw = measure(&lv, 14.0).width;
@@ -589,33 +599,43 @@ fn location_tooltip(game: &Game, l: &Location) -> Tooltip {
 }
 
 fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
-    let cell = 30.0;
+    use super::chrome::{shadow_centered, CREAM};
+    let cell = 40.0;
     let f = game.content.formation;
-    let grid_w = f.cols as f32 * (cell + 3.0);
+    let grid_w = f.cols as f32 * (cell + 3.0) - 3.0;
     let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 };
-    let w = [measure(&t.title, 22.0).width + 24.0, grid_w + 24.0, 250.0]
+    // A name in green (the leader) is drawn larger, as the original's.
+    let size = |c: Color| if c == GREEN { 20.0 } else { 16.0 };
+    let shown = |c: Color| match c {
+        c if c == INK => CREAM,
+        c if c == GREEN => Color::new(0.45, 1.0, 0.5, 1.0),
+        c => c,
+    };
+    let w = [measure(&t.title, 20.0).width + 40.0, grid_w + 24.0, 250.0]
         .into_iter()
-        .chain(t.lines.iter().chain(&t.footer).map(|(s, _)| measure(s, 16.0).width + 24.0))
+        .chain(t.lines.iter().chain(&t.footer).map(|(s, c)| measure(s, size(*c)).width + 24.0))
         .fold(0.0, f32::max)
-        .min(380.0);
-    let h = 34.0 + (t.lines.len() + t.footer.len()) as f32 * 19.0 + grid_h + 8.0;
+        .min(400.0);
+    let lines_h: f32 = t.lines.iter().chain(&t.footer).map(|(_, c)| size(*c) + 3.0).sum();
+    let h = 36.0 + lines_h + grid_h + 10.0;
     let (mx, my) = mouse_position();
     let x = (mx + 18.0).min(screen_width() - w - 4.0);
-    let y = (my + 18.0).min(screen_height() - h - 4.0);
-    draw_rectangle(x, y, w, h, Color::new(0.06, 0.12, 0.09, 0.93));
-    draw_rectangle_lines(x, y, w, h, 2.0, Color::new(0.35, 0.55, 0.4, 1.0));
-    text_centered(&t.title, x + w / 2.0, y + 24.0, 22.0, ACCENT);
+    let y = (my + 18.0).min(screen_height() - bar_h() - h - 4.0).max(2.0);
+    tooltip_panel(Rect::new(x, y, w, h));
+    draw_rectangle(x + 2.0, y + 2.0, w - 4.0, 26.0, Color::new(0.0, 0.0, 0.0, 0.3));
+    draw_line(x + 2.0, y + 28.0, x + w - 2.0, y + 28.0, 1.0, super::chrome::SILVER);
+    shadow_centered(&t.title, x + w / 2.0, y + 21.0, 18.0, CREAM);
     let mut ly = y + 34.0;
     for (s, c) in &t.lines {
-        text_centered(s, x + w / 2.0, ly + 14.0, 16.0, *c);
-        ly += 19.0;
+        shadow_centered(s, x + w / 2.0, ly + size(*c) - 2.0, size(*c), shown(*c));
+        ly += size(*c) + 3.0;
     }
     if !t.troops.is_empty() {
         ly += formation_grid(game, assets, &t.troops, t.team, x + (w - grid_w) / 2.0, ly + 4.0, cell) + 8.0;
     }
     for (s, c) in &t.footer {
-        text_centered(s, x + w / 2.0, ly + 14.0, 16.0, *c);
-        ly += 19.0;
+        shadow_centered(s, x + w / 2.0, ly + size(*c) - 2.0, size(*c), shown(*c));
+        ly += size(*c) + 3.0;
     }
 }
 
@@ -737,99 +757,66 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
     next
 }
 
-/// Gold, mana, income and wages along the bottom edge.
-fn resource_strip(game: &Game) {
-    let (w, h) = (screen_width(), screen_height());
-    let sy = h - 10.0;
-    let mut wages = format!("wages -{}", game.daily_wages());
-    if game.daily_mana_wages() > 0 {
-        wages += &format!(" / -{} mana", game.daily_mana_wages());
-    }
-    let items: [(String, Color); 4] = [
-        (format!("mana {}", game.mana), MANA),
-        (format!("gold {}", game.gold), ACCENT),
-        (format!("income +{}", game.daily_income()), INK),
-        (wages, rgb(240, 150, 60)),
-    ];
-    for (i, (s, c)) in items.iter().enumerate() {
-        text(s, 20.0 + i as f32 * (w - 40.0) / 4.0, sy, 20.0, *c);
-    }
-}
-
-/// The map under a building window or a dialog: drawn, not interactive.
-pub fn backdrop(game: &Game, assets: &Assets) {
+/// The map under a building window or a dialog: drawn over the whole screen, not
+/// interactive, with the bar's buttons greyed (`lit`: the open screen's button).
+pub fn backdrop_lit(game: &Game, assets: &Assets, lit: Option<BarButton>) {
     clear_background(rgb(10, 12, 10));
-    let cam = Camera::follow(game, 1.0);
+    let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
+    let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
     draw_world(game, assets, &cam);
     cam.draw_fog(game);
-    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.3));
-    let (w, h) = (screen_width(), screen_height());
-    draw_rectangle(0.0, h - BAR_H, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
-    text_centered(&format!("Time: {}", game.clock.label()), w / 2.0, h - BAR_H + 30.0, 20.0, INK);
-    resource_strip(game);
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.2));
+    game_bar::draw(game, |b| if Some(b) == lit { Look::Lit } else { Look::Grey });
 }
 
-fn bottom_bar(game: &mut Game, message: &mut Option<String>) -> Option<Screen> {
-    let (w, h) = (screen_width(), screen_height());
-    let y = h - BAR_H;
-    draw_rectangle(0.0, y, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
-    draw_line(0.0, y, w, y, 2.0, Color::new(0.35, 0.45, 0.4, 1.0));
-    let mut next = None;
+pub fn backdrop(game: &Game, assets: &Assets) {
+    backdrop_lit(game, assets, None);
+}
+
+/// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
+/// minimap was toggled.
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
     let idle = game.foe.is_none();
-    // Waits play in real time, a 30-minute tick every 150 ms (`Game::tick`).
-    let can_wait = idle && !game.waiting();
-    if button(8.0, y + 8.0, 96.0, 40.0, "Wait 1 h", can_wait) || (can_wait && key(KeyCode::Key1)) {
-        game.begin_wait(1);
-    }
-    if button(110.0, y + 8.0, 96.0, 40.0, "Wait 4 h", can_wait) || (can_wait && key(KeyCode::Key4)) {
-        game.begin_wait(4);
-    }
-    if (button(212.0, y + 8.0, 104.0, 40.0, "Spells (B)", idle) || (idle && key(KeyCode::B))) && next.is_none() {
-        game.stop();
-        *message = None;
-        next = Some(Screen::Spellbook { selected: 0 });
-    }
-    if button(322.0, y + 8.0, 70.0, 40.0, "Save", idle) && next.is_none() {
-        game.stop();
-        next = Some(Screen::Save(SaveView::new(game, Back::Map)));
-    }
-    if button(398.0, y + 8.0, 70.0, 40.0, "Load", true) && next.is_none() {
-        game.stop();
-        next = Some(Screen::Load(LoadView::new(Back::Map)));
-    }
-    // Time panel: between the left buttons and the minimap button.
-    let (px, pr) = (476.0, w - 498.0);
-    let (pw, cx) = ((pr - px).max(200.0), (px + pr) / 2.0);
-    draw_rectangle(px, y + 6.0, pw, 46.0, Color::new(0.42, 0.20, 0.14, 1.0));
-    draw_rectangle_lines(px, y + 6.0, pw, 46.0, 2.0, Color::new(0.6, 0.45, 0.3, 1.0));
-    let label = game.clock.label();
-    let size = if measure(&label, 20.0).width < pw - 12.0 { 20.0 } else { 17.0 };
-    text_centered(&label, cx, y + 25.0, size, INK);
-    if game.moving() {
-        let left = format!("Path left: {}", duration_label(game.minutes_left() as f64));
-        text_centered(&left, cx, y + 45.0, 17.0, ACCENT);
-    } else if game.waiting() {
-        text_centered("waiting…", cx, y + 45.0, 17.0, ACCENT);
-    } else {
-        text_centered("time stands still", cx, y + 45.0, 16.0, DIM);
-    }
     let quests = game.script().map(|s| s.journal().len());
-    let label = quests.map_or("Journal".to_string(), |n| format!("Journal ({n})"));
-    if (button(w - 366.0, y + 8.0, 132.0, 40.0, &label, quests.is_some()) || (quests.is_some() && key(KeyCode::J))) && next.is_none() {
-        game.stop();
-        next = Some(Screen::Journal { selected: 0 });
+    let modal = input_blocked();
+    let look = |b: BarButton| match b {
+        _ if modal => Look::Grey,
+        BarButton::Journal if quests.is_none() => Look::Grey,
+        BarButton::Save | BarButton::Spells if !idle => Look::Grey,
+        BarButton::Map if minimap_open => Look::Glow,
+        _ => Look::Normal,
+    };
+    let mut pressed = game_bar::draw(game, look);
+    if pressed.is_none() {
+        pressed = if key(KeyCode::Escape) {
+            Some(BarButton::Menu)
+        } else if idle && key(KeyCode::B) {
+            Some(BarButton::Spells)
+        } else if quests.is_some() && key(KeyCode::J) {
+            Some(BarButton::Journal)
+        } else {
+            None
+        };
     }
-    if button(w - 228.0, y + 8.0, 100.0, 40.0, "Squad", true) && next.is_none() {
+    let next = match pressed {
+        Some(BarButton::Menu | BarButton::Settings) => Some(Screen::Menu),
+        Some(BarButton::Save) => Some(Screen::Save(SaveView::new(game, Back::Map))),
+        Some(BarButton::Load) => Some(Screen::Load(LoadView::new(Back::Map))),
+        Some(BarButton::Journal) => Some(Screen::Journal { selected: 0 }),
+        Some(BarButton::Squad) => {
+            *message = None;
+            Some(Screen::Squad { selected: 0, scroll: 0, back: None })
+        }
+        Some(BarButton::Spells) => {
+            *message = None;
+            Some(Screen::Spellbook { selected: 0 })
+        }
+        Some(BarButton::Map) | None => None,
+    };
+    if next.is_some() {
         game.stop();
-        *message = None;
-        next = Some(Screen::Squad { selected: 0, scroll: 0, back: None });
     }
-    if (button(w - 122.0, y + 8.0, 114.0, 40.0, "Menu (Esc)", true) || key(KeyCode::Escape)) && next.is_none() {
-        game.stop();
-        next = Some(Screen::Menu);
-    }
-    resource_strip(game);
-    next
+    (next, pressed == Some(BarButton::Map))
 }
 
 pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
@@ -912,8 +899,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 
     // Side panel.
     let x = screen_width() - PANEL_W;
-    let panel_h = screen_height() - BAR_H;
-    draw_rectangle(x, 0.0, PANEL_W, panel_h, rgb(28, 26, 24));
+    let panel_h = screen_height() - bar_h();
+    super::chrome::surface(Rect::new(x, 0.0, PANEL_W, panel_h), super::chrome::Skin::Marble);
+    draw_rectangle(x, 0.0, PANEL_W, panel_h, Color::new(0.0, 0.0, 0.0, 0.25));
+    draw_line(x + 1.0, 0.0, x + 1.0, panel_h, 2.0, super::chrome::SILVER);
     let y = 12.0 + squad_panel(game, assets, x + 15.0, 12.0) + 12.0;
     if next.is_none() {
         next = location_panel(game, x + 15.0, y);
@@ -939,14 +928,23 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     } else if game.ship.is_some() {
         text("Your ship waits; walk onto it to sail.", x + 15.0, panel_h - 100.0, 15.0, ACCENT);
     }
+    // Waits play in real time, a 30-minute tick every 150 ms (`Game::tick`).
+    let can_wait = game.foe.is_none() && !game.waiting();
+    let wy = panel_h - 150.0 - 44.0;
+    if button(x + 15.0, wy, 115.0, 34.0, "Wait 1 h", can_wait) || (can_wait && key(KeyCode::Key1)) {
+        game.begin_wait(1);
+    }
+    if button(x + 140.0, wy, 115.0, 34.0, "Wait 4 h", can_wait) || (can_wait && key(KeyCode::Key4)) {
+        game.begin_wait(4);
+    }
     let help = ["Click the map to travel; time passes", "only while you move or wait.", "Right click / Space: stop.", "Wheel or +/-: zoom. 1 / 4: wait."];
     for (i, line) in help.iter().enumerate() {
         text(line, x + 15.0, panel_h - 80.0 + i as f32 * 18.0, 15.0, DIM);
     }
 
-    let bar = bottom_bar(game, message);
+    let (bar, toggle_map) = bottom_bar(game, message, view.minimap);
     next = next.or(bar);
-    if minimap::toggle_button(screen_width() - 492.0, screen_height() - BAR_H + 8.0, view.minimap) {
+    if toggle_map {
         view.minimap = !view.minimap;
     }
     if view.minimap {
@@ -959,7 +957,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
     if let Some(m) = message {
         let w = measure(m, 22.0).width + 40.0;
-        let (cx, y) = ((screen_width() - PANEL_W) / 2.0, screen_height() - BAR_H - 50.0);
+        let (cx, y) = ((screen_width() - PANEL_W) / 2.0, screen_height() - bar_h() - 50.0);
         draw_rectangle(cx - w / 2.0, y, w, 36.0, PANEL);
         text_centered(m, cx, y + 25.0, 22.0, ACCENT);
     }

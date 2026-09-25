@@ -125,10 +125,16 @@ pub fn window(game: &Game, view: Rect, view_world: Rect, surface_color: fn(u8) -
     let fog = &game.fog;
     let r = rect(map, view);
     let o = outer(map, view);
-    // Stone-grey frame.
-    draw_rectangle(o.x, o.y, o.w, o.h, Color::new(0.30, 0.31, 0.30, 1.0));
-    draw_rectangle_lines(o.x + 1.0, o.y + 1.0, o.w - 2.0, o.h - 2.0, 2.0, Color::new(0.62, 0.64, 0.62, 1.0));
-    draw_rectangle_lines(r.x - 2.0, r.y - 2.0, r.w + 4.0, r.h + 4.0, 2.0, Color::new(0.12, 0.12, 0.12, 1.0));
+    // The window: black behind the map, the original's silver frame over it (or a stone-grey
+    // one).
+    let frame_art = super::chrome::win_fx("MiniMap_Frame_400x400", super::chrome::Fx::KeyBlack);
+    if frame_art.is_some() {
+        draw_rectangle(o.x, o.y, o.w, o.h, BLACK);
+    } else {
+        draw_rectangle(o.x, o.y, o.w, o.h, Color::new(0.30, 0.31, 0.30, 1.0));
+        draw_rectangle_lines(o.x + 1.0, o.y + 1.0, o.w - 2.0, o.h - 2.0, 2.0, Color::new(0.62, 0.64, 0.62, 1.0));
+        draw_rectangle_lines(r.x - 2.0, r.y - 2.0, r.w + 4.0, r.h + 4.0, 2.0, Color::new(0.12, 0.12, 0.12, 1.0));
+    }
     let tex = cached(&MINI_TEX, fog.fingerprint() ^ (map.w as u64) << 20 ^ map.h as u64, FilterMode::Linear, || {
         let mut rgba = Vec::with_capacity((map.w * map.h * 4) as usize);
         for y in 0..map.h {
@@ -202,17 +208,13 @@ pub fn window(game: &Game, view: Rect, view_world: Rect, surface_color: fn(u8) -
         draw_rectangle_lines(x0, y0, x1 - x0, y1 - y0, 1.5, Color::new(1.0, 1.0, 0.9, 0.8));
     }
 
+    if let Some(t) = frame_art {
+        let pad = 3.0;
+        super::chrome::tex(&t, Rect::new(o.x - pad, o.y - pad, o.w + 2.0 * pad, o.h + 2.0 * pad), WHITE);
+    }
+
     let m = Vec2::from(mouse_position());
     (clicked() && r.contains(m)).then(|| ((m.x - r.x) / k.x - 0.5, (m.y - r.y) / k.y - 0.5 * rh))
-}
-
-/// The bottom-bar toggle, lit while the minimap is open.
-pub fn toggle_button(x: f32, y: f32, open: bool) -> bool {
-    let pressed = button(x, y, 120.0, 40.0, "Map (M)", true);
-    if open {
-        draw_rectangle_lines(x - 2.0, y - 2.0, 124.0, 44.0, 2.0, Color::new(1.0, 0.6, 0.2, 1.0));
-    }
-    pressed
 }
 
 #[cfg(test)]
