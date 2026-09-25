@@ -342,12 +342,15 @@ impl Location {
     }
 
     /// Bars the hero's route (world.md §1): a castle or fort whose attitude to him is at most
-    /// 0, or ruins that are not his (not yet cleared). Other buildings are walked through.
+    /// 0, ruins that are not his (not yet cleared), and any other enemy building (attitude
+    /// below 0; bridges excepted). The route goes around it unless it is the building clicked.
+    /// Other buildings are walked through without being entered.
     pub fn bars_hero(&self) -> bool {
         match self.kind {
             LocationKind::Castle | LocationKind::Fort => !self.owned() && self.attitude <= 0,
             LocationKind::Ruins => !self.owned() && !self.cleared,
-            _ => false,
+            k if k.is_bridge() => false,
+            _ => self.hostile(),
         }
     }
 
@@ -1333,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn only_ill_disposed_castles_and_forts_and_unowned_ruins_bar_the_way() {
+    fn ill_disposed_castles_forts_unowned_ruins_and_enemy_buildings_bar_the_way() {
         let mut l = Location::new(LocationKind::Fort, "Fort", (0, 0));
         for (attitude, bars) in [(-2, true), (0, true), (1, false)] {
             l.attitude = attitude;
@@ -1350,8 +1353,13 @@ mod tests {
         for k in [LocationKind::Town, LocationKind::Village, LocationKind::Church, LocationKind::Tavern, LocationKind::Palace] {
             let mut t = Location::new(k, "", (0, 0));
             t.attitude = -3;
-            assert!(!t.bars_hero(), "{k:?}");
+            assert!(t.bars_hero(), "an enemy {k:?}: the route goes around it");
+            t.attitude = 0;
+            assert!(!t.bars_hero(), "a neutral {k:?} is walked through");
         }
+        let mut b = Location::new(LocationKind::StoneBridge, "", (0, 0));
+        b.attitude = -3;
+        assert!(!b.bars_hero(), "bridges never bar the way");
     }
 
     #[test]

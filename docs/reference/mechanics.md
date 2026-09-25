@@ -623,8 +623,9 @@ Each is marked *(guess)* in the code.
   A massif (classes 1–8) covers a square of `sprite div 10` cells a side whose bottom-right
   cell is its own. Nothing keeps a road open under an object.
 - **Buildings**: the footprint (`size_x × size_y` up and left of the anchor, one more row
-  above when wider than tall) is road on foot and for ships; stepping onto any of its cells
-  enters the building (no entry cell) and ends the walk; bridges are walked, never entered.
+  above when wider than tall) is road on foot and for ships; only the building clicked (or the one a
+  route ends in) is entered, on any of its cells; buildings crossed on the way are not visited
+  (the player's rule); enemy buildings (attitude < 0) are routed around unless clicked; bridges are walked, never entered.
   Only castles and forts of attitude ≤ 0 (not his) and ruins not yet his bar the hero's
   route, unless clicked or the one he stands in; stationary guards (patrol radius 0) bar it
   too, except the one clicked; at sea he does not pass under bridges. A garrison fights when

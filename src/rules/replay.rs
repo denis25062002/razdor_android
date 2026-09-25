@@ -134,6 +134,8 @@ pub(crate) struct Driver {
     /// Answer for a question (default Yes).
     pub no_to: BTreeSet<EventId>,
     pub verbose: bool,
+    /// Armies met so far, one entry per meeting (their scenario ids).
+    pub met_log: Vec<u8>,
 }
 
 impl Driver {
@@ -142,7 +144,7 @@ impl Driver {
         let s = m.load().unwrap();
         let mut g = Game::from_scenario(content.clone(), &s, class, 7);
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
-        let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: BTreeSet::new(), verbose: std::env::var_os("RAZDOR_REPLAY_LOG").is_some() };
+        let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: BTreeSet::new(), verbose: std::env::var_os("RAZDOR_REPLAY_LOG").is_some(), met_log: Vec::new() };
         let opening = d.g.drain_events();
         d.settle(opening);
         d
@@ -180,6 +182,13 @@ impl Driver {
                         o => self.log(format!("{o:?}")),
                     },
                     Event::Encounter(_) => {}
+                    Event::Met(i) => {
+                        if let Some(a) = self.g.world.armies.get(i) {
+                            let id = a.id;
+                            self.log(format!("met A{id}"));
+                            self.met_log.push(id);
+                        }
+                    }
                     Event::Captured(l) => self.log(format!("captured B{}", self.g.world.locations[l].id)),
                     _ => {}
                 }
@@ -279,14 +288,24 @@ impl Driver {
 
     /// Chases army `id` until it is met or beaten (a friendly one is met).
     pub fn reach_army(&mut self, id: u8) -> bool {
+        // Success is a new meeting with it, or it beaten, since this call began: the player
+        // clicks the army ("click it to talk or fight"), so an army met before talks again.
+        let meetings = self.met_log.iter().filter(|&&m| m == id).count();
+        let beaten = self.g.beaten_armies.contains(&id);
         for _ in 0..200 {
             let Some(a) = self.g.world.armies.iter().find(|a| a.id == id) else { return false };
-            let t = a.tile(&self.g.world.map);
-            let beaten = self.g.beaten_armies.contains(&id);
-            let met = self.g.met_armies.contains(&id);
-            let d = self.g.world.map.distance(self.g.tile(), t);
-            if d <= 1 && met {
-                return true;
+            let (t, hostile, uid) = (a.tile(&self.g.world.map), a.hostile(), a.uid);
+            let near = self.g.world.map.distance(self.g.tile(), t);
+            // Close to an army on the move, a player stands and lets it come (a patrolling
+            // friend that seeks him out keeps its distance while chased).
+            if (2..=3).contains(&near) && !hostile {
+                let ev = self.g.wait(1);
+                self.settle(ev);
+                if self.met_log.iter().filter(|&&m| m == id).count() > meetings {
+                    return true;
+                }
+                // Still apart: click it again.
+                self.g.talk_to = Some(uid);
             }
             self.g.stop();
             if !self.g.set_destination(t) {
@@ -304,7 +323,7 @@ impl Driver {
                     break;
                 }
             }
-            if self.g.beaten_armies.contains(&id) && !beaten || self.g.met_armies.contains(&id) && !met {
+            if self.g.beaten_armies.contains(&id) && !beaten || self.met_log.iter().filter(|&&m| m == id).count() > meetings {
                 return true;
             }
         }
@@ -351,7 +370,7 @@ impl Driver {
         let s = m.load().unwrap();
         let mut g = Game::from_campaign(content.clone(), &s, &next, 7);
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
-        let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: self.no_to.clone(), verbose: self.verbose };
+        let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: self.no_to.clone(), verbose: self.verbose, met_log: Vec::new() };
         let opening = d.g.drain_events();
         d.settle(opening);
         d

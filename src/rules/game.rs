@@ -216,6 +216,10 @@ pub struct Game {
     pub pending_reveals: Vec<(i32, i32, i32)>,
     /// Scenario armies (ids) the player has met / beaten.
     pub(crate) met_armies: BTreeSet<ArmyId>,
+    /// The army the player clicked (its `uid`): reaching it always starts a meeting ("click
+    /// it to talk or fight"), even if it greeted him before.
+    #[serde(default)]
+    pub(crate) talk_to: Option<u32>,
     pub(crate) beaten_armies: BTreeSet<ArmyId>,
     /// Scenario armies beaten by AI armies (`rules::ai`).
     #[serde(default)]
@@ -312,6 +316,7 @@ impl Game {
             effect_events: Vec::new(),
             pending_reveals: Vec::new(),
             met_armies: BTreeSet::new(),
+            talk_to: None,
             beaten_armies: BTreeSet::new(),
             ai_beaten: BTreeSet::new(),
             ai_stats: AiStats::default(),
@@ -508,6 +513,9 @@ impl Game {
     /// Walk to `to` along the cheapest path. A click on a building means the building: the
     /// walk ends on the first of its cells it reaches. Returns false if it can't be reached.
     pub fn set_destination(&mut self, to: Tile) -> bool {
+        // A click on an army means meeting it (the help: "click it to talk or fight").
+        let map = &self.world.map;
+        self.talk_to = self.world.armies.iter().find(|a| a.tile(map) == to).map(|a| a.uid);
         let to = self.world.location_at(to).map_or(to, |l| self.world.locations[l].tile);
         let path = self.plan(to);
         if path.is_empty() {
@@ -693,7 +701,11 @@ impl Game {
             return false;
         }
         let minutes = self.step_time(from, next);
-        let entered = w.location_at(next).filter(|&l| w.location_at(from) != Some(l));
+        // Only the building clicked, or the one the route ends in, is entered; others on the
+        // way are crossed without a visit (no window, tribute or events).
+        let target = self.goal.and_then(|g| w.location_at(g));
+        let last = self.path.len() == 1;
+        let entered = w.location_at(next).filter(|&l| w.location_at(from) != Some(l) && (last || target == Some(l)));
         self.path.remove(0);
         self.pos = self.world.map.center(next);
         self.update_ship();
@@ -757,6 +769,7 @@ impl Game {
         let here = self.tile();
         let mut found = None;
         let map = &self.world.map;
+        let talk_to = self.talk_to;
         for (i, a) in self.world.armies.iter_mut().enumerate() {
             let d = map.distance(a.tile(map), here);
             if d > MEET_AGAIN_DISTANCE {
@@ -767,10 +780,13 @@ impl Game {
             }
             if a.hostile() {
                 found = Some(Event::Encounter(i));
-            } else if !a.met {
+            } else if !a.met || talk_to == Some(a.uid) {
                 a.met = true;
                 found = Some(Event::Met(i));
             }
+        }
+        if matches!(found, Some(Event::Met(_) | Event::Encounter(_))) {
+            self.talk_to = None;
         }
         if let Some(e) = &found {
             self.path.clear();
@@ -1857,6 +1873,52 @@ mod tests {
     use crate::rules::world::testkit::{self as tk, army, building, hero, scenario, troop};
 
     /// A 24×6 grass strip; the knight starts at (2, 2) with two warriors and 200 gold.
+    #[test]
+    fn walking_across_a_friendly_building_does_not_enter_it() {
+        let mut s = strip();
+        let mut v = building(BuildingType::Village, 10, 3, (2, 2));
+        v.relations = [1, 0, 0, 0];
+        v.gold_per_day = 25;
+        v.gold_max = 50;
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.world.armies.clear();
+        // No fog: these are about buildings on the route.
+        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        assert!(g.set_destination((20, 2)));
+        assert!(g.path.iter().any(|&t| g.world.location_covering(t) == Some(0)), "the road runs through the village");
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (20, 2), "walked on to the point clicked");
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_) | Event::Tribute { .. })), "{events:?}");
+        assert_eq!(g.world.locations[0].tribute_gold, 25, "passing by takes no tribute");
+        // Clicking the village itself enters it.
+        assert!(g.set_destination((9, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Arrived(0)), "{events:?}");
+    }
+
+    #[test]
+    fn the_route_goes_around_an_enemy_building_unless_it_is_clicked() {
+        let mut s = strip();
+        // A hostile town across rows 0–4 of columns 11–12; row 5 stays open.
+        let mut t = building(BuildingType::Town, 12, 4, (2, 5));
+        t.relations = [-2, 0, 0, 0];
+        t.faction = 4;
+        s.buildings = vec![t];
+        let mut g = start(&s);
+        g.world.armies.clear();
+        // No fog: these are about buildings on the route.
+        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        assert!(g.set_destination((20, 2)));
+        assert!(g.path.iter().all(|&t| g.world.location_covering(t).is_none()), "around it: {:?}", g.path);
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (20, 2));
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_))));
+        // Clicked, it is the destination: the walk ends inside it.
+        assert!(g.set_destination((11, 2)));
+        assert!(g.path.last().is_some_and(|&t| g.world.location_covering(t) == Some(0)));
+    }
+
     fn strip() -> Scenario {
         let mut s = scenario(24, 6);
         s.header.heroes[0] = hero(2, 2, 200, &[troop(4, 0, 2)]);
@@ -1932,6 +1994,27 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_) | Event::Encounter(_))), "{events:?}");
         assert_eq!(g.tile(), (22, 2));
+    }
+
+    #[test]
+    fn clicking_a_friendly_army_meets_it_again() {
+        // The help: "click it to talk or fight". Passing by greets once; a click always talks.
+        let mut s = strip();
+        let mut friend = army(1, 10, 2, 1, &[troop(4, 0, 1)]);
+        friend.patrols = 0;
+        s.armies = vec![friend];
+        let mut g = start(&s);
+        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        g.set_destination((22, 2));
+        assert_eq!(walk_until_stopped(&mut g).last(), Some(&Event::Met(0)));
+        assert!(g.world.armies[0].met, "greeted once");
+        // Standing next to it, the player clicks it: a new meeting.
+        let at = g.world.armies[0].tile(&g.world.map);
+        assert!(g.world.map.distance(g.tile(), at) <= 1);
+        assert!(g.set_destination(at));
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Met(0)), "{events:?}");
+        assert_eq!(g.foe, None);
     }
 
     #[test]
@@ -2076,7 +2159,7 @@ mod tests {
     }
 
     #[test]
-    fn towns_and_villages_on_the_way_are_entered_from_any_cell() {
+    fn towns_and_villages_on_the_way_are_crossed_without_a_visit() {
         let mut s = strip();
         // A 3 × 3 village across the road east (x 9..=11, y 1..=3).
         let mut v = building(BuildingType::Village, 11, 3, (3, 3));
@@ -2086,17 +2169,13 @@ mod tests {
         g.fog = Fog::disabled(24, 6);
         let l = &g.world.locations[0];
         assert!(!l.bars_hero() && l.cells().all(|t| g.world.map.cost(t) == Some(crate::rules::map::ROAD)));
-        // Walking east along row 2 steps onto the village's first cell: it enters it and stops.
+        // Walking east along row 2 crosses the village's cells (road) without a visit: only the
+        // building clicked, or the one a route ends in, is entered.
         assert!(g.set_destination((20, 2)));
         assert!(g.path.iter().any(|&t| g.world.location_at(t) == Some(0)), "the route may cross it");
         let events = walk_until_stopped(&mut g);
-        assert_eq!(events.last(), Some(&Event::Arrived(0)));
-        assert_eq!((g.tile(), g.location), ((9, 2), Some(0)), "the first footprint cell reached");
-        // From inside, the walk across its other cells goes on without entering again.
-        assert!(g.set_destination((20, 2)));
-        let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_))), "{events:?}");
-        assert_eq!(g.tile(), (20, 2));
+        assert_eq!((g.tile(), g.location), ((20, 2), None));
     }
 
     #[test]
