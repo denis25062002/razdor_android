@@ -12,7 +12,7 @@ use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
 use razdor::rules::game::{Currency, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
 use razdor::rules::items::describe;
-use razdor::rules::script::{HallEntry, RUMOUR_PRICE};
+use razdor::rules::script::HallEntry;
 use razdor::rules::town::{ServiceError, Tab};
 use razdor::rules::units::Unit;
 
@@ -207,7 +207,7 @@ fn empty_cells(game: &Game, x: f32, y: f32, cw: f32, ch: f32, gap: f32) {
     }
 }
 
-/// Main hall: the building's picture, the rumours on offer (heard for a price) and this
+/// Main hall: the building's picture, the rumours on offer (heard for free; a rumour's own event may cost gold) and this
 /// building's quests, the description.
 fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let l = game.location?;
@@ -237,9 +237,8 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     let ly = y + pic_h + 12.0;
     draw_rectangle(x, ly, w, 36.0, Color::new(0.14, 0.24, 0.2, 1.0));
     text("Quests and rumours:", x + 14.0, ly + 25.0, 20.0, ACCENT);
-    let label = format!("Hear rumour ({RUMOUR_PRICE} gold)");
     let mut next = None;
-    if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, &label, rumour.is_some() && game.gold >= RUMOUR_PRICE) {
+    if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, "Hear rumour", rumour.is_some()) {
         if let Some(id) = rumour {
             match game.hear_rumour(id) {
                 Ok(events) => {

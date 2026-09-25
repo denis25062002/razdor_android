@@ -18,8 +18,6 @@ use super::units::{Stats, Unit};
 use super::world::{Army, EventInfo, Troop};
 use crate::dt::dtm::EventKind;
 
-/// Gold a rumour costs in a main hall (the footage: 10).
-pub const RUMOUR_PRICE: i32 = 10;
 /// Radius revealed around an army an event shows *(guess)*.
 const SHOW_ARMY_RADIUS: i32 = 3;
 /// Radius of a lantern whose point has none set *(guess)*.
@@ -35,7 +33,8 @@ pub enum ScriptEnd {
 /// A line of a main hall's list of quests and rumours.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HallEntry {
-    /// A rumour on offer, for [`RUMOUR_PRICE`].
+    /// A rumour on offer. Hearing it is free; any price is the rumour event's own (its gold
+    /// condition and result).
     Rumour(EventId),
     /// A quest of this building that is in the journal.
     Quest(EventId),
@@ -146,16 +145,13 @@ impl Game {
         out
     }
 
-    /// Pays [`RUMOUR_PRICE`] gold to hear rumour `id` of this main hall: it fires (or asks its
-    /// question), then the events run on.
+    /// Hears rumour `id` of this main hall: it fires (or asks its question), then the events
+    /// run on. There is no flat price: a rumour that costs something says so in its own event
+    /// (a gold condition and a negative gold result), as the original's rumours do.
     pub fn hear_rumour(&mut self, id: EventId) -> Result<Vec<Event>, ServiceError> {
         if !self.rumours_here().contains(&id) || self.pending_question().is_some() {
             return Err(ServiceError::NotHere);
         }
-        if self.gold < RUMOUR_PRICE {
-            return Err(ServiceError::CannotAfford);
-        }
-        self.gold -= RUMOUR_PRICE;
         let Some(mut engine) = self.script.take() else { return Ok(Vec::new()) };
         let out = engine.hear_rumour(self, id);
         self.script = Some(engine);
@@ -1127,9 +1123,10 @@ mod tests {
     }
 
     #[test]
-    fn rumours_cost_ten_gold_in_the_main_hall() {
+    fn hearing_a_rumour_is_free_its_event_sets_any_cost() {
         let mut rumour = ev(EventKind::Rumour);
         rumour.results.mana = 3;
+        rumour.results.gold = -4; // the rumour's own price, from its event
         let mut quest = ev(EventKind::Quest);
         quest.title = "q%+Q".into();
         quest.flags = crate::dt::dtm::FlagScript::from_title(&quest.title);
@@ -1146,9 +1143,26 @@ mod tests {
         assert_eq!(g.hall_entries(), vec![HallEntry::Rumour(1), HallEntry::Quest(2)], "the quest was given on arrival");
         let events = g.hear_rumour(1).unwrap();
         assert_eq!(fired(&events), vec![1]);
-        assert_eq!((g.gold, g.mana), (5, 3));
+        assert_eq!((g.gold, g.mana), (11, 3), "no flat price: only the event's own -4 gold");
         assert_eq!(g.hear_rumour(1), Err(ServiceError::NotHere), "heard");
         assert_eq!(g.hall_entries(), vec![HallEntry::Quest(2)]);
+    }
+
+    #[test]
+    fn a_free_rumour_needs_no_gold() {
+        let mut s = world(vec![ev(EventKind::Rumour)]);
+        s.header.heroes[0] = hero(9, 3, 0, &[]);
+        let mut town = building(BuildingType::Town, 9, 2, (1, 1));
+        town.event_slots[0] = 1;
+        town.event_count = 1;
+        s.buildings = vec![town];
+        let mut g = start(&s);
+        g.set_destination((9, 2));
+        walk(&mut g);
+        assert_eq!(g.gold, 0);
+        let events = g.hear_rumour(1).unwrap();
+        assert_eq!(fired(&events), vec![1]);
+        assert_eq!(g.gold, 0);
     }
 
     #[test]

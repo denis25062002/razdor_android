@@ -843,8 +843,9 @@ events only; texts are read from the scenario at runtime.
   once and for free through the world-spell path (§8.3), lasting 10× its `TimeWork` (5× from
   8 hours). Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
   without a radius reveals 5 cells, an army 3 *(guess)*) for the fog of war.
-- **Rumours** cost 10 gold (the footage) and are listed in the main hall with the building's
-  quests in the journal and those done.
+- **Rumours** are heard for free and listed in the main hall with the building's quests; a
+  rumour that costs something says so in its own event (gold condition and result), as in the
+  original (economy.md: no fixed rumour price exists in the code).
 - **Texts** are read from the scenario at runtime: the title without its flag script, the
   question (or the message when the question text is empty), the message. `#HERONAME` is
   the hero's class name (there is no name entry) *(guess)*; `#N`, `#G`, `#Ok` seen in some
