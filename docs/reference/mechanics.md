@@ -109,7 +109,7 @@ Hero class bonuses [doc; knight part also exe]:
 | 19 | FastDead | As 18, plus +1 action on turn 1. | doc+exe |
 | 20 | Counterblow | Hits back when struck in melee. | doc |
 | 21 | FlankStrike | Doubles its attack on a "flank" strike (the long strike through empty cells, see 2.3). | doc+exe |
-| 22+ | Community tokens | Hunger, Berserk, Exhaustion, Drying, CtrPoison, Suicide, Caster (−20% spell time and cost), Splash (80% to the target and 40% to its neighbours), Fortify, Dominate, Concentration, PoisonS (25%/turn), Stun, Potent (magic ignores protection), FirstShot, Bastion, Flying (can hit any row), Flock, Bleed, HoldLine (does not work), ArmorBreaker, PoisonArmorIgnore (#45), FasterAttack, NoHeal, PreventiveStrike, Neutralize, KillingStrike (<25% HP dies), BloodThrist, Assault (#50), EternalGift (buffs last the whole battle), FateGift. | doc |
+| 22–52 | Community tokens (index order of the exe's table) | Hunger, Berserk, Exhaustion, Drying, CtrPoison, Suicide, Caster (−20% spell time and cost), Splash (80% to the target and 40% to its neighbours), Fortify, Dominate, Concentration, PoisonS (25%/turn), Stun, Potent (magic ignores protection), FirstShot, Bastion, Flying (can hit any row), Flock, Bleed, HoldLine (does not work), ArmorBreaker, PoisonArmorIgnore (#45), FasterAttack, NoHeal, PreventiveStrike, Neutralize, KillingStrike (<25% HP dies), BloodThrist, Assault (#50), EternalGift (buffs last the whole battle), FateGift. | doc |
 
 ### 1.4 Experience and levels
 
@@ -578,12 +578,78 @@ Each is marked *(guess)* in the code.
   else (non-Life casters) curse the most dangerous uncursed enemy; else the attack needing
   the fewest hits; else heal or bless. Units without a target step towards a cell with one
   (warriors to the front row, others to the back row); units in the reserve stay there.
-- **Community bonuses not implemented** (no effect yet): Hunger, Berserk, Exhaustion,
-  Drying, CtrPoison, Suicide, Caster, Splash, Fortify, Dominate, Concentration, PoisonS,
-  Stun, Potent, FirstShot, Bastion, Flying, Flock, Bleed, HoldLine, ArmorBreaker,
-  FasterAttack, NoHeal, PreventiveStrike, Neutralize, KillingStrike, BloodThrist, Assault,
-  EternalGift, FateGift. `PoisonArmorIgnore` counts as piercing; `Evasion`,
-  `MinMagicPower` and `ManaDrain` are implemented.
+- **Community bonuses** (`src/rules/battle.rs`; tokens and indices in `src/dt/data.rs`).
+  The 31 tokens are spelled as in the Community modder note; their indices 22–52 follow the
+  order of the executable's token table (it agrees with the doc's #45 `PoisonArmorIgnore`
+  and #50 `Assault`). Neither `Rus_Units.ini` nor `Rus_Artefacts.ini` of the Community
+  install uses any of them (103 bonuses, all vanilla), so they matter for mods only. The
+  changelog's descriptions are followed; *(guess)* marks the gaps it leaves.
+  - `Hunger`: a kill heals it to full HP [exe: HP is set to max HP].
+  - `Berserk`: physical damage × `(2·max − hp) / max` (×1 unhurt, up to ×2) *(guess: linear)*.
+  - `Exhaustion`: each hostile spell (strike or curse) lowers all three protections of the
+    target by 15 points for the battle, cumulatively, not below 0 *(guess: all schools)*.
+  - `Drying`: each hostile spell also deals 8% of the target's max HP (at least 1), through
+    any protection; a strike that protection would stop still does this.
+  - `CtrPoison`: a melee or long strike on it poisons the striker for 15% per turn *(guess:
+    shots and spells do not)*.
+  - `Suicide`: it dies after any hostile action of its own.
+  - `Caster`: world spells only (§8.3); nothing in battle.
+  - `Splash`: its physical attack counts 80% on the target and 40% on each living neighbour
+    of the target in the same row (columns c ± 1) *(guess: the row)*. The neighbours' damage
+    is the normal formula with 40% of the attack.
+  - `Fortify`: its own melee/ranged defence × `(100 + min(25·turn, 125)) / 100`, turn 1
+    included *(guess)*; building defence is added after.
+  - `Dominate`: **not documented anywhere**; the exe has one check for it that we did not
+    decode. *(guess)*: physical damage ×1.25 against a target with less max HP than its own.
+  - `PoisonS`: poison of 25% per turn (the strongest poison on a unit counts).
+  - `Concentration`: magic power rises by a tenth of its base (at least 1) every turn from
+    turn 2, up to twice the base, instead of draining *(guess: rate and cap)*.
+  - `Potent`: its hostile magic ignores the target's protection.
+  - `Stun`: a damaging hit cuts the target's initiative to 3/4 for the battle, once per
+    target *(guess: not cumulative; takes effect from the next turn's order)*.
+  - `FirstShot`: first in the turn order on turn 1 (before `Artillery`); normal later.
+  - `Bastion`: inside a building (garrison fights): its attacks and defences ×3, the
+    physical damage it takes (after defence) halved, and its whole army +10 defence (once
+    per army, however many bastions) *(guess)*.
+  - `Flying`: from the front or back row, a warrior strikes any enemy in the enemy's front or
+    back row (a normal strike, no long strike); shooters and hostile mages ignore the
+    "blocked in front" rule. Never from or into the reserve.
+  - `Flock`: physical damage ×1.25 when its side has more living units, ×0.75 when fewer.
+  - `Bleed`: a wounding physical hit makes the target lose half that damage again at the
+    start of the next turn (wounds add up; paid once) *(guess: "50% bleeding")*.
+  - `PreventiveStrike`: when an enemy strikes or shoots it, it first hits the attacker
+    (melee if a warrior, else a shot), whatever the reach; if that kills the attacker, the
+    attack does not happen *(guess: every attack, not once a turn)*.
+  - `ArmorBreaker`: a wounding physical hit multiplies the target's melee and ranged
+    defence by 0.7 for the battle, cumulatively.
+  - `NoHeal`: a unit it wounds physically is crippled: no heals, regeneration, vampirism or
+    `Hunger` for the rest of the battle. After the battle the world's healing is not blocked
+    *(not wired: the daily healing is in game.rs)*.
+  - `FasterAttack`: +1 action on turns 1 and 2.
+  - `PoisonArmorIgnore`: piercing (only building defence counts) and a 10% poison.
+  - `HoldLine`: no effect (the doc says it does not work; the exe has no check for it).
+  - `Neutralize`: a damaging hit strips all the target's bonuses (its own and its items')
+    for the battle, before the target could answer (a stripped Counterblow does not strike).
+  - `KillingStrike`: a target left below 25% of its max HP by its hit dies.
+  - `BloodThrist`: a kill gives the spent action back.
+  - `Assault`: storming a building (the other side is inside): attacks and defences ×2, and
+    physical damage it takes ×0.7.
+  - `EternalGift`: its blessings and curses last until the battle ends.
+  - `FateGift`: once per battle, a blow that would kill it (any damage of an action, not
+    poison or bleeding) leaves it at full HP instead, with attacks and defences +25%
+    *(guess: the size)*.
+  - Community changelog also says Poison works for mages: a Life/Death/Elemental strike of
+    a `Poison` unit poisons like a physical hit. "Garrison works for shooters" holds already
+    (both attacks double).
+  - Order in the damage formula (2.4): Fortify on the unit's defence; Splash on the
+    attack; after `max(1, atk − def)`: Berserk, Flock, Dominate, then the vanilla
+    reductions, Bastion, Assault, the knight, Unvulnerabe/Ghost, God bonuses and Evasion.
+  - "Inside a building" is set by `Battle::set_building_defence` (any garrison fight with
+    extra defence) or `Battle::set_in_building`. The game calls the first only when the
+    garrison has extra defence; a follow-up in `game.rs` should also call
+    `set_in_building(Team::Enemy)` for defence-0 garrisons.
+- **Community unit fields**: `Evasion` (applied last, 2.4), `MinMagicPower` and `ManaDrain`
+  (per-unit floor and drain of magic power) are implemented.
 - **World grid** (Stage 3): scenarios use 8-neighbour rectangular cells (32×22 px, a
   vertical step is 22/32 of a horizontal one, a diagonal step √(32²+22²)/32); travel time is
   the cell's cost times the length of the step. The built-in demo keeps its own hex grid
@@ -698,9 +764,64 @@ events only; texts are read from the scenario at runtime.
 - **Results order**: flags (`+X`/`-X`), world effects, quest to journal, quest completed,
   relative event, victory/defeat (ends the engine), then the chained event. "Move to hero"
   moves the army the removed units go to (else the one added units come from) *(guess)*.
-- **Community extensions** ("no meeting" + patrol value 1–20, + a spell, + named squads) are
-  detected and listed by `extensions()` but not run; such an event fires without its spell,
-  resource, patrol and stat fields (they are arguments). None of the 15 shipped maps uses them.
+- **Community extensions** (Community editor guide; `extension()` detects them). An event
+  with "no meeting" and patrol value 1–20 runs that **opcode**: its XP, gold and mana fields
+  are arguments (`x`, `g`, `m`), never resources, and its patrol change is not made. The
+  squad-count, strength and stats conditions are skipped for opcode events (1–5 and 19 use
+  them as arguments). Where an argument names a holder: 0 = the player's army, 1–255 = an
+  army id, negative = building `−n`. A unit is its index in the army (0 = leader / hero);
+  −1 = everyone.
+  - **1–5, event editing**: first setting from (patrol value = action, `x` = shift to the
+    target event, `g` = the field's byte offset in the event record, `m` = value); a second
+    setting when the squad-count condition is 1–5 (it is the action; gold condition = shift,
+    level = offset, holiness-and-mana = value). 1 adds, 2 sets (clamped to the field's
+    range; `EventEngine::event_field` reads it); 3, 4, 5 are conditions: the event does not
+    fire when the target's value is greater than / not equal to / less than the value. Only
+    offsets where a field starts count; a missing event or unknown offset is ignored (a
+    comparison with it passes *(guess)*). Edits are kept in the save and put back on load.
+  - **6** the unit wears the event's four "items added" (0 = empty slot), whatever the
+    rules; the player's old items go to the pack. AI units have no own items in Razdor: an
+    army adds them to its items (its loot), a garrison takes none *(recorded, no battle
+    effect)*.
+  - **7** unit type `m` in slot `g` (the player's unit keeps level, XP, items, HP fraction;
+    an AI troop its level).
+  - **8** speed code `g`: 1 → +5 … 5 → +1, 6 → −1 … 8 → −3 *(guess: the guide gives only 1
+    and 8)*; AI armies get the terrain factor of that correction. The hero's own speed is a
+    recorded no-op (it lives in game.rs).
+  - **9** group `g` (1 player … 4 enemy): the army or building takes that group's attitude
+    towards the player from the scenario's relations; group 1 means attitude 3 and a
+    building becomes the player's *(guess)*.
+  - **10** relation `m` (−3..3) towards group `g`: only the relation to the player (0) is
+    kept; others are a recorded no-op (no AI diplomacy yet).
+  - **11** the "spells learned" list lasts for good on the holder, replacing its lasting
+    spells; spells are per army in Razdor, so a single unit's list goes on its army
+    *(guess)*; garrisons hold none.
+  - **12** slot `g` becomes named character `m` (its unit type from the scenario's list).
+  - **13** `m` XP to unit `g` (or all): the player's units gain XP; an AI troop, which has
+    no XP, rises the levels the amount pays for *(guess)*.
+  - **14** (condition) all listed spells last on the holder (order free).
+  - **15** records the campaign branch (`x` = map number, `g` = variant); the event's chain
+    usually fires the victory event. `Game::next_map()` then names the map: the scenario's
+    next-map name with its leading `N-V` replaced (or `N-V` alone) *(guess: the guide's
+    "N-V" naming)*, plus what the header's carry-over flags (0x110) keep: gold, mana for
+    "gods' favour" *(guess)*, fame (flag only), hero level and XP, personal items (negative
+    price), the pack, the living army. Without a branch the scenario's next map is named as
+    it is; `None` before a victory or with no next map. The UI does not offer it yet.
+  - **16** the listed spells leave the spell book.
+  - **17** model `g` for army `x` (the hero's figure: no-op).
+  - **18** flag `RAND` + one character, drawn from codes `x..=g` (cp1251); an existing
+    `RAND?` flag is replaced. The guide's example gives 41 and 57 for RAND1–RAND9, which
+    only works as 49–57 (the characters 1–9): codes are used as given.
+  - **19** army `x` heads for cell (`g`, `m`): its post moves there and it walks there
+    (then patrols around it) *(guess)*; condition: army (strength field) stands on cell
+    (gold field, holiness-and-mana field).
+  - **20** the hero moves to cell (`x`, `g`) (or the nearest passable one within 8), stops
+    and looks around (the fog lifts there).
+  - "No meeting" + a spell (no opcode): that lasting spell is lifted from the player's army
+    instead of cast. "No meeting" + named squads: the class check the guide adds is what the
+    named-unit condition already does for the player's squad (type and name must match);
+    AI armies keep their named character per army, so their class is not checked.
+  None of the 15 shipped maps uses any of them.
 
 **In the game** (`src/rules/script.rs`: `Game` is the `EventWorld`; UI in `src/ui/story.rs`):
 

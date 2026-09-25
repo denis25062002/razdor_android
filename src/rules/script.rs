@@ -10,7 +10,8 @@
 //! Choices where the sources are silent are marked *(guess)* and listed in mechanics.md §8.1.
 
 use super::content::{ItemId, UnitId};
-use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Place, UnitPick, SIDE_PLAYER};
+use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitPick, SIDE_PLAYER};
+use super::magic::ActiveSpell;
 use super::game::{troop_unit, Event, Foe, Game, PACK_SIZE, SPELL_BOOK_SIZE};
 use super::town::ServiceError;
 use super::units::{Stats, Unit};
@@ -549,6 +550,336 @@ impl EventWorld for Game {
     fn hero_to_one_hp(&mut self) {
         self.squad[0].hp = 1;
     }
+
+    // --- Community Update extensions (mechanics.md §8.1) --------------------------------------
+
+    fn remove_army_spell(&mut self, spell: u8) {
+        self.effects.retain(|e| e.spell != spell as u32);
+    }
+
+    /// The player's unit wears exactly these items; what it wore goes to the pack. AI units
+    /// carry no items of their own in Razdor: for an army the items join its items (the
+    /// loot) without changing its fight; a garrison takes none *(recorded, not simulated)*.
+    fn equip_unit(&mut self, holder: Holder, unit: u8, items: [u8; 4]) {
+        let c = self.content.clone();
+        let valid = |i: u8| (i != 0).then_some(ItemId(i as u32)).filter(|&id| c.try_item(id).is_some());
+        match holder {
+            Holder::Player => {
+                let Some(u) = self.squad.get_mut(unit as usize) else { return };
+                let old: Vec<ItemId> = u.items.iter().flatten().copied().collect();
+                for (k, slot) in u.items.iter_mut().enumerate() {
+                    *slot = items.get(k).copied().and_then(valid);
+                }
+                u.hp = u.hp.min(u.max_hp(&c));
+                for item in old {
+                    if self.pack.len() < PACK_SIZE {
+                        self.pack.push(item);
+                    }
+                }
+            }
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.items.extend(items.iter().copied().filter_map(valid));
+                }
+            }
+            Holder::Building(_) => {}
+        }
+    }
+
+    /// The unit keeps its level (and, in the player's army, its XP, items and HP fraction).
+    fn replace_unit(&mut self, holder: Holder, unit: u8, with: u8) {
+        let id = UnitId(with as u32);
+        if self.content.try_unit(id).is_none() {
+            return;
+        }
+        if holder == Holder::Player {
+            let c = self.content.clone();
+            if let Some(u) = self.squad.get_mut(unit as usize) {
+                let (hp, max) = (u.hp, u.max_hp(&c).max(1));
+                u.def = id;
+                if u.alive() {
+                    u.hp = (hp * u.max_hp(&c) / max).max(1);
+                }
+            }
+        } else if let Some(t) = self.troops_of(holder).and_then(|t| t.get_mut(unit as usize)) {
+            t.unit = id;
+        }
+    }
+
+    /// An AI army walks at the new speed. The hero's own speed is not changed *(recorded:
+    /// the player's walking speed is fixed by his class in Razdor)*.
+    fn set_army_speed(&mut self, holder: Holder, correction: i8) {
+        if let Holder::Army(a) = holder {
+            if let Some(a) = self.army_mut(a) {
+                a.slowness = Army::slowness_for(correction);
+            }
+        }
+    }
+
+    /// The army or building takes the group's attitude towards the player from the
+    /// scenario's relations; a building that joins the player's group becomes his *(guess)*.
+    fn set_faction(&mut self, holder: Holder, group: u8) {
+        let attitude = self.world.relations[(group - 1) as usize][0];
+        match holder {
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.faction = group;
+                    a.attitude = if group == 1 { 3 } else { attitude };
+                }
+            }
+            Holder::Building(b) => {
+                if let Some(l) = self.world.locations.iter_mut().find(|l| l.id == b) {
+                    l.faction = group;
+                    l.attitude = if group == 1 { 3 } else { attitude };
+                    if group == 1 {
+                        l.owner = super::world::Owner::Player;
+                    }
+                }
+            }
+            Holder::Player => {}
+        }
+    }
+
+    /// Only the relation towards the player is kept (there is no AI diplomacy yet): other
+    /// groups are a recorded no-op.
+    fn set_relation(&mut self, holder: Holder, group: u8, value: i8) {
+        if group != 0 {
+            return;
+        }
+        match holder {
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.attitude = value;
+                }
+            }
+            Holder::Building(b) => {
+                if let Some(l) = self.world.locations.iter_mut().find(|l| l.id == b) {
+                    l.attitude = value;
+                }
+            }
+            Holder::Player => {}
+        }
+    }
+
+    /// World spells are kept per army, so a spell for one unit goes on its whole army
+    /// *(guess)*; garrisons hold none.
+    fn set_spells(&mut self, holder: Holder, _unit: Option<u8>, spells: &[u8]) {
+        let list: Vec<ActiveSpell> = spells.iter().map(|&s| ActiveSpell { spell: s as u32, until: None }).collect();
+        match holder {
+            Holder::Player => self.effects = list,
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.effects = list;
+                }
+            }
+            Holder::Building(_) => {}
+        }
+    }
+
+    fn set_named_unit(&mut self, holder: Holder, unit: u8, named: u8, class: u8) {
+        let class = Some(UnitId(class as u32)).filter(|&id| class != 0 && self.content.try_unit(id).is_some());
+        match holder {
+            Holder::Player => {
+                if let Some(u) = self.squad.get_mut(unit as usize) {
+                    u.named = named;
+                    if let Some(id) = class {
+                        u.def = id;
+                    }
+                }
+            }
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.named = named;
+                    if let (Some(id), Some(t)) = (class, a.troops.get_mut(unit as usize)) {
+                        t.unit = id;
+                    }
+                }
+            }
+            Holder::Building(_) => {
+                if let (Some(id), Some(t)) = (class, self.troops_of(holder).and_then(|t| t.get_mut(unit as usize))) {
+                    t.unit = id;
+                }
+            }
+        }
+    }
+
+    /// The player's units gain it as XP; an AI troop, which keeps no XP, rises the levels
+    /// the amount pays for from its level on *(guess)*.
+    fn give_unit_xp(&mut self, holder: Holder, unit: Option<u8>, xp: i64) {
+        let xp = xp.clamp(0, i32::MAX as i64) as i32;
+        let c = self.content.clone();
+        if holder == Holder::Player {
+            for (k, u) in self.squad.iter_mut().enumerate() {
+                if u.alive() && unit.is_none_or(|n| n as usize == k) {
+                    u.gain_xp(&c, xp);
+                }
+            }
+            return;
+        }
+        let Some(troops) = self.troops_of(holder) else { return };
+        for (k, t) in troops.iter_mut().enumerate() {
+            if unit.is_some_and(|n| n as usize != k) {
+                continue;
+            }
+            let mut left = xp;
+            loop {
+                let need = c.xp_to_next(t.unit, t.level);
+                if need <= 0 || left < need {
+                    break;
+                }
+                left -= need;
+                t.level += 1;
+            }
+        }
+    }
+
+    /// Spells are kept per army (see `set_spells`); a garrison has none.
+    fn has_spells(&self, holder: Holder, _unit: Option<u8>, spells: &[u8]) -> bool {
+        let now = self.clock.total_minutes() as u64;
+        let on = |effects: &[ActiveSpell]| spells.iter().all(|&s| effects.iter().any(|e| e.spell == s as u32 && e.lasts_at(now)));
+        match holder {
+            Holder::Player => on(&self.effects),
+            Holder::Army(a) => {
+                let w = &self.world;
+                w.armies.iter().chain(w.inactive.iter()).find(|x| x.id == a).is_some_and(|x| on(&x.effects))
+            }
+            Holder::Building(_) => spells.is_empty(),
+        }
+    }
+
+    fn forget_spell(&mut self, spell: u8) {
+        self.spells.retain(|&s| s != spell);
+    }
+
+    /// The hero's figure is not a model of the scenario: a recorded no-op for him.
+    fn set_army_model(&mut self, holder: Holder, model: u8) {
+        if let Holder::Army(a) = holder {
+            if let Some(a) = self.army_mut(a) {
+                a.model = model;
+            }
+        }
+    }
+
+    fn random(&mut self, lo: i64, hi: i64) -> i64 {
+        self.rng.range(lo.clamp(i32::MIN as i64, i32::MAX as i64) as i32, hi.clamp(i32::MIN as i64, i32::MAX as i64) as i32) as i64
+    }
+
+    /// The army's post moves to the cell and, on the map, it sets off there (its patrol
+    /// then goes on around it) *(guess)*.
+    fn set_army_target(&mut self, army: ArmyId, x: i32, y: i32) {
+        let to = (x, y);
+        if let Some(i) = self.army_index(army) {
+            let map = &self.world.map;
+            let a = &mut self.world.armies[i];
+            let here = a.tile(map);
+            a.post = to;
+            a.chasing = false;
+            a.path = if map.passable(to) { map.path_limited(here, to, AI_TARGET_NODES) } else { Vec::new() };
+        } else if let Some(a) = self.army_mut(army) {
+            a.post = to;
+        }
+    }
+
+    fn army_at(&self, army: ArmyId, x: i32, y: i32) -> bool {
+        self.army_index(army).is_some_and(|i| self.world.armies[i].tile(&self.world.map) == (x, y))
+    }
+
+    /// To the cell, or the nearest passable one within 8 cells (else he stays); the walk
+    /// stops and the hero looks around.
+    fn teleport_player(&mut self, x: i32, y: i32) {
+        let map = &self.world.map;
+        let to = if map.passable((x, y)) { Some((x, y)) } else { map.nearest_passable((x, y), 8) };
+        let Some(t) = to else { return };
+        self.pos = map.center(t);
+        self.path.clear();
+        self.goal = None;
+        self.location = None;
+        self.look_around();
+    }
+}
+
+/// Search limit of the path to an AI army's scripted target.
+const AI_TARGET_NODES: usize = 4000;
+
+/// What the next map of a campaign starts with ([`Game::next_map`]). A field is `None` (or
+/// empty) when the scenario does not carry it over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NextMap {
+    /// The map to load: the scenario's next-map name; after an opcode 15 branch its leading
+    /// "number-variant" (or the whole name) is the chosen `N-V` *(guess: the guide names maps
+    /// "N-V …" and gives the next map as "0-0")*.
+    pub name: String,
+    pub branch: Option<(i16, i16)>,
+    pub gold: Option<i32>,
+    /// Gods' favour: Razdor's mana *(guess)*.
+    pub mana: Option<i32>,
+    /// Fame carries over (Razdor has no fame yet).
+    pub fame: bool,
+    /// The hero's (level, XP).
+    pub hero: Option<(i32, i32)>,
+    /// Personal items (negative price), worn or in the pack.
+    pub personal_items: Vec<ItemId>,
+    /// The pack.
+    pub inventory: Vec<ItemId>,
+    /// The squad without the hero, living units only.
+    pub army: Vec<Unit>,
+}
+
+/// The name of branch (map, variant) for a next-map name such as "0-0 …".
+pub fn branch_name(next: &str, (map, variant): (i16, i16)) -> String {
+    let t = next.trim();
+    let digits = |s: &str| s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let a = digits(t);
+    if a > 0 && t[a..].starts_with('-') {
+        let rest = &t[a + 1..];
+        let b = digits(rest);
+        if b > 0 {
+            return format!("{map}-{variant}{}", &rest[b..]);
+        }
+    }
+    format!("{map}-{variant}")
+}
+
+impl Game {
+    /// After a scenario victory, the next campaign map (named by the scenario, or chosen by
+    /// an opcode 15 branch) and what carries over to it (header 0x110). `None` before a
+    /// victory or when the scenario names no next map.
+    pub fn next_map(&self) -> Option<NextMap> {
+        let engine = self.script()?;
+        if !matches!(self.script_end(), Some(ScriptEnd::Victory(_))) {
+            return None;
+        }
+        let branch = engine.campaign_branch();
+        let name = match branch {
+            Some(b) => branch_name(engine.next_map_name(), b),
+            None if engine.next_map_name().trim().is_empty() => return None,
+            None => engine.next_map_name().trim().to_string(),
+        };
+        let carry = engine.carry_over().map(|b| b != 0);
+        let personal = |i: &ItemId| self.content.try_item(*i).is_some_and(|d| d.cost < 0);
+        let worn = self.squad.iter().flat_map(|u| u.items.iter().flatten().copied());
+        let hero = self.hero();
+        Some(NextMap {
+            name,
+            branch,
+            gold: carry[0].then_some(self.gold),
+            mana: carry[1].then_some(self.mana),
+            fame: carry[2],
+            hero: carry[3].then_some((hero.level, hero.xp)),
+            personal_items: if carry[4] { worn.chain(self.pack.iter().copied()).filter(personal).collect() } else { Vec::new() },
+            inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
+            army: if carry[6] { self.squad.iter().skip(1).filter(|u| u.alive()).cloned().collect() } else { Vec::new() },
+        })
+    }
+
+    /// The troops of an AI army (on the map or waiting) or of a building's garrison.
+    fn troops_of(&mut self, holder: Holder) -> Option<&mut Vec<Troop>> {
+        match holder {
+            Holder::Army(a) => self.army_mut(a).map(|a| &mut a.troops),
+            Holder::Building(b) => self.world.locations.iter_mut().find(|l| l.id == b).map(|l| &mut l.garrison),
+            Holder::Player => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -836,6 +1167,125 @@ mod tests {
         assert!(!g.fog.enabled || g.fog.explored((10, 4)), "the lantern lights the fog");
     }
 
+    // --- Community Update opcodes ---------------------------------------------------------------
+
+    /// A Community opcode event: "no meeting", patrol value `code`, resources (XP, gold, mana).
+    fn op(code: i8, x: i16, g: i16, m: i16) -> DtEvent {
+        let mut e = ev(EventKind::Global);
+        e.message.clear();
+        (e.results.no_meeting, e.results.patrol_delta) = (1, code);
+        (e.results.experience, e.results.gold, e.results.mana) = (x, g, m);
+        e
+    }
+
+    #[test]
+    fn community_opcodes_change_the_players_army() {
+        let mut learn = ev(EventKind::Global);
+        learn.results.spells_learned = [4, 6, 0, 0];
+        let mut equip = op(6, 0, 1, 0);
+        equip.results.artifacts_add = [7, 0, 0, 0];
+        let mut lasting = op(11, 0, -1, 0);
+        lasting.results.spells_learned = [1, 0, 0, 0];
+        let mut forget = op(16, 0, 0, 0);
+        forget.results.spells_learned = [4, 0, 0, 0];
+        let mut s = world(vec![learn, equip, op(7, 0, 1, 3), op(13, 0, -1, 10), lasting, forget, op(20, 10, 5, 0)]);
+        s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 5, name: "Aide".into() }];
+        s.events.push(op(12, 0, 1, 1));
+        let mut g = start(&s);
+        g.drain_events();
+        assert_eq!(g.squad[1].items[0], Some(ItemId(7)));
+        assert_eq!(g.pack, Vec::<ItemId>::new(), "the item is worn, not given");
+        assert_eq!((g.squad[1].def, g.squad[1].named), (UnitId(5), 1), "replaced by type 3, then named character 1 of type 5");
+        assert_eq!((g.squad[0].xp, g.squad[1].xp), (10, 10));
+        assert_eq!(g.spells, vec![6]);
+        assert_eq!(g.active_spells(), &[ActiveSpell { spell: 1, until: None }]);
+        assert!(g.has_spells(Holder::Player, None, &[1]) && !g.has_spells(Holder::Player, None, &[1, 2]));
+        assert_eq!(g.tile(), (10, 5));
+        assert_eq!(g.gold, 100, "the resources are arguments");
+        // "No meeting" + a spell lifts it.
+        g.remove_army_spell(1);
+        assert!(g.active_spells().is_empty());
+    }
+
+    #[test]
+    fn community_opcodes_change_ai_armies_and_buildings() {
+        let mut lasting = op(11, 2, -1, 0);
+        lasting.results.spells_learned = [3, 0, 0, 0];
+        let events = vec![
+            op(7, 2, 0, 5),
+            op(8, 2, 8, 0),
+            op(9, 2, 4, 0),
+            op(10, 2, 0, 2),
+            lasting,
+            op(12, 2, 1, 1),
+            op(13, -1, -1, 1000),
+            op(17, 2, 12, 0),
+            op(19, 2, 14, 10),
+            op(9, -1, 1, 0),
+        ];
+        let mut s = world(events);
+        s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 3, name: "Aide".into() }];
+        s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1), troop(1, 0, 1)])];
+        let mut fort = building(BuildingType::Fort, 9, 2, (1, 1));
+        fort.garrison[0] = troop(4, 0, 1);
+        s.buildings = vec![fort];
+        let mut g = start(&s);
+        g.drain_events();
+        let a = g.world.armies.iter().find(|a| a.id == 2).unwrap();
+        assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), vec![UnitId(5), UnitId(3)]);
+        assert_eq!(a.slowness, Army::slowness_for(-3));
+        assert_eq!((a.faction, a.attitude), (4, 2), "enemy group, then relation 2 towards the player");
+        assert_eq!(a.effects, vec![ActiveSpell { spell: 3, until: None }]);
+        assert_eq!((a.named, a.model), (1, 12));
+        assert_eq!(a.post, (14, 10));
+        assert!(!a.path.is_empty(), "it sets off");
+        assert!(g.has_spells(Holder::Army(2), None, &[3]));
+        assert!(g.army_at(2, 12, 10) && !g.army_at(2, 14, 10));
+        let l = &g.world.locations[0];
+        let mut level = 1;
+        let mut left = 1000;
+        while left >= g.content.xp_to_next(UnitId(4), level) {
+            left -= g.content.xp_to_next(UnitId(4), level);
+            level += 1;
+        }
+        assert_eq!(l.garrison[0].level, level);
+        assert!(level > 1);
+        assert_eq!((l.faction, l.owner), (1, crate::rules::world::Owner::Player), "the fort joins the player");
+    }
+
+    #[test]
+    fn next_map_after_a_campaign_victory() {
+        let mut branch = op(15, 3, 2, 0);
+        branch.results.chained_event = 2;
+        let mut win = ev(EventKind::Global);
+        win.subordinate = 1;
+        let mut s = world(vec![branch, win]);
+        s.header.victory_event = 2;
+        s.next_map = "0-0 Road".into();
+        s.header.carry_over = [1, 0, 0, 1, 0, 1, 1];
+        let g = start(&s);
+        assert_eq!(g.script_end(), Some(ScriptEnd::Victory(2)));
+        let next = g.next_map().unwrap();
+        assert_eq!(next.name, "3-2 Road");
+        assert_eq!(next.branch, Some((3, 2)));
+        assert_eq!((next.gold, next.mana, next.fame), (Some(100), None, false));
+        assert_eq!(next.hero, Some((1, 0)));
+        assert_eq!(next.army.len(), 1);
+        assert!(next.inventory.is_empty() && next.personal_items.is_empty());
+
+        // No branch: the scenario's next map; none before a victory.
+        let mut win = ev(EventKind::Global);
+        win.start_time = 624_354_300 + 120;
+        let mut s = world(vec![win]);
+        s.header.victory_event = 1;
+        s.next_map = "Road".into();
+        let mut g = start(&s);
+        assert_eq!(g.next_map(), None);
+        g.wait(4);
+        assert_eq!(g.next_map().map(|n| (n.name, n.gold, n.army.len())), Some(("Road".to_string(), None, 0)));
+        assert_eq!(branch_name("Road", (4, 1)), "4-1");
+        assert_eq!(branch_name("12-3.DTm", (4, 1)), "4-1.DTm");
+    }
     #[test]
     fn hero_name_escapes() {
         let g = start(&world(vec![]));
