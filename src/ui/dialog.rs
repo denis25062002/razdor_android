@@ -9,11 +9,10 @@ use razdor::rules::content::{ItemId, UnitId};
 use razdor::rules::game::{BattleResult, DayReport, Game};
 
 use super::assets::Assets;
+use super::chrome;
 use super::widgets::*;
 
-const MARBLE: Color = Color::new(0.10, 0.20, 0.16, 0.98);
 const MARBLE_EDGE: Color = Color::new(0.38, 0.58, 0.46, 1.0);
-const PARCHMENT_DARK: Color = Color::new(0.36, 0.16, 0.10, 1.0);
 pub const MANA: Color = Color::new(0.55, 0.72, 1.0, 1.0);
 
 /// A resource icon with its label.
@@ -161,6 +160,21 @@ impl Dialog {
 
 /// Small drawn icons for the resources (our own shapes).
 pub fn resource_icon(r: Resource, cx: f32, cy: f32, s: f32) {
+    // The original's pictures: coins, the magic book, the house, the paid knight.
+    let art = match r {
+        Resource::Gold => Some(0),
+        Resource::Mana => Some(1),
+        Resource::Income => Some(2),
+        Resource::Wages => Some(3),
+        Resource::Experience => None,
+    };
+    if let Some(n) = art {
+        let name = if s <= 48.0 { format!("res{n}-44") } else { format!("res{n}") };
+        if let Some(t) = super::chrome::win(&name) {
+            super::chrome::tex(&t, Rect::new(cx - s / 2.0, cy - s / 2.0, s, s), WHITE);
+            return;
+        }
+    }
     match r {
         Resource::Gold => {
             for k in 0..3 {
@@ -226,23 +240,20 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
         (w, lines) = fit(980.0f32.min(sw - 20.0));
     }
     let text_h = lines.len() as f32 * 23.0 + 24.0;
-    let res_h = if d.resources.is_empty() { 0.0 } else { 86.0 };
+    let res_h = if d.resources.is_empty() { 0.0 } else { 104.0 };
     let items_h = if d.items.is_empty() { 0.0 } else { 60.0 };
     let notice_h = if d.notice.is_some() { 26.0 } else { 0.0 };
     let pic_h = if d.picture.is_some() { 140.0 } else { 0.0 };
     let units_h = [&d.joined, &d.left].iter().filter(|u| !u.is_empty()).count() as f32 * 60.0;
     let h = 34.0 + 16.0 + pic_h + text_h + res_h + items_h + units_h + notice_h + 64.0;
     let (x, y) = ((sw - w) / 2.0, ((sh - h) / 2.0).max(10.0));
-    draw_rectangle(x, y, w, h, MARBLE);
-    draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
-    draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
-    text_centered(&d.title, x + w / 2.0, y + 22.0, 20.0, INK);
+    chrome::window(Rect::new(x, y, w, h), &d.title, chrome::Skin::Marble, false);
     let mut cy = y + 44.0;
     match &d.picture {
         Some(Picture::Unit(u)) => {
-            draw_rectangle(x + w / 2.0 - 64.0, cy, 128.0, 128.0, Color::new(0.35, 0.5, 0.65, 1.0));
-            assets.draw_unit(*u, Team::Player, x + w / 2.0, cy + 64.0, 124.0);
-            draw_rectangle_lines(x + w / 2.0 - 64.0, cy, 128.0, 128.0, 2.0, MARBLE_EDGE);
+            let r = Rect::new(x + w / 2.0 - 64.0, cy, 128.0, 128.0);
+            assets.draw_portrait(*u, Team::Player, r);
+            chrome::silver_frame(r, 1.5);
         }
         Some(Picture::Image(tex)) => {
             let k = (128.0 / tex.height()).min((w - 60.0) / tex.width());
@@ -253,10 +264,9 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
         None => {}
     }
     cy += pic_h;
-    draw_rectangle(x + 24.0, cy, w - 48.0, text_h, PARCHMENT_DARK);
-    draw_rectangle_lines(x + 24.0, cy, w - 48.0, text_h, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
+    chrome::text_box(Rect::new(x + 16.0, cy, w - 32.0, text_h));
     for (i, line) in lines.iter().enumerate() {
-        text_centered(line, x + w / 2.0, cy + 30.0 + i as f32 * 23.0, 19.0, Color::new(1.0, 0.85, 0.55, 1.0));
+        chrome::shadow_centered(line, x + w / 2.0, cy + 30.0 + i as f32 * 23.0, 19.0, Color::new(1.0, 0.9, 0.66, 1.0));
     }
     cy += text_h + 10.0;
     if !d.resources.is_empty() {
@@ -264,8 +274,9 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
         let step = (w - 60.0) / n;
         for (k, (r, label)) in d.resources.iter().enumerate() {
             let cx = x + 30.0 + step * (k as f32 + 0.5);
-            text_centered(label, cx, cy + 18.0, 18.0, if *r == Resource::Mana { MANA } else { ACCENT });
-            resource_icon(*r, cx, cy + 52.0, 44.0);
+            let c = if *r == Resource::Mana { MANA } else { Color::new(0.7, 0.92, 0.75, 1.0) };
+            chrome::shadow_centered(label, cx, cy + 18.0, 18.0, c);
+            resource_icon(*r, cx, cy + 62.0, 70.0);
         }
         cy += res_h;
     }
@@ -279,9 +290,11 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     cy += unit_row(assets, "Joined the army:", &d.joined, x, cy);
     cy += unit_row(assets, "Left the army:", &d.left, x, cy);
     if let Some(n) = &d.notice {
-        text_centered(n, x + w / 2.0, cy + 18.0, 18.0, MANA);
+        chrome::shadow_centered(n, x + w / 2.0, cy + 18.0, 18.0, Color::new(0.3, 0.72, 1.0, 1.0));
     }
     let by = y + h - 52.0;
+    // The silver line over the buttons.
+    draw_line(x + 2.0, by - 10.0, x + w - 2.0, by - 10.0, 1.5, chrome::SILVER);
     if d.question {
         let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, "Yes", true) || key(KeyCode::Enter) || key(KeyCode::Y);
         let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, "No", true) || key(KeyCode::Escape) || key(KeyCode::N);

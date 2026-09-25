@@ -18,9 +18,8 @@ use super::widgets::*;
 use super::world_view;
 use super::Screen;
 
-const MARBLE: Color = Color::new(0.10, 0.20, 0.16, 0.98);
-const MARBLE_EDGE: Color = Color::new(0.38, 0.58, 0.46, 1.0);
-const CELL: Color = Color::new(0.16, 0.12, 0.20, 1.0);
+const MARBLE_EDGE: Color = Color::new(0.80, 0.80, 0.84, 1.0);
+const CELL: Color = Color::new(0.0, 0.03, 0.02, 0.5);
 const COLS: usize = 3;
 
 /// "heals 30 hits", "defence +5, hits +20%", "-15 hits".
@@ -89,15 +88,13 @@ pub fn frame(
     message: &mut Option<String>,
     dialogs: &mut VecDeque<Dialog>,
 ) -> Option<Screen> {
-    world_view::backdrop(game, assets);
+    world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Spells));
     let (sw, sh) = (screen_width(), screen_height());
-    let (w, h) = (1080.0f32.min(sw - 20.0), 640.0f32.min(sh - 110.0));
-    let (x, y) = ((sw - w) / 2.0, ((sh - 84.0 - h) / 2.0).max(8.0));
-    draw_rectangle(x, y, w, h, MARBLE);
-    draw_rectangle_lines(x, y, w, h, 3.0, MARBLE_EDGE);
-    draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
-    text_centered("Spell book", x + w / 2.0, y + 22.0, 20.0, INK);
-    text(&format!("Mana {}", game.mana), x + w - 140.0, y + 22.0, 20.0, MANA);
+    let bar = super::chrome::bar_height();
+    let (w, h) = (1080.0f32.min(sw - 20.0), 640.0f32.min(sh - bar - 8.0));
+    let (x, y) = ((sw - w) / 2.0, ((sh - bar - h) / 2.0).max(4.0));
+    super::chrome::window(Rect::new(x, y, w, h), "The hero's spell book", super::chrome::Skin::Marble, false);
+    super::chrome::shadow_text(&format!("Mana {}", game.mana), x + w - 140.0, y + 20.0, 18.0, MANA);
 
     // The book: 3 × 5 cells.
     let book: Vec<SpellDef> = game.book().into_iter().cloned().collect();
@@ -134,7 +131,7 @@ pub fn frame(
     let mut next = None;
     if let Some(s) = book.get(*selected) {
         let mut cy = gy;
-        draw_rectangle(px, cy, pw, 150.0, Color::new(0.36, 0.16, 0.10, 1.0));
+        super::chrome::text_box(Rect::new(px, cy, pw, 150.0));
         text_centered(&s.name, px + pw / 2.0, cy + 28.0, 22.0, Color::new(1.0, 0.85, 0.55, 1.0));
         for (i, line) in spell_lines(game, s).iter().enumerate() {
             for (j, l) in wrap(line, pw - 20.0, 17.0).iter().take(2).enumerate() {

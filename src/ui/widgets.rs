@@ -70,12 +70,12 @@ fn transliterate(s: &str) -> String {
 }
 
 /// Runs `f` with the font to use for `s` (`None` = the built-in one) and the text to draw.
+/// The TrueType font draws everything when there is one, as the original uses one smooth
+/// font for all its texts.
 fn with_font<R>(s: &str, f: impl FnOnce(Option<&Font>, &str) -> R) -> R {
-    if s.is_ascii() {
-        return f(None, s);
-    }
     FONT.with(|font| match font.borrow().as_ref() {
         Some(font) => f(Some(font), s),
+        None if s.is_ascii() => f(None, s),
         None => f(None, &transliterate(s)),
     })
 }
@@ -133,25 +133,23 @@ pub fn tooltip(lines: &[(String, Color)]) {
     let (mx, my) = mouse_position();
     let x = (mx + 18.0).min(screen_width() - w - 4.0);
     let y = (my + 18.0).min(screen_height() - h - 4.0);
-    draw_rectangle(x, y, w, h, Color::new(0.06, 0.12, 0.09, 0.95));
-    draw_rectangle_lines(x, y, w, h, 2.0, Color::new(0.35, 0.55, 0.4, 1.0));
+    tooltip_panel(Rect::new(x, y, w, h));
     for (i, (s, c)) in lines.iter().enumerate() {
-        text(s, x + 12.0, y + 24.0 + i as f32 * 21.0, 17.0, *c);
+        super::chrome::shadow_text(s, x + 12.0, y + 24.0 + i as f32 * 21.0, 17.0, *c);
     }
+}
+
+/// The translucent green-marble panel of hover tooltips, with a silver edge.
+pub fn tooltip_panel(r: Rect) {
+    super::chrome::surface(r, super::chrome::Skin::Marble);
+    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.05, 0.03, 0.25));
+    super::chrome::silver_frame(r, 1.5);
 }
 
 /// Draws a button and returns true when it was clicked this frame.
 pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> bool {
     let hover = enabled && mouse_in(x, y, w, h);
-    let bg = match (enabled, hover) {
-        (false, _) => Color::new(0.2, 0.2, 0.2, 1.0),
-        (true, true) => Color::new(0.45, 0.35, 0.2, 1.0),
-        (true, false) => Color::new(0.3, 0.24, 0.15, 1.0),
-    };
-    draw_rectangle(x, y, w, h, bg);
-    draw_rectangle_lines(x, y, w, h, 2.0, if enabled { ACCENT } else { DIM });
-    let dim = measure(label, 22.0);
-    text(label, x + (w - dim.width) / 2.0, y + (h + dim.offset_y) / 2.0 - 2.0, 22.0, if enabled { INK } else { DIM });
+    super::chrome::marble_button(Rect::new(x, y, w, h), label, enabled, hover);
     let pressed = hover && clicked();
     if pressed {
         super::audio::cue(super::audio::Cue::Button);

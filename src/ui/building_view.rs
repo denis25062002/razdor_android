@@ -15,8 +15,10 @@ use razdor::rules::items::describe;
 use razdor::rules::script::HallEntry;
 use razdor::rules::town::{ServiceError, Tab};
 use razdor::rules::units::Unit;
+use razdor::rules::world::LocationKind;
 
 use super::assets::Assets;
+use super::chrome;
 use super::audio::{cue, Cue};
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
 use super::items_view::{level_gains, unit_stat_lines};
@@ -26,11 +28,7 @@ use super::widgets::*;
 use super::world_view;
 use super::Screen;
 
-const MARBLE: Color = Color::new(0.10, 0.19, 0.15, 1.0);
-const MARBLE_EDGE: Color = Color::new(0.36, 0.55, 0.44, 1.0);
-const PARCHMENT: Color = Color::new(0.85, 0.75, 0.55, 1.0);
 const PARCHMENT_INK: Color = Color::new(0.45, 0.28, 0.14, 1.0);
-const BOX: Color = Color::new(0.32, 0.15, 0.09, 1.0);
 const BOX_INK: Color = Color::new(1.0, 0.86, 0.58, 1.0);
 const SILVER: Color = Color::new(0.78, 0.78, 0.82, 1.0);
 const TAB_RED: Color = Color::new(0.75, 0.18, 0.12, 1.0);
@@ -116,40 +114,75 @@ struct Frame {
     cw: f32,
 }
 
+/// The window, as the original's building window (836×600 in the reference video): the tab
+/// column on the left, the content pane on the right.
 fn window() -> Frame {
+    let k = chrome::k();
     let (sw, sh) = (screen_width(), screen_height());
-    let w = 1060.0f32.min(sw - 20.0);
-    let h = 700.0f32.min(sh - 130.0);
-    let (x, y) = ((sw - w) / 2.0, ((sh - 84.0 - h) / 2.0 - 16.0).max(8.0));
-    Frame { x, y, w, h, cx: x + 262.0, cy: y + 38.0, cw: w - 272.0 }
+    let w = (836.0 * k).min(sw - 8.0).round();
+    let h = (600.0 * k).min(sh - chrome::bar_height() - 4.0).round();
+    let (x, y) = (((sw - w) / 2.0).round(), ((sh - chrome::bar_height() - h) / 2.0).max(2.0).round());
+    Frame { x, y, w, h, cx: x + 256.0 * k, cy: y + 34.0 * k, cw: w - 264.0 * k }
 }
 
-/// A parchment tab in the left column. Returns true when clicked.
-fn tab_button(label: &str, x: f32, y: f32, w: f32, h: f32, active: bool) -> bool {
-    let hover = mouse_in(x, y, w, h);
-    draw_rectangle(x, y, w, h, if hover && !active { Color::new(0.9, 0.81, 0.62, 1.0) } else { PARCHMENT });
-    draw_rectangle_lines(x, y, w, h, if active { 4.0 } else { 1.5 }, if active { SILVER } else { PARCHMENT_INK });
-    let size = 30.0;
-    let d = measure(label, size);
-    text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 3.0, size, if active { TAB_RED } else { PARCHMENT_INK });
+/// The original's picture of a tab (`TB-<n>_RUS`, hovered `TBo`, open `TBd`), if it has one.
+fn tab_art(tab: Option<Tab>) -> Option<usize> {
+    Some(match tab {
+        Some(Tab::MainHall) => 1,
+        Some(Tab::Barracks) => 2,
+        Some(Tab::Garrison) => 3,
+        Some(Tab::Market) => 4,
+        Some(Tab::Sanctuary) => 5,
+        None => 6,
+        Some(Tab::Tribute | Tab::Shipyard) => return None,
+    })
+}
+
+/// A parchment tab in the left column (`tab` `None` is the exit). Returns true when clicked.
+fn tab_button(label: &str, tab: Option<Tab>, r: Rect, active: bool) -> bool {
+    let hover = mouse_in(r.x, r.y, r.w, r.h);
+    let state = if active {
+        "TBd"
+    } else if hover {
+        "TBo"
+    } else {
+        "TB-"
+    };
+    let art = tab_art(tab).and_then(|n| chrome::win(&format!("{state}{n}_RUS")));
+    if let Some(t) = art {
+        chrome::tex(&t, r, WHITE);
+    } else {
+        if active {
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.45, 0.4, 0.38, 0.35));
+        } else if hover {
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(1.0, 0.95, 0.8, 0.25));
+        }
+        let (edge, width) = if active { (SILVER, 4.0) } else { (PARCHMENT_INK, 2.0) };
+        draw_rectangle_lines(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0, width, edge);
+        draw_rectangle_lines(r.x + 12.0, r.y + 12.0, r.w - 24.0, r.h - 24.0, 1.0, Color { a: 0.6, ..edge });
+        let size = (r.h * 0.36).round();
+        let d = measure(label, size);
+        let color = if active { TAB_RED } else { PARCHMENT_INK };
+        text(label, r.x + (r.w - d.width) / 2.0 + 1.5, r.y + (r.h + d.offset_y) / 2.0 - 1.5, size, Color::new(1.0, 0.95, 0.85, 0.5));
+        text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 3.0, size, color);
+    }
     hover && clicked()
 }
 
-/// The dark text box with the building's description.
+/// The red-brown text box with the building's description.
 fn description_box(desc: &str, x: f32, y: f32, w: f32, h: f32) {
-    draw_rectangle(x, y, w, h, BOX);
-    draw_rectangle_lines(x, y, w, h, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
-    let lines = wrap(desc, w - 40.0, 19.0);
+    chrome::text_box(Rect::new(x, y, w, h));
+    let lines = wrap(desc, w - 60.0, 19.0);
     let top = y + (h - lines.len() as f32 * 23.0) / 2.0 + 16.0;
     for (i, line) in lines.iter().enumerate() {
-        text_centered(line, x + w / 2.0, top + i as f32 * 23.0, 19.0, BOX_INK);
+        chrome::shadow_centered(line, x + w / 2.0, top + i as f32 * 23.0, 19.0, BOX_INK);
     }
 }
 
 /// Gold / wages / income counters, as under the original's recruit row.
 fn counters(game: &Game, x: f32, y: f32, w: f32) {
-    draw_rectangle(x, y, w, 50.0, Color::new(0.2, 0.12, 0.07, 1.0));
-    draw_rectangle_lines(x, y, w, 50.0, 1.5, Color::new(0.55, 0.4, 0.25, 1.0));
+    draw_rectangle(x, y, w, 50.0, Color::new(0.1, 0.06, 0.03, 0.55));
+    chrome::silver_frame(Rect::new(x, y, w, 50.0), 1.0);
     let mut wages = format!("- {}", game.daily_wages());
     if game.daily_mana_wages() > 0 {
         wages += &format!(" / {} mana", game.daily_mana_wages());
@@ -169,25 +202,32 @@ fn counters(game: &Game, x: f32, y: f32, w: f32) {
     }
 }
 
-/// A unit card: portrait, name, HP bar; dimmed with a cross for a corpse.
+/// A unit card: the portrait with a thin light frame, the level in the corner, HP and XP
+/// bars along the bottom; dimmed with a cross for a corpse.
 fn unit_card(game: &Game, assets: &Assets, u: &Unit, x: f32, y: f32, w: f32, h: f32) {
-    draw_rectangle(x, y, w, h, Color::new(0.12, 0.2, 0.17, 1.0));
-    draw_rectangle_lines(x, y, w, h, 1.0, MARBLE_EDGE);
     let c = &game.content;
-    assets.draw_unit(u.def, Team::Player, x + w / 2.0, y + h * 0.42, h * 0.72);
+    draw_rectangle(x + 3.0, y + 3.0, w, h, Color::new(0.0, 0.0, 0.0, 0.45));
+    let s = w.min(h);
+    let sq = Rect::new(x + (w - s) / 2.0, y, s, s);
+    draw_rectangle(x, y, w, h, Color::new(0.05, 0.08, 0.07, 1.0));
+    assets.draw_portrait(u.def, Team::Player, sq);
+    draw_rectangle_lines(x, y, w, h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
     if !u.alive() {
         draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.55));
-        draw_line(x + 12.0, y + 12.0, x + w - 12.0, y + h - 30.0, 3.0, RED);
-        draw_line(x + w - 12.0, y + 12.0, x + 12.0, y + h - 30.0, 3.0, RED);
+        draw_line(x + 12.0, y + 12.0, x + w - 12.0, y + h - 12.0, 3.0, RED);
+        draw_line(x + w - 12.0, y + 12.0, x + 12.0, y + h - 12.0, 3.0, RED);
     } else if u.unpaid {
-        text("unpaid", x + 4.0, y + 16.0, 15.0, RED);
+        chrome::badge("sign-payment", x + 12.0, y + 12.0, 20.0, RED);
     }
-    let name: String = u.name(c).chars().take(14).collect();
-    text_centered(&name, x + w / 2.0, y + h - 14.0, 14.0, INK);
-    hp_bar(x + 4.0, y + h - 8.0, w - 8.0, u.hp, u.max_hp(c));
-    // The level in the corner, the progress under the HP bar.
-    text(&format!("Lv {}", u.level), x + w - 34.0, y + 16.0, 15.0, XP_COLOR);
-    xp_bar(x + 4.0, y + h - 3.0, w - 8.0, 2.0, u.xp, u.xp_to_next(c));
+    let lv = format!("Lv {}", u.level);
+    let lw = measure(&lv, 14.0).width;
+    draw_rectangle(x + w - lw - 6.0, y + 1.0, lw + 5.0, 16.0, Color::new(0.0, 0.0, 0.0, 0.55));
+    chrome::shadow_text(&lv, x + w - lw - 3.0, y + 14.0, 14.0, XP_COLOR);
+    let name: String = u.name(c).chars().take(16).collect();
+    draw_rectangle(x + 1.0, y + h - 24.0, w - 2.0, 23.0, Color::new(0.0, 0.0, 0.0, 0.5));
+    chrome::shadow_centered(&name, x + w / 2.0, y + h - 11.0, 13.0, chrome::CREAM);
+    hp_bar(x + 3.0, y + h - 7.0, w - 6.0, u.hp, u.max_hp(c));
+    xp_bar(x + 3.0, y + h - 2.5, w - 6.0, 2.0, u.xp, u.xp_to_next(c));
 }
 
 /// Cell of a formation grid of cards.
@@ -201,8 +241,10 @@ fn empty_cells(game: &Game, x: f32, y: f32, cw: f32, ch: f32, gap: f32) {
     for r in 0..f.display_lines() {
         for col in (0..f.cols).filter(|&c| f.at_display(r, c).is_some()) {
             let (cx, cy) = (x + col as f32 * (cw + gap), y + r as f32 * (ch + gap));
-            draw_rectangle(cx, cy, cw, ch, Color::new(0.07, 0.13, 0.11, 1.0));
-            draw_rectangle_lines(cx, cy, cw, ch, 1.0, Color::new(0.25, 0.38, 0.32, 1.0));
+            let Some(slot) = f.at_display(r, col) else { continue };
+            // The ornament hangs under the cell when there is room for it.
+            let ornament = ch + gap >= cw * 1.45;
+            chrome::empty_cell(Rect::new(cx, cy, cw, ch), chrome::CellIcon::of(f, slot), ornament);
         }
     }
 }
@@ -217,14 +259,29 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
         let loc = &game.world.locations[l];
         draw_rectangle(x, y, w, pic_h, Color::new(0.35, 0.5, 0.65, 1.0));
         draw_rectangle(x, y + pic_h * 0.62, w, pic_h * 0.38, Color::new(0.35, 0.5, 0.3, 1.0));
-        if let Some(tex) = assets.dt.as_ref().and_then(|a| a.building(loc.picture.0, loc.picture.1)) {
+        // The original's picture of this kind of building, else its map sprite.
+        let scene = match loc.kind {
+            LocationKind::Town | LocationKind::Palace => Some("S_Town"),
+            LocationKind::Castle | LocationKind::Fort => Some("S_Castle"),
+            LocationKind::Church => Some("S_Church"),
+            LocationKind::Market | LocationKind::Smithy => Some("S_Market"),
+            LocationKind::Tavern => Some("S_Tavern"),
+            LocationKind::Village => Some("S_Village"),
+            LocationKind::Shipyard => Some("S_Shipyard"),
+            LocationKind::Ruins => Some("S_Ruin"),
+            _ => None,
+        };
+        if let Some(t) = scene.and_then(chrome::win) {
+            let src_h = (t.width() * pic_h / w).min(t.height());
+            chrome::tex_src(&t, Rect::new(0.0, (t.height() - src_h) / 2.0, t.width(), src_h), Rect::new(x, y, w, pic_h), WHITE);
+        } else if let Some(tex) = assets.dt.as_ref().and_then(|a| a.building(loc.picture.0, loc.picture.1)) {
             let k = ((pic_h - 20.0) / tex.height()).min((w - 20.0) / tex.width()).min(2.5);
             let (tw, th) = (tex.width() * k, tex.height() * k);
             draw_texture_ex(&tex, x + (w - tw) / 2.0, y + pic_h - th - 6.0, WHITE, DrawTextureParams { dest_size: Some(vec2(tw, th)), ..Default::default() });
         } else {
             text_centered(loc.kind.label(), x + w / 2.0, y + pic_h / 2.0, 40.0, INK);
         }
-        draw_rectangle_lines(x, y, w, pic_h, 2.0, MARBLE_EDGE);
+        chrome::silver_frame(Rect::new(x, y, w, pic_h), 1.0);
     }
     let entries = game.hall_entries();
     if view.pick.is_some_and(|k| k >= entries.len()) {
@@ -235,8 +292,9 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
         _ => None,
     });
     let ly = y + pic_h + 12.0;
-    draw_rectangle(x, ly, w, 36.0, Color::new(0.14, 0.24, 0.2, 1.0));
-    text("Quests and rumours:", x + 14.0, ly + 25.0, 20.0, ACCENT);
+    draw_rectangle(x, ly, w, 36.0, Color::new(0.0, 0.0, 0.0, 0.3));
+    chrome::silver_frame(Rect::new(x, ly, w, 36.0), 1.0);
+    chrome::shadow_text("Quests and rumours:", x + 14.0, ly + 25.0, 20.0, chrome::GOLD);
     let mut next = None;
     if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, "Hear rumour", rumour.is_some()) {
         if let Some(id) = rumour {
@@ -253,7 +311,7 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     let list_y = ly + 42.0;
     let (row_h, rows) = (24.0, 5);
     let list_h = rows as f32 * row_h + 12.0;
-    draw_rectangle(x, list_y, w, list_h, PARCHMENT);
+    chrome::parchment(Rect::new(x, list_y, w, list_h), false);
     if entries.is_empty() {
         let none = if game.script().is_some() { "Nothing is on offer here." } else { "No quests in the demo." };
         text_centered(none, x + w / 2.0, list_y + list_h / 2.0 + 6.0, 19.0, PARCHMENT_INK);
@@ -299,17 +357,32 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     let c = game.content.clone();
     let recruits = game.world.locations[l].recruits.clone();
     let hires = game.world.locations[l].hires();
-    let (rw, rh) = (((w - 10.0) / 6.0 - 8.0).min(118.0), 112.0);
-    draw_rectangle(x, y, w, rh + 76.0, Color::new(0.3, 0.2, 0.12, 1.0));
+    let (rw, rh) = (((w - 10.0) / 6.0 - 8.0).min(118.0), ((w - 10.0) / 6.0 - 8.0).min(112.0));
+    // The recruits stand before the building's sepia interior, as in the original.
+    let back = Rect::new(x, y, w, rh + 76.0);
+    let interior = match game.world.locations[l].kind {
+        LocationKind::Town | LocationKind::Palace => Some("BI_Town"),
+        LocationKind::Castle | LocationKind::Fort => Some("BI_Castle"),
+        LocationKind::Church => Some("BI_Church"),
+        LocationKind::Ruins => Some("BI_Ruin"),
+        _ => None,
+    };
+    match interior.and_then(chrome::win) {
+        Some(t) => {
+            let src_h = t.width() * back.h / back.w;
+            chrome::tex_src(&t, Rect::new(0.0, (t.height() - src_h).max(0.0) / 2.0, t.width(), src_h.min(t.height())), back, WHITE);
+        }
+        None => draw_rectangle(back.x, back.y, back.w, back.h, Color::new(0.3, 0.2, 0.12, 1.0)),
+    }
+    chrome::silver_frame(back, 1.0);
     let mut hover_lines = Vec::new();
     if recruits.is_empty() {
-        text_centered("No recruits here.", x + w / 2.0, y + 70.0, 22.0, DIM);
+        chrome::shadow_centered("No recruits here.", x + w / 2.0, y + 70.0, 22.0, chrome::CREAM);
     }
     for (k, r) in recruits.iter().take(6).enumerate() {
         let (cx, cy) = (x + 8.0 + k as f32 * (rw + 8.0), y + 8.0);
-        draw_rectangle(cx, cy, rw, rh, Color::new(0.4, 0.55, 0.7, 1.0));
-        assets.draw_unit(r.unit, Team::Player, cx + rw / 2.0, cy + rh / 2.0, rh - 6.0);
-        draw_rectangle_lines(cx, cy, rw, rh, 2.0, Color::new(0.6, 0.45, 0.3, 1.0));
+        assets.draw_portrait(r.unit, Team::Player, Rect::new(cx, cy, rw, rh));
+        draw_rectangle_lines(cx, cy, rw, rh, 1.0, Color::new(0.85, 0.85, 0.85, 0.9));
         if mouse_in(cx, cy, rw, rh) {
             let def = c.unit(r.unit);
             hover_lines.push((def.name.clone(), ACCENT));
@@ -321,7 +394,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let price = game.hire_price(r.unit);
         let stock_left = r.stock != Some(0);
         let can = hires && stock_left && game.can_afford(price) && game.squad.len() < game.max_squad();
-        if button(cx + 6.0, cy + rh + 4.0, rw - 12.0, 24.0, "Hire", can) {
+        if chrome::pill_button(Rect::new(cx + 4.0, cy + rh + 4.0, rw - 8.0, 22.0), "Hire", can, true) {
             let name = c.unit(r.unit).name.clone();
             *message = Some(match game.hire(r.unit) {
                 Ok(()) => format!("{name} joins your army."),
@@ -330,12 +403,12 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
                 Err(HireError::NotOffered) => "Not offered here.".into(),
             });
         }
-        text_centered(&format!("Price = {}", price.amount), cx + rw / 2.0, cy + rh + 46.0, 16.0, if price.currency == Currency::Mana { MANA } else { ACCENT });
+        chrome::shadow_centered(&format!("Price = {}", price.amount), cx + rw / 2.0, cy + rh + 44.0, 15.0, if price.currency == Currency::Mana { MANA } else { chrome::GOLD });
         let left = match r.stock {
             Some(n) => format!("{n} of {} left", r.max),
             None => "always".to_string(),
         };
-        text_centered(&left, cx + rw / 2.0, cy + rh + 64.0, 14.0, DIM);
+        chrome::shadow_centered(&left, cx + rw / 2.0, cy + rh + 62.0, 13.0, chrome::CREAM);
     }
     let cy = y + rh + 84.0;
     counters(game, x, cy, w);
@@ -359,15 +432,15 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         }
         let (bx, by, bw) = (ux + 4.0, uy + ch + 3.0, cw - 8.0);
         if let Some(p) = game.heal_price(i).filter(|_| heals) {
-            if button(bx, by, bw, 22.0, "Heal", game.can_afford(p)) {
+            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), "Heal", game.can_afford(p), false) {
                 action = Some((i, false));
             }
-            text_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, ACCENT);
+            chrome::shadow_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
         } else if let Some(p) = game.resurrect_price(i).filter(|_| raises) {
-            if button(bx, by, bw, 22.0, "Raise", game.can_afford(p)) {
+            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), "Raise", game.can_afford(p), false) {
                 action = Some((i, true));
             }
-            text_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, ACCENT);
+            chrome::shadow_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
         } else if !u.alive() {
             let left = game.resurrection_minutes_left(i).map_or("to be buried".into(), |m| duration_label(m as f64));
             text_centered(&left, ux + cw / 2.0, by + 16.0, 14.0, DIM);
@@ -391,7 +464,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         (true, false) => "Healing is paid at once. The dead are raised in towns and churches.".to_string(),
         _ => "No healing here.".into(),
     };
-    text(&note, x, f.y + f.h - 6.0, 15.0, DIM);
+    chrome::shadow_text(&note, x, f.y + f.h - 6.0, 15.0, chrome::CREAM);
     tooltip(&hover_lines);
     next
 }
@@ -451,7 +524,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         });
     }
     let note = format!("Units on guard are paid for their first day only and heal {}% a day.", c.options.garrison_auto_heal);
-    text(&note, x, f.y + f.h - 6.0, 15.0, DIM);
+    chrome::shadow_text(&note, x, f.y + f.h - 6.0, 15.0, chrome::CREAM);
     tooltip(&hover);
 }
 
@@ -460,7 +533,8 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
 #[allow(clippy::too_many_arguments)]
 fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)], pick: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32, visible: usize) -> Option<usize> {
     let row_h = 30.0;
-    draw_rectangle(x, y, w, 26.0 + visible as f32 * row_h, Color::new(0.12, 0.2, 0.16, 1.0));
+    draw_rectangle(x, y, w, 26.0 + visible as f32 * row_h, Color::new(0.0, 0.04, 0.02, 0.45));
+    chrome::silver_frame(Rect::new(x, y, w, 26.0 + visible as f32 * row_h), 1.0);
     text("Name", x + 50.0, y + 19.0, 17.0, ACCENT);
     text("Price", x + w - 80.0, y + 19.0, 17.0, ACCENT);
     let max_scroll = rows.len().saturating_sub(visible);
@@ -499,10 +573,10 @@ fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)]
     hit
 }
 
-fn item_description(game: &Game, assets: &Assets, item: ItemId, x: f32, y: f32, w: f32, h: f32) {
+pub(super) fn item_description(game: &Game, assets: &Assets, item: ItemId, x: f32, y: f32, w: f32, h: f32) {
     let c = &game.content;
     let d = c.item(item);
-    draw_rectangle(x, y, w, h, BOX);
+    chrome::text_box(Rect::new(x, y, w, h));
     draw_rectangle_lines(x, y, w, h, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
     assets.draw_item(item, x + w / 2.0 - 28.0, y + 10.0, 56.0);
     text_centered(&d.name, x + w / 2.0, y + 90.0, 20.0, BOX_INK);
@@ -551,7 +625,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     match view.pick.and_then(|k| rows.get(k)).and_then(|r| r.0) {
         Some(item) => item_description(game, assets, item, x, y, dw, dh),
         None => {
-            draw_rectangle(x, y, dw, dh, BOX);
+            chrome::text_box(Rect::new(x, y, dw, dh));
             text_centered("Pick an item from the list.", x + dw / 2.0, y + dh / 2.0, 18.0, BOX_INK);
         }
     }
@@ -612,7 +686,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
         view.pick = Some(k);
     }
     let dh = 150.0;
-    draw_rectangle(x, y, dw, dh, BOX);
+    chrome::text_box(Rect::new(x, y, dw, dh));
     let chosen = view.pick.and_then(|k| spells.get(k));
     match chosen {
         Some(s) => {
@@ -747,23 +821,24 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         view.switch(tabs[0]);
     }
     let f = window();
-    draw_rectangle(f.x, f.y, f.w, f.h, MARBLE);
-    draw_rectangle_lines(f.x, f.y, f.w, f.h, 3.0, MARBLE_EDGE);
-    draw_rectangle(f.x, f.y, f.w, 28.0, Color::new(0.06, 0.13, 0.10, 1.0));
-    text_centered(&title(game), f.x + f.w / 2.0, f.y + 21.0, 20.0, INK);
-    let close = button(f.x + f.w - 30.0, f.y + 3.0, 24.0, 22.0, "x", true);
+    let k = chrome::k();
+    let (_, close) = chrome::window(Rect::new(f.x, f.y, f.w, f.h), &title(game), chrome::Skin::Marble, true);
 
-    // Tabs.
-    let (tx, tw) = (f.x + 10.0, 240.0);
-    draw_rectangle(tx, f.y + 36.0, tw, f.h - 46.0, Color::new(0.8, 0.69, 0.48, 1.0));
-    let th = 76.0;
-    for (k, &t) in tabs.iter().enumerate() {
-        if tab_button(tab_label(t), tx + 10.0, f.y + 48.0 + k as f32 * (th + 12.0), tw - 20.0, th, view.tab == t) && view.tab != t {
+    // Tabs, on light parchment.
+    let col = Rect::new(f.x + 2.0 * k, f.y + 27.0 * k, 244.0 * k, f.h - 29.0 * k);
+    chrome::surface(col, chrome::Skin::Paper);
+    draw_line(col.x + col.w + 1.0, col.y, col.x + col.w + 1.0, col.y + col.h, 1.5 * k, SILVER);
+    let (tw, th) = (228.0 * k, 88.0 * k);
+    let tx = col.x + (col.w - tw) / 2.0;
+    let pitch = (th + 6.0 * k).min((col.h - th - 20.0 * k) / tabs.len().max(1) as f32);
+    for (i, &t) in tabs.iter().enumerate() {
+        let r = Rect::new(tx, col.y + 12.0 * k + i as f32 * pitch, tw, th);
+        if tab_button(tab_label(t), Some(t), r, view.tab == t) && view.tab != t {
             view.switch(t);
             *message = None;
         }
     }
-    let exit = tab_button("Exit", tx + 10.0, f.y + f.h - th - 20.0, tw - 20.0, th, false);
+    let exit = tab_button("Exit", None, Rect::new(tx, col.y + col.h - th - 10.0 * k, tw, th), false);
 
     let mut next = early;
     match view.tab {

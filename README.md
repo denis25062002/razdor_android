@@ -47,13 +47,13 @@ cargo test          # game rules
   undecided battle ends and both sides pull back. Your hero survives with 1 HP as long as
   anyone in his army does; you lose when the whole army is dead. Army cap: 12.
 - Survivors gain XP ("XP +N" on the cards). Levels add stats; some units can be promoted
-  from the **Squad** (hero and army) screen (the spearman becomes a swordsman at level 2).
+  from the hero and army screen, the crossed swords of the bottom bar (the spearman becomes a swordsman at level 2).
   The fallen stay in the army as bodies until raised or buried; their items go to the
   backpack. A victory window shows the gold, mana and items taken, and any castle captured.
 - Items, as in the original: every unit has 4 slots, one weapon, never two of the same
   type; melee weapons for warriors, bows for shooters, staffs for mages. Buy them at
   markets (new random goods every 7 days, sell for a quarter of the price), loot them from
-  camps and gangs, or get them as village tribute. Manage gear from the **Squad** screen (4
+  camps and gangs, or get them as village tribute. Manage gear from the hero and army screen (4
   slots per unit, a scrolling backpack of 40); potions are drunk there (healing at once,
   other effects last until the end of the next battle). Units can be dismissed there.
 - Units and items of the demo are our own content in `data/units.ini` and `data/items.ini`,
@@ -96,7 +96,7 @@ Accepted quests go into the **Journal** (bottom bar, key J) with their texts, an
 ones are marked there; the main hall lists the building's quests and the rumours on offer
 (10 gold each). The scenario's victory or defeat event ends the game. The fog of war hides what the hero
 has not seen yet (unexplored ground is black and cannot be walked; a click into the dark
-makes the hero feel his way towards it); M or the "Map (M)" button opens the minimap of the
+makes the hero feel his way towards it); M or the spiral "map" button of the bottom bar opens the minimap of the
 explored land, and a click on it moves the camera. A **shipyard** rents a ship for
 `ShipCost` gold (250): click the water to board it and sail, click the shore to land; the
 ship waits where you left it until you walk back onto it (one ship at a time). Pirate
@@ -107,6 +107,30 @@ start building when the map names one, and the class screen takes a name for him
 (`#HERONAME`; empty means the class's name). Russian text needs a TrueType font with Cyrillic: a common
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
+
+## Interface
+The screens follow the original's layout (the 960×720 gameplay video, scaled to the window;
+`docs/reference/video-notes.md`). The **bottom bar** has the original's oval buttons: menu,
+settings, save, load on the left, journal, hero and army, spell book and map on the right
+(blue; grey while a window is open, green for the open screen, orange while the minimap
+shows), the time panel in the middle and mana, gold, income and wages under them. Wait 1 h /
+4 h are in the side panel. The **battle** is a window over the map titled with both armies:
+the acting (or hovered) unit's full-body figure, stat list and traits on the left; the
+enemy's formation on top, a hint strip, and yours below, each card the portrait with the
+stat strip (`A: 45 D: 35/40`, `Mnvr: 1 Ini: 12`, `Hits: 70`; `Pwr` for casters); empty
+cells show swords (front), a bow (back) or a tent (reserve). The acting card is framed
+green, cells it can step to blue, its targets red or blue; hovering one previews the action
+("Click to curse X / Initiative: -5 Actions: -1"), and hits and spells play the original's
+battle and spell animations. Building windows (tab column and content), the hero and army
+screen (unit panel with four item slots, backpack or upgrade tree, item description, army
+cards), dialogs, tooltips and the minimap use the same frames.
+
+With an install, all of this is the original's art, decoded at runtime from
+`Graphics/Windows`, `Graphics/Battle`, `Graphics/Spells` and the unit portraits and figures
+(`src/ui/chrome.rs`, `src/dt/gfx.rs`); trait descriptions come from the install's
+`Rus_DiscordTimes.ini`. Nothing decoded is stored. Without one, the same layout is drawn in
+our own placeholder style (procedural marble and parchment, drawn icons and silhouettes).
+All text uses the TrueType font when one is found.
 
 ## AI armies
 The scenario's armies live their own lives while you walk (`src/rules/ai.rs`). Each one
@@ -144,7 +168,7 @@ map gives them.
 
 ## Spells
 Learn spells for gold at a sanctuary (the **Sanctuary** tab of towns and churches; the book
-holds 15). Open the spell book from the map with **Spells (B)** or B: every spell shows its
+holds 15). Open the spell book from the map with the book button or B: every spell shows its
 mana cost and casting time for your hero, how long it lasts and what it does. Blessings and
 heals go on your own army; curses and bolts on a hostile army within 3 cells that you can
 see. Casting costs mana **and game time**: armies move meanwhile, and an enemy reaching you
@@ -255,5 +279,7 @@ RAZDOR_ASSETS=./assets-local cargo run --release
 - `src/dt/` — readers for the original's files (ini data, `.DTm` maps). Pure, no macroquad.
 - `src/rules/` — pure game logic (no macroquad), unit-tested.
 - `src/editor/` — the map editor's model (documents, commands, undo, validation, saving). Pure, unit-tested.
-- `src/ui/` — macroquad screens; `assets.rs` is the only place that draws units and items.
+- `src/ui/` — macroquad screens; `assets.rs` is the only place that draws units and items,
+  `chrome.rs` the window art (original or placeholder), `unit_sheet.rs` the unit panel and
+  card strip, `game_bar.rs` the bottom bar.
 - Design: `docs/superpowers/specs/2026-09-24-razdor-prototype-design.md`.

@@ -100,14 +100,59 @@ pub fn team_color(team: Team) -> Color {
 }
 
 impl Assets {
-    /// Original portrait: a demo unit uses its stand-in, original content its own `GlobalIndex`.
+    /// The original unit whose pictures stand for `kind`: a demo unit's stand-in, original
+    /// content its own `GlobalIndex`.
+    fn dt_id(&self, kind: UnitId) -> Option<u32> {
+        match self.content.unit(kind).extra.get("Key") {
+            Some(key) => dt_stand_in(key),
+            None => Some(kind.0),
+        }
+    }
+
     fn dt_portrait(&self, kind: UnitId) -> Option<Texture2D> {
-        let dt = self.dt.as_ref()?;
-        let id = match self.content.unit(kind).extra.get("Key") {
-            Some(key) => dt_stand_in(key)?,
-            None => kind.0,
+        self.dt.as_ref()?.unit_portrait(self.dt_id(kind)?)
+    }
+
+    /// The full-body sepia figure of `kind` (the unit panels), if the install has it.
+    pub fn figure(&self, kind: UnitId) -> Option<Texture2D> {
+        self.dt.as_ref()?.unit_figure(self.dt_id(kind)?)
+    }
+
+    /// A card portrait filling the square `r`: the original's bust, a custom sprite, or a
+    /// placeholder (a sky in the team's colour with the unit's token).
+    pub fn draw_portrait(&self, kind: UnitId, team: Team, r: Rect) {
+        let custom = self.custom_sprites().then(|| self.sprites.get(&kind).cloned()).flatten();
+        if let Some(tex) = self.dt_portrait(kind) {
+            draw_texture_ex(&tex, r.x, r.y, WHITE, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
+            return;
+        }
+        let sky = match team {
+            Team::Player => (Color::from_rgba(70, 110, 170, 255), Color::from_rgba(170, 190, 215, 255)),
+            Team::Enemy => (Color::from_rgba(120, 60, 50, 255), Color::from_rgba(210, 160, 120, 255)),
         };
-        dt.unit_portrait(id)
+        let bands = 8;
+        for i in 0..bands {
+            let t = i as f32 / (bands - 1) as f32;
+            let c = Color::new(sky.0.r + (sky.1.r - sky.0.r) * t, sky.0.g + (sky.1.g - sky.0.g) * t, sky.0.b + (sky.1.b - sky.0.b) * t, 1.0);
+            draw_rectangle(r.x, r.y + r.h * i as f32 / bands as f32, r.w, r.h / bands as f32 + 0.5, c);
+        }
+        if let Some(tex) = custom {
+            let params = DrawTextureParams { dest_size: Some(vec2(r.w * 0.8, r.h * 0.8)), ..Default::default() };
+            draw_texture_ex(&tex, r.x + r.w * 0.1, r.y + r.h * 0.1, WHITE, params);
+            return;
+        }
+        let (fill, letter) = token(&self.content, kind);
+        let (cx, cy, s) = (r.x + r.w / 2.0, r.y + r.h / 2.0, r.w.min(r.h));
+        // Shoulders and head, like a bust.
+        let (top, bottom) = (cy + s * 0.12, r.y + r.h);
+        let (a, b, c, d) = (vec2(cx - s * 0.2, top), vec2(cx + s * 0.2, top), vec2(cx + s * 0.42, bottom), vec2(cx - s * 0.42, bottom));
+        draw_triangle(a, b, c, fill);
+        draw_triangle(a, c, d, fill);
+        draw_circle(cx, cy - s * 0.06, s * 0.22, fill);
+        draw_circle_lines(cx, cy - s * 0.06, s * 0.22, 2.0, Color::new(0.0, 0.0, 0.0, 0.5));
+        let fs = (s * 0.3).round();
+        let dim = measure(&letter, fs);
+        text(&letter, cx - dim.width / 2.0, cy - s * 0.06 + dim.offset_y / 2.0, fs, BLACK);
     }
 
     /// Original item icon, for original content only (demo items have their own keys).
@@ -133,7 +178,11 @@ impl Assets {
                 }
             }
         }
-        Assets { demo: content.clone(), content, sprites, item_sprites, dt: DtArt::from_env() }
+        let dt = DtArt::from_env();
+        if let Some(d) = &dt {
+            super::chrome::set_install(d.install.dir.clone());
+        }
+        Assets { demo: content.clone(), content, sprites, item_sprites, dt }
     }
 
     /// Draw pictures for `content` from now on (a new game on other content).

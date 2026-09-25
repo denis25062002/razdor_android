@@ -221,31 +221,30 @@ pub fn class_select(
     None
 }
 
-pub(super) fn top_bar(game: &Game) {
-    draw_rectangle(0.0, 0.0, screen_width(), 44.0, PANEL);
-    text(&game.clock.label(), 16.0, 29.0, 24.0, INK);
-    text(&format!("{} gold", game.gold), 330.0, 29.0, 24.0, ACCENT);
-    text(&format!("{} mana", game.mana), 470.0, 29.0, 24.0, Color::new(0.5, 0.7, 1.0, 1.0));
-}
-
 /// Squad shown as its battle formation (front row on top). Returns the panel height.
 pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     const CELL: f32 = 36.0;
     let formation = game.content.formation;
     let lines = formation.display_lines();
     let h = 40.0 + lines as f32 * (CELL + 14.0) + 30.0;
-    draw_rectangle(x, y, 240.0, h, PANEL);
-    text(&format!("Squad {}/{}", game.squad.len(), game.max_squad()), x + 12.0, y + 28.0, 24.0, INK);
+    draw_rectangle(x, y, 240.0, h, Color::new(0.0, 0.0, 0.0, 0.3));
+    super::chrome::silver_frame(Rect::new(x, y, 240.0, h), 1.0);
+    super::chrome::shadow_text(&format!("Squad {}/{}", game.squad.len(), game.max_squad()), x + 12.0, y + 28.0, 22.0, super::chrome::CREAM);
     let mut hovered = None;
     let cell = (228.0 / formation.cols as f32 - 1.0).min(CELL);
     for r in 0..lines {
         for col in 0..formation.cols {
             let Some(slot) = formation.at_display(r, col) else { continue };
             let (cx, cy) = (x + 6.0 + col as f32 * (cell + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
+            let sq = Rect::new(cx, cy, cell, CELL);
+            draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.4));
             draw_rectangle_lines(cx, cy, cell, CELL, 1.0, if slot.row == Row::Reserve { Color::new(0.3, 0.3, 0.3, 1.0) } else { DIM });
-            let Some(i) = game.squad.iter().position(|u| u.slot == slot) else { continue };
+            let Some(i) = game.squad.iter().position(|u| u.slot == slot) else {
+                super::chrome::cell_icon(super::chrome::CellIcon::of(formation, slot), sq);
+                continue;
+            };
             let u = &game.squad[i];
-            assets.draw_unit(u.def, Team::Player, cx + cell / 2.0, cy + CELL / 2.0, CELL);
+            assets.draw_portrait(u.def, Team::Player, sq);
             if !u.alive() {
                 draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
                 text_centered("+", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 26.0, RED);
@@ -270,15 +269,6 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     };
     text(&info, x + 12.0, y + h - 10.0, 18.0, DIM);
     h
-}
-
-pub(super) fn message_line(message: &Option<String>) {
-    if let Some(m) = message {
-        let w = measure(m, 24.0).width + 40.0;
-        let x = (screen_width() - w) / 2.0;
-        draw_rectangle(x, screen_height() - 60.0, w, 40.0, PANEL);
-        text_centered(m, screen_width() / 2.0, screen_height() - 33.0, 24.0, ACCENT);
-    }
 }
 
 fn end_screen(title: &str, subtitle: &str, color: Color, game: &mut Option<Game>) -> Option<Screen> {

@@ -115,14 +115,12 @@ fn notice(line: &str, event: Option<EventId>, message: &mut Option<String>, dial
 
 /// The journal: active quests, then those completed; the selected one's text on the right.
 pub fn journal(game: &Game, assets: &super::assets::Assets, selected: &mut usize) -> Option<Screen> {
-    world_view::backdrop(game, assets);
+    world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Journal));
     let (sw, sh) = (screen_width(), screen_height());
-    let (w, h) = (1000.0f32.min(sw - 20.0), 640.0f32.min(sh - 110.0));
-    let (x, y) = ((sw - w) / 2.0, ((sh - 84.0 - h) / 2.0).max(8.0));
-    draw_rectangle(x, y, w, h, Color::new(0.10, 0.19, 0.15, 1.0));
-    draw_rectangle_lines(x, y, w, h, 3.0, Color::new(0.36, 0.55, 0.44, 1.0));
-    draw_rectangle(x, y, w, 30.0, Color::new(0.06, 0.13, 0.10, 1.0));
-    text_centered("Journal", x + w / 2.0, y + 22.0, 20.0, INK);
+    let bar = super::chrome::bar_height();
+    let (w, h) = (1000.0f32.min(sw - 20.0), 640.0f32.min(sh - bar - 8.0));
+    let (x, y) = ((sw - w) / 2.0, ((sh - bar - h) / 2.0).max(4.0));
+    super::chrome::window(Rect::new(x, y, w, h), "The hero's journal", super::chrome::Skin::Marble, false);
 
     let (active, done): (Vec<EventId>, Vec<EventId>) =
         game.script().map_or((Vec::new(), Vec::new()), |s| (s.journal().to_vec(), s.completed_quests().to_vec()));
@@ -132,7 +130,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, selected: &mut usize
     // The list.
     let (lx, ly, lw) = (x + 16.0, y + 44.0, 360.0);
     let lh = h - 110.0;
-    draw_rectangle(lx, ly, lw, lh, Color::new(0.85, 0.75, 0.55, 1.0));
+    super::chrome::parchment(Rect::new(lx, ly, lw, lh), false);
     let ink = Color::new(0.45, 0.28, 0.14, 1.0);
     let mut ry = ly + 8.0;
     let header = |label: &str, ry: &mut f32| {
@@ -166,8 +164,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, selected: &mut usize
 
     // The selected quest's text.
     let (tx, tw) = (lx + lw + 16.0, w - lw - 48.0);
-    draw_rectangle(tx, ly, tw, lh, Color::new(0.32, 0.15, 0.09, 1.0));
-    draw_rectangle_lines(tx, ly, tw, lh, 2.0, Color::new(0.6, 0.42, 0.25, 1.0));
+    super::chrome::text_box(Rect::new(tx, ly, tw, lh));
     let box_ink = Color::new(1.0, 0.86, 0.58, 1.0);
     match rows.get(*selected) {
         Some(&(q, finished)) => {
