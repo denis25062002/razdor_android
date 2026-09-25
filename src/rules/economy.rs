@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ai;
 use super::content::{Bonus, HeroClass, ItemId, Nature, Source, WageKind};
-use super::game::{Currency, Game, Price, Tribute, PACK_SIZE};
+use super::game::{Currency, Event, Game, Price, Tribute, PACK_SIZE};
 use super::magic;
 use super::units::{Stats, Unit};
 use super::world::{Army, LocationKind, Recruit};
@@ -567,6 +567,24 @@ impl Game {
                 return;
             }
         }
+    }
+
+    /// Entering village `l`: unless it made an offer (answered first, [`Game::accept_offer`] or
+    /// [`Game::decline_offer`]), the hero takes the tribute at once (economy.md §3, 0x4c6000;
+    /// the footage's "tribute already collected").
+    pub(crate) fn auto_tribute(&mut self, l: usize) -> Option<Event> {
+        if self.village_offer().is_some() || self.village_ready() != Some(l) {
+            return None;
+        }
+        let mana = self.world.locations[l].tribute_mana;
+        self.collect_tribute().map(|paid| Event::Tribute { at: l, paid, mana })
+    }
+
+    /// Declines the village's offer and takes its tribute instead.
+    pub fn decline_offer(&mut self) -> Option<Tribute> {
+        self.village_offer()?;
+        self.offer = None;
+        self.collect_tribute()
     }
 
     /// Accepts the village's offer: it takes effect and empties both of the village's stocks.

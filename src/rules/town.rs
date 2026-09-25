@@ -288,6 +288,7 @@ mod tests {
 
     use super::*;
     use crate::dt::dtm::{BuildingType, RecruitSlot, Scenario};
+    use crate::rules::game::Tribute;
     use crate::rules::battle::{Battle, Team};
     use crate::rules::content::testkit as ck;
     use crate::rules::content::{ArtefactType, Bonus, Content, HeroClass, ItemId, MagicDirection, MagicSchool, Nature, UnitDef, UnitId};
@@ -714,6 +715,58 @@ mod tests {
         assert_eq!(g.squad[1].hp, 10);
         g.pass_time(60.0, &mut Vec::new());
         assert_eq!(g.squad[1].hp, 14);
+    }
+
+    /// The hero walks from (2, 2) into a village at (8, 2) holding 40 gold and 5 mana, with
+    /// `rng` seed `seed`. Returns the game, the events of the walk, and his mana before it.
+    fn walk_into_village(seed: u64, attitude: i8) -> (Game, Vec<Event>, i32) {
+        let mut s = map();
+        let mut v = town(BuildingType::Village, 8, 2, attitude);
+        (v.gold_per_day, v.gold_max, v.mana_per_day, v.mana_max) = (40, 40, 5, 5);
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.rng = crate::rules::rng::Rng::new(seed);
+        let mana = g.mana;
+        assert!(g.set_destination(g.world.locations[0].tile));
+        let mut events = Vec::new();
+        for _ in 0..2000 {
+            if !g.moving() {
+                break;
+            }
+            events.extend(g.tick(0.05));
+        }
+        assert_eq!(g.location, Some(0));
+        (g, events, mana)
+    }
+
+    #[test]
+    fn entering_a_village_collects_its_tribute_at_once() {
+        // world.md / economy.md §3 (0x4c6000) and the footage: no button, the hero takes it all.
+        let seed = (0..200).find(|&s| walk_into_village(s, 1).0.village_offer().is_none()).unwrap();
+        let (g, events, mana) = walk_into_village(seed, 1);
+        assert!(events.contains(&Event::Tribute { at: 0, paid: Tribute::Gold(40), mana: 5 }), "{events:?}");
+        assert_eq!((g.world.locations[0].tribute_gold, g.world.locations[0].tribute_mana), (0, 0));
+        assert_eq!(g.mana, mana + 5);
+        assert_eq!(g.tribute_available(), None, "already collected");
+    }
+
+    #[test]
+    fn with_an_offer_the_tribute_waits_for_the_answer() {
+        let seed = (0..200).find(|&s| walk_into_village(s, 1).0.village_offer().is_some()).unwrap();
+        let (mut g, events, _) = walk_into_village(seed, 1);
+        assert!(!events.iter().any(|e| matches!(e, Event::Tribute { .. })), "not before the answer");
+        assert_eq!(g.world.locations[0].tribute_gold, 40);
+        let gold = g.gold;
+        assert_eq!(g.decline_offer(), Some(Tribute::Gold(40)), "no thanks: the tribute instead");
+        assert_eq!((g.gold, g.world.locations[0].tribute_gold), (gold + 40, 0));
+        assert_eq!(g.village_offer(), None);
+    }
+
+    #[test]
+    fn an_ill_disposed_village_pays_nothing() {
+        let (g, events, _) = walk_into_village(1, -1);
+        assert!(!events.iter().any(|e| matches!(e, Event::Tribute { .. })));
+        assert_eq!(g.world.locations[0].tribute_gold, 40);
     }
 
     /// A village with `gold`/`mana` waiting, the hero entering it with `rng` seed `seed`.

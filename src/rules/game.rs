@@ -96,7 +96,7 @@ pub enum TradeError {
 }
 
 /// What a village paid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tribute {
     Gold(i32),
     Item(ItemId),
@@ -161,6 +161,9 @@ pub enum Event {
     Battle(AiNews),
     /// A squad member reached a new level outside battle (scenario XP): (squad index, level).
     LevelUp(usize, i32),
+    /// Entering village `at`, the hero took its tribute (economy.md §3: on entering, all the
+    /// gold and mana, no button): what it paid, and the mana.
+    Tribute { at: usize, paid: Tribute, mana: i32 },
 }
 
 /// Who the next battle is against.
@@ -701,6 +704,7 @@ impl Game {
             if taken {
                 events.push(Event::Captured(l));
             }
+            events.extend(self.auto_tribute(l));
             // Local events of the building.
             events.extend(self.run_script());
             return false;
@@ -2177,11 +2181,15 @@ mod tests {
         s.buildings = vec![v];
         let mut g = start(&s);
         g.set_destination((6, 2));
-        assert_eq!(walk_until_stopped(&mut g).last(), Some(&Event::Arrived(0)));
-        assert_eq!(g.tribute_available(), Some(25));
-        let gold = g.gold;
-        assert_eq!(g.collect_tribute(), Some(Tribute::Gold(25)));
-        assert_eq!((g.gold, g.mana), (gold + 25, 4));
+        // Entering takes it all at once (economy.md §3), unless the village asks something first.
+        let events = walk_until_stopped(&mut g);
+        if g.village_offer().is_some() {
+            assert_eq!(g.decline_offer(), Some(Tribute::Gold(25)));
+        } else {
+            let arrived = events.iter().position(|e| e == &Event::Arrived(0)).expect("arrived");
+            assert_eq!(events.get(arrived + 1), Some(&Event::Tribute { at: 0, paid: Tribute::Gold(25), mana: 4 }), "{events:?}");
+        }
+        assert_eq!(g.mana, 4);
         assert_eq!(g.tribute_available(), None);
         g.wait(24);
         assert_eq!(g.tribute_available(), Some(25), "refilled at midnight");

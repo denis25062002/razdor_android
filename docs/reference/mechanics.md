@@ -632,7 +632,7 @@ Each is marked *(guess)* in the code.
   faction 1, its income and mana count from the next noon) and gives ruins' treasure. AI
   armies stand at the footprint's centre `(x0 + sx/2, y0 + sy/2)`.
 - **Villages** start with one day's tribute; at midnight it grows by
-  `round(income × √(1 − stock/max))`, capped (slower as it fills). Collecting takes all of it.
+  `round(income × √(1 − stock/max))`, capped (slower as it fills). Entering the village takes all of it at once (no button; economy.md §3, the footage's "tribute already collected"), unless the village makes an offer: then accepting it empties the village, declining takes the tribute.
 - **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile =
   the army's own attitude towards the player < 0. Contact on neighbouring cells (diagonals
   too): hostile ones fight, others greet once. Word 17 is the army's starting gold, byte 80 ×

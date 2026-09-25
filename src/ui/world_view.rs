@@ -686,6 +686,10 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
         Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
+        Event::Tribute { paid, mana, .. } => Some(match paid {
+            razdor::rules::game::Tribute::Gold(g) => format!("The village pays its tribute: {g} gold and {mana} mana."),
+            razdor::rules::game::Tribute::Item(item) => format!("The village pays with a {} and {mana} mana.", game.content.item(*item).name),
+        }),
         Event::LevelUp(i, level) => game.squad.get(*i).map(|u| format!("{} reaches level {level}!", u.name(&game.content))),
         Event::Battle(news) => Some(news.text.clone()),
         Event::Arrived(l) => {
@@ -725,7 +729,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             }
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
-            Event::Met(_) | Event::Battle(_) => {}
+            Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } => {}
             Event::LevelUp(..) => cue(Cue::Upgrade),
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }

@@ -654,15 +654,16 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     text(&format!("Gold {} (up to {})", v.tribute_gold, v.gold_max.max(v.gold_income)), x + 70.0, y + 84.0, 20.0, ACCENT);
     resource_icon(Resource::Mana, x + 340.0, y + 76.0, 40.0);
     text(&format!("Mana {} (up to {})", v.tribute_mana, v.mana_max.max(v.mana_income)), x + 370.0, y + 84.0, 20.0, MANA);
-    let ready = game.tribute_available().is_some();
+    // The tribute is taken on entering (economy.md §3); only an offer waits for an answer.
     let mut by = y + 140.0;
-    if button(x, by, 420.0, 42.0, "Collect the tribute", ready) {
-        let (gold, mana) = (v.tribute_gold, v.tribute_mana);
-        *message = game.collect_tribute().map(|t| match t {
-            razdor::rules::game::Tribute::Gold(_) => format!("The village pays {gold} gold and {mana} mana."),
-            razdor::rules::game::Tribute::Item(item) => format!("The village pays with a {}.", game.content.item(item).name),
-        });
-    }
+    let status = if game.village_offer().is_some() {
+        "The villagers ask you something before paying their tribute."
+    } else if v.hostile() {
+        "The village pays no tribute to you."
+    } else {
+        "Tribute already collected."
+    };
+    text(status, x, by + 26.0, 19.0, DIM);
     by += 52.0;
     // The one offer this visit may bring (instead of the tribute: it empties the village).
     if let Some(offer) = game.village_offer() {
@@ -687,6 +688,14 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
                 OfferResult::Blessing(id) => format!("The villagers pray for you: {}.", spell_name(id)),
                 OfferResult::Furs(item) => format!("You get {}.", game.content.item(item).name),
                 OfferResult::Mana(m) => format!("The witch gives {m} mana."),
+            });
+        }
+        by += 52.0;
+        if button(x, by, 420.0, 42.0, "No thanks: take the tribute", true) {
+            let (gold, mana) = (v.tribute_gold, v.tribute_mana);
+            *message = game.decline_offer().map(|t| match t {
+                razdor::rules::game::Tribute::Gold(_) => format!("The village pays {gold} gold and {mana} mana."),
+                razdor::rules::game::Tribute::Item(item) => format!("The village pays with a {}.", game.content.item(item).name),
             });
         }
         by += 52.0;
