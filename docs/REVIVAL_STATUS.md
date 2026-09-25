@@ -35,7 +35,7 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Armies** | Placed from the scenario, active/inactive, factions and attitudes; hostile armies chase and attack; friendly ones greet (events run on meeting). |
 | **Buildings** | All 16 types. Building window with the original's tabs by type: main hall (quests, rumours for 10 gold), barracks (stock that regrows, paid healing, resurrection within 7 days), garrison, market + sell shop (25% sale price, prices by attitude), sanctuary (learn spells), village tribute (gold and mana) or, instead, once a day: priest heal, innkeeper pays the unpaid, a long blessing (a spell for 3× its time), furs (150% of the gold) or a magic ritual (mana), shipyard (rent a ship). Forts at the foot of bridges let you through to the bridge. Capturing forts and castles changes owner and income. Ruins give their treasure. |
 | **Economy** | Gold and mana; building income; wages from unit cost (recruit / mercenary kinds); unpaid units sit out battles and desert after 7 days; loot = loser's gold ÷ 2 (min 25) plus items; mana from surrendered units. |
-| **Battle** | The original's rules: 2×6 formation (Community wide row, as in your install; vanilla 3×4 + reserve supported), deterministic attack − defence (min 1), separate melee/ranged defence, back row +5 vs shots, the real reach rules (front / diagonals at normal damage; long strike halving defence when all three are empty), shooters and mages by row, magic by school with protection % and creature nature, magic power drain, all 21 vanilla unit bonuses and the 31 Community ones (Splash, Flying, Bastion, FateGift, …; see mechanics.md §8), initiative with attacker +1, actions per unit, 25-turn limit, no retreat, hero survives while any unit lives. Cards show the original's stats; hover previews damage or curse effects. |
+| **Battle** | The original's rules as reverse-engineered in original-mechanics/battle.md (every row of its table): the Community wide row (front 6, back 4, reserve 2, drawn 2×6 with the reserve at the back row's ends; vanilla 3×4 + reserve supported), the descending initiative scan (ties and +1 to the player, Artillery +30 on turn 1), modifiers until the next turn, automatic mage actions (curse, then strike; heal, else bless), one reserve move per unit and turn, collapse after deaths and last actions, the piercing sets per path, Knight −20%, poison as −20 regeneration, surrender (mana from the surrendering units only), the turn limit as a victory, one bonus per unit, all vanilla and Community bonuses with the exe's numbers, and the deterministic scored AI that never uses the reserve. Cards show the original's stats; hover previews the action. |
 | **Units** | Experience as the original's code computes it (docs/reference/original-mechanics/experience.md): unit strength from the stats, the battle pool and shares by row and activity, the player's modifier × difficulty × the beaten army's correction with the Community 5256 cap, victory only; AI-vs-AI XP, AI promotion and XP for AI hires (map bytes 14, 19); levels (`StartExpirience·(LevelMultipler/100)^(level−1)`, `d-*` gains, percent stats), promotions along the upgrade tree (any non-hero unit with a level, free, back to level 1), level-up notices; XP bars and "Lv N · XP a/b" on cards, panels and lists, "Level up!" after a battle, the upgrade tree on the army screen, 4 item slots with the one-weapon / one-per-type / class rules, `f-`/`d-`/`p-` modifiers, potions, 40-slot backpack, hero class bonuses (knight −10% physical damage to his army, archmage cheaper faster spells, ranger faster and better healing). |
 | **Events and quests** | The scenario script engine: global / local / quest / rumour events, time windows and repeats, relative and chained events, all condition and result groups, flags (`%+X -X =X =/X`), yes/no questions, journal, victory and defeat events. The Community extensions: event opcodes 1–20 (editing other events, AI armies' items/units/speed/groups/spells/XP, spell checks, campaign branches with `Game::next_map()`, random flags, AI targets, teleports) and lifting a spell. Story dialogs with pictures and rewards. On РК1 the opening dialog, the first quest and the journal work. |
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for mana and game time; effects last into battles; archmage and Caster discounts; scripted spells use the same path. |
@@ -44,13 +44,13 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Map editor (step 1)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms except events; undo/redo; checks before saving; test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **429 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **454 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
 
-- **2×6 formation by default**, because your Community Update install and the video use it; the
-  vanilla 3×4 with a reserve row is a supported option.
+- **The wide row by default** (front 6, back 4, reserve 2), because your Community Update install
+  and the video use it; the vanilla 3×4 with a reserve row is a supported option.
 - **Square cells with 8 neighbours for scenarios**, not hexes: РК3's bridges are diagonal chains
   of 1×1 pieces that no hex row parity connects (one is the only way to the capital), and the
   editor's grid is square. The demo keeps its hex map.
@@ -67,10 +67,10 @@ files run only when it is set. `cargo clippy --all-targets` is clean.
   captured castle gets a garrison of the taker's weakest troops.
 - **Daily report at 12:00**, villages at 00:00: the footage shows the report and autosave at noon.
 - **Prices fitted to the footage** (+15% per attitude step below 1; a fort capture pays one day
-  of income; a beaten unit gives its `Surrender` value in mana).
+  of income).
 - Everything the original leaves unknown is marked *(guess)* in the code and listed in
-  `docs/reference/mechanics.md` §8 (terrain costs, buff duration of 3 turns, sight radius 7.5
-  cells, backpack of 40, spell book of 15, reserve moves, level numbering, …).
+  `docs/reference/mechanics.md` §8 (terrain costs, sight radius 7.5 cells, backpack of 40, spell
+  book of 15, level numbering, …).
 
 Closing the window used to end in a segmentation fault (a native library's exit handler,
 after `main` returned); the game now ends the process directly once everything is written.

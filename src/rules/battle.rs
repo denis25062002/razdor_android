@@ -1,11 +1,13 @@
-//! Card battles, following the original's rules (mechanics.md 2 and 3.3).
+//! Card battles, following the original's rules (original-mechanics/battle.md).
 //!
-//! Each side stands in a [`Formation`] (front, back and optionally a reserve row). Units act
-//! one at a time by initiative; each has `Manevres` actions per turn, spent on an attack, a
-//! spell or a step. Damage is deterministic. The battle ends when a side is wiped out, or
-//! undecided after `BattleEndTurn` turns. There is no retreat.
-//!
-//! Choices where the original is unknown are marked *(guess)*.
+//! Each side stands in a [`Formation`] (front, back and reserve rows). The turn order is the
+//! original's descending initiative threshold: at each threshold the player's units are
+//! scanned in army order, then the enemy's, and a unit whose initiative reaches the threshold
+//! spends all its actions (`Manevres`) in a row. Every action costs one: an attack, a spell, a
+//! step or a pass. Damage is deterministic, and so is the AI. Blessings, curses and other
+//! modifiers last until the next turn starts. The battle ends when a side is gone, when a side
+//! has only units that surrender, or after the first action of turn `BattleEndTurn`, which the
+//! player wins if any of his units stand. There is no retreat.
 
 use std::sync::Arc;
 
@@ -14,30 +16,49 @@ use super::experience::{self, Role, SideUnit};
 use super::formation::{Formation, Row, Slot};
 use super::units::{Stats, Unit};
 
-/// How many turns a blessing or curse lasts, the turn it is cast included *(guess: the
-/// original's duration is unknown)*.
-pub const EFFECT_TURNS: u32 = 3;
-/// Share of max HP a poisoned unit loses each turn (bonus `Poison`; `CtrPoison` too).
-const POISON_PERCENT: i32 = 15;
-/// Community `PoisonS` (strong poison) and `PoisonArmorIgnore` poison per turn.
-const STRONG_POISON_PERCENT: i32 = 25;
-const PIERCING_POISON_PERCENT: i32 = 10;
-/// Community `Exhaustion`: magic protection lost per hostile spell, in points.
-const EXHAUSTION_POINTS: i32 = 15;
-/// Community `Drying`: extra damage of hostile magic, % of the target's max HP.
+/// Turn 1 starts its initiative scan here (4840ec); later turns start where the first unit of
+/// the turn before acted.
+const TURN_ONE_THRESHOLD: i32 = 75;
+/// The knight's army takes this % of physical damage: the exe sets 80 when `[GlobalOptions]`
+/// loads (4e4501), whatever the ini says.
+const KNIGHT_PERCENT: i32 = 80;
+/// Regeneration a poison sets: `Poison`, `PoisonS`, `PoisonArmorIgnore` (at most).
+const POISON_REGEN: i32 = -20;
+const STRONG_POISON_REGEN: i32 = -25;
+const PIERCING_POISON_REGEN: i32 = -10;
+/// `CtrPoison`: regeneration its melee attacker loses per hit (stacks).
+const CTR_POISON_STEP: i32 = 20;
+/// A `Poison` mage poisons when its power after protection is above this.
+const MAGE_POISON_POWER: i32 = 15;
+/// `Exhaustion`: points of every magic protection lost per hostile spell.
+const EXHAUSTION_POINTS: i32 = 10;
+/// `Drying`: extra damage of a hostile spell, % of the target's max HP.
 const DRYING_PERCENT: i32 = 8;
-/// Community `Fortify`: physical defence +25% per turn, up to +125%.
-const FORTIFY_STEP: i32 = 25;
-const FORTIFY_MAX: i32 = 125;
-/// Community `Splash`: attack on the target and on its row neighbours, %.
+/// `Fortify`: defence bonus per turn after the first, % of DefenceBlow, for up to 5 turns.
+const FORTIFY_PERCENT: i32 = 25;
+const FORTIFY_TURNS: i32 = 5;
+/// `Splash`: the first hit and the neighbours' hits, % of attack or power.
 const SPLASH_MAIN: i32 = 80;
 const SPLASH_SIDE: i32 = 40;
-/// Community `KillingStrike`: a target left below this % of max HP dies.
+/// `KillingStrike`: a target left at or below this % of max HP dies.
 const KILLING_STRIKE_PERCENT: i32 = 25;
-/// Community `Bleed`: share of a wound that bleeds again at the next turn *(guess)*.
-const BLEED_PERCENT: i32 = 50;
-/// Community `FateGift`: attack and defence gain when the gift saves the unit *(guess)*.
-const FATE_GIFT_PERCENT: i32 = 25;
+/// `Bleed`: the bleeding value a hit sets; each action start costs this % of AB + AS + MP.
+const BLEED_PERCENT: i32 = 75;
+/// `Stun`: initiative modifier lost per hit, % of the current initiative.
+const STUN_PERCENT: i32 = 30;
+/// `Berserk`: attack modifier = this % of AB × the share of HP lost.
+const BERSERK_PERCENT: i32 = 75;
+/// `Flock`: attack modifier ± this % of AB (or AS).
+const FLOCK_PERCENT: i32 = 25;
+/// `Artillery` and `FirstShot`: initiative on turn 1, twice with building defence ≥ 10.
+const FIRST_TURN_INITIATIVE: i32 = 30;
+/// `FateGift`: protections +20, regeneration +20, max HP +20%, initiative modifier +5.
+const FATE_PROTECTION: i32 = 20;
+const FATE_REGEN: i32 = 20;
+const FATE_HP_PERCENT: i32 = 20;
+const FATE_INITIATIVE: i32 = 5;
+/// Undead Death casters' magic power floor is raised by this.
+const UNDEAD_DEATH_FLOOR: i32 = 25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Team {
@@ -56,15 +77,28 @@ impl Team {
     fn index(self) -> usize {
         self as usize
     }
+
+    const BOTH: [Team; 2] = [Team::Player, Team::Enemy];
 }
 
+/// How the battle went. There is no draw: at the turn limit the player wins if any of his
+/// units stand (4c50ec has no other branch).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Ongoing,
     Victory,
     Defeat,
-    /// `BattleEndTurn` reached with both sides standing.
-    Stalemate,
+}
+
+/// Why a finished battle ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndReason {
+    /// A side has no units left.
+    Wiped,
+    /// The first action of turn `BattleEndTurn` was made.
+    TurnLimit,
+    /// Every remaining unit of this side has `Surrender > 0`: it gave up.
+    Surrender(Team),
 }
 
 /// What a unit does to a target.
@@ -76,18 +110,23 @@ pub enum ActionKind {
     /// halves the target's defence; `FlankStrike` doubles the attack.
     LongStrike,
     Shot,
-    /// Hostile magic damage.
+    /// Hostile magic damage: on a target that already has a negative modifier this turn.
     Strike,
-    /// Hostile magic debuff.
+    /// Hostile magic debuff: on a target without one.
     Curse,
+    /// Friendly magic on a wounded ally.
     Heal,
-    /// Friendly magic buff.
+    /// Friendly magic on anyone else.
     Bless,
 }
 
 impl ActionKind {
     pub fn is_physical(self) -> bool {
         matches!(self, ActionKind::Melee | ActionKind::LongStrike | ActionKind::Shot)
+    }
+
+    pub fn is_melee(self) -> bool {
+        matches!(self, ActionKind::Melee | ActionKind::LongStrike)
     }
 
     pub fn is_hostile(self) -> bool {
@@ -107,7 +146,8 @@ impl ActionKind {
     }
 }
 
-/// Stat changes of a blessing (positive) or curse (negative).
+/// Stat changes: of a blessing (positive) or curse (negative), or a unit's per-turn
+/// modifiers (`actions` unused there).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Buff {
     /// Added to melee and ranged attack (only those the unit has).
@@ -115,6 +155,7 @@ pub struct Buff {
     /// Added to melee and ranged defence.
     pub defence: i32,
     pub initiative: i32,
+    /// Actions left this turn (Elemental magic).
     pub actions: i32,
 }
 
@@ -137,13 +178,10 @@ impl Buff {
         .collect();
         parts.join(", ")
     }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Timed {
-    buff: Buff,
-    /// Last turn it is in effect.
-    until: u32,
+    fn negative(&self) -> bool {
+        self.attack < 0 || self.defence < 0 || self.initiative < 0
+    }
 }
 
 /// The expected effect of an action, for hover previews.
@@ -152,6 +190,14 @@ pub enum Preview {
     Damage(i32),
     Heal(i32),
     Buff(Buff),
+}
+
+/// The battle AI's view of a unit (4836cc).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AiRole {
+    Warrior,
+    Shooter,
+    Mage,
 }
 
 #[derive(Clone, Debug)]
@@ -168,42 +214,57 @@ pub struct Fighter {
     pub level: i32,
     /// XP towards the next level as the battle began (for display).
     pub xp: i32,
-    /// Stats at the start of the battle (level, items, potions).
+    /// Battle stats: the start of the battle (level, items, potions, spells) plus what the
+    /// battle changed for good (EternalGift, ArmorBreaker, Bastion, Exhaustion …).
     pub base: Stats,
-    /// Current stats: base with magic drain, blessing and curse.
+    /// Current stats: base with this turn's modifiers and the drained magic power.
     pub stats: Stats,
     /// Magic power left after the per-turn drain.
     pub power: i32,
-    blessing: Option<Timed>,
-    curse: Option<Timed>,
-    /// Poisoned: `poison` % of max HP lost every turn.
-    pub poisoned: bool,
-    pub poison: i32,
-    /// Community `Bleed`: HP lost at the start of the next turn.
-    pub bleeding: i32,
-    /// Community `Stun`: initiative already cut.
-    pub stunned: bool,
-    /// Community `NoHeal`: wounded by a crippling weapon, heals no more this battle.
+    /// This turn's attack, defence and initiative modifiers (blessings, curses, Stun,
+    /// Berserk, Fortify, Flock …). Every turn start sets them to 0.
+    pub mods: Buff,
+    /// Blessed or cursed this turn.
+    pub blessed: bool,
+    pub cursed: bool,
+    /// Actions left this turn.
+    pub actions: i32,
+    /// Regeneration % per turn; a poison replaces it with a negative value.
+    pub regen: i32,
+    /// Community `Bleed`: % of AB + AS + MP lost at each action start (0 = not bleeding).
+    pub bleed: i32,
+    /// May still move into or out of the reserve this turn.
+    reserve_move: bool,
+    /// Community `NoHeal`: hit by a crippling weapon; no heal or blessing this battle.
     pub crippled: bool,
-    /// Community `FateGift` used up.
-    pub fate_used: bool,
+    /// `Surrender` of its type; a side left with only such units gives up.
+    pub surrender: i32,
+    /// Left the field by surrendering.
+    pub surrendered: bool,
+    surrender_hp: i32,
     /// Tactical cost at the start (experience.md §1), for the sides' strength.
     pub tactical: i32,
     /// Role in the side's strength sum, set at the start.
     pub role: Role,
-    /// For the XP share: attacks and spells made, all actions taken (moves and waits too),
-    /// actions left this turn, and hit points lost.
+    /// For the XP share: attacks and spells made, all actions taken (moves and passes too)
+    /// and hit points lost.
     pub useful: i32,
     pub taken: i32,
-    pub left: i32,
     pub lost: i32,
     /// Cell after deployment; written back to the squad.
     deployed: Slot,
+    ai_power: i32,
+    ai_role: AiRole,
 }
 
 impl Fighter {
     fn new(content: &Content, unit: &Unit, team: Team, squad_index: Option<usize>) -> Fighter {
-        let base = unit.stats(content);
+        let mut base = unit.stats(content);
+        // One bonus per unit: each worn item with a bonus overwrites the unit's, the last one
+        // wins (4919f0).
+        if let Some(b) = base.bonuses.last().cloned() {
+            base.bonuses = vec![b];
+        }
         Fighter {
             unit: unit.def,
             name: unit.name(content).to_string(),
@@ -215,23 +276,27 @@ impl Fighter {
             level: unit.level,
             xp: unit.xp,
             power: base[Stat::MagicPower],
+            regen: base[Stat::Regen],
             stats: base.clone(),
             base,
-            blessing: None,
-            curse: None,
-            poisoned: false,
-            poison: 0,
-            bleeding: 0,
-            stunned: false,
+            mods: Buff::default(),
+            blessed: false,
+            cursed: false,
+            actions: 0,
+            bleed: 0,
+            reserve_move: true,
             crippled: false,
-            fate_used: false,
+            surrender: content.unit(unit.def).surrender.max(0),
+            surrendered: false,
+            surrender_hp: 0,
             tactical: 1,
             role: Role::Melee,
             useful: 0,
             taken: 0,
-            left: 0,
             lost: 0,
             deployed: unit.slot,
+            ai_power: 0,
+            ai_role: AiRole::Warrior,
         }
     }
 
@@ -243,16 +308,35 @@ impl Fighter {
         self.stats.max_hp()
     }
 
-    pub fn blessing(&self) -> Option<Buff> {
-        self.blessing.map(|t| t.buff)
+    /// Poisoned (or otherwise losing HP each turn).
+    pub fn poisoned(&self) -> bool {
+        self.regen < 0
     }
 
-    pub fn curse(&self) -> Option<Buff> {
-        self.curse.map(|t| t.buff)
+    /// Any negative attack, defence or initiative modifier this turn: a hostile mage strikes
+    /// it instead of cursing.
+    pub fn weakened(&self) -> bool {
+        self.mods.negative()
+    }
+
+    fn is_warrior(&self) -> bool {
+        self.base[Stat::AttackBlow] > 0
+    }
+
+    fn is_shooter(&self) -> bool {
+        self.base[Stat::AttackShot] > 0
     }
 
     fn has_attack(&self) -> bool {
-        self.base[Stat::AttackBlow] > 0 || self.base[Stat::AttackShot] > 0
+        self.is_warrior() || self.is_shooter()
+    }
+
+    fn has(&self, b: Bonus) -> bool {
+        self.base.has(&b)
+    }
+
+    fn wounded(&self) -> bool {
+        self.hp < self.max_hp()
     }
 }
 
@@ -268,10 +352,10 @@ pub struct Hit {
     pub killed: bool,
     /// Counterblow (after) or PreventiveStrike (before) damage taken by the actor.
     pub counter: Option<i32>,
-    /// The actor died: killed a `DeathCurse`/`Ghost` unit, fell to the counterblow or the
-    /// preventive strike, or it is a `Suicide` unit.
+    /// The actor died: killed a `DeathCurse`/`Ghost` unit, fell to the counterblow, the
+    /// preventive strike or its bleeding, or it is a `Suicide` unit.
     pub actor_died: bool,
-    /// Community `Splash`: damage to the target's row neighbours (fighter, damage).
+    /// Community `Splash`: the neighbours' damage or healing (fighter, amount).
     pub splash: Vec<(usize, i32)>,
 }
 
@@ -286,6 +370,7 @@ impl Hit {
 pub enum Step {
     Act { actor: usize, hit: Hit },
     Move { actor: usize, from: Slot, to: Slot },
+    /// One action passed.
     Wait { actor: usize },
 }
 
@@ -320,40 +405,61 @@ pub struct FighterResult {
     pub slot: Slot,
 }
 
+/// What the AI does with the active unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Plan {
+    Act(usize, ActionKind),
+    Move(Slot),
+    Pass,
+}
+
 pub struct Battle {
     content: Arc<Content>,
     pub formation: Formation,
     pub fighters: Vec<Fighter>,
-    /// Battle turn (all units act once per turn), 1-based once the fight starts.
+    /// Battle turn, 1-based once the fight starts.
     pub round: u32,
     pub log: Vec<String>,
-    /// The side that started the fight: +1 initiative.
+    /// The side that started the fight. The original gives its +1 initiative to the player
+    /// whoever attacks, so this is for information only.
     pub attacker: Team,
     building_defence: [i32; 2],
-    /// The side fights inside a building (a garrison): `Bastion` works there, `Assault`
-    /// against it.
-    in_building: [bool; 2],
-    order: Vec<usize>,
-    turn: usize,
-    actions_left: i32,
     deploying: bool,
-    stalemate: bool,
+    /// Ended by the turn limit or a surrender (a wiped-out side needs no flag).
+    ended: Option<EndReason>,
+    /// The initiative scan: threshold, the threshold of the turn's first actor, and the
+    /// cursor (side, position among the side's living units).
+    threshold: i32,
+    first_threshold: i32,
+    cursor: (usize, usize),
+    current: Option<usize>,
     /// Both sides at the start ([`Battle::begin`]).
     start: [SideStart; 2],
     /// The beaten army's experience correction for the player's XP (100 for a garrison).
     xp_correction: i32,
+    /// A battle on screen (Splash works only there, 4ed424); false for AI-vs-AI battles.
+    interactive: bool,
+    /// The AI's level (battle B+5): 1 normally, 2 with "improved enemy AI" (`OptValue9`), 0
+    /// between AI armies. It decides when a target counts as killable.
+    ai_level: u8,
+    /// Community `Hunger`: the living-unit count it last saw (shared by all Hunger units).
+    hunger_seen: usize,
+    /// Mana a side's surrender gives the winner.
+    surrender_mana: [i32; 2],
 }
 
 /// A fighter in its side's strength sum.
 fn side_unit(f: &Fighter) -> SideUnit {
-    SideUnit { tactical: f.tactical, hp: f.hp, max_hp: f.max_hp(), row: f.slot.row, role: f.role }
+    let hp = if f.surrendered { f.surrender_hp } else { f.hp };
+    SideUnit { tactical: f.tactical, hp, max_hp: f.max_hp(), row: f.slot.row, role: f.role }
 }
 
-/// Bonuses whose attacks ignore the target's defence.
-const PIERCING: [Bonus; 5] =
-    [Bonus::ArmorIgnore, Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::Artillery, Bonus::PoisonArmorIgnore];
-/// Bonuses that give +1 action on the first turn.
+/// Bonuses that give +1 action on the first turn (48431a).
 const FAST_START: [Bonus; 3] = [Bonus::HorseAtack, Bonus::OldVampirsGist, Bonus::FastDead];
+/// Piercing: the unit's own defence counts 0 (485908, hooks c2a27c and c2a3bf). Building
+/// defence (and Row2Def against shots) still count.
+const PIERCE_MELEE: [Bonus; 4] = [Bonus::ArmorIgnore, Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::PoisonArmorIgnore];
+const PIERCE_SHOT: [Bonus; 3] = [Bonus::ArmorIgnore, Bonus::Artillery, Bonus::PoisonArmorIgnore];
 
 /// `f(P)` of mechanics.md 3.3: actions added or removed by Elemental magic.
 fn actions_of_power(p: i32) -> i32 {
@@ -369,6 +475,16 @@ fn god_bonus(s: &Stats) -> i32 {
     10 * i32::from(s.has(&Bonus::GodAnger)) + 20 * i32::from(s.has(&Bonus::GodStrike))
 }
 
+/// `n / d` rounded half to even, as Delphi's `Round`.
+fn round_even(n: i64, d: i64) -> i64 {
+    let (q, r) = (n.div_euclid(d), n.rem_euclid(d));
+    match (2 * r).cmp(&d) {
+        std::cmp::Ordering::Less => q,
+        std::cmp::Ordering::Greater => q + 1,
+        std::cmp::Ordering::Equal => q + (q & 1),
+    }
+}
+
 impl Battle {
     /// `player` entries are (squad index, unit); squad index 0 is the hero. Starts in the
     /// deploy phase; call [`Battle::begin`] to fight.
@@ -376,7 +492,7 @@ impl Battle {
         let mut fighters: Vec<Fighter> =
             player.iter().map(|&(idx, u)| Fighter::new(&content, u, Team::Player, Some(idx))).collect();
         fighters.extend(enemies.iter().map(|u| Fighter::new(&content, u, Team::Enemy, None)));
-        Battle {
+        let mut b = Battle {
             formation: content.formation,
             content,
             fighters,
@@ -384,14 +500,44 @@ impl Battle {
             log: Vec::new(),
             attacker,
             building_defence: [0; 2],
-            in_building: [false; 2],
-            order: Vec::new(),
-            turn: 0,
-            actions_left: 0,
             deploying: true,
-            stalemate: false,
+            ended: None,
+            threshold: 0,
+            first_threshold: 0,
+            cursor: (0, 0),
+            current: None,
             start: [SideStart::default(); 2],
             xp_correction: 100,
+            interactive: true,
+            ai_level: 1,
+            hunger_seen: 0,
+            surrender_mana: [0; 2],
+        };
+        b.fit_to_formation();
+        b
+    }
+
+    /// Units standing outside the formation (a blocked cell of the wide row, an old save) or
+    /// on a taken cell move to the first free one.
+    fn fit_to_formation(&mut self) {
+        for team in Team::BOTH {
+            let mut taken: Vec<Slot> = Vec::new();
+            for i in 0..self.fighters.len() {
+                let f = &self.fighters[i];
+                if f.team != team {
+                    continue;
+                }
+                let slot = if self.formation.contains(f.slot) && !taken.contains(&f.slot) {
+                    Some(f.slot)
+                } else {
+                    self.formation.free_slot(&taken, f.base.preferred_row())
+                };
+                if let Some(s) = slot {
+                    self.fighters[i].slot = s;
+                    self.fighters[i].deployed = s;
+                    taken.push(s);
+                }
+            }
         }
     }
 
@@ -399,6 +545,19 @@ impl Battle {
     /// player's XP (experience.md §3). A garrison's is 100.
     pub fn set_xp_correction(&mut self, percent: i32) {
         self.xp_correction = percent;
+    }
+
+    /// A battle between AI armies, played off screen: no `Splash`, and the AI counts a
+    /// target as killable only by one hit (B+5 = 0).
+    pub fn set_simulation(&mut self) {
+        self.interactive = false;
+        self.ai_level = 0;
+    }
+
+    /// "Improved enemy AI in battle" (`OptValue9`): the enemy also counts a target as
+    /// killable when its actions left can do it.
+    pub fn set_improved_ai(&mut self, on: bool) {
+        self.ai_level = if on { 2 } else { 1 };
     }
 
     /// Both sides as the battle began.
@@ -423,6 +582,7 @@ impl Battle {
             let after = f.base.max_hp();
             f.stats = f.base.clone();
             f.power = f.base[Stat::MagicPower];
+            f.regen = f.base[Stat::Regen];
             if f.alive() {
                 f.hp = (f.hp + (after - before).max(0)).min(after);
             }
@@ -430,16 +590,8 @@ impl Battle {
     }
 
     /// Extra defence of the building `team` fights in (garrisons). Set before [`Battle::begin`].
-    /// It also puts `team` inside a building ([`Battle::set_in_building`]).
     pub fn set_building_defence(&mut self, team: Team, defence: i32) {
         self.building_defence[team.index()] = defence;
-        self.in_building[team.index()] = true;
-    }
-
-    /// `team` fights inside a building (a castle or fort garrison), even one without extra
-    /// defence. Set before [`Battle::begin`].
-    pub fn set_in_building(&mut self, team: Team) {
-        self.in_building[team.index()] = true;
     }
 
     pub fn is_deploying(&self) -> bool {
@@ -473,19 +625,30 @@ impl Battle {
             return;
         }
         self.deploying = false;
-        const COMBAT: [Stat; 4] = [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot];
-        // Community Bastion: the whole army inside gets +10 defence (once per army *(guess)*).
-        let bastion = |team: Team| {
-            self.in_building[team.index()] && self.fighters.iter().any(|f| f.team == team && f.alive() && f.base.has(&Bonus::Bastion))
-        };
-        let bastions = [bastion(Team::Player), bastion(Team::Enemy)];
         // Strength at the start, from the stats the units bring (items, spells) and the
         // building they stand in.
         for f in &mut self.fighters {
             f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.building_defence[f.team.index()]);
             f.role = experience::role(&f.base);
+            let s = &f.base;
+            let (ab, sh, mp) = (s[Stat::AttackBlow], s[Stat::AttackShot], s[Stat::MagicPower]);
+            let top = ab.max(sh).max(mp);
+            let mut power = top + (ab + sh + mp - top) / 3;
+            power += [(Bonus::GodAnger, 10), (Bonus::ArmorIgnore, 15), (Bonus::GodStrike, 20), (Bonus::Counterblow, ab), (Bonus::FlankStrike, 10)]
+                .iter()
+                .filter(|(b, _)| s.has(b))
+                .map(|(_, v)| v)
+                .sum::<i32>();
+            f.ai_power = power;
+            f.ai_role = if 3 * mp >= 2 * power && s.is_mage() {
+                AiRole::Mage
+            } else if 3 * sh >= 2 * power && sh > 0 {
+                AiRole::Shooter
+            } else {
+                AiRole::Warrior
+            };
         }
-        for team in [Team::Player, Team::Enemy] {
+        for team in Team::BOTH {
             let side: Vec<&Fighter> = self.fighters.iter().filter(|f| f.team == team && f.alive()).collect();
             self.start[team.index()] = SideStart {
                 strength: experience::side_strength(&side.iter().map(|f| side_unit(f)).collect::<Vec<_>>()),
@@ -493,34 +656,24 @@ impl Battle {
                 count: side.len(),
             };
         }
-        for f in &mut self.fighters {
+        for i in 0..self.fighters.len() {
+            let building = self.building_defence[self.fighters[i].team.index()];
+            let f = &mut self.fighters[i];
             f.deployed = f.slot;
-            let inside = self.in_building[f.team.index()];
-            let storming = self.in_building[f.team.other().index()];
-            // Garrison: stats ×2 inside a strong building (mechanics.md 1.3).
-            let mut factor = 1;
-            if f.base.has(&Bonus::Garrison) && self.building_defence[f.team.index()] >= 10 {
-                factor *= 2;
+            // Garrison in a strong building: AB, DB and DS ×2; not AS (49861d).
+            if f.has(Bonus::Garrison) && building >= 10 {
+                for st in [Stat::AttackBlow, Stat::DefenceBlow, Stat::DefenceShot] {
+                    f.base[st] *= 2;
+                }
             }
-            // Community: Bastion ×3 inside a castle or fort, Assault ×2 storming one.
-            if f.base.has(&Bonus::Bastion) && inside {
-                factor *= 3;
+            // Side 1, the player, gets +1 initiative whoever attacks (48b917).
+            if f.team == Team::Player {
+                f.base[Stat::Initiative] += 1;
             }
-            if f.base.has(&Bonus::Assault) && storming {
-                factor *= 2;
-            }
-            for st in COMBAT {
-                f.base[st] *= factor;
-            }
-            if bastions[f.team.index()] {
-                f.base[Stat::DefenceBlow] += 10;
-                f.base[Stat::DefenceShot] += 10;
-            }
-            f.stats = f.base.clone();
         }
-        self.collapse(Team::Player);
-        self.collapse(Team::Enemy);
-        self.next_turn();
+        self.hunger_seen = self.fighters.iter().filter(|f| f.alive()).count();
+        self.start_turn();
+        self.advance();
     }
 
     fn opt(&self) -> &super::content::GlobalOptions {
@@ -531,16 +684,37 @@ impl Battle {
         self.fighters.iter().filter(move |f| f.alive() && f.team == team)
     }
 
+    fn living_ids(&self, team: Team) -> Vec<usize> {
+        (0..self.fighters.len()).filter(|&i| self.fighters[i].alive() && self.fighters[i].team == team).collect()
+    }
+
+    fn turn_limit(&self) -> u32 {
+        self.opt().battle_end_turn.max(1) as u32
+    }
+
     pub fn outcome(&self) -> Outcome {
-        if self.living(Team::Player).next().is_none() {
-            Outcome::Defeat
-        } else if self.living(Team::Enemy).next().is_none() {
-            Outcome::Victory
-        } else if self.stalemate {
-            Outcome::Stalemate
-        } else {
-            Outcome::Ongoing
+        let player = self.living(Team::Player).next().is_some();
+        let enemy = self.living(Team::Enemy).next().is_some();
+        match (player, enemy) {
+            (false, _) => Outcome::Defeat,
+            (true, false) => Outcome::Victory,
+            (true, true) if self.ended.is_some() => Outcome::Victory,
+            _ => Outcome::Ongoing,
         }
+    }
+
+    /// Why the battle ended, once it has.
+    pub fn end_reason(&self) -> Option<EndReason> {
+        match self.outcome() {
+            Outcome::Ongoing => None,
+            _ => Some(self.ended.unwrap_or(EndReason::Wiped)),
+        }
+    }
+
+    /// Mana `team` gets from the other side's surrender: the sum of the surrendered units'
+    /// `Surrender` (units killed before give none).
+    pub fn surrender_mana(&self, team: Team) -> i32 {
+        self.surrender_mana[team.index()]
     }
 
     /// Fighter whose turn it is; `None` while deploying or once the battle is over.
@@ -548,218 +722,305 @@ impl Battle {
         if self.deploying || self.outcome() != Outcome::Ongoing {
             return None;
         }
-        self.order.get(self.turn).copied()
+        self.current.filter(|&i| self.fighters[i].alive())
     }
 
+    /// Actions the active fighter has left.
     pub fn actions_left(&self) -> i32 {
-        self.actions_left
+        self.active().map_or(0, |i| self.fighters[i].actions)
     }
 
-    /// Upcoming fighters this turn, starting with the active one.
+    /// Current initiative: base with this turn's modifier.
+    fn initiative(&self, i: usize) -> i32 {
+        self.fighters[i].stats[Stat::Initiative]
+    }
+
+    /// The expected order of the fighters still to act this turn, the active one first.
     pub fn queue(&self) -> impl Iterator<Item = usize> + '_ {
-        self.order.iter().skip(self.turn).copied().filter(|&i| self.fighters[i].alive())
-    }
-
-    /// Turn order key: on turn 1 `FirstShot` first (Community), then `Artillery`, then
-    /// initiative (attacker +1), attacker on ties.
-    fn order_key(&self, i: usize) -> (bool, bool, i32, bool, usize) {
-        let f = &self.fighters[i];
-        let ini = f.stats[Stat::Initiative] + i32::from(f.team == self.attacker);
-        let first = self.round == 1 && f.stats.has(&Bonus::FirstShot);
-        (!first, !f.stats.has(&Bonus::Artillery), -ini, f.team != self.attacker, i)
-    }
-
-    /// Starts the next battle turn; false once `BattleEndTurn` is reached.
-    fn start_round(&mut self) -> bool {
-        if self.round >= self.opt().battle_end_turn.max(1) as u32 {
-            self.stalemate = true;
-            self.log.push(format!("Turn {} ends the battle undecided", self.round));
-            return false;
+        let (t, (side, pos)) = (self.threshold, self.cursor);
+        let mut rest: Vec<(i32, usize, usize, usize)> = Vec::new();
+        for (s, team) in Team::BOTH.into_iter().enumerate() {
+            for (p, i) in self.living_ids(team).into_iter().enumerate() {
+                let (ini, f) = (self.initiative(i), &self.fighters[i]);
+                if Some(i) == self.active() || f.actions <= 0 || ini <= 0 {
+                    continue;
+                }
+                let this_pass = (s, p) > (side, pos) && ini >= t;
+                rest.push((if this_pass { t } else { ini.min(t - 1) }, s, p, i));
+            }
         }
+        rest.sort_by_key(|&(at, s, p, _)| (-at, s, p));
+        self.active().into_iter().chain(rest.into_iter().map(|r| r.3))
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Turns (4840ec, 489ca0)
+    // ------------------------------------------------------------------------------------
+
+    /// Starts the next battle turn: modifiers and flags reset, actions refilled, then from
+    /// turn 2 magic drain, regeneration and poison, then the Community turn-start bonuses.
+    fn start_turn(&mut self) {
         self.round += 1;
-        if self.round > 1 {
-            self.turn_effects();
-        }
-        let mut order: Vec<usize> = (0..self.fighters.len()).filter(|&i| self.fighters[i].alive()).collect();
-        for &i in &order {
-            self.fighters[i].left = self.turn_actions(i).max(0);
-        }
-        order.sort_by_key(|&i| self.order_key(i));
-        self.order = order;
-        self.turn = 0;
-        self.log.push(format!("-- Turn {} --", self.round));
-        true
-    }
-
-    /// Start-of-turn upkeep from turn 2: effects expire, magic power drains, regeneration
-    /// and poison.
-    fn turn_effects(&mut self) {
         let round = self.round;
+        self.threshold = if round == 1 { TURN_ONE_THRESHOLD } else { self.first_threshold };
+        self.first_threshold = 0;
+        self.cursor = (0, 0);
+        self.log.push(format!("-- Turn {round} --"));
+        for f in self.fighters.iter_mut().filter(|f| f.alive()) {
+            f.mods = Buff::default();
+            f.blessed = false;
+            f.cursed = false;
+            f.reserve_move = true;
+            f.actions = f.base[Stat::Manevres]
+                + i32::from(round == 1 && f.base.has_any(&FAST_START))
+                + i32::from(round <= 2 && f.has(Bonus::FasterAttack));
+        }
+        if round >= 2 {
+            for i in 0..self.fighters.len() {
+                if self.fighters[i].alive() {
+                    self.drain(i);
+                    self.regenerate(i);
+                }
+            }
+        }
+        self.turn_bonuses();
         for i in 0..self.fighters.len() {
-            let (dec, floor) = {
-                let f = &self.fighters[i];
-                match f.base.magic.filter(|_| f.base.is_mage()) {
-                    Some(school) => (
-                        f.base.mana_drain.unwrap_or(self.opt().dec_spell(school)),
-                        f.base.min_magic_power.unwrap_or(self.opt().min_spell(school)),
-                    ),
-                    None => (0, 0),
-                }
-            };
-            let f = &mut self.fighters[i];
-            if !f.alive() {
-                continue;
-            }
-            if f.blessing.is_some_and(|t| t.until < round) {
-                f.blessing = None;
-            }
-            if f.curse.is_some_and(|t| t.until < round) {
-                f.curse = None;
-            }
-            if f.base.has(&Bonus::Concentration) {
-                // Community Concentration: power grows by a tenth of its base every turn, up
-                // to twice the base, instead of draining *(guess: the rate is not documented)*.
-                let base = f.base[Stat::MagicPower];
-                if f.power < 2 * base {
-                    f.power = (f.power + (base / 10).max(1)).min(2 * base);
-                }
-            } else if f.power > floor {
-                // Magic power drains to the floor, never below (or up to) it.
-                f.power = (f.power - dec).max(floor);
-            }
-            let max = f.base.max_hp();
-            // Regen: percent of max HP per turn (guess: the original's timing is unverified).
-            let regen = f.base[Stat::Regen];
-            if regen > 0 && f.hp < max && !f.crippled {
-                let healed = (max * regen / 100).max(1).min(max - f.hp);
-                f.hp += healed;
-                self.log.push(format!("{} regenerates +{healed}", f.name));
-            }
-            if f.poisoned {
-                let loss = (max * f.poison.max(1) / 100).max(1).min(f.hp);
-                f.hp -= loss;
-                f.lost += loss;
-                self.log.push(format!("{} suffers {loss} from poison", f.name));
-            }
-            if f.bleeding > 0 && f.alive() {
-                let loss = f.bleeding.min(f.hp);
-                f.hp -= loss;
-                f.lost += loss;
-                f.bleeding = 0;
-                self.log.push(format!("{} bleeds for {loss}", f.name));
-            }
             self.refresh(i);
         }
-        self.collapse(Team::Player);
-        self.collapse(Team::Enemy);
     }
 
-    /// Actions `id` gets this turn: `Manevres`, +1 on turn 1 for the fast-start bonuses,
-    /// +1 on turns 1 and 2 for the Community `FasterAttack`.
-    fn turn_actions(&self, id: usize) -> i32 {
-        let f = &self.fighters[id];
-        f.stats[Stat::Manevres]
-            + i32::from(self.round == 1 && f.stats.has_any(&FAST_START))
-            + i32::from(self.round <= 2 && f.stats.has(&Bonus::FasterAttack))
+    /// Magic power drain from turn 2 (Community c2851a): `max(MP − drain, floor)`, at least
+    /// 0, for units with power; the floor also raises weak casters. Concentration adds the
+    /// drain instead.
+    fn drain(&mut self, i: usize) {
+        let f = &self.fighters[i];
+        let Some(school) = f.base.magic else { return };
+        if f.power <= 0 {
+            return;
+        }
+        let o = self.opt();
+        let dec = f.base.mana_drain.filter(|&v| v != 0).unwrap_or(o.dec_spell(school));
+        let mut floor = f.base.min_magic_power.filter(|&v| v != 0).unwrap_or(o.min_spell(school));
+        if school == MagicSchool::Death && f.base.nature == Nature::Undead {
+            floor += UNDEAD_DEATH_FLOOR;
+        }
+        let f = &mut self.fighters[i];
+        f.power = if f.has(Bonus::Concentration) { f.power + dec } else { f.power - dec };
+        f.power = f.power.max(floor).max(0);
     }
 
-    /// Moves on to the next fighter able to act, starting new turns as needed.
-    fn next_turn(&mut self) {
-        loop {
-            if self.outcome() != Outcome::Ongoing {
-                return;
+    /// Regeneration and poison from turn 2: `HP += round(maxHP × regen / 100)`, capped at
+    /// max HP; a unit at 0 or less dies (4846c1).
+    fn regenerate(&mut self, i: usize) {
+        let f = &mut self.fighters[i];
+        let max = f.base.max_hp();
+        let delta = round_even(max as i64 * f.regen as i64, 100) as i32;
+        if delta == 0 || (delta > 0 && f.hp >= max) {
+            return;
+        }
+        let new = (f.hp + delta).min(max);
+        let change = new - f.hp;
+        f.hp = new;
+        if change < 0 {
+            f.lost -= change;
+            let msg = format!("{} loses {} to poison", f.name, -change);
+            self.log.push(msg);
+            if !self.fighters[i].alive() {
+                self.died(i);
             }
-            if self.turn >= self.order.len() {
-                if !self.start_round() {
-                    return;
-                }
+        } else {
+            let msg = format!("{} regenerates +{change}", f.name);
+            self.log.push(msg);
+        }
+    }
+
+    /// Community turn-start bonuses (the hook chain in 4840ec).
+    fn turn_bonuses(&mut self) {
+        let round = self.round as i32;
+        let living = self.fighters.iter().filter(|f| f.alive()).count();
+        let starts = [self.start[0].count, self.start[1].count];
+        for i in 0..self.fighters.len() {
+            if !self.fighters[i].alive() {
                 continue;
             }
-            let id = self.order[self.turn];
-            if self.fighters[id].alive() {
-                let actions = self.turn_actions(id);
-                if actions > 0 {
-                    self.actions_left = actions;
+            let team = self.fighters[i].team;
+            let own_building = self.building_defence[team.index()];
+            let their_building = self.building_defence[team.other().index()];
+            let f = &mut self.fighters[i];
+            // Hunger: the unit count changed since the last look: healed to full.
+            if round >= 2 && f.has(Bonus::Hunger) && living != self.hunger_seen {
+                self.hunger_seen = living;
+                f.hp = f.base.max_hp();
+            }
+            if f.has(Bonus::Berserk) {
+                f.mods.attack = berserk(f);
+            }
+            if round >= 2 && f.has(Bonus::Fortify) {
+                f.mods.defence += (f.base[Stat::DefenceBlow] * FORTIFY_PERCENT / 100).max(1) * (round - 1).min(FORTIFY_TURNS);
+            }
+            // The Community Garrison fix: +AttackShot to the attack modifier.
+            if f.has(Bonus::Garrison) && own_building == 10 {
+                f.mods.attack += f.base[Stat::AttackShot];
+            }
+            if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
+                f.mods.initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
+            }
+            // Bastion doubles its attacks and defences every turn, with no building check.
+            if f.has(Bonus::Bastion) {
+                for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
+                    f.base[st] *= 2;
+                }
+            }
+            if round == 1 && f.has(Bonus::Assault) && their_building >= 10 {
+                for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
+                    f.base[st] *= 2;
+                }
+            }
+            if f.has(Bonus::Flock) {
+                let (own, other) = (starts[team.index()], starts[team.other().index()]);
+                let of = if f.base[Stat::AttackBlow] > 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
+                let step = of * FLOCK_PERCENT / 100;
+                f.mods.attack += match own.cmp(&other) {
+                    std::cmp::Ordering::Greater => step,
+                    std::cmp::Ordering::Less => -step,
+                    std::cmp::Ordering::Equal => 0,
+                };
+            }
+        }
+    }
+
+    /// Picks the next actor with the threshold scan (489ca0), starting new turns as needed.
+    fn advance(&mut self) {
+        self.current = None;
+        if self.outcome() != Outcome::Ongoing {
+            return;
+        }
+        let mut lists = [self.living_ids(Team::Player), self.living_ids(Team::Enemy)];
+        loop {
+            if self.cursor == (0, 0) && self.threshold > 0 {
+                // A pass that finds nobody only lowers the threshold: jump over those.
+                let top = lists.iter().flatten().filter(|&&i| self.fighters[i].actions > 0).map(|&i| self.initiative(i)).max().unwrap_or(0);
+                self.threshold = self.threshold.min(top.max(0));
+            }
+            if self.threshold <= 0 {
+                if self.round >= self.turn_limit() {
+                    // Nobody can act any more: the limit ends it.
+                    self.ended = Some(EndReason::TurnLimit);
                     return;
                 }
-                self.log.push(format!("{} cannot act", self.fighters[id].name));
+                self.start_turn();
+                if self.outcome() != Outcome::Ongoing {
+                    return;
+                }
+                lists = [self.living_ids(Team::Player), self.living_ids(Team::Enemy)];
+                continue;
             }
-            self.turn += 1;
+            let (side, pos) = self.cursor;
+            let list = &lists[side];
+            if let Some(&i) = list.get(pos) {
+                if self.initiative(i) >= self.threshold && self.fighters[i].actions > 0 {
+                    if self.first_threshold == 0 {
+                        self.first_threshold = self.threshold;
+                    }
+                    self.current = Some(i);
+                    return;
+                }
+            }
+            if pos + 1 < list.len() {
+                self.cursor.1 += 1;
+            } else if side == 0 {
+                self.cursor = (1, 0);
+            } else {
+                self.cursor = (0, 0);
+                self.threshold -= 1;
+            }
         }
     }
 
-    fn end_turn(&mut self) {
-        self.turn += 1;
-        self.next_turn();
-    }
-
-    fn spend_action(&mut self, id: usize) {
-        self.actions_left -= 1;
-        let f = &mut self.fighters[id];
-        f.taken += 1;
-        f.left = self.actions_left.max(0);
-        if self.actions_left <= 0 || !self.fighters[id].alive() {
-            self.end_turn();
-        }
-    }
-
-    /// End the active fighter's turn, forfeiting any remaining actions.
-    pub fn skip(&mut self) {
-        if let Some(id) = self.active() {
-            self.log.push(format!("{} waits", self.fighters[id].name));
-            // Waiting spends what is left, one pass per action as in the original.
-            let f = &mut self.fighters[id];
-            f.taken += self.actions_left.max(0);
-            f.left = 0;
-            self.end_turn();
-        }
-    }
-
-    /// Recomputes current stats from base, drain, blessing and curse.
+    /// Recomputes current stats from base, drain and this turn's modifiers.
     fn refresh(&mut self, i: usize) {
         let f = &mut self.fighters[i];
         let mut s = f.base.clone();
         s[Stat::MagicPower] = f.power;
-        for b in [f.blessing, f.curse].into_iter().flatten().map(|t| t.buff) {
-            for st in [Stat::AttackBlow, Stat::AttackShot] {
-                if s[st] > 0 {
-                    s[st] += b.attack;
-                }
+        s[Stat::Regen] = f.regen;
+        for st in [Stat::AttackBlow, Stat::AttackShot] {
+            if s[st] > 0 {
+                s[st] += f.mods.attack;
             }
-            s[Stat::DefenceBlow] += b.defence;
-            s[Stat::DefenceShot] += b.defence;
-            s[Stat::Initiative] += b.initiative;
-            s[Stat::Manevres] += b.actions;
         }
+        s[Stat::DefenceBlow] += f.mods.defence;
+        s[Stat::DefenceShot] += f.mods.defence;
+        s[Stat::Initiative] += f.mods.initiative;
         s.clamp();
+        s[Stat::Regen] = f.regen;
         f.stats = s;
-        if self.order.get(self.turn) == Some(&i) {
-            self.actions_left = self.actions_left.min(f.stats[Stat::Manevres].max(0));
-        }
     }
 
     fn row_occupied(&self, team: Team, row: Row) -> bool {
         self.living(team).any(|f| f.slot.row == row)
     }
 
-    /// With its front row empty, a side's back row steps forward; with both empty, the
-    /// reserve does *(guess: so a side is never left untargetable)*.
+    /// Row collapse (48a170): with rows 1 and 2 empty the reserve moves to row 1 (same
+    /// column) and loses its remaining actions; with only row 1 empty row 2 moves up and
+    /// keeps them.
     fn collapse(&mut self, team: Team) {
         if self.row_occupied(team, Row::Front) {
             return;
         }
-        let from = [Row::Back, Row::Reserve].into_iter().find(|&r| self.row_occupied(team, r));
-        let Some(from) = from else { return };
+        let back = self.row_occupied(team, Row::Back);
+        let from = if back { Row::Back } else { Row::Reserve };
+        let mut moved = false;
         for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team && f.slot.row == from) {
             f.slot.row = Row::Front;
+            if from == Row::Reserve {
+                f.actions = 0;
+            }
+            moved = true;
         }
-        let side = if team == Team::Player { "Your" } else { "The enemy" };
-        let what = if from == Row::Back { "rear" } else { "reserve" };
-        self.log.push(format!("{side} {what} steps forward"));
+        if moved {
+            let side = if team == Team::Player { "Your" } else { "The enemy" };
+            let what = if back { "rear" } else { "reserve" };
+            self.log.push(format!("{side} {what} steps forward"));
+        }
+    }
+
+    /// A unit has just died: it leaves the field, and its side's rows may collapse.
+    fn died(&mut self, i: usize) {
+        let team = self.fighters[i].team;
+        self.collapse(team);
+    }
+
+    /// The end check after every action (48b67b): a side gone, the turn limit, or a side
+    /// whose every unit has `Surrender > 0`, which then gives up.
+    fn end_check(&mut self) {
+        if self.living(Team::Player).next().is_none() || self.living(Team::Enemy).next().is_none() {
+            return;
+        }
+        let limit = self.round >= self.turn_limit();
+        let giving_up: Vec<Team> =
+            Team::BOTH.into_iter().filter(|&t| self.living(t).all(|f| f.surrender > 0)).collect();
+        for &team in &giving_up {
+            let mut mana = 0;
+            for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team) {
+                mana += f.surrender;
+                f.surrendered = true;
+                f.surrender_hp = f.hp;
+                f.hp = 0;
+            }
+            self.surrender_mana[team.other().index()] += mana;
+            let side = if team == Team::Player { "Your army" } else { "The enemy" };
+            self.log.push(format!("{side} surrenders"));
+        }
+        if let Some(&team) = giving_up.first() {
+            self.ended = Some(EndReason::Surrender(team));
+        } else if limit {
+            self.ended = Some(EndReason::TurnLimit);
+            self.log.push(format!("Turn {} ends the battle", self.round));
+        }
     }
 
     // ------------------------------------------------------------------------------------
-    // Reach (mechanics.md 2.3)
+    // Reach (484c4c)
     // ------------------------------------------------------------------------------------
 
     /// Occupied front cells of `team` in columns c−1..c+1.
@@ -777,59 +1038,69 @@ impl Battle {
         [right, left].into_iter().flatten().collect()
     }
 
-    /// What `id`, standing on `from`, can do to `target`, the default action first.
-    fn options_from(&self, id: usize, from: Slot, target: usize) -> Vec<ActionKind> {
+    /// What `id`, standing on `from`, would do to `target`: one action per cell, as in the
+    /// original's cell map. Where several fit, later ones win as there: melee, then a shot,
+    /// then hostile magic; Flying's melee only where nothing else fits.
+    fn option_at(&self, id: usize, from: Slot, target: usize) -> Option<ActionKind> {
         use ActionKind::*;
         let (f, t) = (&self.fighters[id], &self.fighters[target]);
-        let mut v = Vec::new();
-        if !f.alive() || !t.alive() || !from.row.is_active() || !t.slot.row.is_active() {
-            return v;
+        if !f.alive() || !t.alive() {
+            return None;
         }
         let s = &f.stats;
         if t.team != f.team {
+            if !t.slot.row.is_active() {
+                return None;
+            }
             let near = self.front_near(t.team, from.col);
-            let blocked = !near.is_empty();
+            let engaged = !near.is_empty();
             let adjacent = t.slot.row == Row::Front && near.contains(&t.slot.col);
-            // Community Flying: any enemy (front or back row) from any row, as a normal strike.
-            let flying = s.has(&Bonus::Flying);
-            if s.is_warrior() && flying {
-                v.push(Melee);
-            } else if s.is_warrior() && from.row == Row::Front && t.slot.row == Row::Front {
+            let mut kind = None;
+            if f.has(Bonus::Flying) && from.row.is_active() && adjacent {
+                kind = Some(Melee);
+            }
+            if f.is_warrior() && from.row == Row::Front {
                 if adjacent {
-                    v.push(Melee);
-                } else if !blocked && self.long_strike_targets(t.team, from.col).contains(&target) {
-                    v.push(LongStrike);
+                    kind = Some(Melee);
+                } else if !engaged && self.long_strike_targets(t.team, from.col).contains(&target) {
+                    kind = Some(LongStrike);
                 }
             }
-            if s.is_shooter() && (flying || from.row == Row::Back || !blocked || adjacent) {
-                v.push(Shot);
+            if f.is_shooter() && (from.row == Row::Back || (from.row == Row::Front && (!engaged || adjacent))) {
+                kind = Some(Shot);
             }
-            if s.is_mage() && s.magic_direction().hits_enemies() && (flying || from.row == Row::Back || !blocked) {
-                let pair = if s.magic == Some(MagicSchool::Life) { [Strike, Curse] } else { [Curse, Strike] };
-                for k in pair {
-                    let useful = match k {
-                        Strike => self.magic_strike(id, target) > 0,
-                        _ => !self.curse_buff(id, target).is_empty(),
-                    };
-                    if useful {
-                        v.push(k);
-                    }
+            if s.is_mage() && s.magic_direction().hits_enemies() {
+                let reach = from.row == Row::Back || (from.row == Row::Front && !engaged);
+                // Ghost casters also reach the three front cells opposite, from any row.
+                if reach || (f.has(Bonus::Ghost) && adjacent) {
+                    kind = Some(if t.weakened() { Strike } else { Curse });
                 }
             }
-        } else if s.is_mage() && s.magic_direction().helps_allies() {
-            if t.hp < t.max_hp() && self.heal_power(id, target) > 0 {
-                v.push(Heal);
+            kind
+        } else {
+            if !(s.is_mage() && s.magic_direction().helps_allies()) || t.crippled {
+                return None;
             }
-            if t.blessing.is_none() && !self.bless_buff(id, target).is_empty() {
-                v.push(Bless);
+            if from.row == Row::Reserve {
+                // A caster in the reserve tends the reserve, and nothing else.
+                if t.slot.row != Row::Reserve {
+                    return None;
+                }
+            } else {
+                if !t.slot.row.is_active() || (t.blessed && !t.wounded()) {
+                    return None;
+                }
+                if self.school(id) == MagicSchool::Elemental && t.base.magic == Some(MagicSchool::Elemental) && !t.wounded() {
+                    return None;
+                }
             }
+            Some(if t.wounded() && self.heal_amount(id, target, f.power) > 0 { Heal } else { Bless })
         }
-        v
     }
 
-    /// What the fighter `id` can do to `target` from where it stands, default first.
+    /// What the fighter `id` can do to `target` from where it stands (at most one action).
     pub fn options(&self, id: usize, target: usize) -> Vec<ActionKind> {
-        self.options_from(id, self.fighters[id].slot, target)
+        self.option_at(id, self.fighters[id].slot, target).into_iter().collect()
     }
 
     pub fn can_target(&self, id: usize, target: usize) -> bool {
@@ -840,22 +1111,22 @@ impl Battle {
         (0..self.fighters.len()).filter(|&t| self.can_target(id, t)).collect()
     }
 
-    fn has_hostile_option_from(&self, id: usize, from: Slot) -> bool {
-        (0..self.fighters.len()).any(|t| self.options_from(id, from, t).iter().any(|k| k.is_hostile()))
+    fn all_options(&self, id: usize) -> Vec<(usize, ActionKind)> {
+        (0..self.fighters.len()).filter_map(|t| self.option_at(id, self.fighters[id].slot, t).map(|k| (t, k))).collect()
     }
 
-    /// A unit that cannot attack from where it stands (e.g. a warrior in the back row).
+    /// A unit that could attack but cannot from where it stands (e.g. a warrior in the back
+    /// row).
     pub fn helpless(&self, id: usize) -> bool {
         let f = &self.fighters[id];
         let s = &f.stats;
-        let could = s.is_warrior() || s.is_shooter() || (s.is_mage() && s.magic_direction().hits_enemies());
-        could && !self.has_hostile_option_from(id, f.slot)
+        let could = f.is_warrior() || f.is_shooter() || (s.is_mage() && s.magic_direction().hits_enemies());
+        could && !self.all_options(id).iter().any(|o| o.1.is_hostile())
     }
 
-    /// Empty own cells the fighter could step to: columns c−1..c+1 of the front and back
-    /// rows. From the reserve: any empty front or back cell. Into the reserve: any empty
-    /// reserve cell, from the back row only *(guess: the original gates this on an unknown
-    /// per-unit flag)*.
+    /// Empty own cells the fighter could step to (484c4c): from row 1 or 2, columns c−1..c+1
+    /// of rows 1 and 2; any reserve cell while it may still use the reserve this turn. From
+    /// the reserve (with the same permission): any cell of rows 1 and 2. No swaps.
     pub fn moves(&self, id: usize) -> Vec<Slot> {
         let f = &self.fighters[id];
         if !f.alive() {
@@ -866,105 +1137,87 @@ impl Battle {
             .slots()
             .filter(|&s| s != from && self.at(f.team, s).is_none())
             .filter(|s| match (from.row, s.row) {
-                (Row::Reserve, r) => r.is_active(),
-                (Row::Back, Row::Reserve) => true,
-                (_, Row::Reserve) => false,
+                (Row::Reserve, Row::Reserve) => false,
+                (Row::Reserve, _) | (_, Row::Reserve) => f.reserve_move,
                 _ => s.col.abs_diff(from.col) <= 1,
             })
             .collect()
     }
 
     // ------------------------------------------------------------------------------------
-    // Damage and magic (mechanics.md 2.4, 3.3)
+    // Damage and magic (485908, 485b3c)
     // ------------------------------------------------------------------------------------
 
     fn has_knight(&self, team: Team) -> bool {
         self.fighters.iter().any(|f| f.team == team && f.is_hero && HeroClass::of_unit(f.unit) == Some(HeroClass::Knight))
     }
 
-    /// Living units of `team`.
-    fn head_count(&self, team: Team) -> usize {
-        self.living(team).count()
+    fn splash_pct(&self, a: usize) -> i32 {
+        if self.interactive && self.fighters[a].has(Bonus::Splash) {
+            SPLASH_MAIN
+        } else {
+            100
+        }
     }
 
-    /// Physical damage of `a` on `t`, before capping at the target's HP. Deterministic.
-    /// A `Splash` unit's attack counts 80% on its target.
+    /// Physical damage of `a` on `t` (before capping at the target's HP). A `Splash` unit's
+    /// first hit uses 80% of its attack.
     pub fn physical_damage(&self, a: usize, t: usize, kind: ActionKind) -> i32 {
-        let pct = if self.fighters[a].stats.has(&Bonus::Splash) { SPLASH_MAIN } else { 100 };
-        self.physical_damage_at(a, t, kind, pct)
+        self.physical_damage_at(a, t, kind, self.splash_pct(a))
     }
 
-    /// Physical damage with `pct`% of the attacker's attack.
+    /// Physical damage with `pct`% of the attacker's attack (485908).
     fn physical_damage_at(&self, a: usize, t: usize, kind: ActionKind, pct: i32) -> i32 {
         let (af, tf) = (&self.fighters[a], &self.fighters[t]);
         let (s, ts) = (&af.stats, &tf.stats);
         let shot = kind == ActionKind::Shot;
         let building = self.building_defence[tf.team.index()];
         let mut atk = if shot { s[Stat::AttackShot] } else { s[Stat::AttackBlow] } * pct / 100;
-        let mut own = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] };
-        if ts.has(&Bonus::Fortify) {
-            // Community Fortify: +25% of its own defence per turn (turn 1 included *(guess)*).
-            own = own * (100 + (FORTIFY_STEP * self.round.max(1) as i32).min(FORTIFY_MAX)) / 100;
-        }
-        let mut def = own + building;
-        if shot && tf.slot.row == Row::Back {
-            def += self.opt().row2_def;
-        }
-        if !shot && self.round <= 1 && ts.has(&Bonus::SpearDefense) {
-            def *= 3;
-        }
-        if kind == ActionKind::LongStrike {
-            def /= 2;
-            if s.has(&Bonus::FlankStrike) {
-                atk *= 2;
+        let mut def = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] };
+        if shot {
+            if s.has_any(&PIERCE_SHOT) {
+                def = 0;
+            }
+            if tf.slot.row == Row::Back {
+                def += self.opt().row2_def;
+            }
+        } else {
+            if self.round == 1 && ts.has(&Bonus::SpearDefense) {
+                def *= 3;
+            }
+            if s.has_any(&PIERCE_MELEE) {
+                def = 0;
+            }
+            if kind == ActionKind::LongStrike {
+                def /= 2;
+                if s.has(&Bonus::FlankStrike) {
+                    atk *= 2;
+                }
             }
         }
-        // Piercing ignores the unit's defence; the building's still counts.
-        if s.has_any(&PIERCING) {
-            def = building;
-        }
-        let mut dmg = (atk - def).max(1);
-        // Community: Berserk up to ×2 as its HP falls *(guess: linear in the HP lost)*.
-        if s.has(&Bonus::Berserk) {
-            let max = af.max_hp().max(1);
-            dmg = dmg * (2 * max - af.hp.clamp(0, max)) / max;
-        }
-        // Community: Flock ±25% by head count against the other army.
-        if s.has(&Bonus::Flock) {
-            let (own, other) = (self.head_count(af.team), self.head_count(tf.team));
-            if own > other {
-                dmg = dmg * 125 / 100;
-            } else if own < other {
-                dmg = dmg * 75 / 100;
-            }
-        }
-        // Community: Dominate +25% on a target with less max HP *(guess: undocumented)*.
-        if s.has(&Bonus::Dominate) && tf.max_hp() < af.max_hp() {
-            dmg = dmg * 125 / 100;
-        }
-        if ts.has_any(&[Bonus::VampirsGist, Bonus::OldVampirsGist, Bonus::Evasive]) {
+        def += building;
+        let mut dmg = if atk > def { atk - def } else { 1 };
+        // Assault takes ×2/3 from a garrison (the misaligned test at c2a403, medium).
+        let assaulted = ts.has(&Bonus::Assault) && self.building_defence[af.team.index()] > 0 && af.mods.initiative >= 0;
+        if ts.has_any(&[Bonus::Evasive, Bonus::VampirsGist, Bonus::OldVampirsGist]) || assaulted {
             dmg = dmg * 2 / 3;
         }
         if ts.has(&Bonus::Garrison) && building >= 10 {
             dmg = dmg * 2 / 3;
         }
-        // Community: Bastion takes half inside, Assault 70% while storming.
-        if ts.has(&Bonus::Bastion) && self.in_building[tf.team.index()] {
-            dmg /= 2;
-        }
-        if ts.has(&Bonus::Assault) && self.in_building[af.team.index()] {
-            dmg = dmg * 7 / 10;
-        }
         if shot && ts.has_any(&[Bonus::Dead, Bonus::FastDead]) {
             dmg = dmg * 3 / 10;
         }
         if self.has_knight(tf.team) {
-            dmg = dmg * 90 / 100;
+            dmg = dmg * KNIGHT_PERCENT / 100;
         }
         if ts.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
             dmg = 1;
         }
         dmg += god_bonus(s);
+        if dmg == 0 {
+            dmg = 1;
+        }
         (dmg * (100 - ts.evasion.clamp(0, 100)) / 100).max(1)
     }
 
@@ -972,50 +1225,60 @@ impl Battle {
         self.fighters[a].stats.magic.unwrap_or(MagicSchool::Elemental)
     }
 
-    /// Caster power against `t` for hostile magic: reduced by the target's protection %,
+    /// Caster power `p` against `t` for hostile magic: reduced by the target's protection %,
     /// except for a Community `Potent` caster.
-    fn hostile_power(&self, a: usize, t: usize) -> i32 {
-        let p = self.fighters[a].stats[Stat::MagicPower];
-        if self.fighters[a].stats.has(&Bonus::Potent) {
+    fn hostile_power_of(&self, a: usize, t: usize, p: i32) -> i32 {
+        if self.fighters[a].has(Bonus::Potent) {
             return p;
         }
         let prot = self.fighters[t].stats.protection(self.school(a)).clamp(0, 100);
         (p * (100 - prot) + 50) / 100
     }
 
-    /// Magic strike damage, before capping at HP: Life ×2 on undead, Death ×½ on undead,
-    /// Elemental ¾; ¾ on elementals for Life and Death; plus GodAnger/GodStrike.
-    pub fn magic_strike(&self, a: usize, t: usize) -> i32 {
-        let p = self.hostile_power(a, t);
+    /// The power `a` casts with at `pct`% (Splash).
+    fn power_at(&self, a: usize, pct: i32) -> i32 {
+        self.fighters[a].power * pct / 100
+    }
+
+    /// Magic strike damage of hostile power `p`, before capping at HP: Life ×2 on undead,
+    /// Death ×½ on undead, Elemental ¾; ¾ on elementals for Life and Death (not for a
+    /// `Potent` caster); plus GodAnger/GodStrike.
+    fn strike_damage(&self, a: usize, t: usize, p: i32) -> i32 {
         let nature = self.fighters[t].stats.nature;
         let dmg = match (self.school(a), nature) {
+            _ if self.fighters[a].has(Bonus::Potent) => p,
             (MagicSchool::Life, Nature::Undead) => 2 * p,
             (MagicSchool::Death, Nature::Undead) => p / 2,
             (MagicSchool::Elemental, _) | (_, Nature::Elemental) => p * 3 / 4,
             _ => p,
         };
-        let dmg = if dmg > 0 { dmg + god_bonus(&self.fighters[a].stats) } else { 0 };
-        dmg + self.drying(a, t)
+        if dmg > 0 {
+            dmg + god_bonus(&self.fighters[a].stats)
+        } else {
+            0
+        }
+    }
+
+    /// A magic strike's damage on `t` as it would be cast now, `Drying` included.
+    pub fn magic_strike(&self, a: usize, t: usize) -> i32 {
+        let p = self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a)));
+        self.strike_damage(a, t, p) + self.drying(a, t)
     }
 
     /// Community `Drying`: 8% of the target's max HP on every hostile spell, ignoring
     /// protection (at least 1).
     fn drying(&self, a: usize, t: usize) -> i32 {
-        if self.fighters[a].stats.has(&Bonus::Drying) {
+        if self.fighters[a].has(Bonus::Drying) {
             (self.fighters[t].max_hp() * DRYING_PERCENT / 100).max(1)
         } else {
             0
         }
     }
 
-    /// HP a heal restores before capping: Life P (not on undead or elementals), Elemental
-    /// P/2, Death P on undead only.
-    fn heal_power(&self, a: usize, t: usize) -> i32 {
-        let p = self.fighters[a].stats[Stat::MagicPower];
+    /// HP a heal of power `p` restores before capping: Life P (not on undead or elementals),
+    /// Elemental P/2, Death P on undead only.
+    fn heal_amount(&self, a: usize, t: usize, p: i32) -> i32 {
         let nature = self.fighters[t].stats.nature;
-        if self.fighters[t].crippled {
-            return 0;
-        }
         match self.school(a) {
             MagicSchool::Life if matches!(nature, Nature::Undead | Nature::Elemental) => 0,
             MagicSchool::Life => p,
@@ -1025,9 +1288,8 @@ impl Battle {
         }
     }
 
-    /// Blessing by school (friendly: power not reduced).
-    pub fn bless_buff(&self, a: usize, t: usize) -> Buff {
-        let p = self.fighters[a].stats[Stat::MagicPower];
+    /// Blessing of power `p` by school (friendly: power not reduced).
+    fn bless_of(&self, a: usize, t: usize, p: i32) -> Buff {
         let o = self.opt();
         let (bm, bn, w) = (o.bless_main_spell.max(1), o.bless_next_spell.max(1), o.wizard_main_spell.max(1));
         let target = &self.fighters[t];
@@ -1043,142 +1305,457 @@ impl Battle {
         b
     }
 
-    /// Curse by school (hostile: power reduced by protection).
-    pub fn curse_buff(&self, a: usize, t: usize) -> Buff {
-        let p = self.hostile_power(a, t);
+    /// Curse of hostile power `p` by school.
+    fn curse_of(&self, a: usize, t: usize, p: i32) -> Buff {
         let o = self.opt();
         let (cm, cn, w) = (o.curse_main_spell.max(1), o.curse_next_spell.max(1), o.wizard_main_spell.max(1));
+        // Life divides by the integer ⅔ of CurseMainSpell (4ed3a8) and a fixed 10 (4ed3b0).
+        let life = (2 * cm / 3).max(1);
         let mut b = match self.school(a) {
-            // Life uses ⅔ of CurseMainSpell and a fixed 10.
-            MagicSchool::Life => Buff { defence: -(1 + 3 * p / (2 * cm)), attack: -(p / 10), ..Buff::default() },
+            MagicSchool::Life => Buff { defence: -(p / life + 1), attack: -(p / 10), ..Buff::default() },
             MagicSchool::Elemental => Buff { actions: -actions_of_power(p), initiative: -(1 + p / w), ..Buff::default() },
             MagicSchool::Death => Buff { attack: -(1 + p / cm), defence: -(p / cn), ..Buff::default() },
         };
         if !self.fighters[t].has_attack() {
             b.attack = 0;
         }
-        if p == 0 {
-            b = Buff::default();
-        }
         b
+    }
+
+    /// The blessing `a` would give `t` now.
+    pub fn bless_buff(&self, a: usize, t: usize) -> Buff {
+        self.bless_of(a, t, self.power_at(a, self.splash_pct(a)))
+    }
+
+    /// The curse `a` would put on `t` now.
+    pub fn curse_buff(&self, a: usize, t: usize) -> Buff {
+        self.curse_of(a, t, self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a))))
     }
 
     /// Expected effect of `kind` by `a` on `t`, for hover previews.
     pub fn preview(&self, a: usize, t: usize, kind: ActionKind) -> Preview {
         let target = &self.fighters[t];
+        let pct = self.splash_pct(a);
         match kind {
             ActionKind::Strike => Preview::Damage(self.magic_strike(a, t).min(target.hp)),
             ActionKind::Curse => Preview::Buff(self.curse_buff(a, t)),
-            ActionKind::Heal => Preview::Heal(self.heal_power(a, t).min(target.max_hp() - target.hp)),
+            ActionKind::Heal => Preview::Heal(self.heal_amount(a, t, self.power_at(a, pct)).min(target.max_hp() - target.hp)),
             ActionKind::Bless => Preview::Buff(self.bless_buff(a, t)),
             k => Preview::Damage(self.physical_damage(a, t, k).min(target.hp)),
         }
     }
 
     // ------------------------------------------------------------------------------------
-    // Actions
+    // Actions (48a5c4)
     // ------------------------------------------------------------------------------------
 
-    /// Step the active fighter to an empty own cell; costs one action.
+    /// Every action starts by spending one action; a bleeding unit then bleeds, and dies
+    /// before acting if that kills it. False if the actor died.
+    fn start_action(&mut self, id: usize) -> bool {
+        let f = &mut self.fighters[id];
+        f.actions -= 1;
+        f.taken += 1;
+        if f.bleed > 0 {
+            let loss = ((f.base[Stat::AttackBlow] + f.base[Stat::AttackShot] + f.power) * f.bleed / 100).clamp(0, f.hp);
+            if loss > 0 {
+                f.hp -= loss;
+                f.lost += loss;
+                let msg = format!("{} bleeds for {loss}", f.name);
+                self.log.push(msg);
+                if !self.fighters[id].alive() {
+                    self.died(id);
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// After every action: the actor's side collapses once it has used its last action
+    /// (48b5ac), the end check runs and the next actor is picked.
+    fn finish_action(&mut self, id: usize) {
+        if self.fighters[id].alive() && self.fighters[id].actions <= 0 {
+            let team = self.fighters[id].team;
+            self.collapse(team);
+        }
+        self.end_check();
+        self.advance();
+    }
+
+    /// Step the active fighter to an empty own cell; costs one action. Stepping into or out
+    /// of the reserve uses up that unit's reserve move for the turn.
     pub fn move_active(&mut self, to: Slot) -> Result<(), ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
         if !self.moves(id).contains(&to) {
             return Err(ActionError::InvalidTarget);
         }
-        self.fighters[id].slot = to;
-        let team = self.fighters[id].team;
-        self.log.push(format!("{} moves", self.fighters[id].name));
-        self.collapse(team);
-        self.spend_action(id);
+        if self.start_action(id) {
+            let f = &mut self.fighters[id];
+            if (f.slot.row == Row::Reserve) != (to.row == Row::Reserve) {
+                f.reserve_move = false;
+            }
+            f.slot = to;
+            let msg = format!("{} moves", f.name);
+            self.log.push(msg);
+        }
+        self.finish_action(id);
         Ok(())
     }
 
-    /// The active fighter's default action on `target`; costs one action.
+    /// The active fighter passes one action (a click on its own cell).
+    pub fn pass(&mut self) {
+        if let Some(id) = self.active() {
+            self.start_action(id);
+            self.finish_action(id);
+        }
+    }
+
+    /// The active fighter passes all its remaining actions.
+    pub fn skip(&mut self) {
+        if let Some(id) = self.active() {
+            self.log.push(format!("{} waits", self.fighters[id].name));
+            for _ in 0..self.fighters[id].actions {
+                if self.active() != Some(id) {
+                    break;
+                }
+                self.pass();
+            }
+        }
+    }
+
+    /// The active fighter's action on `target`; costs one action.
     pub fn act(&mut self, target: usize) -> Result<Hit, ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
         let kind = *self.options(id, target).first().ok_or(ActionError::InvalidTarget)?;
         self.act_with(target, kind)
     }
 
-    /// The active fighter does `kind` to `target`; costs one action.
+    /// The active fighter does `kind` to `target` (it must be the cell's action); costs one
+    /// action.
     pub fn act_with(&mut self, target: usize, kind: ActionKind) -> Result<Hit, ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
         if !self.options(id, target).contains(&kind) {
             return Err(ActionError::InvalidTarget);
         }
         let mut hit = Hit::new(target, kind);
-        let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
-        if kind.is_physical() {
-            self.preventive_strike(id, target, &mut hit);
-        }
-        if self.fighters[id].alive() {
-            match kind {
-                ActionKind::Heal => {
-                    let t = &self.fighters[target];
-                    let healed = self.heal_power(id, target).min(t.max_hp() - t.hp);
-                    self.fighters[target].hp += healed;
-                    hit.amount = healed;
-                    self.log.push(format!("{name} heals {tname} +{healed}"));
-                }
-                ActionKind::Bless | ActionKind::Curse => {
-                    let buff = if kind == ActionKind::Bless { self.bless_buff(id, target) } else { self.curse_buff(id, target) };
-                    // Community EternalGift: the whole battle.
-                    let until = if self.fighters[id].stats.has(&Bonus::EternalGift) { u32::MAX } else { self.round + EFFECT_TURNS - 1 };
-                    let timed = Some(Timed { buff, until });
-                    if kind == ActionKind::Bless {
-                        self.fighters[target].blessing = timed;
-                    } else {
-                        self.fighters[target].curse = timed;
-                    }
-                    self.refresh(target);
-                    hit.buff = buff;
-                    let verb = if kind == ActionKind::Bless { "blesses" } else { "curses" };
-                    self.log.push(format!("{name} {verb} {tname}: {}", buff.describe()));
-                    if kind == ActionKind::Curse {
-                        let dry = self.drying(id, target);
-                        if dry > 0 {
-                            self.deal(id, target, dry, &mut hit);
-                        }
-                        self.exhaust(id, target);
-                    }
-                }
-                _ => {
-                    let raw = if kind == ActionKind::Strike { self.magic_strike(id, target) } else { self.physical_damage(id, target, kind) };
-                    self.deal(id, target, raw, &mut hit);
-                    self.on_hit(id, target, &mut hit);
-                    if kind.is_physical() {
-                        self.splash(id, target, &mut hit);
-                    }
-                    let melee = matches!(kind, ActionKind::Melee | ActionKind::LongStrike);
-                    let t = &self.fighters[target];
-                    // Counterblow: a warrior struck in melee hits back once.
-                    if melee && t.alive() && t.stats.has(&Bonus::Counterblow) && t.stats.is_warrior() && self.fighters[id].alive() {
-                        let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp);
-                        self.wound(id, dmg);
-                        hit.counter = Some(dmg);
-                        self.log.push(format!("{tname} hits back for {dmg}"));
-                        hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
-                    }
-                    // Community CtrPoison: striking it in melee poisons the striker *(guess:
-                    // shots and spells do not)*.
-                    if melee && self.fighters[target].base.has(&Bonus::CtrPoison) && self.fighters[id].alive() {
-                        self.poison(id, POISON_PERCENT);
-                    }
-                }
+        if self.start_action(id) {
+            self.fighters[id].useful += 1;
+            if kind.is_physical() {
+                self.physical_action(id, target, &mut hit);
+            } else if kind.is_hostile() {
+                self.hostile_action(id, target, &mut hit);
+            } else {
+                self.friendly_action(id, target, &mut hit);
             }
-            // Community Suicide: dies after its own attack.
-            if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].stats.has(&Bonus::Suicide) {
-                let hp = self.fighters[id].hp;
-                self.wound(id, hp);
-                hit.actor_died = true;
-                self.log.push(format!("{name} gives its life"));
+            // Suicide: gone after any hostile action of its own.
+            if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].has(Bonus::Suicide) {
+                let f = &mut self.fighters[id];
+                f.lost += f.hp;
+                f.hp = 0;
+                let msg = format!("{} gives its life", f.name);
+                self.log.push(msg);
+                self.died(id);
             }
         }
-        self.fighters[id].useful += 1;
-        self.collapse(Team::Player);
-        self.collapse(Team::Enemy);
-        self.spend_action(id);
+        hit.actor_died = !self.fighters[id].alive();
+        self.finish_action(id);
         Ok(hit)
+    }
+
+    /// Community `PreventiveStrike`: before a melee on it, it hits first (melee with an
+    /// AttackBlow, else a shot); before a shot or a hostile spell, it shoots first if it has
+    /// an AttackShot. False if the attacker died.
+    fn preventive_strike(&mut self, id: usize, target: usize, kind: ActionKind, hit: &mut Hit) -> bool {
+        let t = &self.fighters[target];
+        if !t.alive() || !t.has(Bonus::PreventiveStrike) {
+            return true;
+        }
+        let answer = if kind.is_melee() {
+            Some(if t.is_warrior() { ActionKind::Melee } else { ActionKind::Shot })
+        } else {
+            t.is_shooter().then_some(ActionKind::Shot)
+        };
+        let Some(answer) = answer else { return true };
+        let dmg = self.physical_damage_at(target, id, answer, 100).min(self.fighters[id].hp);
+        self.wound(id, dmg);
+        hit.counter = Some(dmg);
+        self.log.push(format!("{} strikes first for {dmg}", self.fighters[target].name));
+        !self.check_death(id, Some(target), false)
+    }
+
+    fn physical_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        let kind = hit.kind;
+        if !self.preventive_strike(id, target, kind, hit) {
+            return;
+        }
+        let pct = self.splash_pct(id);
+        let (dealt, killed) = self.physical_hit(id, target, kind, pct);
+        hit.amount = dealt;
+        hit.killed = killed;
+        if pct != 100 {
+            for n in self.splash_neighbours(id, target, kind) {
+                if self.fighters[id].alive() {
+                    let (d, _) = self.physical_hit(id, n, kind, SPLASH_SIDE);
+                    hit.splash.push((n, d));
+                }
+            }
+        }
+        self.after_kill(id, killed, kind);
+        // Counterblow: a surviving target answers a melee or long strike with melee damage.
+        let t = &self.fighters[target];
+        if kind.is_melee() && t.alive() && t.has(Bonus::Counterblow) && self.fighters[id].alive() && !self.fighters[id].has(Bonus::Suicide) {
+            let dmg = self.physical_damage_at(target, id, ActionKind::Melee, 100).min(self.fighters[id].hp);
+            self.wound(id, dmg);
+            hit.counter = Some(dmg);
+            self.log.push(format!("{} hits back for {dmg}", self.fighters[target].name));
+            self.check_death(id, Some(target), false);
+        }
+    }
+
+    /// BloodThrist (+1 action) and, for melee, Hunger (full HP) after a kill.
+    fn after_kill(&mut self, id: usize, killed: bool, kind: ActionKind) {
+        let f = &mut self.fighters[id];
+        if !killed || !f.alive() {
+            return;
+        }
+        if f.has(Bonus::BloodThrist) {
+            f.actions += 1;
+        }
+        if kind.is_melee() && f.has(Bonus::Hunger) {
+            f.hp = f.max_hp();
+        }
+    }
+
+    /// Living units beside `target` in its row (c ± 1); for melee also within one column of
+    /// the attacker.
+    fn splash_neighbours(&self, id: usize, target: usize, kind: ActionKind) -> Vec<usize> {
+        let (team, slot) = (self.fighters[target].team, self.fighters[target].slot);
+        let col = self.fighters[id].slot.col;
+        (0..self.fighters.len())
+            .filter(|&n| {
+                let f = &self.fighters[n];
+                n != target
+                    && f.alive()
+                    && f.team == team
+                    && f.slot.row == slot.row
+                    && f.slot.col.abs_diff(slot.col) == 1
+                    && (!kind.is_melee() || f.slot.col.abs_diff(col) <= 1)
+            })
+            .collect()
+    }
+
+    /// One physical hit and its effects on the target. Returns (damage dealt, killed).
+    fn physical_hit(&mut self, id: usize, target: usize, kind: ActionKind, pct: i32) -> (i32, bool) {
+        let raw = self.physical_damage_at(id, target, kind, pct);
+        let dealt = raw.min(self.fighters[target].hp);
+        self.wound(target, dealt);
+        let a = self.fighters[id].base.clone();
+        // Vanilla Poison and PoisonS: a hit of more than 1 sets the regeneration.
+        if raw > 1 {
+            let t = &mut self.fighters[target];
+            if a.has(&Bonus::Poison) {
+                t.regen = POISON_REGEN;
+            }
+            if a.has(&Bonus::PoisonS) {
+                t.regen = STRONG_POISON_REGEN;
+            }
+        }
+        // Vampirism on the uncapped damage, not from undead or elementals.
+        let vamp = self.fighters[id].stats[Stat::Vampirizm];
+        if vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
+            let f = &mut self.fighters[id];
+            f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
+        }
+        if kind.is_melee() && self.fighters[target].has(Bonus::CtrPoison) {
+            self.fighters[id].regen -= CTR_POISON_STEP;
+            self.refresh(id);
+        }
+        self.after_hit(id, target, raw);
+        let how = if kind == ActionKind::LongStrike { " with a long strike" } else { "" };
+        let killed = self.check_death(target, Some(id), true);
+        let (name, tname) = (&self.fighters[id].name, &self.fighters[target].name);
+        let msg = if killed { format!("{name} kills {tname}{how} ({dealt})") } else { format!("{name} hits {tname}{how} for {dealt}") };
+        self.log.push(msg);
+        (dealt, killed)
+    }
+
+    fn hostile_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        if !self.preventive_strike(id, target, hit.kind, hit) {
+            return;
+        }
+        let pct = self.splash_pct(id);
+        let (amount, buff, killed) = self.hostile_spell(id, target, pct);
+        (hit.amount, hit.buff, hit.killed) = (amount, buff, killed);
+        if pct != 100 {
+            for n in self.splash_neighbours(id, target, hit.kind) {
+                if self.fighters[id].alive() {
+                    let (d, _, _) = self.hostile_spell(id, n, SPLASH_SIDE);
+                    hit.splash.push((n, d));
+                }
+            }
+        }
+        self.after_kill(id, killed, hit.kind);
+    }
+
+    /// A hostile spell at `pct`% power: a strike on a weakened target, else a curse, then the
+    /// spell's side effects. Returns (damage dealt, curse, killed).
+    fn hostile_spell(&mut self, id: usize, target: usize, pct: i32) -> (i32, Buff, bool) {
+        let p = self.hostile_power_of(id, target, self.power_at(id, pct));
+        let school = self.school(id);
+        let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
+        let mut dealt = 0;
+        let mut buff = Buff::default();
+        if self.fighters[target].weakened() {
+            let raw = self.strike_damage(id, target, p);
+            dealt = raw.min(self.fighters[target].hp);
+            self.wound(target, dealt);
+            self.log.push(format!("{name} hits {tname} with magic for {dealt}"));
+            // Vampirism on magic: Death strikes only, not from undead or elementals.
+            let vamp = self.fighters[id].stats[Stat::Vampirizm];
+            if school == MagicSchool::Death && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
+                let f = &mut self.fighters[id];
+                f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
+            }
+        } else {
+            buff = self.curse_of(id, target, p);
+            self.apply_buff(id, target, buff, false);
+            self.fighters[target].cursed = true;
+            self.log.push(format!("{name} curses {tname}: {}", buff.describe()));
+            // An undead caster's Elemental or Death curse drains life to it.
+            if self.fighters[id].base.nature == Nature::Undead && school != MagicSchool::Life {
+                let drain = (p / self.opt().curse_main_spell.max(1) / 2 + 1).min(self.fighters[target].hp);
+                self.wound(target, drain);
+                dealt += drain;
+                let f = &mut self.fighters[id];
+                f.hp = (f.hp + drain).min(f.max_hp());
+            }
+        }
+        let a = self.fighters[id].base.clone();
+        let dry = self.drying(id, target).min(self.fighters[target].hp);
+        if dry > 0 {
+            self.wound(target, dry);
+            dealt += dry;
+        }
+        // Poison works for mages whose power after protection is above 15.
+        if p > MAGE_POISON_POWER {
+            let t = &mut self.fighters[target];
+            if a.has(&Bonus::Poison) {
+                t.regen = POISON_REGEN;
+            }
+            if a.has(&Bonus::PoisonS) {
+                t.regen = STRONG_POISON_REGEN;
+            }
+        }
+        if a.has(&Bonus::Exhaustion) {
+            let t = &mut self.fighters[target];
+            for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
+                t.base[st] = (t.base[st] - EXHAUSTION_POINTS).max(0);
+            }
+        }
+        // In this path the "damage" the hooks test is the spell's power.
+        self.after_hit(id, target, p);
+        let killed = self.check_death(target, Some(id), true);
+        if killed {
+            self.log.push(format!("{name} kills {tname} with magic"));
+        }
+        (dealt, buff, killed)
+    }
+
+    fn friendly_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
+        let pct = self.splash_pct(id);
+        let (amount, buff) = self.friendly_spell(id, target, pct);
+        (hit.amount, hit.buff) = (amount, buff);
+        if pct != 100 {
+            for n in self.splash_neighbours(id, target, hit.kind) {
+                if !self.fighters[n].crippled {
+                    let (h, _) = self.friendly_spell(id, n, SPLASH_SIDE);
+                    hit.splash.push((n, h));
+                }
+            }
+        }
+    }
+
+    /// Heal a wounded ally (if the heal does anything), else bless it, at `pct`% power.
+    fn friendly_spell(&mut self, id: usize, target: usize, pct: i32) -> (i32, Buff) {
+        let p = self.power_at(id, pct);
+        let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
+        let t = &self.fighters[target];
+        let heal = self.heal_amount(id, target, p);
+        if t.wounded() && heal > 0 {
+            let healed = heal.min(t.max_hp() - t.hp);
+            self.fighters[target].hp += healed;
+            self.log.push(format!("{name} heals {tname} +{healed}"));
+            return (healed, Buff::default());
+        }
+        let buff = self.bless_of(id, target, p);
+        self.apply_buff(id, target, buff, true);
+        self.fighters[target].blessed = true;
+        self.log.push(format!("{name} blesses {tname}: {}", buff.describe()));
+        (0, buff)
+    }
+
+    /// A blessing or curse: added to this turn's modifiers, or with `EternalGift` to the
+    /// battle stats (which lasts and stacks; its Life blessing lowers the defences, a bug of
+    /// the original). The change of actions left counts for this turn only; a curse cannot
+    /// take them below 0.
+    fn apply_buff(&mut self, caster: usize, target: usize, b: Buff, bless: bool) {
+        let eternal = self.fighters[caster].has(Bonus::EternalGift);
+        let life = self.school(caster) == MagicSchool::Life;
+        let t = &mut self.fighters[target];
+        if eternal {
+            let attack = if t.base[Stat::AttackBlow] > 0 { Stat::AttackBlow } else { Stat::AttackShot };
+            t.base[attack] += b.attack;
+            let defence = if bless && life { -b.defence } else { b.defence };
+            t.base[Stat::DefenceBlow] += defence;
+            t.base[Stat::DefenceShot] += defence;
+            t.base[Stat::Initiative] += b.initiative;
+        } else {
+            t.mods.attack += b.attack;
+            t.mods.defence += b.defence;
+            t.mods.initiative += b.initiative;
+        }
+        t.actions = (t.actions + b.actions).max(0);
+        self.refresh(target);
+    }
+
+    /// Per-hit effects on the target (Berserk-on-target, Stun and the Community on-hit
+    /// block). `v` is the damage, or the spell's power for magic.
+    fn after_hit(&mut self, id: usize, target: usize, v: i32) {
+        let a = self.fighters[id].base.clone();
+        let finish = format!("{} finishes {}", self.fighters[id].name, self.fighters[target].name);
+        let t = &mut self.fighters[target];
+        if t.has(Bonus::Berserk) && t.alive() {
+            t.mods.attack = berserk(t);
+        }
+        if a.has(&Bonus::Stun) {
+            t.mods.initiative -= t.stats[Stat::Initiative] * STUN_PERCENT / 100;
+        }
+        if v > 1 {
+            if a.has(&Bonus::PoisonArmorIgnore) {
+                t.regen = t.regen.min(PIERCING_POISON_REGEN);
+            }
+            if a.has(&Bonus::Bleed) {
+                t.bleed = BLEED_PERCENT;
+            }
+            if a.has(&Bonus::ArmorBreaker) {
+                t.base[Stat::DefenceBlow] = t.base[Stat::DefenceBlow] * 3 / 4;
+                t.base[Stat::DefenceShot] = t.base[Stat::DefenceShot] * 3 / 4;
+            }
+            if a.has(&Bonus::KillingStrike) && t.alive() && t.hp * 100 <= t.base.max_hp() * KILLING_STRIKE_PERCENT {
+                t.lost += t.hp;
+                t.hp = 0;
+                self.log.push(finish);
+            }
+        }
+        let t = &mut self.fighters[target];
+        if a.has(&Bonus::Neutralize) {
+            t.base.bonuses.clear();
+        }
+        if a.has(&Bonus::NoHeal) {
+            t.crippled = true;
+            t.regen = t.regen.min(0);
+        }
+        self.refresh(target);
     }
 
     /// `i` loses `amount` hit points (already capped at its HP).
@@ -1188,307 +1765,414 @@ impl Battle {
         f.lost += amount;
     }
 
-    /// A fighter at 0 HP: true if it dies, false if the Community `FateGift` saves it (once
-    /// a battle: full HP and attack and defence +25% *(guess: the size of the gain)*).
-    fn lethal(&mut self, i: usize) -> bool {
+    /// After a hit: true if `i` died. `FateGift` saves a unit once from a hit (`savable`):
+    /// actions refilled, protections and regeneration +20, max HP +20% and full, initiative
+    /// +5 this turn, and the gift is gone. The killer of a `DeathCurse` unit dies; the killer
+    /// of a `Ghost` dies if its Death protection is below 30 × the ghost's actions (48a3f0).
+    fn check_death(&mut self, i: usize, killer: Option<usize>, savable: bool) -> bool {
+        if self.fighters[i].alive() {
+            return false;
+        }
         let f = &mut self.fighters[i];
-        if f.alive() || f.fate_used || !f.base.has(&Bonus::FateGift) {
-            return !f.alive();
-        }
-        f.fate_used = true;
-        for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-            f.base[st] = f.base[st] * (100 + FATE_GIFT_PERCENT) / 100;
-        }
-        f.hp = f.base.max_hp();
-        self.log.push(format!("{} is spared by fate", f.name));
-        self.refresh(i);
-        false
-    }
-
-    /// Poisons `i` for `percent`% of max HP a turn (the strongest poison counts).
-    fn poison(&mut self, i: usize, percent: i32) {
-        let f = &mut self.fighters[i];
-        if f.alive() {
-            f.poisoned = true;
-            f.poison = f.poison.max(percent);
-        }
-    }
-
-    /// Community `Exhaustion`: the target loses 15 points of every magic protection for the
-    /// battle (cumulative; all three schools *(guess)*).
-    fn exhaust(&mut self, a: usize, t: usize) {
-        if !self.fighters[a].stats.has(&Bonus::Exhaustion) || !self.fighters[t].alive() {
-            return;
-        }
-        let f = &mut self.fighters[t];
-        for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
-            f.base[st] = (f.base[st] - EXHAUSTION_POINTS).max(0);
-        }
-        self.refresh(t);
-    }
-
-    /// Community `PreventiveStrike`: a unit about to be struck by an enemy strikes (or
-    /// shoots) the attacker first, whatever the reach *(guess)*.
-    fn preventive_strike(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        let t = &self.fighters[target];
-        if !t.alive() || t.team == self.fighters[id].team || !t.stats.has(&Bonus::PreventiveStrike) {
-            return;
-        }
-        let kind = if t.stats.is_warrior() {
-            ActionKind::Melee
-        } else if t.stats.is_shooter() {
-            ActionKind::Shot
-        } else {
-            return;
-        };
-        let dmg = self.physical_damage(target, id, kind).min(self.fighters[id].hp);
-        self.wound(id, dmg);
-        hit.counter = Some(dmg);
-        self.log.push(format!("{} strikes first for {dmg}", self.fighters[target].name));
-        hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
-    }
-
-    /// Community `Splash`: 40% of the attack on each living neighbour of the target in its
-    /// row.
-    fn splash(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        if !self.fighters[id].stats.has(&Bonus::Splash) {
-            return;
-        }
-        let (team, slot) = (self.fighters[target].team, self.fighters[target].slot);
-        let near: Vec<usize> = (0..self.fighters.len())
-            .filter(|&n| {
-                let f = &self.fighters[n];
-                n != target && f.alive() && f.team == team && f.slot.row == slot.row && f.slot.col.abs_diff(slot.col) == 1
-            })
-            .collect();
-        for n in near {
-            if !self.fighters[id].alive() {
-                break;
+        if savable && f.has(Bonus::FateGift) {
+            f.base.bonuses.clear();
+            f.actions = f.base[Stat::Manevres];
+            for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
+                f.base[st] += FATE_PROTECTION;
             }
-            let raw = self.physical_damage_at(id, n, hit.kind, SPLASH_SIDE);
-            let mut side = Hit::new(n, hit.kind);
-            self.deal(id, n, raw, &mut side);
-            hit.splash.push((n, side.amount));
-            hit.actor_died |= side.actor_died;
-        }
-    }
-
-    /// Community effects of a damaging hit (physical or a magic strike) on its target.
-    fn on_hit(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        let a = self.fighters[id].stats.clone();
-        let physical = hit.kind.is_physical();
-        if hit.killed {
-            // Hunger: a kill heals to full HP [exe: HP set to max HP].
-            if a.has(&Bonus::Hunger) && self.fighters[id].alive() && !self.fighters[id].crippled {
-                let f = &mut self.fighters[id];
-                f.hp = f.max_hp();
-            }
-            // BloodThrist: a kill gives the action back.
-            if a.has(&Bonus::BloodThrist) && self.fighters[id].alive() && self.order.get(self.turn) == Some(&id) {
-                self.actions_left += 1;
-                self.fighters[id].left += 1;
-            }
-            return;
-        }
-        if !self.fighters[target].alive() {
-            return;
-        }
-        // Poisons: after a solid hit (more than 1). Poison works for mages too (Community).
-        if hit.amount > 1 {
-            let mut pct = 0;
-            if a.has(&Bonus::Poison) {
-                pct = pct.max(POISON_PERCENT);
-            }
-            if a.has(&Bonus::PoisonS) {
-                pct = pct.max(STRONG_POISON_PERCENT);
-            }
-            if physical && a.has(&Bonus::PoisonArmorIgnore) {
-                pct = pct.max(PIERCING_POISON_PERCENT);
-            }
-            if pct > 0 {
-                self.poison(target, pct);
-            }
-        }
-        if physical && hit.amount > 0 {
-            let t = &mut self.fighters[target];
-            if a.has(&Bonus::Bleed) {
-                t.bleeding += (hit.amount * BLEED_PERCENT / 100).max(1);
-            }
-            if a.has(&Bonus::ArmorBreaker) {
-                t.base[Stat::DefenceBlow] = t.base[Stat::DefenceBlow] * 7 / 10;
-                t.base[Stat::DefenceShot] = t.base[Stat::DefenceShot] * 7 / 10;
-            }
-            if a.has(&Bonus::NoHeal) {
-                t.crippled = true;
-            }
-        }
-        let t = &mut self.fighters[target];
-        if a.has(&Bonus::Stun) && !t.stunned {
-            t.stunned = true;
-            t.base[Stat::Initiative] = t.base[Stat::Initiative] * 3 / 4;
-        }
-        if a.has(&Bonus::Neutralize) {
-            t.base.bonuses.clear();
-        }
-        self.refresh(target);
-        if hit.kind == ActionKind::Strike {
-            self.exhaust(id, target);
-        }
-        let t = &self.fighters[target];
-        if a.has(&Bonus::KillingStrike) && t.hp * 100 < t.max_hp() * KILLING_STRIKE_PERCENT {
-            let (name, tname, left) = (self.fighters[id].name.clone(), t.name.clone(), t.hp);
-            hit.amount += left;
-            self.wound(target, left);
-            self.log.push(format!("{name} finishes {tname}"));
-            if self.lethal(target) {
-                hit.killed = true;
-                self.death_curse(id, target, hit);
-            }
-        }
-    }
-
-    /// The killer of a `DeathCurse` or `Ghost` unit dies.
-    fn death_curse(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        if self.fighters[target].stats.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) && self.fighters[id].alive() {
-            let hp = self.fighters[id].hp;
-            self.wound(id, hp);
-            hit.actor_died = true;
-            let msg = format!("{} dies by {}'s curse", self.fighters[id].name, self.fighters[target].name);
+            f.regen += FATE_REGEN;
+            f.base[Stat::Hits] += f.base[Stat::Hits] * FATE_HP_PERCENT / 100;
+            f.hp = f.base.max_hp();
+            f.mods.initiative += FATE_INITIATIVE;
+            let msg = format!("{} is spared by fate", f.name);
             self.log.push(msg);
+            self.refresh(i);
+            return false;
         }
-    }
-
-    /// Applies `raw` damage (capped at HP), vampirism and the killer-dies bonuses.
-    fn deal(&mut self, id: usize, target: usize, raw: i32, hit: &mut Hit) {
-        let dmg = raw.min(self.fighters[target].hp);
-        self.wound(target, dmg);
-        let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
-        let a = &mut self.fighters[id];
-        let vamp = a.stats[Stat::Vampirizm];
-        if vamp > 0 && !a.crippled {
-            a.hp = (a.hp + dmg * vamp / 100).min(a.max_hp());
-        }
-        hit.amount += dmg;
-        let how = match hit.kind {
-            ActionKind::LongStrike => " with a long strike",
-            ActionKind::Strike => " with magic",
-            _ => "",
-        };
-        if !self.fighters[target].alive() && self.lethal(target) {
-            hit.killed = true;
-            self.log.push(format!("{name} kills {tname}{how} ({dmg})"));
-            self.death_curse(id, target, hit);
-        } else {
-            self.log.push(format!("{name} hits {tname}{how} for {dmg}"));
-        }
-    }
-
-    // ------------------------------------------------------------------------------------
-    // AI
-    // ------------------------------------------------------------------------------------
-
-    /// How dangerous a fighter is: its best attack or magic power.
-    fn threat(&self, t: usize) -> i32 {
-        let s = &self.fighters[t].stats;
-        s[Stat::AttackBlow].max(s[Stat::AttackShot]).max(s[Stat::MagicPower])
-    }
-
-    /// Action the AI would pick for the active fighter:
-    /// 1. heal an ally below half HP (the most wounded);
-    /// 2. a damaging action that kills (the most dangerous victim);
-    /// 3. a curse on an uncursed enemy, for casters whose default is the curse (non-Life);
-    /// 4. the damaging action needing the fewest hits to kill, then the most damage;
-    /// 5. heal any wounded ally, else bless the most dangerous unblessed ally.
-    pub fn ai_choice(&self) -> Option<(usize, ActionKind)> {
-        let id = self.active()?;
-        let opts: Vec<(usize, ActionKind)> =
-            (0..self.fighters.len()).flat_map(|t| self.options(id, t).into_iter().map(move |k| (t, k))).collect();
-        let hp_frac = |t: usize| self.fighters[t].hp * 1000 / self.fighters[t].max_hp();
-        let heals = || opts.iter().copied().filter(|o| o.1 == ActionKind::Heal);
-        if let Some(o) = heals().filter(|o| hp_frac(o.0) < 500).min_by_key(|o| hp_frac(o.0)) {
-            return Some(o);
-        }
-        let damage = |o: &(usize, ActionKind)| match self.preview(id, o.0, o.1) {
-            Preview::Damage(d) => Some(d),
-            _ => None,
-        };
-        let damaging: Vec<((usize, ActionKind), i32)> = opts.iter().filter_map(|o| damage(o).map(|d| (*o, d))).collect();
-        if let Some((o, _)) = damaging.iter().filter(|(o, d)| *d >= self.fighters[o.0].hp).max_by_key(|(o, _)| (self.threat(o.0), std::cmp::Reverse(o.0))) {
-            return Some(*o);
-        }
-        let curse_first = self.fighters[id].stats.magic != Some(MagicSchool::Life);
-        if curse_first {
-            let curse = opts
-                .iter()
-                .filter(|o| o.1 == ActionKind::Curse && self.fighters[o.0].curse.is_none())
-                .max_by_key(|o| (self.threat(o.0), std::cmp::Reverse(o.0)));
-            if let Some(o) = curse {
-                return Some(*o);
+        if let Some(k) = killer.filter(|&k| self.fighters[k].alive()) {
+            let dead = &self.fighters[i];
+            let curse = dead.has(Bonus::DeathCurse)
+                || (dead.has(Bonus::Ghost) && self.fighters[k].stats[Stat::ProtectDeath] < 30 * dead.base[Stat::Manevres]);
+            if curse {
+                let kf = &mut self.fighters[k];
+                kf.lost += kf.hp;
+                kf.hp = 0;
+                let msg = format!("{} dies by {}'s curse", self.fighters[k].name, self.fighters[i].name);
+                self.log.push(msg);
+                self.died(k);
             }
         }
-        let best = damaging.iter().filter(|(_, d)| *d > 0).min_by_key(|(o, d)| {
-            let hp = self.fighters[o.0].hp;
-            ((hp + d - 1) / d, -d, hp, o.0)
-        });
-        if let Some((o, _)) = best {
-            return Some(*o);
-        }
-        if let Some(o) = heals().min_by_key(|o| hp_frac(o.0)) {
-            return Some(o);
-        }
-        opts.iter().filter(|o| o.1 == ActionKind::Bless).max_by_key(|o| (self.threat(o.0), std::cmp::Reverse(o.0))).copied()
+        self.died(i);
+        true
     }
 
-    /// How good a cell is for a fighter with nothing to attack: somewhere it can attack from,
-    /// in its preferred row, (warriors) with nobody of its own in front, close to an enemy.
-    fn approach_score(&self, id: usize, s: Slot) -> (bool, bool, bool, i32) {
-        let f = &self.fighters[id];
-        let dist = self.living(f.team.other()).filter(|e| e.slot.row == Row::Front).map(|e| e.slot.col.abs_diff(s.col) as i32).min().unwrap_or(0);
-        let front_free = self.at(f.team, Slot::new(Row::Front, s.col)).is_none_or(|o| o == id);
-        (self.has_hostile_option_from(id, s), s.row == f.base.preferred_row(), front_free, -dist)
+    // ------------------------------------------------------------------------------------
+    // AI (4864e0; notes in battle.md §4)
+    // ------------------------------------------------------------------------------------
+
+    /// A target is killable by one hit, or (improved AI, or the player's side at the normal
+    /// level) by the actor's actions left.
+    fn killable(&self, id: usize, t: usize, dmg: i32) -> bool {
+        let smart = self.ai_level == 2 || (self.ai_level == 1 && self.fighters[id].team == Team::Player);
+        let hits = if smart { self.fighters[id].actions.max(1) } else { 1 };
+        self.fighters[t].hp <= hits * dmg
     }
 
-    /// Cell the AI would step to, if stepping strictly improves its position. Units in the
-    /// reserve stay there.
-    fn ai_move(&self) -> Option<Slot> {
+    /// The best cell by the original's picker (4860cc): rows front to back, columns in the
+    /// preferred order, the first strictly higher score wins, and 0 or less never does.
+    fn pick<T: Copy>(&self, cands: impl IntoIterator<Item = (Slot, f64, T)>) -> Option<(f64, T)> {
+        let order = self.formation.col_order();
+        let mut v: Vec<(Slot, f64, T)> = cands.into_iter().collect();
+        v.sort_by_key(|(s, _, _)| (s.row, order.iter().position(|&c| c == s.col).unwrap_or(usize::MAX)));
+        let mut best: Option<(f64, T)> = None;
+        for (_, score, x) in v {
+            if score > 0.0 && best.is_none_or(|(b, _)| score > b) {
+                best = Some((score, x));
+            }
+        }
+        best
+    }
+
+    fn pick_target(&self, cands: impl IntoIterator<Item = (usize, f64)>) -> Option<(f64, usize)> {
+        self.pick(cands.into_iter().map(|(t, s)| (self.fighters[t].slot, s, t)))
+    }
+
+    /// The target's answer in the AI's melee score: its melee (warrior) or shot (shooter)
+    /// damage on the actor, else its power.
+    fn return_threat(&self, id: usize, t: usize) -> i32 {
+        match self.fighters[t].ai_role {
+            AiRole::Warrior => self.physical_damage_at(t, id, ActionKind::Melee, 100),
+            AiRole::Shooter => self.physical_damage_at(t, id, ActionKind::Shot, 100),
+            AiRole::Mage => self.fighters[t].ai_power,
+        }
+    }
+
+    fn poisons(&self, id: usize, t: usize, dmg: i32) -> bool {
+        let a = &self.fighters[id];
+        (a.has(Bonus::Poison) || a.has(Bonus::PoisonS)) && self.fighters[t].regen >= 0 && dmg > 1
+    }
+
+    fn ai_plan(&self) -> Option<Plan> {
         let id = self.active()?;
+        let opts = self.all_options(id);
+        if let Some(to) = self.ai_retreat(id) {
+            return Some(Plan::Move(to));
+        }
+        let pick = |kinds: &[ActionKind], score: &dyn Fn(usize, ActionKind) -> f64| {
+            self.pick(opts.iter().filter(|o| kinds.contains(&o.1)).map(|&(t, k)| (self.fighters[t].slot, score(t, k), (t, k))))
+        };
+        // Melee on the enemy front row.
+        let melee = |t: usize, k: ActionKind| {
+            let dmg = self.physical_damage(id, t, k);
+            let m = self.fighters[t].base[Stat::Manevres].max(1);
+            let r = (self.return_threat(id, t) + 1) * m;
+            let mut s = if self.killable(id, t, dmg) { r as f64 * 100.0 } else { dmg as f64 * r as f64 };
+            if self.poisons(id, t, dmg) {
+                s *= 2.0;
+            }
+            s
+        };
+        if let Some((_, (t, k))) = pick(&[ActionKind::Melee, ActionKind::LongStrike], &melee) {
+            return Some(Plan::Act(t, k));
+        }
+        let shot = |t: usize, _| {
+            let dmg = self.physical_damage(id, t, ActionKind::Shot);
+            let tf = &self.fighters[t];
+            let m = tf.base[Stat::Manevres] as f64 + if tf.actions > 0 { (tf.actions as f64).sqrt() } else { 0.0 };
+            let mut s = ((tf.ai_power + 1) as f64 * dmg as f64 * m).round();
+            if self.poisons(id, t, dmg) {
+                s *= 2.0;
+            }
+            if self.killable(id, t, dmg) {
+                s *= 4.0;
+            }
+            if tf.slot.row == Row::Back {
+                s *= match tf.ai_role {
+                    AiRole::Warrior => 1.0 / 3.0,
+                    AiRole::Shooter => 1.5,
+                    AiRole::Mage => 1.75,
+                };
+                if tf.ai_role == AiRole::Mage
+                    && tf.stats.magic_direction() == super::content::MagicDirection::ToEnemy
+                    && tf.base.nature == self.fighters[id].base.nature
+                {
+                    s /= 2.0;
+                }
+            }
+            if tf.base[Stat::Manevres] == 1 {
+                s /= 2.0;
+            }
+            s
+        };
+        if let Some((_, (t, k))) = pick(&[ActionKind::Shot], &shot) {
+            return Some(Plan::Act(t, k));
+        }
+        if let Some(plan) = self.ai_magic(id, &opts) {
+            return Some(plan);
+        }
+        Some(self.ai_move(id, &opts).unwrap_or(Plan::Pass))
+    }
+
+    /// A non-warrior in the front row with more than one action steps back behind the
+    /// healthiest own front unit.
+    fn ai_retreat(&self, id: usize) -> Option<Slot> {
         let f = &self.fighters[id];
-        if f.slot.row == Row::Reserve || self.has_hostile_option_from(id, f.slot) {
+        let s = &f.stats;
+        let warrior = s[Stat::AttackBlow] > s[Stat::MagicPower] && s[Stat::AttackBlow] > s[Stat::AttackShot];
+        if f.slot.row != Row::Front || f.has(Bonus::Ghost) || f.actions <= 1 || warrior {
             return None;
         }
-        let here = self.approach_score(id, f.slot);
-        self.moves(id)
-            .into_iter()
-            .filter(|s| s.row.is_active())
-            .map(|s| (self.approach_score(id, s), s))
-            .filter(|(score, _)| *score > here)
-            .max_by_key(|&(score, s)| (score, std::cmp::Reverse(s.col)))
-            .map(|(_, s)| s)
+        let others = self.living(f.team).filter(|o| o.slot.row == Row::Front).count() > 1;
+        let alone_mage = self.living(f.team).count() == 1 && s.is_mage();
+        if !others && !alone_mage {
+            return None;
+        }
+        let cands = self.moves(id).into_iter().filter(|m| m.row == Row::Back).map(|m| {
+            let front = self.at(f.team, Slot::new(Row::Front, m.col)).filter(|&o| o != id);
+            (m, 1000.0 + front.map_or(0, |o| self.fighters[o].hp) as f64, m)
+        });
+        self.pick(cands).map(|(_, m)| m)
+    }
+
+    /// Magic by the caster's school (487244, 487c93, 488928).
+    fn ai_magic(&self, id: usize, opts: &[(usize, ActionKind)]) -> Option<Plan> {
+        let f = &self.fighters[id];
+        if !f.stats.is_mage() {
+            return None;
+        }
+        let team = f.team;
+        let hostile: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Strike | ActionKind::Curse)).map(|o| o.0).collect();
+        let friendly: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Heal | ActionKind::Bless)).map(|o| o.0).collect();
+        let act = |t: usize| {
+            let k = opts.iter().find(|o| o.0 == t).map(|o| o.1).expect("an option");
+            Plan::Act(t, k)
+        };
+        let mp = f.power;
+        let cms = self.opt().curse_main_spell.max(1);
+        let missing = |t: usize| (self.fighters[t].max_hp() - self.fighters[t].hp) as f64;
+        match self.school(id) {
+            MagicSchool::Life => {
+                let ghostly = hostile.iter().any(|&t| self.fighters[t].base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]));
+                let shooters = hostile.iter().any(|&t| self.fighters[t].base[Stat::AttackShot] > 0);
+                if !ghostly {
+                    let heal = self.pick_target(friendly.iter().map(|&t| {
+                        let m = missing(t);
+                        let small = mp as f64 > 4.0 * m || self.fighters[t].stats.nature == Nature::Undead;
+                        (t, if small { 0.0 } else { m })
+                    }));
+                    if let Some((_, t)) = heal {
+                        return Some(act(t));
+                    }
+                    let bless = self.pick_target(friendly.iter().map(|&t| {
+                        let tf = &self.fighters[t];
+                        if tf.mods.defence > 0 || tf.actions <= 0 {
+                            return (t, 0.0);
+                        }
+                        let mut s = tf.ai_power as f64 * 100.0 * tf.base[Stat::Manevres] as f64
+                            / (tf.stats[Stat::DefenceBlow] + tf.stats[Stat::DefenceShot] + 20) as f64;
+                        if shooters {
+                            if tf.ai_role == AiRole::Mage {
+                                s *= 2.0;
+                            }
+                        } else if tf.slot.row == Row::Front {
+                            s *= 3.0;
+                        } else {
+                            s /= 5.0;
+                        }
+                        (t, s)
+                    }));
+                    if let Some((_, t)) = bless {
+                        return Some(act(t));
+                    }
+                }
+                let life = (2 * cms / 3).max(1);
+                let strike = self.pick_target(hostile.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    let p = self.hostile_power_of(id, t, mp);
+                    if p <= 0 {
+                        return (t, 0.0);
+                    }
+                    let (db, ds) = (tf.stats[Stat::DefenceBlow], tf.stats[Stat::DefenceShot]);
+                    let v = if tf.weakened() {
+                        (f.actions * p) as f64
+                    } else {
+                        // The second term compares with DefenceShot but adds DefenceBlow.
+                        let q = p / life;
+                        (3 * (q.min(db) + if q < ds { q } else { db }) + 1) as f64
+                    };
+                    let base = if tf.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
+                        3 * tf.ai_power
+                    } else {
+                        db + ds + tf.ai_power * tf.actions
+                    } as f64;
+                    let mut s = base * v;
+                    if tf.weakened() && tf.hp as f64 <= v && !tf.base.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) {
+                        s *= 3.0;
+                    }
+                    s *= match tf.stats.nature {
+                        Nature::Undead => 1.0,
+                        Nature::Elemental => 2.0 / 3.0,
+                        _ => 1.0 / 3.0,
+                    };
+                    (t, s)
+                }));
+                strike.map(|(_, t)| act(t))
+            }
+            MagicSchool::Elemental => {
+                let enemies: Vec<&Fighter> = self.living(team.other()).collect();
+                let avg_ini = (enemies.iter().map(|e| e.stats[Stat::Initiative]).sum::<i32>() as f64 / enemies.len().max(1) as f64).max(1.0);
+                let ghosts = enemies.iter().filter(|e| e.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost])).count();
+                let damp = if ghosts > 0 && enemies.len() / 2 <= ghosts { 0.1 } else { 1.0 };
+                let own = self.pick_target(friendly.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    let haste = if t != id && tf.mods.initiative <= 0 && tf.base[Stat::Manevres] > 0 && tf.actions > 0 {
+                        (actions_of_power(mp) * tf.ai_power * tf.stats[Stat::Initiative]) as f64 / avg_ini
+                    } else {
+                        0.0
+                    };
+                    let heal = if tf.wounded() { (2 * mp / 3).min(tf.max_hp() - tf.hp) as f64 } else { 0.0 };
+                    (t, haste.max(heal) * damp)
+                }));
+                let foe = self.pick_target(hostile.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    let p = self.hostile_power_of(id, t, mp);
+                    let slow = if tf.mods.initiative >= 0 && tf.actions > 0 { (actions_of_power(p) * tf.ai_power * tf.actions) as f64 } else { 0.0 };
+                    let strike = if f.actions > 1 { self.strike_damage(id, t, p) as f64 } else { 0.0 };
+                    (t, slow.max(strike))
+                }));
+                match (own, foe) {
+                    (Some((a, t)), Some((b, _))) if a > b => Some(act(t)),
+                    (_, Some((_, t))) => Some(act(t)),
+                    (Some((_, t)), None) => Some(act(t)),
+                    (None, None) => None,
+                }
+            }
+            MagicSchool::Death => {
+                let best_strike = hostile.iter().map(|&t| self.strike_damage(id, t, self.hostile_power_of(id, t, mp))).max().unwrap_or(0);
+                if best_strike <= mp / cms && f.hp * 4 <= f.max_hp() && f.max_hp() - mp >= f.hp && friendly.contains(&id) {
+                    return Some(act(id));
+                }
+                let strike = self.pick_target(hostile.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    let p = self.hostile_power_of(id, t, mp);
+                    if p <= 0 {
+                        return (t, 0.0);
+                    }
+                    let n = f.actions;
+                    let v = if tf.weakened() { n * p } else { p / cms / 2 + 1 + (n - 1).max(0) * p };
+                    let u = if tf.hp <= v { 20 - 2 * (tf.hp / p) } else { 0 };
+                    let m = tf.base[Stat::Manevres].max(1);
+                    let threat = |dmg: i32, top: i32, low: i32| (top - f.hp / (dmg * m).max(1)).max(low);
+                    let th = match tf.ai_role {
+                        AiRole::Shooter => threat(self.physical_damage_at(t, id, ActionKind::Shot, 100), 16, 3),
+                        AiRole::Mage => threat(self.strike_damage(t, id, self.hostile_power_of(t, id, tf.power)), 12, 2),
+                        AiRole::Warrior => threat(self.physical_damage_at(t, id, ActionKind::Melee, 100), 8, 1),
+                    };
+                    (t, tf.ai_power as f64 * (u + th) as f64 * v as f64)
+                }));
+                if let Some((_, t)) = strike {
+                    return Some(act(t));
+                }
+                let heal = self.pick_target(friendly.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    (t, if matches!(tf.stats.nature, Nature::Undead | Nature::Elemental) { missing(t) } else { 0.0 })
+                }));
+                if let Some((_, t)) = heal {
+                    return Some(act(t));
+                }
+                let bless = self.pick_target(friendly.iter().map(|&t| {
+                    let tf = &self.fighters[t];
+                    let ok = !tf.blessed && tf.actions > 0 && tf.ai_role != AiRole::Mage;
+                    (t, if ok { (f.actions * tf.ai_power * tf.hp) as f64 } else { 0.0 })
+                }));
+                bless.map(|(_, t)| act(t))
+            }
+        }
+    }
+
+    /// Moves when nothing else scored (489549). The AI never moves into the reserve.
+    fn ai_move(&self, id: usize, opts: &[(usize, ActionKind)]) -> Option<Plan> {
+        let f = &self.fighters[id];
+        let moves = self.moves(id);
+        let enemy_front: Vec<u8> = self.living(f.team.other()).filter(|e| e.slot.row == Row::Front).map(|e| e.slot.col).collect();
+        let enemy_back: Vec<u8> = self.living(f.team.other()).filter(|e| e.slot.row == Row::Back).map(|e| e.slot.col).collect();
+        let best = match f.slot.row {
+            Row::Back if f.base[Stat::AttackShot] == 0 && f.power == 0 => self.pick(moves.iter().filter(|m| m.row == Row::Front).map(|&m| {
+                let behind = self.at(f.team, Slot::new(Row::Back, m.col)).filter(|&o| o != id);
+                let support = behind.map_or(0, |o| self.fighters[o].power.abs() + self.fighters[o].base[Stat::AttackShot]);
+                let facing = if enemy_front.contains(&m.col) { 2 } else { 0 };
+                (m, (1 + support + facing) as f64, m)
+            })),
+            Row::Front => self.pick(moves.iter().filter(|m| m.row == Row::Front).map(|&m| {
+                let pull = |cols: &[u8], k: i32| cols.iter().map(|&c| (k * (4 - c.abs_diff(m.col) as i32)).max(0)).sum::<i32>();
+                (m, (pull(&enemy_front, 2) + pull(&enemy_back, 1)) as f64, m)
+            })),
+            Row::Reserve => {
+                let heal = self.pick_target(opts.iter().filter(|o| o.1 == ActionKind::Heal).map(|o| (o.0, (self.fighters[o.0].max_hp() - self.fighters[o.0].hp) as f64)));
+                if let Some((_, t)) = heal {
+                    return Some(Plan::Act(t, ActionKind::Heal));
+                }
+                let skip_edge = self.formation.cols == 6;
+                self.pick(moves.iter().filter(|m| m.row.is_active() && !(skip_edge && m.col == 0)).map(|&m| {
+                    let s = if f.is_warrior() {
+                        if m.row == Row::Front { 2 } else { 1 }
+                    } else if m.row == Row::Back {
+                        3 - m.col.abs_diff(f.slot.col) as i32
+                    } else {
+                        0
+                    };
+                    (m, s as f64, m)
+                }))
+            }
+            Row::Back => None,
+        };
+        best.map(|(_, m)| Plan::Move(m))
+    }
+
+    /// The action the AI would take with the active fighter, if it attacks or casts.
+    pub fn ai_choice(&self) -> Option<(usize, ActionKind)> {
+        match self.ai_plan()? {
+            Plan::Act(t, k) => Some((t, k)),
+            _ => None,
+        }
     }
 
     /// Plays one action of the active fighter automatically.
     pub fn ai_step(&mut self) -> Option<Step> {
         let actor = self.active()?;
-        if let Some((t, kind)) = self.ai_choice() {
-            let hit = self.act_with(t, kind).ok()?;
-            return Some(Step::Act { actor, hit });
+        match self.ai_plan()? {
+            Plan::Act(t, kind) => {
+                let hit = self.act_with(t, kind).ok()?;
+                Some(Step::Act { actor, hit })
+            }
+            Plan::Move(to) => {
+                let from = self.fighters[actor].slot;
+                self.move_active(to).ok()?;
+                Some(Step::Move { actor, from, to })
+            }
+            Plan::Pass => {
+                self.pass();
+                Some(Step::Wait { actor })
+            }
         }
-        if let Some(to) = self.ai_move() {
-            let from = self.fighters[actor].slot;
-            self.move_active(to).ok()?;
-            return Some(Step::Move { actor, from, to });
-        }
-        self.skip();
-        Some(Step::Wait { actor })
     }
 
     // ------------------------------------------------------------------------------------
     // After the battle
     // ------------------------------------------------------------------------------------
 
-    /// `team`'s strength now: its living units with their current HP and rows.
+    /// Standing at the end: alive, or surrendered (a surrendering side is paid its XP
+    /// before it leaves).
+    fn present(&self, i: usize) -> bool {
+        self.fighters[i].alive() || self.fighters[i].surrendered
+    }
+
+    /// `team`'s strength now: its units still standing with their current HP and rows.
     pub fn strength_now(&self, team: Team) -> i64 {
-        let side: Vec<SideUnit> = self.fighters.iter().filter(|f| f.team == team && f.alive()).map(side_unit).collect();
+        let side: Vec<SideUnit> = (0..self.fighters.len())
+            .filter(|&i| self.fighters[i].team == team && self.present(i))
+            .map(|i| side_unit(&self.fighters[i]))
+            .collect();
         experience::side_strength(&side)
     }
 
@@ -1504,10 +2188,10 @@ impl Battle {
         let lost: i64 = self.fighters.iter().filter(|f| f.team == team).map(|f| f.lost as i64).sum();
         let pool = experience::battle_pool(self.start[team.other().index()].strength, own.hp, lost);
         (0..self.fighters.len())
-            .filter(|&i| self.fighters[i].team == team && self.fighters[i].alive())
+            .filter(|&i| self.fighters[i].team == team && self.present(i))
             .map(|i| {
                 let f = &self.fighters[i];
-                XpAward { fighter: i, xp: experience::share(pool, own.count, f.slot.row, f.useful, f.taken, f.left) }
+                XpAward { fighter: i, xp: experience::share(pool, own.count, f.slot.row, f.useful, f.taken, f.actions.max(0)) }
             })
             .collect()
     }
@@ -1537,7 +2221,7 @@ impl Battle {
     }
 
     /// Final state of the player's fighters. The hero cannot die while a unit of his army
-    /// survives: he comes back with 1 HP (mechanics.md 2.5). Slots are the deployed ones.
+    /// survives: he comes back with 1 HP (4906a0). Slots are the deployed ones.
     pub fn player_results(&self) -> Vec<FighterResult> {
         let survivors = self.living(Team::Player).next().is_some();
         self.fighters
@@ -1551,1014 +2235,11 @@ impl Battle {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::rules::content::testkit::*;
-    use crate::rules::content::{MagicDirection, UnitDef};
-    use Row::*;
-
-    const fn f(col: u8) -> Slot {
-        Slot::new(Front, col)
-    }
-    const fn b(col: u8) -> Slot {
-        Slot::new(Back, col)
-    }
-    const fn r(col: u8) -> Slot {
-        Slot::new(Reserve, col)
-    }
-
-    /// Test units: 10 warrior 30/5, 11 shooter 20, 12 Elemental enemy mage 40, 13 Life healer 20,
-    /// 14 Death mage 30, 15 Life strike mage 30, 16 undead warrior, 17 elemental warrior,
-    /// 18 weak warrior 10/0 with 200 HP (a punching bag), 1 = Knight hero class.
-    fn units() -> Vec<UnitDef> {
-        use MagicDirection::*;
-        let bag = UnitDef { hits: 200, ..warrior(18, 10, 0) };
-        vec![
-            warrior(10, 30, 5),
-            shooter(11, 20),
-            mage(12, 40, MagicSchool::Elemental, ToEnemy),
-            mage(13, 20, MagicSchool::Life, ToAlly),
-            mage(14, 30, MagicSchool::Death, ToEnemy),
-            mage(15, 30, MagicSchool::Life, ToEnemy),
-            UnitDef { nature: Nature::Undead, ..warrior(16, 20, 0) },
-            UnitDef { nature: Nature::Elemental, ..warrior(17, 20, 0) },
-            bag,
-            warrior(1, 30, 5),
-        ]
-    }
-
-    fn content_with(extra: Vec<UnitDef>, formation: Formation) -> Arc<Content> {
-        let mut us = units();
-        for u in extra {
-            us.retain(|x| x.id != u.id);
-            us.push(u);
-        }
-        let mut c = content(us, vec![]);
-        c.formation = formation;
-        Arc::new(c)
-    }
-
-    fn battle_in(c: &Arc<Content>, player: &[(u32, Slot)], enemies: &[(u32, Slot)]) -> Battle {
-        let squad: Vec<Unit> = player.iter().map(|&(id, s)| Unit::new(c, UnitId(id), s)).collect();
-        let p: Vec<_> = squad.iter().enumerate().collect();
-        let e: Vec<Unit> = enemies.iter().map(|&(id, s)| Unit::new(c, UnitId(id), s)).collect();
-        let mut bt = Battle::new(c.clone(), &p, &e, Team::Player);
-        bt.begin();
-        bt
-    }
-
-    fn battle(player: &[(u32, Slot)], enemies: &[(u32, Slot)]) -> Battle {
-        battle_in(&content_with(vec![], Formation::WIDE), player, enemies)
-    }
-
-    fn with(extra: Vec<UnitDef>, player: &[(u32, Slot)], enemies: &[(u32, Slot)]) -> Battle {
-        battle_in(&content_with(extra, Formation::WIDE), player, enemies)
-    }
-
-    /// Makes `id` the active fighter by skipping others (fails after a full turn).
-    fn turn_of(bt: &mut Battle, id: usize) {
-        for _ in 0..50 {
-            if bt.active() == Some(id) {
-                return;
-            }
-            bt.skip();
-        }
-        panic!("fighter {id} never gets a turn");
-    }
-
-    fn bonus(id: u32, b: Bonus, base: UnitDef) -> UnitDef {
-        UnitDef { id, bonus: Some(b), ..base }
-    }
-
-    // --- reach -----------------------------------------------------------------------------
-
-    #[test]
-    fn warrior_hits_front_cells_c_minus_1_to_c_plus_1() {
-        let bt = battle(&[(10, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4)), (18, b(2))]);
-        assert_eq!(bt.targets(0), vec![1, 2, 3]);
-        assert!(bt.targets(0).iter().all(|&t| bt.options(0, t) == vec![ActionKind::Melee]));
-    }
-
-    #[test]
-    fn warrior_in_the_back_row_cannot_attack() {
-        let bt = battle(&[(10, f(2)), (10, b(2))], &[(18, f(2))]);
-        assert!(bt.targets(1).is_empty());
-        assert!(bt.helpless(1) && !bt.helpless(0));
-    }
-
-    #[test]
-    fn long_strike_reaches_the_nearest_on_each_side_through_three_empty_cells() {
-        let bt = battle(&[(10, f(2))], &[(18, f(0)), (18, f(5)), (18, f(4)), (18, b(2))]);
-        // c=2: 1,2,3 empty; nearest right is col 4 (not 5), nearest left col 0.
-        assert_eq!(bt.targets(0), vec![1, 3]);
-        assert_eq!(bt.options(0, 3), vec![ActionKind::LongStrike]);
-        // One cell of c−1..c+1 occupied: no long strike.
-        let bt = battle(&[(10, f(2))], &[(18, f(0)), (18, f(3))]);
-        assert_eq!(bt.targets(0), vec![2]);
-    }
-
-    #[test]
-    fn long_strike_halves_defence_and_flank_strike_doubles_attack() {
-        // Attack 30 vs defence 20: normal 10, long strike 30 − 10 = 20, FlankStrike 60 − 10 = 50.
-        let tough = UnitDef { hits: 500, ..warrior(19, 1, 20) };
-        let flanker = bonus(20, Bonus::FlankStrike, warrior(20, 30, 5));
-        let bt = with(vec![tough.clone(), flanker.clone()], &[(10, f(2))], &[(19, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 10);
-        let bt = with(vec![tough.clone(), flanker.clone()], &[(10, f(0))], &[(19, f(4))]);
-        assert_eq!(bt.options(0, 1), vec![ActionKind::LongStrike]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::LongStrike), 20);
-        let bt = with(vec![tough, flanker], &[(20, f(0))], &[(19, f(4))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::LongStrike), 50);
-    }
-
-    #[test]
-    fn shooter_reach_from_back_and_front_rows() {
-        // From the back row: anyone in the enemy front and back rows.
-        let bt = battle(&[(11, b(0)), (10, f(3))], &[(18, f(3)), (18, b(5))]);
-        assert_eq!(bt.targets(0), vec![2, 3]);
-        // From the front row with an enemy in c−1..c+1: only those adjacent front units.
-        let bt = battle(&[(11, f(3))], &[(18, f(4)), (18, f(0)), (18, b(3))]);
-        assert_eq!(bt.targets(0), vec![1]);
-        // From the front row with the three opposite cells empty: anyone.
-        let bt = battle(&[(11, f(3))], &[(18, f(0)), (18, b(3))]);
-        assert_eq!(bt.targets(0), vec![1, 2]);
-    }
-
-    #[test]
-    fn hostile_mage_reach() {
-        let bt = battle(&[(12, b(0)), (10, f(0))], &[(18, f(3)), (18, b(5))]);
-        assert_eq!(bt.targets(0), vec![2, 3]);
-        // Front row, enemy opposite: cannot cast at all.
-        let bt = battle(&[(12, f(3))], &[(18, f(3)), (18, b(0))]);
-        assert!(bt.targets(0).is_empty());
-        let bt = battle(&[(12, f(3))], &[(18, f(0)), (18, b(3))]);
-        assert_eq!(bt.targets(0), vec![1, 2]);
-    }
-
-    #[test]
-    fn friendly_mage_heals_the_wounded_and_blesses_the_rest() {
-        let mut bt = battle(&[(13, b(2)), (10, f(2)), (10, f(3))], &[(18, f(2))]);
-        assert_eq!(bt.options(0, 2), vec![ActionKind::Bless]);
-        bt.fighters[1].hp = 20;
-        assert_eq!(bt.options(0, 1), vec![ActionKind::Heal, ActionKind::Bless]);
-        assert!(bt.options(0, 3).is_empty(), "ToAlly never targets enemies");
-        turn_of(&mut bt, 0);
-        let hit = bt.act(1).unwrap();
-        assert_eq!((hit.kind, hit.amount, bt.fighters[1].hp), (ActionKind::Heal, 20, 40));
-        turn_of(&mut bt, 0);
-        bt.act(2).unwrap();
-        assert!(bt.options(0, 2).is_empty(), "already blessed, unhurt");
-    }
-
-    #[test]
-    fn reserve_cannot_be_targeted_or_attack() {
-        let c = content_with(vec![], Formation::VANILLA);
-        let bt = battle_in(&c, &[(11, b(1)), (11, r(1)), (10, f(1))], &[(18, f(1)), (11, r(2))]);
-        assert_eq!(bt.targets(0), vec![3], "enemy reserve archer is out of reach");
-        assert!(bt.targets(1).is_empty(), "reserve shooter cannot shoot");
-        assert!(bt.targets(4).is_empty());
-        // From the reserve a unit can step to any empty front or back cell.
-        assert!(bt.moves(1).contains(&f(3)) && bt.moves(1).contains(&b(0)) && !bt.moves(1).contains(&r(0)));
-        // From the back row into the reserve.
-        assert!(bt.moves(0).contains(&r(3)));
-        assert!(!bt.moves(2).iter().any(|s| s.row == Reserve), "not from the front row");
-    }
-
-    #[test]
-    fn vanilla_battle_collapses_back_then_reserve() {
-        let c = content_with(vec![], Formation::VANILLA);
-        let mut bt = battle_in(&c, &[(10, f(1))], &[(18, f(1)), (11, r(2))]);
-        let enemy = bt.at(Team::Enemy, f(1)).unwrap();
-        bt.fighters[enemy].hp = 1;
-        turn_of(&mut bt, 0);
-        bt.act(enemy).unwrap();
-        assert_eq!(bt.fighters[2].slot, f(2), "the reserve steps up when nobody else stands");
-    }
-
-    // --- movement, order, actions ---------------------------------------------------------------
-
-    #[test]
-    fn moves_are_to_columns_c_minus_1_to_c_plus_1_in_own_rows() {
-        let bt = battle(&[(10, f(0)), (10, f(1))], &[(18, f(0))]);
-        assert_eq!(bt.moves(1), vec![f(2), b(0), b(1), b(2)]);
-        assert_eq!(bt.moves(0), vec![b(0), b(1)]);
-    }
-
-    #[test]
-    fn back_row_collapses_forward_when_the_front_falls() {
-        let mut bt = battle(&[(10, f(2))], &[(18, f(2)), (11, b(4))]);
-        bt.fighters[1].hp = 1;
-        turn_of(&mut bt, 0);
-        bt.act(1).unwrap();
-        assert_eq!(bt.fighters[2].slot, f(4));
-        // A side that deploys only in the back row starts in front.
-        let bt = battle(&[(11, b(2))], &[(18, f(2))]);
-        assert_eq!(bt.fighters[0].slot, f(2));
-    }
-
-    #[test]
-    fn initiative_order_with_attacker_bonus() {
-        let fast = UnitDef { initiative: 12, ..warrior(21, 10, 0) };
-        let same = UnitDef { initiative: 12, ..warrior(22, 10, 0) };
-        let slow = UnitDef { initiative: 11, ..warrior(23, 10, 0) };
-        // Player attacks: its 11 becomes 12 and beats the defender's 12 on the tie.
-        let bt = with(vec![fast, same, slow], &[(23, f(0)), (21, f(1))], &[(22, f(1))]);
-        let order: Vec<usize> = bt.queue().collect();
-        assert_eq!(order, vec![1, 0, 2]);
-    }
-
-    #[test]
-    fn artillery_always_acts_first() {
-        let gun = bonus(24, Bonus::Artillery, UnitDef { initiative: 1, ..shooter(24, 10) });
-        let bt = with(vec![gun], &[(10, f(0))], &[(24, b(0))]);
-        assert_eq!(bt.active(), Some(1));
-    }
-
-    #[test]
-    fn manevres_and_fast_start() {
-        let two = UnitDef { manevres: 2, ..shooter(25, 10) };
-        let horse = bonus(26, Bonus::HorseAtack, UnitDef { initiative: 30, ..warrior(26, 10, 0) });
-        let mut bt = with(vec![two, horse], &[(26, f(0)), (25, b(0))], &[(18, f(0))]);
-        assert_eq!((bt.active(), bt.actions_left()), (Some(0), 2), "HorseAtack: +1 on turn 1");
-        bt.skip();
-        assert_eq!((bt.active(), bt.actions_left()), (Some(1), 2));
-        bt.move_active(b(1)).unwrap();
-        assert_eq!((bt.active(), bt.actions_left()), (Some(1), 1), "a step costs one action");
-        while bt.round < 2 {
-            bt.skip();
-        }
-        assert_eq!((bt.active(), bt.actions_left()), (Some(0), 1), "no bonus on turn 2");
-    }
-
-    #[test]
-    fn turn_limit_ends_in_a_stalemate() {
-        let mut bt = battle(&[(10, f(0))], &[(18, f(5))]);
-        while bt.outcome() == Outcome::Ongoing {
-            bt.skip();
-        }
-        assert_eq!((bt.outcome(), bt.round), (Outcome::Stalemate, 25));
-    }
-
-    // --- damage ---------------------------------------------------------------------------
-
-    #[test]
-    fn damage_is_attack_minus_defence_at_least_one() {
-        let bt = battle(&[(10, f(2)), (18, f(3))], &[(10, f(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 25);
-        assert_eq!(bt.physical_damage(1, 2, ActionKind::Melee), 5);
-        let armour = UnitDef { hits: 100, ..warrior(27, 1, 50) };
-        let bt = with(vec![armour], &[(10, f(2))], &[(27, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 1);
-    }
-
-    #[test]
-    fn back_row_gets_row2_def_against_shots_only() {
-        let mixed = UnitDef { hits: 100, ..warrior(28, 10, 4) };
-        let bt = with(vec![mixed], &[(11, b(0)), (10, f(1))], &[(28, f(1)), (28, b(3))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Shot), 16);
-        assert_eq!(bt.physical_damage(0, 3, ActionKind::Shot), 11, "+5 in the back row");
-        assert_eq!(bt.physical_damage(1, 3, ActionKind::Melee), 26, "melee unaffected");
-    }
-
-    #[test]
-    fn spear_defense_triples_melee_defence_on_turn_one() {
-        let spear = bonus(29, Bonus::SpearDefense, UnitDef { hits: 300, initiative: 1, ..warrior(29, 5, 8) });
-        let mut bt = with(vec![spear], &[(10, f(2)), (11, b(2))], &[(29, f(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 6, "30 − 24");
-        assert_eq!(bt.physical_damage(1, 2, ActionKind::Shot), 12, "shots: 20 − 8");
-        while bt.round < 2 {
-            bt.skip();
-        }
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 22);
-    }
-
-    #[test]
-    fn armor_ignore_skips_defence_but_not_the_building() {
-        let pierce = bonus(30, Bonus::ArmorIgnore, warrior(30, 30, 0));
-        let armour = UnitDef { hits: 100, ..warrior(27, 1, 20) };
-        let mut bt = with(vec![pierce, armour], &[(30, f(2))], &[(27, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30);
-        bt.set_building_defence(Team::Enemy, 6);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 24);
-    }
-
-    #[test]
-    fn unvulnerable_and_ghost_take_one_and_ghost_kills_its_killer() {
-        let stone = bonus(31, Bonus::Unvulnerabe, UnitDef { hits: 3, ..warrior(31, 1, 0) });
-        let ghost = bonus(32, Bonus::Ghost, UnitDef { hits: 1, initiative: 1, ..warrior(32, 1, 0) });
-        let mut bt = with(vec![stone, ghost], &[(10, f(2)), (15, b(2))], &[(31, f(2)), (32, f(3))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 1);
-        assert_eq!(bt.physical_damage(0, 3, ActionKind::Melee), 1);
-        assert_eq!(bt.magic_strike(1, 3), 30, "magic is not physical");
-        turn_of(&mut bt, 0);
-        let hit = bt.act(3).unwrap();
-        assert!(hit.killed && hit.actor_died);
-        assert!(!bt.fighters[0].alive());
-    }
-
-    #[test]
-    fn evasive_dead_vs_shots_god_anger_and_evasion() {
-        let evasive = bonus(33, Bonus::Evasive, UnitDef { hits: 100, ..warrior(33, 1, 0) });
-        let corpse = bonus(34, Bonus::Dead, UnitDef { hits: 100, ..warrior(34, 1, 0) });
-        let angry = bonus(35, Bonus::GodAnger, shooter(35, 20));
-        let dodger = UnitDef { evasion: Some(50), hits: 100, ..warrior(36, 1, 0) };
-        let bt = with(vec![evasive, corpse, angry, dodger], &[(11, b(0)), (35, b(1))], &[(33, f(0)), (34, f(1)), (36, f(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Shot), 13, "20 × 2/3");
-        assert_eq!(bt.physical_damage(0, 3, ActionKind::Shot), 6, "20 × 3/10");
-        assert_eq!(bt.physical_damage(1, 3, ActionKind::Shot), 16, "6 + 10 GodAnger");
-        assert_eq!(bt.physical_damage(0, 4, ActionKind::Shot), 10, "Evasion 50%");
-    }
-
-    #[test]
-    fn knight_hero_cuts_physical_damage_to_his_army_by_ten_percent() {
-        let bt = battle(&[(1, f(0)), (18, f(2))], &[(10, f(2)), (15, b(2))]);
-        // 30 − 0 = 30 → 27; the bag is not the hero but is in the knight's army.
-        assert_eq!(bt.physical_damage(2, 1, ActionKind::Melee), 27);
-        assert_eq!(bt.magic_strike(3, 1), 30, "magic is not reduced");
-        let bt = battle(&[(10, f(0)), (18, f(2))], &[(10, f(2))]);
-        assert_eq!(bt.physical_damage(2, 1, ActionKind::Melee), 30);
-    }
-
-    #[test]
-    fn counterblow_and_death_curse() {
-        let chief = bonus(37, Bonus::Counterblow, UnitDef { hits: 100, ..warrior(37, 25, 0) });
-        let cursed = bonus(38, Bonus::DeathCurse, UnitDef { hits: 1, ..warrior(38, 1, 0) });
-        let mut bt = with(vec![chief, cursed], &[(10, f(2)), (10, f(4))], &[(37, f(2)), (38, f(4))]);
-        turn_of(&mut bt, 0);
-        let hit = bt.act(2).unwrap();
-        assert_eq!((hit.amount, hit.counter), (30, Some(20)), "25 − 5 back");
-        turn_of(&mut bt, 1);
-        let hit = bt.act(3).unwrap();
-        assert!(hit.killed && hit.actor_died && !bt.fighters[1].alive());
-    }
-
-    // --- magic ------------------------------------------------------------------------------
-
-    #[test]
-    fn magic_strike_by_school_and_nature() {
-        let bt = battle(&[(15, b(0)), (14, b(1)), (12, b(2))], &[(18, f(0)), (16, f(1)), (17, f(2))]);
-        let (life, death, elem) = (0, 1, 2);
-        let (normal, undead, elemental) = (3, 4, 5);
-        assert_eq!([bt.magic_strike(life, normal), bt.magic_strike(life, undead), bt.magic_strike(life, elemental)], [30, 60, 22]);
-        assert_eq!([bt.magic_strike(death, normal), bt.magic_strike(death, undead), bt.magic_strike(death, elemental)], [30, 15, 22]);
-        assert_eq!([bt.magic_strike(elem, normal), bt.magic_strike(elem, undead)], [30, 30], "Elemental: 0.75 × 40");
-    }
-
-    #[test]
-    fn protection_reduces_hostile_magic() {
-        let warded = UnitDef { protect_life: 50, protect_elemental: 100, hits: 100, ..warrior(39, 20, 0) };
-        let bt = with(vec![warded], &[(15, b(0)), (12, b(1))], &[(39, f(0))]);
-        assert_eq!(bt.magic_strike(0, 2), 15);
-        assert_eq!(bt.magic_strike(1, 2), 0);
-        assert_eq!(bt.options(1, 2), Vec::<ActionKind>::new(), "fully protected: nothing to cast");
-    }
-
-    #[test]
-    fn blessings_and_curses_by_school() {
-        let life_all = mage(40, 36, MagicSchool::Life, MagicDirection::ToAll);
-        let death_all = mage(41, 36, MagicSchool::Death, MagicDirection::ToAll);
-        let elem_all = mage(42, 36, MagicSchool::Elemental, MagicDirection::ToAll);
-        let bt = with(vec![life_all, death_all, elem_all], &[(40, b(0)), (41, b(1)), (42, b(2)), (10, f(0))], &[(10, f(0)), (16, f(1))]);
-        let (ally, foe, undead) = (3, 4, 5);
-        // Life: def + 3P/12 + 1 = 10, atk + 3P/24 = 4; curse def −(1 + 3P/10) = −11, atk −P/10 = −3.
-        assert_eq!(bt.bless_buff(0, ally), Buff { attack: 4, defence: 10, ..Buff::default() });
-        assert_eq!(bt.curse_buff(0, foe), Buff { attack: -3, defence: -11, ..Buff::default() });
-        assert!(bt.bless_buff(0, undead).is_empty(), "Life does not bless the undead");
-        // Death: atk + P/6 + 1 = 7, def + P/12 = 3; curse atk −(1 + P/5) = −8, def −P/10 = −3.
-        assert_eq!(bt.bless_buff(1, ally), Buff { attack: 7, defence: 3, ..Buff::default() });
-        assert_eq!(bt.curse_buff(1, foe), Buff { attack: -8, defence: -3, ..Buff::default() });
-        // Elemental: actions ±f(36) = 1, initiative + (P/7 + 1) = 6.
-        assert_eq!(bt.bless_buff(2, ally), Buff { actions: 1, initiative: 6, ..Buff::default() });
-        assert_eq!(bt.curse_buff(2, foe), Buff { actions: -1, initiative: -6, ..Buff::default() });
-        assert_eq!([actions_of_power(19), actions_of_power(20), actions_of_power(45), actions_of_power(100)], [0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn heal_by_school_and_nature() {
-        let death_healer = mage(43, 20, MagicSchool::Death, MagicDirection::ToAlly);
-        let mut bt = with(vec![death_healer], &[(13, b(0)), (43, b(1)), (10, f(0)), (16, f(1))], &[(18, f(0))]);
-        bt.fighters[2].hp = 10;
-        bt.fighters[3].hp = 10;
-        assert_eq!(bt.preview(0, 2, ActionKind::Heal), Preview::Heal(20));
-        assert!(!bt.options(0, 3).contains(&ActionKind::Heal), "Life cannot heal the undead");
-        assert!(bt.options(1, 3).contains(&ActionKind::Heal), "Death heals the undead");
-        assert!(!bt.options(1, 2).contains(&ActionKind::Heal), "…and only them");
-    }
-
-    #[test]
-    fn curse_lowers_stats_and_wears_off() {
-        let mut bt = battle(&[(18, f(5)), (12, b(0))], &[(10, f(0))]);
-        turn_of(&mut bt, 1);
-        let hit = bt.act(2).unwrap();
-        assert_eq!(hit.kind, ActionKind::Curse, "Elemental defaults to the curse");
-        // P 40: actions −1, initiative −(1 + 40/7).
-        assert_eq!((bt.fighters[2].stats[Stat::Manevres], bt.fighters[2].stats[Stat::Initiative]), (0, 4));
-        assert!(bt.options(1, 2).contains(&ActionKind::Strike));
-        while bt.round <= EFFECT_TURNS {
-            assert_ne!(bt.active(), Some(2), "no actions left while cursed");
-            bt.skip();
-        }
-        assert_eq!(bt.fighters[2].curse(), None);
-        assert_eq!(bt.fighters[2].stats[Stat::Manevres], 1);
-    }
-
-    #[test]
-    fn magic_power_drains_per_turn_down_to_the_floor() {
-        // Elemental: −5 per turn, floor 15. Life healer at 20: −2 to 15. Death: −2, floor 0.
-        let low = mage(44, 10, MagicSchool::Life, MagicDirection::ToAlly);
-        let own = UnitDef { min_magic_power: Some(30), mana_drain: Some(1), ..mage(45, 32, MagicSchool::Elemental, MagicDirection::ToEnemy) };
-        let mut bt = with(vec![low, own], &[(12, b(0)), (13, b(1)), (14, b(2)), (44, b(3)), (45, b(4))], &[(18, f(0))]);
-        let powers = |bt: &Battle| (0..5).map(|i| bt.fighters[i].stats[Stat::MagicPower]).collect::<Vec<_>>();
-        assert_eq!(powers(&bt), vec![40, 20, 30, 10, 32]);
-        let mut seen = vec![];
-        for turn in 2..=6 {
-            while bt.round < turn {
-                bt.skip();
-            }
-            seen.push(powers(&bt));
-        }
-        assert_eq!(seen[0], vec![35, 18, 28, 10, 31]);
-        assert_eq!(seen[1], vec![30, 16, 26, 10, 30]);
-        assert_eq!(seen[4], vec![15, 15, 20, 10, 30], "floors: 15, 15, community override 30; 10 is below the floor and stays");
-    }
-
-    // --- Community bonuses --------------------------------------------------------------------
-
-    /// A battle where `inside` fights in a building (a castle or fort garrison, no extra
-    /// defence).
-    fn battle_inside(extra: Vec<UnitDef>, player: &[(u32, Slot)], enemies: &[(u32, Slot)], inside: Team) -> Battle {
-        let c = content_with(extra, Formation::WIDE);
-        let squad: Vec<Unit> = player.iter().map(|&(id, s)| Unit::new(&c, UnitId(id), s)).collect();
-        let p: Vec<_> = squad.iter().enumerate().collect();
-        let e: Vec<Unit> = enemies.iter().map(|&(id, s)| Unit::new(&c, UnitId(id), s)).collect();
-        let mut bt = Battle::new(c.clone(), &p, &e, inside.other());
-        bt.set_in_building(inside);
-        bt.begin();
-        bt
-    }
-
-    fn to_round(bt: &mut Battle, round: u32) {
-        while bt.round < round {
-            bt.skip();
-        }
-    }
-
-    /// 69: a heavy hitter, attack 100.
-    fn hammer() -> UnitDef {
-        warrior(69, 100, 0)
-    }
-
-    /// 84: armour 20, 300 HP.
-    fn armour() -> UnitDef {
-        UnitDef { hits: 300, ..warrior(84, 1, 20) }
-    }
-
-    #[test]
-    fn hunger_heals_to_full_on_a_kill() {
-        let hungry = bonus(60, Bonus::Hunger, warrior(60, 30, 0));
-        let mut bt = with(vec![hungry], &[(60, f(2))], &[(10, f(2)), (10, f(3))]);
-        bt.fighters[0].hp = 10;
-        bt.fighters[1].hp = 1;
-        turn_of(&mut bt, 0);
-        assert!(bt.act(1).unwrap().killed);
-        assert_eq!(bt.fighters[0].hp, 50);
-    }
-
-    #[test]
-    fn berserk_hits_harder_when_wounded() {
-        let berserk = bonus(61, Bonus::Berserk, warrior(61, 30, 0));
-        let mut bt = with(vec![berserk], &[(61, f(2))], &[(18, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30, "full HP: ×1");
-        bt.fighters[0].hp = 25;
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 45, "half HP: ×1.5");
-        bt.fighters[0].hp = 1;
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 59);
-    }
-
-    #[test]
-    fn exhaustion_wears_down_magic_protection() {
-        let tired = bonus(62, Bonus::Exhaustion, mage(62, 30, MagicSchool::Life, MagicDirection::ToEnemy));
-        let warded = UnitDef { protect_life: 50, hits: 300, ..warrior(39, 1, 0) };
-        let mut bt = with(vec![tired, warded], &[(62, b(0)), (10, f(5))], &[(39, f(0))]);
-        assert_eq!(bt.magic_strike(0, 2), 15);
-        turn_of(&mut bt, 0);
-        assert_eq!(bt.act(2).unwrap().amount, 15);
-        assert_eq!((bt.fighters[2].stats[Stat::ProtectLife], bt.fighters[2].stats[Stat::ProtectDeath]), (35, 0));
-        assert_eq!(bt.magic_strike(0, 2), 20, "30 × 65%");
-        turn_of(&mut bt, 0);
-        bt.act(2).unwrap();
-        assert_eq!(bt.fighters[2].stats[Stat::ProtectLife], 20, "cumulative");
-    }
-
-    #[test]
-    fn drying_takes_eight_percent_of_max_hp_through_any_protection() {
-        let dry = bonus(63, Bonus::Drying, mage(63, 30, MagicSchool::Life, MagicDirection::ToEnemy));
-        let curser = bonus(64, Bonus::Drying, mage(64, 30, MagicSchool::Death, MagicDirection::ToEnemy));
-        let warded = UnitDef { protect_life: 100, hits: 300, ..warrior(39, 1, 0) };
-        let target = UnitDef { hits: 100, ..warrior(46, 1, 0) };
-        let mut bt = with(vec![dry, curser, warded, target], &[(63, b(0)), (64, b(1)), (10, f(5))], &[(39, f(0)), (46, f(1))]);
-        assert_eq!(bt.magic_strike(0, 3), 24, "0 + 8% of 300");
-        assert_eq!(bt.options(0, 3), vec![ActionKind::Strike]);
-        turn_of(&mut bt, 1);
-        let hit = bt.act(4).unwrap();
-        assert_eq!((hit.kind, hit.amount, bt.fighters[4].hp), (ActionKind::Curse, 8, 92), "a curse dries too");
-    }
-
-    #[test]
-    fn ctr_poison_poisons_whoever_strikes_it_in_melee() {
-        let toad = bonus(65, Bonus::CtrPoison, UnitDef { hits: 300, ..warrior(65, 1, 0) });
-        let mut bt = with(vec![toad], &[(10, f(2)), (11, b(2))], &[(65, f(2))]);
-        turn_of(&mut bt, 0);
-        bt.act(2).unwrap();
-        assert!(bt.fighters[0].poisoned);
-        assert_eq!(bt.fighters[0].poison, 15);
-        turn_of(&mut bt, 1);
-        bt.act(2).unwrap();
-        assert!(!bt.fighters[1].poisoned, "a shot does not touch it");
-    }
-
-    #[test]
-    fn suicide_unit_dies_after_its_attack() {
-        let bomber = bonus(66, Bonus::Suicide, warrior(66, 30, 0));
-        let mut bt = with(vec![bomber], &[(66, f(2)), (10, f(3))], &[(18, f(2))]);
-        turn_of(&mut bt, 0);
-        let hit = bt.act(2).unwrap();
-        assert_eq!((hit.amount, hit.actor_died, bt.fighters[0].hp), (30, true, 0));
-    }
-
-    #[test]
-    fn splash_hits_the_target_for_80_and_its_row_neighbours_for_40() {
-        let sweep = bonus(67, Bonus::Splash, warrior(67, 50, 0));
-        let mut bt = with(vec![sweep], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(5)), (18, b(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 40);
-        turn_of(&mut bt, 0);
-        let hit = bt.act(2).unwrap();
-        assert_eq!(hit.amount, 40);
-        assert_eq!(hit.splash, vec![(1, 20), (3, 20)], "the same row only");
-        assert_eq!([bt.fighters[4].hp, bt.fighters[5].hp], [200, 200]);
-    }
-
-    #[test]
-    fn fortify_adds_a_quarter_of_defence_per_turn_up_to_125_percent() {
-        let wall = bonus(68, Bonus::Fortify, UnitDef { hits: 3000, ..warrior(68, 1, 20) });
-        let mut bt = with(vec![wall, hammer()], &[(69, f(2))], &[(68, f(2))]);
-        let mut seen = Vec::new();
-        for round in 1..=6 {
-            to_round(&mut bt, round);
-            seen.push(bt.physical_damage(0, 1, ActionKind::Melee));
-        }
-        assert_eq!(seen, vec![75, 70, 65, 60, 55, 55]);
-    }
-
-    #[test]
-    fn dominate_hits_smaller_units_harder() {
-        let lord = bonus(70, Bonus::Dominate, UnitDef { hits: 100, ..warrior(70, 30, 0) });
-        let bt = with(vec![lord], &[(70, f(2))], &[(18, f(2)), (10, f(3))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30, "the bag has more HP");
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 31, "(30 − 5) × 1.25");
-    }
-
-    #[test]
-    fn strong_poison_takes_a_quarter_and_poison_works_for_mages() {
-        let viper = bonus(71, Bonus::PoisonS, warrior(71, 30, 0));
-        let witch = bonus(72, Bonus::Poison, mage(72, 30, MagicSchool::Life, MagicDirection::ToEnemy));
-        let mut bt = with(vec![viper, witch], &[(71, f(2)), (72, b(0))], &[(18, f(2)), (18, f(3))]);
-        turn_of(&mut bt, 0);
-        bt.act(2).unwrap();
-        turn_of(&mut bt, 1);
-        bt.act(3).unwrap();
-        assert_eq!((bt.fighters[2].poison, bt.fighters[3].poison), (25, 15));
-        to_round(&mut bt, 2);
-        assert_eq!((bt.fighters[2].hp, bt.fighters[3].hp), (200 - 30 - 50, 200 - 30 - 30));
-    }
-
-    #[test]
-    fn concentration_grows_magic_power_instead_of_draining() {
-        let focus = bonus(73, Bonus::Concentration, mage(73, 30, MagicSchool::Elemental, MagicDirection::ToEnemy));
-        let mut bt = with(vec![focus], &[(73, b(0)), (12, b(1))], &[(18, f(0))]);
-        to_round(&mut bt, 2);
-        assert_eq!((bt.fighters[0].stats[Stat::MagicPower], bt.fighters[1].stats[Stat::MagicPower]), (33, 35));
-        to_round(&mut bt, 15);
-        assert_eq!(bt.fighters[0].stats[Stat::MagicPower], 60, "capped at twice the base");
-    }
-
-    #[test]
-    fn potent_magic_ignores_protection() {
-        let potent = bonus(74, Bonus::Potent, mage(74, 30, MagicSchool::Life, MagicDirection::ToEnemy));
-        let warded = UnitDef { protect_life: 100, hits: 300, ..warrior(39, 1, 0) };
-        let bt = with(vec![potent, warded], &[(74, b(0)), (15, b(1))], &[(39, f(0))]);
-        assert_eq!((bt.magic_strike(0, 2), bt.magic_strike(1, 2)), (30, 0));
-    }
-
-    #[test]
-    fn stun_cuts_initiative_by_a_quarter_once() {
-        let mace = bonus(75, Bonus::Stun, warrior(75, 30, 0));
-        let mut bt = with(vec![mace], &[(75, f(2))], &[(18, f(2))]);
-        turn_of(&mut bt, 0);
-        bt.act(1).unwrap();
-        assert_eq!(bt.fighters[1].stats[Stat::Initiative], 7);
-        turn_of(&mut bt, 0);
-        bt.act(1).unwrap();
-        assert_eq!(bt.fighters[1].stats[Stat::Initiative], 7);
-    }
-
-    #[test]
-    fn first_shot_moves_first_on_turn_one_only() {
-        let quick = bonus(76, Bonus::FirstShot, UnitDef { initiative: 1, ..warrior(76, 10, 0) });
-        let gun = bonus(24, Bonus::Artillery, UnitDef { initiative: 1, ..shooter(24, 10) });
-        let mut bt = with(vec![quick, gun], &[(10, f(0))], &[(76, f(0)), (24, b(0))]);
-        assert_eq!(bt.queue().collect::<Vec<_>>(), vec![1, 2, 0]);
-        to_round(&mut bt, 2);
-        assert_eq!(bt.queue().collect::<Vec<_>>(), vec![2, 0, 1], "then Artillery, then initiative");
-    }
-
-    #[test]
-    fn bastion_in_a_building() {
-        let tower = bonus(77, Bonus::Bastion, UnitDef { hits: 300, ..warrior(77, 10, 5) });
-        let bt = battle_inside(vec![tower.clone(), hammer()], &[(69, f(2))], &[(77, f(2)), (18, f(3))], Team::Enemy);
-        let t = &bt.fighters[1].stats;
-        assert_eq!((t[Stat::AttackBlow], t[Stat::DefenceBlow]), (30, 25), "×3, then +10 for the army");
-        assert_eq!(bt.fighters[2].stats[Stat::DefenceBlow], 10, "the whole army +10");
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 37, "(100 − 25) / 2");
-        // In the open: nothing.
-        let bt = with(vec![tower, hammer()], &[(69, f(2))], &[(77, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 95);
-    }
-
-    #[test]
-    fn assault_when_storming_a_building() {
-        let sapper = bonus(78, Bonus::Assault, UnitDef { hits: 300, ..warrior(78, 20, 5) });
-        let bt = battle_inside(vec![sapper.clone(), hammer()], &[(78, f(2))], &[(69, f(2))], Team::Enemy);
-        let s = &bt.fighters[0].stats;
-        assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow]), (40, 10));
-        assert_eq!(bt.physical_damage(1, 0, ActionKind::Melee), 63, "(100 − 10) × 0.7");
-        let bt = with(vec![sapper, hammer()], &[(78, f(2))], &[(69, f(2))]);
-        assert_eq!(bt.physical_damage(1, 0, ActionKind::Melee), 95);
-    }
-
-    #[test]
-    fn flying_attacks_any_enemy_from_any_row() {
-        let bird = bonus(79, Bonus::Flying, warrior(79, 30, 0));
-        let bt = with(vec![bird.clone()], &[(79, b(0)), (10, f(0))], &[(18, f(5)), (18, b(3))]);
-        assert_eq!(bt.targets(0), vec![2, 3]);
-        assert_eq!(bt.options(0, 3), vec![ActionKind::Melee]);
-        let c = content_with(vec![bird], Formation::VANILLA);
-        let bt = battle_in(&c, &[(79, r(0)), (10, f(0))], &[(18, f(3))]);
-        assert!(bt.targets(0).is_empty(), "not from the reserve");
-    }
-
-    #[test]
-    fn flock_by_head_count() {
-        let wolf = bonus(80, Bonus::Flock, warrior(80, 40, 0));
-        let bt = with(vec![wolf.clone()], &[(80, f(2)), (18, f(3))], &[(18, f(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 50);
-        let bt = with(vec![wolf.clone()], &[(80, f(2))], &[(18, f(2)), (18, f(3))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30);
-        let bt = with(vec![wolf], &[(80, f(2))], &[(18, f(2))]);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 40);
-    }
-
-    #[test]
-    fn bleed_takes_half_the_wound_again_next_turn() {
-        let knife = bonus(81, Bonus::Bleed, warrior(81, 30, 0));
-        let mut bt = with(vec![knife], &[(81, f(2))], &[(18, f(2))]);
-        turn_of(&mut bt, 0);
-        bt.act(1).unwrap();
-        assert_eq!(bt.fighters[1].bleeding, 15);
-        to_round(&mut bt, 2);
-        assert_eq!((bt.fighters[1].hp, bt.fighters[1].bleeding), (155, 0));
-    }
-
-    #[test]
-    fn hold_line_does_nothing() {
-        let line = bonus(82, Bonus::HoldLine, warrior(82, 30, 5));
-        let bt = with(vec![line], &[(82, f(2)), (82, f(3))], &[(10, f(2))]);
-        assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 25);
-        assert_eq!(bt.physical_damage(2, 0, ActionKind::Melee), 25);
-    }
-
-    #[test]
-    fn armor_breaker_cuts_defence_by_30_percent_per_hit() {
-        let breaker = bonus(83, Bonus::ArmorBreaker, warrior(83, 30, 0));
-        let mut bt = with(vec![breaker, armour()], &[(83, f(2))], &[(84, f(2))]);
-        turn_of(&mut bt, 0);
-        assert_eq!(bt.act(1).unwrap().amount, 10);
-        assert_eq!(bt.fighters[1].stats[Stat::DefenceBlow], 14);
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 16);
-    }
-
-    #[test]
-    fn poison_armor_ignore_pierces_and_poisons_ten_percent() {
-        let sting = bonus(85, Bonus::PoisonArmorIgnore, warrior(85, 30, 0));
-        let c = content_with(vec![sting, armour()], Formation::WIDE);
-        let squad = [Unit::new(&c, UnitId(85), f(2))];
-        let p: Vec<_> = squad.iter().enumerate().collect();
-        let mut bt = Battle::new(c.clone(), &p, &[Unit::new(&c, UnitId(84), f(2))], Team::Player);
-        bt.set_building_defence(Team::Enemy, 6);
-        bt.begin();
-        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 24, "the building still counts");
-        bt.act(1).unwrap();
-        assert_eq!(bt.fighters[1].poison, 10);
-    }
-
-    #[test]
-    fn faster_attack_gives_an_extra_action_on_the_first_two_turns() {
-        let fast = bonus(86, Bonus::FasterAttack, UnitDef { initiative: 30, ..warrior(86, 10, 0) });
-        let mut bt = with(vec![fast], &[(86, f(0))], &[(18, f(5))]);
-        let mut seen = Vec::new();
-        for round in 1..=3 {
-            to_round(&mut bt, round);
-            turn_of(&mut bt, 0);
-            seen.push(bt.actions_left());
-            bt.skip();
-        }
-        assert_eq!(seen, vec![2, 2, 1]);
-    }
-
-    #[test]
-    fn no_heal_stops_heals_and_regeneration() {
-        let cripple = bonus(87, Bonus::NoHeal, warrior(87, 30, 0));
-        let troll = UnitDef { regen: 10, hits: 200, ..warrior(88, 1, 0) };
-        let mut bt = with(vec![cripple, troll], &[(87, f(2))], &[(88, f(2)), (13, b(0))]);
-        turn_of(&mut bt, 0);
-        bt.act(1).unwrap();
-        assert!(bt.fighters[1].crippled);
-        assert!(!bt.options(2, 1).contains(&ActionKind::Heal));
-        to_round(&mut bt, 2);
-        assert_eq!(bt.fighters[1].hp, 170, "no regeneration");
-    }
-
-    #[test]
-    fn preventive_strike_hits_the_attacker_first() {
-        let guard = bonus(89, Bonus::PreventiveStrike, UnitDef { hits: 100, ..warrior(89, 60, 0) });
-        let archer = bonus(47, Bonus::PreventiveStrike, UnitDef { hits: 100, ..shooter(47, 20) });
-        let mut bt = with(vec![guard, archer], &[(10, f(2)), (1, f(3))], &[(89, f(2)), (47, f(3))]);
-        turn_of(&mut bt, 0);
-        let hit = bt.act(2).unwrap();
-        assert_eq!((hit.counter, hit.actor_died, hit.amount, bt.fighters[2].hp), (Some(50), true, 0, 100), "55 kills the 50-HP striker first");
-        turn_of(&mut bt, 1);
-        let hit = bt.act(3).unwrap();
-        assert_eq!((hit.counter, hit.amount), (Some(15), 30), "the archer shoots first: 20 − 5; then 30 − 0");
-    }
-
-    #[test]
-    fn neutralize_strips_the_targets_bonuses() {
-        let null = bonus(90, Bonus::Neutralize, UnitDef { hits: 300, ..warrior(90, 30, 0) });
-        let chief = bonus(91, Bonus::Counterblow, UnitDef { hits: 300, ..warrior(91, 25, 0) });
-        let mut bt = with(vec![null, chief], &[(90, f(2)), (10, f(3))], &[(91, f(2))]);
-        turn_of(&mut bt, 1);
-        assert_eq!(bt.act(2).unwrap().counter, Some(20), "a plain strike is answered: 25 − 5");
-        turn_of(&mut bt, 0);
-        assert_eq!(bt.act(2).unwrap().counter, None, "stripped before it can answer");
-        assert!(bt.fighters[2].stats.bonuses.is_empty());
-    }
-
-    #[test]
-    fn killing_strike_finishes_a_target_below_a_quarter() {
-        let axe = bonus(92, Bonus::KillingStrike, warrior(92, 30, 0));
-        let mut bt = with(vec![axe], &[(92, f(2))], &[(18, f(2)), (18, f(3))]);
-        bt.fighters[1].hp = 70;
-        bt.fighters[2].hp = 100;
-        turn_of(&mut bt, 0);
-        let hit = bt.act(1).unwrap();
-        assert_eq!((hit.killed, hit.amount), (true, 70), "40 left of 200 is below 25%");
-        turn_of(&mut bt, 0);
-        let hit = bt.act(2).unwrap();
-        assert_eq!((hit.killed, bt.fighters[2].hp), (false, 70));
-    }
-
-    #[test]
-    fn blood_thirst_gets_its_action_back_after_a_kill() {
-        let fang = bonus(93, Bonus::BloodThrist, warrior(93, 30, 0));
-        let mut bt = with(vec![fang], &[(93, f(2))], &[(10, f(2)), (10, f(3))]);
-        bt.fighters[1].hp = 1;
-        turn_of(&mut bt, 0);
-        assert!(bt.act(1).unwrap().killed);
-        assert_eq!((bt.active(), bt.actions_left()), (Some(0), 1));
-        assert!(!bt.act(2).unwrap().killed);
-        assert_ne!(bt.active(), Some(0));
-    }
-
-    #[test]
-    fn eternal_gift_blessings_last_the_whole_battle() {
-        let saint = bonus(94, Bonus::EternalGift, mage(94, 36, MagicSchool::Life, MagicDirection::ToAll));
-        let mut bt = with(vec![saint], &[(94, b(0)), (10, f(0))], &[(18, f(5))]);
-        turn_of(&mut bt, 0);
-        assert_eq!(bt.act_with(1, ActionKind::Bless).unwrap().kind, ActionKind::Bless);
-        to_round(&mut bt, 20);
-        assert!(bt.fighters[1].blessing().is_some());
-    }
-
-    #[test]
-    fn fate_gift_saves_once_and_makes_stronger() {
-        let lucky = bonus(95, Bonus::FateGift, UnitDef { hits: 40, ..warrior(95, 20, 4) });
-        let mut bt = with(vec![lucky, hammer()], &[(69, f(2))], &[(95, f(2))]);
-        turn_of(&mut bt, 0);
-        let hit = bt.act(1).unwrap();
-        assert!(!hit.killed);
-        let t = &bt.fighters[1];
-        assert_eq!((t.hp, t.stats[Stat::AttackBlow], t.stats[Stat::DefenceBlow]), (40, 25, 5));
-        turn_of(&mut bt, 0);
-        assert!(bt.act(1).unwrap().killed, "only once");
-    }
-
-    // --- outcome, hero, XP ---------------------------------------------------------------------
-
-    #[test]
-    fn hero_survives_while_his_army_lives() {
-        let mut bt = battle(&[(10, f(2)), (10, f(3))], &[(18, f(2))]);
-        bt.fighters[0].hp = 0;
-        assert_eq!(bt.outcome(), Outcome::Ongoing, "hero down, army fights on");
-        bt.fighters[2].hp = 0;
-        assert_eq!(bt.outcome(), Outcome::Victory);
-        let res = bt.player_results();
-        assert_eq!((res[0].hp, res[1].hp), (1, 50), "hero comes back badly wounded");
-        let mut bt = battle(&[(10, f(2)), (10, f(3))], &[(18, f(2))]);
-        bt.fighters[0].hp = 0;
-        bt.fighters[1].hp = 0;
-        assert_eq!(bt.outcome(), Outcome::Defeat, "defeat only when the whole army is dead");
-        assert_eq!(bt.player_results()[0].hp, 0);
-    }
-
-    #[test]
-    fn deployment_is_kept_after_the_battle() {
-        let c = content_with(vec![], Formation::WIDE);
-        let squad = [Unit::new(&c, UnitId(10), f(2)), Unit::new(&c, UnitId(11), b(2))];
-        let p: Vec<_> = squad.iter().enumerate().collect();
-        let mut bt = Battle::new(c.clone(), &p, &[Unit::new(&c, UnitId(18), f(2))], Team::Player);
-        assert_eq!(bt.active(), None);
-        bt.move_card(f(2), b(2)).unwrap();
-        assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (b(2), f(2)));
-        bt.move_card(f(2), f(5)).unwrap();
-        assert_eq!(bt.move_card(f(0), f(1)), Err(ActionError::InvalidTarget));
-        assert_eq!(bt.move_card(f(5), r(0)), Err(ActionError::InvalidTarget), "no reserve in 2×6");
-        bt.begin();
-        assert_eq!(bt.move_card(f(5), f(4)), Err(ActionError::NotDeploying));
-        bt.fighters[0].slot = f(0); // pushed around during the fight
-        let res = bt.player_results();
-        assert_eq!((res[0].slot, res[1].slot), (b(2), f(5)));
-    }
-
-    /// The player: warrior 10 in front, shooter 11 behind; the enemy: four punching bags in
-    /// front. A bag: D = round((e⁰/1.17 + e⁰/1.07)·200) = 358, H = 558, A = 11,
-    /// T = round(3.2·558·12/200) = 107; the enemy side 428.
-    fn xp_battle() -> Battle {
-        battle(&[(10, f(2)), (11, b(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))])
-    }
-
-    fn win(bt: &mut Battle) {
-        for i in 2..bt.fighters.len() {
-            bt.fighters[i].hp = 0;
-        }
-    }
-
-    #[test]
-    fn xp_pool_and_shares_follow_the_original() {
-        let mut bt = xp_battle();
-        assert!(bt.xp_awards(Team::Player).is_empty(), "not over yet");
-        assert_eq!(bt.start_of(Team::Enemy).strength, 428);
-        assert_eq!(bt.start_of(Team::Player).count, 2);
-        win(&mut bt);
-        // Pool 428 div 20 = 21; t = 21/4/2 = 2.625; idle front 3t = 7.9, back 2t = 5.25.
-        let xp = bt.xp_awards(Team::Player);
-        assert_eq!(xp.iter().map(|a| (a.fighter, a.xp)).collect::<Vec<_>>(), vec![(0, 8), (1, 5)]);
-        // The player gets ×HeroExpirienceModificator (50) × F (120) × the correction.
-        assert_eq!(bt.player_xp().iter().map(|a| a.xp).collect::<Vec<_>>(), vec![5, 3]);
-        bt.set_xp_correction(250);
-        assert_eq!(bt.player_xp().iter().map(|a| a.xp).collect::<Vec<_>>(), vec![12, 8]);
-    }
-
-    #[test]
-    fn xp_counts_activity_and_hit_points_lost() {
-        let mut bt = xp_battle();
-        turn_of(&mut bt, 0);
-        let hp = bt.fighters[3].hp;
-        bt.act(3).unwrap();
-        let (a, t) = (&bt.fighters[0], &bt.fighters[3]);
-        assert_eq!((a.useful, a.taken, a.left), (1, 1, 0));
-        assert_eq!(t.lost, hp - t.hp, "the target's loss is counted");
-        turn_of(&mut bt, 1);
-        bt.skip();
-        assert_eq!((bt.fighters[1].useful, bt.fighters[1].taken, bt.fighters[1].left), (0, 1, 0), "a wait spends the actions");
-        win(&mut bt);
-        // The busy warrior gets 4t = 10.5 → 10; the shooter that waited 2t = 5.25 → 5.
-        assert_eq!(bt.xp_awards(Team::Player).iter().map(|a| a.xp).collect::<Vec<_>>(), vec![10, 5]);
-        // Hit points lost shrink the pool: half the starting HP lost halves it (21 → 10).
-        bt.fighters[0].lost = (bt.start_of(Team::Player).hp / 2) as i32;
-        assert_eq!(bt.xp_awards(Team::Player).iter().map(|a| a.xp).collect::<Vec<_>>(), vec![5, 2]);
-    }
-
-    #[test]
-    fn the_dead_get_nothing_but_count_and_only_victory_pays_the_player() {
-        let mut bt = battle(&[(10, f(2)), (11, b(2)), (11, b(3))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))]);
-        bt.fighters[2].hp = 0;
-        win(&mut bt);
-        // Now N₀ = 3: t = 1.75, front 5.25 → 5, back 3.5 → 4.
-        let xp = bt.xp_awards(Team::Player);
-        assert_eq!(xp.iter().map(|a| (a.fighter, a.xp)).collect::<Vec<_>>(), vec![(0, 5), (1, 4)]);
-        let mut lost = xp_battle();
-        lost.fighters[0].hp = 0;
-        lost.fighters[1].hp = 0;
-        assert_eq!(lost.outcome(), Outcome::Defeat);
-        assert!(lost.player_xp().is_empty(), "no XP without a victory");
-        assert!(lost.ai_xp(Team::Player).is_empty(), "a wiped-out side has no strength left");
-        assert_eq!(lost.ai_xp(Team::Enemy).len(), 4, "the AI survivors gain");
-    }
-
-    // --- AI ---------------------------------------------------------------------------------
-
-    #[test]
-    fn ai_kills_when_it_can_else_fewest_hits() {
-        let mut bt = battle(&[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2))]);
-        bt.fighters[1].hp = 150;
-        turn_of(&mut bt, 3);
-        assert_eq!(bt.ai_choice(), Some((1, ActionKind::Melee)), "fewest hits to kill");
-        bt.fighters[2].hp = 5;
-        assert_eq!(bt.ai_choice(), Some((2, ActionKind::Melee)), "a kill");
-    }
-
-    #[test]
-    fn ai_mage_curses_first_then_strikes() {
-        let mut bt = battle(&[(10, f(2))], &[(12, b(2)), (18, f(2))]);
-        turn_of(&mut bt, 1);
-        let Some(Step::Act { hit, .. }) = bt.ai_step() else { panic!() };
-        assert_eq!((hit.target, hit.kind), (0, ActionKind::Curse));
-        turn_of(&mut bt, 1);
-        let Some(Step::Act { hit, .. }) = bt.ai_step() else { panic!() };
-        assert_eq!((hit.target, hit.kind), (0, ActionKind::Strike), "already cursed: strike");
-    }
-
-    #[test]
-    fn ai_warrior_uses_the_long_strike_or_steps_forward() {
-        // Three empty cells opposite: the long strike reaches the far unit, no need to walk.
-        let mut bt = battle(&[(18, f(1))], &[(10, f(4))]);
-        turn_of(&mut bt, 1);
-        assert_eq!(bt.ai_choice(), Some((0, ActionKind::LongStrike)));
-        // A warrior in the back row steps into a free front cell.
-        let mut bt = battle(&[(18, f(2))], &[(18, f(2)), (10, b(3))]);
-        turn_of(&mut bt, 2);
-        assert_eq!(bt.ai_step(), Some(Step::Move { actor: 2, from: b(3), to: f(3) }));
-    }
-
-    #[test]
-    fn auto_battles_terminate_on_synthetic_armies() {
-        let army = [(10, f(1)), (10, f(2)), (11, b(1)), (12, b(2)), (13, b(3)), (14, b(4))];
-        for formation in [Formation::WIDE, Formation::VANILLA] {
-            let c = content_with(vec![], formation);
-            let mut bt = battle_in(&c, &army, &army);
-            let mut steps = 0;
-            while bt.outcome() == Outcome::Ongoing {
-                bt.ai_step().expect("an active fighter");
-                steps += 1;
-                assert!(steps < 5000);
-            }
-        }
-    }
-
-    #[test]
-    fn real_armies_auto_battle_terminates() {
-        let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
-        let dt = crate::dt::install::DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
-        let c = Arc::new(Content::from_dt(&dt));
-        let ids: Vec<UnitId> = c.unit_ids().collect();
-        let mut outcomes = [0; 4];
-        for (n, chunk) in ids.chunks(8).enumerate() {
-            let army = |offset: usize| -> Vec<Unit> {
-                let mut taken = Vec::new();
-                (0..8)
-                    .map(|i| {
-                        let id = chunk[(i + offset) % chunk.len()];
-                        let s = Stats::of_level(&c, id, 1);
-                        let slot = c.formation.free_slot(&taken, s.preferred_row()).unwrap();
-                        taken.push(slot);
-                        Unit::new(&c, id, slot)
-                    })
-                    .collect()
-            };
-            let (p, e) = (army(0), army(n % 3 + 1));
-            let squad: Vec<_> = p.iter().enumerate().collect();
-            let mut bt = Battle::new(c.clone(), &squad, &e, Team::Enemy);
-            bt.begin();
-            let mut steps = 0;
-            while bt.outcome() == Outcome::Ongoing {
-                bt.ai_step().expect("an active fighter");
-                steps += 1;
-                assert!(steps < 20_000, "battle {n} never ends");
-            }
-            outcomes[bt.outcome() as usize] += 1;
-            assert!(bt.round <= 25);
-            // XP within bounds: every survivor's share between 1 and the pool, the player's
-            // gain only after a victory and at most the Community cap.
-            let pool = experience::battle_pool(bt.start_of(Team::Enemy).strength, bt.start_of(Team::Player).hp, 0).max(1);
-            for a in bt.xp_awards(Team::Player) {
-                assert!(a.xp >= 1 && a.xp as i64 <= pool, "battle {n}: share {} of pool {pool}", a.xp);
-            }
-            let gains = bt.player_xp();
-            assert_eq!(gains.is_empty(), bt.outcome() != Outcome::Victory);
-            assert!(gains.iter().all(|a| (0..=experience::MAX_BATTLE_XP).contains(&a.xp)));
-        }
-        assert_eq!(outcomes[0], 0);
-        assert!(outcomes.iter().sum::<i32>() >= 12);
-    }
+/// Community `Berserk`: the attack modifier is `AB × 75% × (maxHP − HP) / maxHP`.
+fn berserk(f: &Fighter) -> i32 {
+    let max = f.base.max_hp().max(1);
+    f.base[Stat::AttackBlow] * BERSERK_PERCENT * (max - f.hp.clamp(0, max)) / max / 100
 }
+
+#[cfg(test)]
+mod tests;

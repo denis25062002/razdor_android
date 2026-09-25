@@ -855,7 +855,9 @@ mod tests {
         g.foe = Some(Foe::Garrison(0));
         let mut b: Battle = g.start_battle();
         b.begin();
-        b.fighters.iter_mut().filter(|f| f.team == Team::Enemy).for_each(|f| f.hp = 0);
+        // The bandits fall; the remaining priest (Surrender 20) gives up after the next action.
+        b.fighters.iter_mut().filter(|f| f.team == Team::Enemy && f.surrender == 0).for_each(|f| f.hp = 0);
+        b.pass();
         let (gold, mana) = (g.gold, g.mana);
         let r = g.resolve_battle(&b);
         assert!(matches!(r, BattleResult::Victory { reward: 30, mana: 20, captured: Some(0), .. }), "{r:?}");

@@ -1235,6 +1235,7 @@ impl Game {
         // Squad indices from 1: no fighter counts as the player's hero.
         let side_a: Vec<(usize, &Unit)> = a_units.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
         let mut b = Battle::new(c.clone(), &side_a, &b_units, Team::Player);
+        b.set_simulation();
         b.apply_spells(Team::Player, &self.spells_on_army(att));
         if let Defender::Army(j) = def {
             b.apply_spells(Team::Enemy, &self.spells_on_army(j));

@@ -53,6 +53,13 @@ notes/layout.md.
 - **Shot only:**
   - Piercing: ArmorIgnore, PoisonArmorIgnore or **Artillery** sets `def = 0`. The vampire gifts
     do **not** pierce against shots.
+  - *Re-checked* in the disassembly of 485908 and its two hooks. For melee (kinds 4 and 5)
+    c2a27c tests the attacker's bonus byte for 45 and 3, then back at 485999 for
+    `bonus − 10 < 2`: PoisonArmorIgnore, ArmorIgnore, VampirsGist and OldVampirsGist. For shots
+    (kind 7) c2a3bf tests 45 and 3, then back at 4859fb for `bonus − 3 − 11 = 0`:
+    PoisonArmorIgnore, ArmorIgnore and Artillery. The enum is 1-based (the same function tests
+    0x15 = FlankStrike and target 0xF = Garrison), so these are the bonuses named. A working
+    note that said Artillery never pierces had looked at the melee path only. **code**
   - Then `def += Row2Def` if the target is in row 2, and `def += buildingDefence`.
 - `dmg = atk − def` if `atk > def`, else 1. This is the subtractive mode, B+1 = 1, which the
   real battle always uses. The percentage mode `atk·(1−def/100)` is unused.
@@ -310,6 +317,10 @@ stops after the **first action of turn 25**: 24 full turns plus one action. **co
   - back row: 4 cells, columns 2–5;
   - reserve: 2 cells, columns 3–4.
   - That is still 12 cells. Blocked cells can be neither entered nor targeted. **code**
+  - On screen it is a 2 × 6 grid (492940 maps a cell to one of 12 places): the front row on
+    the first line; on the second, reserve column 3, back columns 2–5, reserve column 4. So
+    the two reserve cells are the ends of the back row, where the footage shows tent icons.
+    **code**
 - **Preferred column order** (AI picking and placement):
   - 4 columns: 3,2,4,1 (tables 4ed030 and 4ed034);
   - 6 columns: 4,3,5,2,6,1 (4ed018 and 4ed01c). **code**
@@ -448,58 +459,61 @@ skips them). **code**
 
 ## Razdor now → original (src/rules/battle.rs, formation.rs, game.rs)
 
-| # | Topic | Razdor now | Original (this exe) | § |
-|---|---|---|---|---|
-| 1 | Buff/curse duration | 3 turns including the cast (`EFFECT_TURNS`) | Until the start of the next turn, since every modifier is reset each turn | 1 |
-| 2 | Stacking | One blessing and one curse slot, a new one replaces the old | Additive modifiers. Each ally can be blessed once per turn (heals still allowed); each enemy is cursed once per turn, then struck | 1, 3 |
-| 3 | EternalGift | Lasts the battle, same values | Changes base stats: lasts the battle, stacks per cast, and the Life blessing lowers defences (bug) | 1 |
-| 4 | Magic drain | Only above the floor: `max(floor, P − dec)` | If MP > 0: `max(MP − drain, floor)`, which raises weak casters to the floor; Undead Death casters get floor +25 | 1 |
-| 5 | Concentration | +10% of base per turn, capped at 2× | Adds the drain value per turn, no cap | 1 |
-| 6 | Hostile mage action | Strike for Life, curse otherwise; the right click picks the other | No choice for the player or the AI: curse if the target has no negative modifier, else strike, for every school | 3 |
-| 7 | Friendly mage | Heal or bless options | Automatic: heal if wounded and heal > 0, else bless. Targets: wounded or not yet blessed. Reserve casters target only the reserve | 3 |
-| 8 | Undead casters | — | Elemental or Death curses by an Undead caster also drain `(P/CurseMainSpell)/2 + 1` HP to the caster | 3 |
-| 9 | Vampirism | Any damage, capped at target HP, any school, any target | Physical hits and Death strikes only; uses the uncapped damage; not against Undead or Elemental; not blocked by NoHeal | 3, 8 |
-| 10 | Life curse | `defence −(1 + 3P/(2·CMS))` | `defence −(P / floor(2·CMS/3) + 1)`, i.e. P/3 + 1 | 3 |
-| 11 | Into the reserve | From the back row only, any time | From the front **or** back row, to any empty reserve cell; at most one reserve transition (in or out) per unit per turn | 2 |
-| 12 | Collapse timing | After every action and move, at turn start and at begin | After a unit's death, and for the actor's side when it ends its actions; a voluntary move collapses only after the mover's last action | 2 |
-| 13 | Reserve collapse | Reserve moves to the front, keeps its actions | Reserve moves to row 1 and **loses its remaining actions** that turn | 2 |
-| 14 | Wide formation | `WIDE` = 2 × 6 with no reserve | Front 6, back 4 (columns 2–5), reserve 2 (columns 3–4); still 12 cells | 6 |
-| 15 | Turn order | Sorted list; ties go to the attacker | Descending threshold scan (turn 1 starts at 75). Ties go to the **player's side**, then army order. Initiative changes apply at once. Initiative ≤ 0 never acts | 8 |
-| 16 | Attacker +1 initiative | To `attacker` | Always to side 1 = the player | 8 |
-| 17 | Artillery | Always first; pierces melee and shots | +30 initiative on turn 1 only (+60 with building defence ≥ 10); pierces **shots** only | 0, 8 |
-| 18 | Piercing set | ArmorIgnore, both vampire gifts, Artillery, PoisonArmorIgnore, for every kind | Melee: ArmorIgnore, PoisonArmorIgnore, VampirsGist, OldVampirsGist. Shots: ArmorIgnore, PoisonArmorIgnore, Artillery | 0 |
-| 19 | Piercing vs Row2Def | `def = building` (drops Row2Def) | Unit defence becomes 0; Row2Def (for shots) and building defence are still added | 0 |
-| 20 | SpearDefense and long strike | ×3 and ÷2 applied to own + building (+ Row2Def) | Applied to the unit's own defence (plus modifier) only; building defence is added afterwards | 0 |
-| 21 | Knight | ×90/100 | ×80/100 (set when `[GlobalOptions]` loads, 4e4501); the flag comes from the army's hero class, not a living hero | 0 |
-| 22 | Counterblow | Warriors only | Any Counterblow unit (AB 0 counters for 1), after melee or a long strike | 8 |
-| 23 | Ghost | Killer always dies | Killer dies only if its ProtectDeath < 30 × the Ghost's Manevres | 8 |
-| 24 | Garrison | ×2 on AB, AS, DB, DS | Base code: ×2 on AB, DB, DS (building defence ≥ 10). Community: +AS to the attack modifier each turn, only when building defence is exactly 10 | 8, 7 |
-| 25 | Regen | `max(1, …)`, positive only, separate from poison | `round(maxHP × regen/100)`, no minimum; poison **sets** regen negative, replacing it | 8 |
-| 26 | Poison | 15%; strongest poison counts | Regen −20 (Poison), −25 (PoisonS), `min(regen, −10)` (PoisonArmorIgnore); CtrPoison −20 stacking; mages poison when power after protection > 15 | 7 |
-| 27 | Turn limit | 25 full turns, then a stalemate (player withdraws) | Ends after the first action of turn 25. **Victory** if the player has any unit left (normal loot) | 5 |
-| 28 | Surrender | `game.rs`: every beaten enemy gives its Surrender in mana | A side whose remaining units **all** have Surrender > 0 gives up at once. Only those units' Surrender sum becomes mana; units killed earlier give none. Applies to the player too (defeat) | 5 |
-| 29 | Bonus count | A list of bonuses per unit (`has_any`) | Exactly one bonus byte; each worn item with a bonus overwrites it (last wins) | 7 |
-| 30 | AI | Heal < 50%, kill the most dangerous, curse, fewest hits, heal or bless; step-forward moves | Scored priorities (retreat non-warriors, melee `dmg×round((R+1)M)`, shots, school magic, moves). Kill test depends on OptValue9. Never moves into the reserve. No randomness | 4 |
-| 31 | Hunger | Any kill heals to full | Melee kills only; plus a turn-start heal when the living-unit count changed (shared counter) | 7 |
-| 32 | Berserk | Damage × (2·max − hp)/max | Attack modifier = AB × 75% × missing/max (up to +75% AB), overwrites a blessing's attack | 7 |
-| 33 | Exhaustion | −15 | −10 points on all three protections | 7 |
-| 34 | CtrPoison | 15% poison on a melee striker | Striker's regen −20, stacking per hit | 7 |
-| 35 | Splash | 80/40 on physical hits, row neighbours | 80/40, also on shots, spells, heals and blessings; a melee neighbour must be within 1 column of the attacker; interactive battles only | 7 |
-| 36 | Fortify | `def × (100 + min(25·turn, 125))/100` from turn 1, on own defence | From turn 2: flat `max(1, DB/4) × min(turn − 1, 5)` added to both defences | 7 |
-| 37 | Dominate | ×1.25 vs smaller max HP (guess) | No effect (dead code) | 7 |
-| 38 | Potent | Skips protection | Skips protection **and** nature multipliers | 7 |
-| 39 | Stun | Once per target, base initiative × 3/4 for the battle | Every hostile hit or spell: initiative modifier −30% of current initiative, cumulative, this turn only | 7 |
-| 40 | FirstShot | First on turn 1 | +30 initiative on turn 1 (+30 more with building defence ≥ 10) | 7 |
-| 41 | Bastion | ×3 inside, half damage, army +10 | AB, AS, DB, DS doubled at every turn start, compounding, no building check (bug) | 7 |
-| 42 | Flying | Any enemy in the front or back row, from any active row; shooters and mages unblocked | Melee on the three enemy front cells c±1 from row 1 or 2; nothing else changes | 7 |
-| 43 | Bleed | Half the wound again next turn | Bleed 75: each action start costs `(AB + AS + MP) × 75%` HP, all battle; a kill cancels the action | 7 |
-| 44 | PreventiveStrike | Strikes (warrior) or shoots first before any physical attack | Before melee: melee if AB, else a shot. Before shots and spells: shoots only if it has AS | 7 |
-| 45 | Flock | Damage ±25% by living counts | Attack modifier ±25% of AB (or AS) by army sizes at battle start (medium confidence) | 7 |
-| 46 | ArmorBreaker | ×0.7 | ×0.75 on DB and DS, cumulative | 7 |
-| 47 | NoHeal | Blocks heals, regen, vampirism, Hunger | Blocks heal **and** bless targeting, zeroes positive regen; vampirism and Hunger still work | 7 |
-| 48 | KillingStrike | Below 25% | HP ≤ 25% after damage > 1; checked before FateGift | 7 |
-| 49 | Assault | While storming: ×2 all battle, damage taken ×0.7 | Turn 1: stats ×2 when the defender's first unit has building defence ≥ 10; damage taken ×2/3 (medium confidence) | 7 |
-| 50 | FateGift | Full HP, attack and defence +25% | Actions refilled, protections +20, regen +20, max HP +20% with a full heal, initiative +5 this turn; not on poison or bleed deaths | 7 |
+All rows are implemented (2026-09-25); each has a test in `src/rules/battle/tests.rs`
+(`rowN_…`). "Razdor before" is what Razdor did until then.
+
+| # | Topic | Razdor before | Original (this exe) | § | Status |
+|---|---|---|---|---|---|
+| 1 | Buff/curse duration | 3 turns including the cast (`EFFECT_TURNS`) | Until the start of the next turn, since every modifier is reset each turn | 1 | Done |
+| 2 | Stacking | One blessing and one curse slot, a new one replaces the old | Additive modifiers. Each ally can be blessed once per turn (heals still allowed); each enemy is cursed once per turn, then struck | 1, 3 | Done |
+| 3 | EternalGift | Lasts the battle, same values | Changes base stats: lasts the battle, stacks per cast, and the Life blessing lowers defences (bug) | 1 | Done |
+| 4 | Magic drain | Only above the floor: `max(floor, P − dec)` | If MP > 0: `max(MP − drain, floor)`, which raises weak casters to the floor; Undead Death casters get floor +25 | 1 | Done |
+| 5 | Concentration | +10% of base per turn, capped at 2× | Adds the drain value per turn, no cap | 1 | Done |
+| 6 | Hostile mage action | Strike for Life, curse otherwise; the right click picks the other | No choice for the player or the AI: curse if the target has no negative modifier, else strike, for every school | 3 | Done: one action per cell, no right click |
+| 7 | Friendly mage | Heal or bless options | Automatic: heal if wounded and heal > 0, else bless. Targets: wounded or not yet blessed. Reserve casters target only the reserve | 3 | Done |
+| 8 | Undead casters | — | Elemental or Death curses by an Undead caster also drain `(P/CurseMainSpell)/2 + 1` HP to the caster | 3 | Done |
+| 9 | Vampirism | Any damage, capped at target HP, any school, any target | Physical hits and Death strikes only; uses the uncapped damage; not against Undead or Elemental; not blocked by NoHeal | 3, 8 | Done |
+| 10 | Life curse | `defence −(1 + 3P/(2·CMS))` | `defence −(P / floor(2·CMS/3) + 1)`, i.e. P/3 + 1 | 3 | Done |
+| 11 | Into the reserve | From the back row only, any time | From the front **or** back row, to any empty reserve cell; at most one reserve transition (in or out) per unit per turn | 2 | Done |
+| 12 | Collapse timing | After every action and move, at turn start and at begin | After a unit's death, and for the actor's side when it ends its actions; a voluntary move collapses only after the mover's last action | 2 | Done; no collapse at deployment either |
+| 13 | Reserve collapse | Reserve moves to the front, keeps its actions | Reserve moves to row 1 and **loses its remaining actions** that turn | 2 | Done |
+| 14 | Wide formation | `WIDE` = 2 × 6 with no reserve | Front 6, back 4 (columns 2–5), reserve 2 (columns 3–4); still 12 cells | 6 | Done; drawn 2 × 6 with the reserve at the back row's ends (492940) |
+| 15 | Turn order | Sorted list; ties go to the attacker | Descending threshold scan (turn 1 starts at 75). Ties go to the **player's side**, then army order. Initiative changes apply at once. Initiative ≤ 0 never acts | 8 | Done; the cursor indexes the living list, so a death before the cursor skips a unit as the exe's record shift does |
+| 16 | Attacker +1 initiative | To `attacker` | Always to side 1 = the player | 8 | Done |
+| 17 | Artillery | Always first; pierces melee and shots | +30 initiative on turn 1 only (+60 with building defence ≥ 10); pierces **shots** only | 0, 8 | Done |
+| 18 | Piercing set | ArmorIgnore, both vampire gifts, Artillery, PoisonArmorIgnore, for every kind | Melee: ArmorIgnore, PoisonArmorIgnore, VampirsGist, OldVampirsGist. Shots: ArmorIgnore, PoisonArmorIgnore, Artillery | 0 | Done; re-checked (§0) |
+| 19 | Piercing vs Row2Def | `def = building` (drops Row2Def) | Unit defence becomes 0; Row2Def (for shots) and building defence are still added | 0 | Done |
+| 20 | SpearDefense and long strike | ×3 and ÷2 applied to own + building (+ Row2Def) | Applied to the unit's own defence (plus modifier) only; building defence is added afterwards | 0 | Done |
+| 21 | Knight | ×90/100 | ×80/100 (set when `[GlobalOptions]` loads, 4e4501); the flag comes from the army's hero class, not a living hero | 0 | Done for the player's army; AI lords' hero class is not modelled |
+| 22 | Counterblow | Warriors only | Any Counterblow unit (AB 0 counters for 1), after melee or a long strike | 8 | Done |
+| 23 | Ghost | Killer always dies | Killer dies only if its ProtectDeath < 30 × the Ghost's Manevres | 8 | Done |
+| 24 | Garrison | ×2 on AB, AS, DB, DS | Base code: ×2 on AB, DB, DS (building defence ≥ 10). Community: +AS to the attack modifier each turn, only when building defence is exactly 10 | 8, 7 | Done |
+| 25 | Regen | `max(1, …)`, positive only, separate from poison | `round(maxHP × regen/100)`, no minimum; poison **sets** regen negative, replacing it | 8 | Done |
+| 26 | Poison | 15%; strongest poison counts | Regen −20 (Poison), −25 (PoisonS), `min(regen, −10)` (PoisonArmorIgnore); CtrPoison −20 stacking; mages poison when power after protection > 15 | 7 | Done |
+| 27 | Turn limit | 25 full turns, then a stalemate (player withdraws) | Ends after the first action of turn 25. **Victory** if the player has any unit left (normal loot) | 5 | Done; the enemy's survivors are handled as a beaten army (the leader-only detail is not modelled) |
+| 28 | Surrender | `game.rs`: every beaten enemy gives its Surrender in mana | A side whose remaining units **all** have Surrender > 0 gives up at once. Only those units' Surrender sum becomes mana; units killed earlier give none. Applies to the player too (defeat) | 5 | Done |
+| 29 | Bonus count | A list of bonuses per unit (`has_any`) | Exactly one bonus byte; each worn item with a bonus overwrites it (last wins) | 7 | Done in battle (the last bonus is kept); `items::apply` outside battle still lists all |
+| 30 | AI | Heal < 50%, kill the most dangerous, curse, fewest hits, heal or bless; step-forward moves | Scored priorities (retreat non-warriors, melee `dmg×round((R+1)M)`, shots, school magic, moves). Kill test depends on OptValue9. Never moves into the reserve. No randomness | 4 | Done; magic scoring is as approximate as the notes, `OptValue9` is not read yet (`Battle::set_improved_ai`), Manevres 0 counts as 1 |
+| 31 | Hunger | Any kill heals to full | Melee kills only; plus a turn-start heal when the living-unit count changed (shared counter) | 7 | Done |
+| 32 | Berserk | Damage × (2·max − hp)/max | Attack modifier = AB × 75% × missing/max (up to +75% AB), overwrites a blessing's attack | 7 | Done |
+| 33 | Exhaustion | −15 | −10 points on all three protections | 7 | Done |
+| 34 | CtrPoison | 15% poison on a melee striker | Striker's regen −20, stacking per hit | 7 | Done |
+| 35 | Splash | 80/40 on physical hits, row neighbours | 80/40, also on shots, spells, heals and blessings; a melee neighbour must be within 1 column of the attacker; interactive battles only | 7 | Done; a hostile-magic neighbour gets its own curse-or-strike |
+| 36 | Fortify | `def × (100 + min(25·turn, 125))/100` from turn 1, on own defence | From turn 2: flat `max(1, DB/4) × min(turn − 1, 5)` added to both defences | 7 | Done |
+| 37 | Dominate | ×1.25 vs smaller max HP (guess) | No effect (dead code) | 7 | Done |
+| 38 | Potent | Skips protection | Skips protection **and** nature multipliers | 7 | Done |
+| 39 | Stun | Once per target, base initiative × 3/4 for the battle | Every hostile hit or spell: initiative modifier −30% of current initiative, cumulative, this turn only | 7 | Done |
+| 40 | FirstShot | First on turn 1 | +30 initiative on turn 1 (+30 more with building defence ≥ 10) | 7 | Done |
+| 41 | Bastion | ×3 inside, half damage, army +10 | AB, AS, DB, DS doubled at every turn start, compounding, no building check (bug) | 7 | Done |
+| 42 | Flying | Any enemy in the front or back row, from any active row; shooters and mages unblocked | Melee on the three enemy front cells c±1 from row 1 or 2; nothing else changes | 7 | Done |
+| 43 | Bleed | Half the wound again next turn | Bleed 75: each action start costs `(AB + AS + MP) × 75%` HP, all battle; a kill cancels the action | 7 | Done |
+| 44 | PreventiveStrike | Strikes (warrior) or shoots first before any physical attack | Before melee: melee if AB, else a shot. Before shots and spells: shoots only if it has AS | 7 | Done |
+| 45 | Flock | Damage ±25% by living counts | Attack modifier ±25% of AB (or AS) by army sizes at battle start (medium confidence) | 7 | Done |
+| 46 | ArmorBreaker | ×0.7 | ×0.75 on DB and DS, cumulative | 7 | Done |
+| 47 | NoHeal | Blocks heals, regen, vampirism, Hunger | Blocks heal **and** bless targeting, zeroes positive regen; vampirism and Hunger still work | 7 | Done |
+| 48 | KillingStrike | Below 25% | HP ≤ 25% after damage > 1; checked before FateGift | 7 | Done |
+| 49 | Assault | While storming: ×2 all battle, damage taken ×0.7 | Turn 1: stats ×2 when the defender's first unit has building defence ≥ 10; damage taken ×2/3 (medium confidence) | 7 | Done; read as a lasting doubling applied on turn 1 |
+| 50 | FateGift | Full HP, attack and defence +25% | Actions refilled, protections +20, regen +20, max HP +20% with a full heal, initiative +5 this turn; not on poison or bleed deaths | 7 | Done |
 
 ## Unknowns and open points
 - **Enemy survivors at the turn limit.** Exactly what happens to them in the victory branch;

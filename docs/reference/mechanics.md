@@ -574,101 +574,31 @@ Each is marked *(guess)* in the code.
   An army's experience correction of 0 is read as 100 *(guess: no shipped army has 0)*.
 - **Wages**: see the Stage 4 notes below for the two hiring kinds. Medic 15% and Ranger
   20% daily healing do not add up (the larger applies).
-- **Battle turn limit**: `BattleEndTurn` full turns are played, then a stalemate; nobody
-  wins, the player withdraws.
-- **Hero**: at 0 HP he leaves the field like any unit; if anyone of his army survives he
-  returns with 1 HP after the battle.
-- **Effects**: blessings and curses last 3 turns including the one they are cast in. A new
-  one replaces the old; a unit holds at most one blessing and one curse. Friendly mages do
-  not bless an already blessed unit.
-- **Magic**: a strike needs power left after protection; a school with no
-  `MagicDirection` counts as `ToAll`. Default hostile action: strike for Life casters,
-  curse otherwise (the right click picks the other).
-- **Regen** heals `Regen`% of max HP at the start of every turn from turn 2. **Poison**:
-  a physical hit of more than 1 damage poisons; 15% of max HP per turn, can kill.
-- **Counterblow**: one melee strike back after being struck in melee (not after shots or
-  magic), by warriors only.
-- **Piercing** (`ArmorIgnore`, the vampire gifts, `Artillery`): the unit's defence is
-  ignored, building defence still counts.
-- **Garrison**: in a building with defence ≥ 10, attack and defence ×2 at the start and
-  damage taken ×2/3.
-- **Movement into the reserve**: any empty reserve cell, from the back row only.
-- **Collapse**: when a front row is empty, the back row steps forward; if the back row is
-  empty too, the reserve does. It also happens after moves.
-- **AI**: heal an ally below half HP; else a killing blow on the most dangerous target;
-  else (non-Life casters) curse the most dangerous uncursed enemy; else the attack needing
-  the fewest hits; else heal or bless. Units without a target step towards a cell with one
-  (warriors to the front row, others to the back row); units in the reserve stay there.
-- **Community bonuses** (`src/rules/battle.rs`; tokens and indices in `src/dt/data.rs`).
-  The 31 tokens are spelled as in the Community modder note; their indices 22–52 follow the
-  order of the executable's token table (it agrees with the doc's #45 `PoisonArmorIgnore`
-  and #50 `Assault`). Neither `Rus_Units.ini` nor `Rus_Artefacts.ini` of the Community
-  install uses any of them (103 bonuses, all vanilla), so they matter for mods only. The
-  changelog's descriptions are followed; *(guess)* marks the gaps it leaves.
-  - `Hunger`: a kill heals it to full HP [exe: HP is set to max HP].
-  - `Berserk`: physical damage × `(2·max − hp) / max` (×1 unhurt, up to ×2) *(guess: linear)*.
-  - `Exhaustion`: each hostile spell (strike or curse) lowers all three protections of the
-    target by 15 points for the battle, cumulatively, not below 0 *(guess: all schools)*.
-  - `Drying`: each hostile spell also deals 8% of the target's max HP (at least 1), through
-    any protection; a strike that protection would stop still does this.
-  - `CtrPoison`: a melee or long strike on it poisons the striker for 15% per turn *(guess:
-    shots and spells do not)*.
-  - `Suicide`: it dies after any hostile action of its own.
-  - `Caster`: world spells only (§8.3); nothing in battle.
-  - `Splash`: its physical attack counts 80% on the target and 40% on each living neighbour
-    of the target in the same row (columns c ± 1) *(guess: the row)*. The neighbours' damage
-    is the normal formula with 40% of the attack.
-  - `Fortify`: its own melee/ranged defence × `(100 + min(25·turn, 125)) / 100`, turn 1
-    included *(guess)*; building defence is added after.
-  - `Dominate`: **not documented anywhere**; the exe has one check for it that we did not
-    decode. *(guess)*: physical damage ×1.25 against a target with less max HP than its own.
-  - `PoisonS`: poison of 25% per turn (the strongest poison on a unit counts).
-  - `Concentration`: magic power rises by a tenth of its base (at least 1) every turn from
-    turn 2, up to twice the base, instead of draining *(guess: rate and cap)*.
-  - `Potent`: its hostile magic ignores the target's protection.
-  - `Stun`: a damaging hit cuts the target's initiative to 3/4 for the battle, once per
-    target *(guess: not cumulative; takes effect from the next turn's order)*.
-  - `FirstShot`: first in the turn order on turn 1 (before `Artillery`); normal later.
-  - `Bastion`: inside a building (garrison fights): its attacks and defences ×3, the
-    physical damage it takes (after defence) halved, and its whole army +10 defence (once
-    per army, however many bastions) *(guess)*.
-  - `Flying`: from the front or back row, a warrior strikes any enemy in the enemy's front or
-    back row (a normal strike, no long strike); shooters and hostile mages ignore the
-    "blocked in front" rule. Never from or into the reserve.
-  - `Flock`: physical damage ×1.25 when its side has more living units, ×0.75 when fewer.
-  - `Bleed`: a wounding physical hit makes the target lose half that damage again at the
-    start of the next turn (wounds add up; paid once) *(guess: "50% bleeding")*.
-  - `PreventiveStrike`: when an enemy strikes or shoots it, it first hits the attacker
-    (melee if a warrior, else a shot), whatever the reach; if that kills the attacker, the
-    attack does not happen *(guess: every attack, not once a turn)*.
-  - `ArmorBreaker`: a wounding physical hit multiplies the target's melee and ranged
-    defence by 0.7 for the battle, cumulatively.
-  - `NoHeal`: a unit it wounds physically is crippled: no heals, regeneration, vampirism or
-    `Hunger` for the rest of the battle. After the battle the world's healing is not blocked
-    *(not wired: the daily healing is in game.rs)*.
-  - `FasterAttack`: +1 action on turns 1 and 2.
-  - `PoisonArmorIgnore`: piercing (only building defence counts) and a 10% poison.
-  - `HoldLine`: no effect (the doc says it does not work; the exe has no check for it).
-  - `Neutralize`: a damaging hit strips all the target's bonuses (its own and its items')
-    for the battle, before the target could answer (a stripped Counterblow does not strike).
-  - `KillingStrike`: a target left below 25% of its max HP by its hit dies.
-  - `BloodThrist`: a kill gives the spent action back.
-  - `Assault`: storming a building (the other side is inside): attacks and defences ×2, and
-    physical damage it takes ×0.7.
-  - `EternalGift`: its blessings and curses last until the battle ends.
-  - `FateGift`: once per battle, a blow that would kill it (any damage of an action, not
-    poison or bleeding) leaves it at full HP instead, with attacks and defences +25%
-    *(guess: the size)*.
-  - Community changelog also says Poison works for mages: a Life/Death/Elemental strike of
-    a `Poison` unit poisons like a physical hit. "Garrison works for shooters" holds already
-    (both attacks double).
-  - Order in the damage formula (2.4): Fortify on the unit's defence; Splash on the
-    attack; after `max(1, atk − def)`: Berserk, Flock, Dominate, then the vanilla
-    reductions, Bastion, Assault, the knight, Unvulnerabe/Ghost, God bonuses and Evasion.
-  - "Inside a building" is set by `Battle::set_building_defence` (any garrison fight with
-    extra defence) or `Battle::set_in_building`. The game calls the first only when the
-    garrison has extra defence; a follow-up in `game.rs` should also call
-    `set_in_building(Team::Enemy)` for defence-0 garrisons.
+- **Battle** (`src/rules/battle.rs`, `formation.rs`) follows original-mechanics/battle.md,
+  every row of its "Razdor now → original" table: the wide row is front 6 / back 4 / reserve
+  2 (drawn 2 × 6, the reserve at the back row's ends), the threshold turn order with ties and
+  +1 initiative to the player, modifiers reset at every turn start (EternalGift writes the
+  battle stats instead), automatic mage actions (curse unless the target already has a
+  negative modifier, else strike; heal the wounded, else bless once a turn), one reserve move
+  in or out per unit and turn, collapse after deaths and after the actor's last action, the
+  turn limit as a victory after the first action of turn 25, surrender (only the surrendering
+  units' `Surrender` becomes mana), Knight −20%, Poison as regeneration −20, the piercing sets
+  per path, one bonus per unit, the deterministic scored AI and the code's numbers for every
+  Community bonus. The remaining choices:
+  - `OptValue9` ("improved enemy AI") is not read from the install yet; battles use the
+    normal level, AI-vs-AI battles level 0 and no `Splash` (`Battle::set_simulation`).
+  - The AI's magic scoring follows the notes, which are approximate for Elemental casters
+    (the front-row hits cap is left out); a target with 0 Manevres counts as 1 in the melee
+    score *(guess)*.
+  - `Assault`'s turn-1 doubling is kept for the battle *(guess: it doubles the battle stats,
+    which are not reset)*.
+  - Where a unit is several kinds at once, a cell's action is magic over a shot over melee
+    (later codes overwrite earlier ones in 484c4c); Flying's melee only where nothing else
+    fits.
+  - `Splash` on hostile magic: each neighbour gets its own curse-or-strike. `Suicide` happens
+    after the splash hits.
+  - Units standing on a blocked cell (old saves) move to the first free cell when a battle
+    starts.
 - **Community unit fields**: `Evasion` (applied last, 2.4), `MinMagicPower` and `ManaDrain`
   (per-unit floor and drain of magic power) are implemented.
 - **World grid** (Stage 3): scenarios use 8-neighbour rectangular cells (32×22 px, a

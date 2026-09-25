@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use razdor::rules::battle::Team;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
-use razdor::rules::formation::Slot;
+use razdor::rules::formation::Row;
 use razdor::rules::game::Game;
 use razdor::rules::save::ScenarioRef;
 use razdor::rules::script::ScriptEnd;
@@ -232,17 +232,18 @@ pub(super) fn top_bar(game: &Game) {
 pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     const CELL: f32 = 36.0;
     let formation = game.content.formation;
-    let rows = formation.rows();
-    let h = 40.0 + rows.len() as f32 * (CELL + 14.0) + 30.0;
+    let lines = formation.display_lines();
+    let h = 40.0 + lines as f32 * (CELL + 14.0) + 30.0;
     draw_rectangle(x, y, 240.0, h, PANEL);
     text(&format!("Squad {}/{}", game.squad.len(), game.max_squad()), x + 12.0, y + 28.0, 24.0, INK);
     let mut hovered = None;
     let cell = (228.0 / formation.cols as f32 - 1.0).min(CELL);
-    for (r, &row) in rows.iter().enumerate() {
+    for r in 0..lines {
         for col in 0..formation.cols {
+            let Some(slot) = formation.at_display(r, col) else { continue };
             let (cx, cy) = (x + 6.0 + col as f32 * (cell + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
-            draw_rectangle_lines(cx, cy, cell, CELL, 1.0, DIM);
-            let Some(i) = game.squad.iter().position(|u| u.slot == Slot::new(row, col)) else { continue };
+            draw_rectangle_lines(cx, cy, cell, CELL, 1.0, if slot.row == Row::Reserve { Color::new(0.3, 0.3, 0.3, 1.0) } else { DIM });
+            let Some(i) = game.squad.iter().position(|u| u.slot == slot) else { continue };
             let u = &game.squad[i];
             assets.draw_unit(u.def, Team::Player, cx + cell / 2.0, cy + CELL / 2.0, CELL);
             if !u.alive() {
