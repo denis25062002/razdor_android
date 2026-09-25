@@ -322,9 +322,9 @@ impl EventWorld for Game {
         self.beaten_armies.contains(&army)
     }
 
-    /// Only the player fights battles so far: beaten by anyone is beaten by him.
+    /// Beaten by the player or by an AI army (`rules::ai` records AI battles).
     fn army_beaten(&self, army: ArmyId) -> bool {
-        self.beaten_armies.contains(&army)
+        self.army_beaten_by_anyone(army)
     }
 
     fn army_active(&self, army: ArmyId) -> bool {
