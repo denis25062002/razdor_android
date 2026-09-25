@@ -11,7 +11,7 @@ use macroquad::prelude::*;
 use razdor::rules::battle::Team;
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
-use razdor::rules::formation::Row;
+use razdor::rules::formation::{Row, Slot};
 use razdor::rules::game::{Event, Foe, Game};
 use razdor::rules::town::first_tab;
 use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
@@ -496,12 +496,13 @@ fn draw_route(game: &Game, path: &[Tile], minutes: f32, cam: &Camera, color: Col
 /// A 2×6 (or 3×4) mini formation of portraits.
 fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x: f32, y: f32, cell: f32) -> f32 {
     let f = game.content.formation;
-    for (r, &row) in f.rows().iter().enumerate() {
+    for r in 0..f.display_lines() {
         for col in 0..f.cols {
+            let Some(Slot { row, .. }) = f.at_display(r, col) else { continue };
             let (cx, cy) = (x + col as f32 * (cell + 3.0), y + r as f32 * (cell + 3.0));
             draw_rectangle(cx, cy, cell, cell, Color::new(0.0, 0.0, 0.0, 0.35));
             draw_rectangle_lines(cx, cy, cell, cell, 1.0, if row == Row::Front { DIM } else { Color::new(0.4, 0.4, 0.4, 1.0) });
-            if let Some(t) = troops.iter().find(|t| t.slot.row == row && t.slot.col == col) {
+            if let Some(t) = troops.iter().find(|t| f.display(t.slot) == (r, col)) {
                 assets.draw_unit(t.unit, team, cx + cell / 2.0, cy + cell / 2.0, cell);
                 // The troop's level in the corner.
                 let lv = t.level.to_string();
@@ -511,7 +512,7 @@ fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x:
             }
         }
     }
-    f.rows().len() as f32 * (cell + 3.0)
+    f.display_lines() as f32 * (cell + 3.0)
 }
 
 struct Tooltip {
@@ -586,7 +587,7 @@ fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
     let cell = 30.0;
     let f = game.content.formation;
     let grid_w = f.cols as f32 * (cell + 3.0);
-    let grid_h = if t.troops.is_empty() { 0.0 } else { f.rows().len() as f32 * (cell + 3.0) + 8.0 };
+    let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 };
     let w = [measure(&t.title, 22.0).width + 24.0, grid_w + 24.0, 250.0]
         .into_iter()
         .chain(t.lines.iter().chain(&t.footer).map(|(s, _)| measure(s, 16.0).width + 24.0))

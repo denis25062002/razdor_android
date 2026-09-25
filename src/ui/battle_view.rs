@@ -1,17 +1,18 @@
 //! The battle screen: both formations (enemy on top, front rows facing in the middle), unit
 //! cards with the original's stat strip, a side panel with the hovered unit's full stats,
 //! the turn order and the log. Hovering a target previews the action ("-N hits", curse
-//! effects); left click does the default action, right click the alternative (e.g. a mage's
-//! strike instead of its curse).
+//! effects); a click does it. As in the original each cell has one action: a hostile mage
+//! curses a target without a negative modifier and strikes the others, a friendly one heals
+//! the wounded and blesses the rest.
 
 use std::collections::VecDeque;
 use std::f32::consts::PI;
 
 use macroquad::prelude::*;
 
-use razdor::rules::battle::{ActionKind, Battle, Hit, Outcome, Preview, Step, Team, XpAward};
+use razdor::rules::battle::{ActionKind, Battle, EndReason, Hit, Outcome, Preview, Step, Team, XpAward};
 use razdor::rules::content::{MagicDirection, Stat};
-use razdor::rules::formation::{Row, Slot};
+use razdor::rules::formation::{Formation, Row, Slot};
 use razdor::rules::game::{BattleResult, Game};
 use razdor::rules::units::Stats;
 
@@ -42,11 +43,12 @@ struct Layout {
     pitch_x: f32,
     pitch_y: f32,
     panel_x: f32,
+    formation: Formation,
 }
 
 impl Layout {
     fn new(battle: &Battle) -> Layout {
-        let rows = battle.formation.rows().len();
+        let rows = battle.formation.display_lines();
         let cols = battle.formation.cols as f32;
         let avail_h = screen_height() - OY - 16.0 - MID_GAP;
         let avail_w = screen_width() - PANEL_W - OX - 24.0;
@@ -64,21 +66,19 @@ impl Layout {
             pitch_x,
             pitch_y,
             panel_x: OX + cols * pitch_x + 16.0,
+            formation: battle.formation,
         }
     }
 
     /// Screen rows top to bottom: enemy reserve, back, front | player front, back, reserve.
+    /// In the wide row the two reserve cells sit at the ends of the back row.
     fn cell_pos(&self, team: Team, slot: Slot) -> Vec2 {
-        let r = match slot.row {
-            Row::Front => 0,
-            Row::Back => 1,
-            Row::Reserve => 2,
-        };
+        let (r, col) = self.formation.display(slot);
         let (line, gap) = match team {
             Team::Enemy => (self.rows - 1 - r, 0.0),
             Team::Player => (self.rows + r, MID_GAP),
         };
-        vec2(OX + slot.col as f32 * self.pitch_x, OY + line as f32 * self.pitch_y + gap)
+        vec2(OX + col as f32 * self.pitch_x, OY + line as f32 * self.pitch_y + gap)
     }
 
     fn panel_height(&self) -> f32 {
@@ -279,22 +279,23 @@ impl BattleView {
             self.battle.skip();
             return;
         }
-        let right = is_mouse_button_pressed(MouseButton::Right);
-        if !clicked() && !right {
+        if !clicked() {
             return;
         }
         if let Some(t) = self.fighter_under_mouse(l) {
             let opts = self.battle.options(active, t);
-            let kind = if right { opts.get(1) } else { opts.first() };
-            if let Some(&kind) = kind {
+            if let Some(&kind) = opts.first() {
                 if let Ok(hit) = self.battle.act_with(t, kind) {
                     cue(action_cue(&self.battle, active, kind));
                     self.fx = Some(Fx { actor: active, kind: FxKind::Act { hit }, t: 0.0 });
                 }
+            } else if t == active {
+                // A click on its own card passes one action, as in the original.
+                self.battle.pass();
             }
         } else if let Some((Team::Player, to)) = self.cell_under_mouse(l) {
             let from = self.battle.fighters[active].slot;
-            if !right && self.battle.move_active(to).is_ok() {
+            if self.battle.move_active(to).is_ok() {
                 cue(Cue::CardMove);
                 let kind = FxKind::Move { from: l.cell_pos(Team::Player, from), to: l.cell_pos(Team::Player, to) };
                 self.fx = Some(Fx { actor: active, kind, t: 0.0 });
@@ -450,10 +451,10 @@ impl BattleView {
         if f.is_hero {
             text("*", p.x + w - 16.0, p.y + 24.0, 26.0, ACCENT);
         }
-        if f.blessing().is_some() {
+        if f.blessed {
             draw_circle(p.x + w - 10.0, p.y + h * 0.4, 5.0, RAISED);
         }
-        if f.curse().is_some() {
+        if f.cursed {
             draw_circle(p.x + w - 10.0, p.y + h * 0.4 + 12.0, 5.0, PURPLE);
         }
         let fighting = !self.battle.is_deploying() && self.battle.outcome() == Outcome::Ongoing;
@@ -498,9 +499,8 @@ impl BattleView {
         }
         let hp = self.battle.fighters[t].hp;
         let mut lines: Vec<String> = Vec::new();
-        for (n, &k) in opts.iter().take(2).enumerate() {
-            let s = preview_text(self.battle.preview(active, t, k), k, hp);
-            lines.push(if n == 0 { s } else { format!("right click: {s}") });
+        for &k in opts.iter().take(1) {
+            lines.push(preview_text(self.battle.preview(active, t, k), k, hp));
         }
         let (mx, my) = mouse_position();
         let w = lines.iter().map(|s| measure(s, 18.0).width).fold(0.0, f32::max) + 16.0;
@@ -565,14 +565,14 @@ impl BattleView {
         row("Actions", Stat::Manevres, &mut y);
         row("Regeneration %", Stat::Regen, &mut y);
         let mut notes: Vec<String> = s.bonuses.iter().map(|b| b.token().to_string()).collect();
-        if let Some(b) = f.blessing() {
-            notes.push(format!("blessed ({})", b.describe()));
+        if !f.mods.is_empty() {
+            notes.push(format!("this turn: {}", f.mods.describe()));
         }
-        if let Some(c) = f.curse() {
-            notes.push(format!("cursed ({})", c.describe()));
-        }
-        if f.poisoned {
+        if f.poisoned() {
             notes.push("poisoned".into());
+        }
+        if f.bleed > 0 {
+            notes.push("bleeding".into());
         }
         if !notes.is_empty() {
             text(&notes.join(", "), x, y, 16.0, ACCENT);
@@ -620,7 +620,8 @@ impl BattleView {
                 "reach anyone not in the reserve. The back row",
                 &row2,
                 "row falls, the rear steps forward. The reserve",
-                "cannot act or be attacked; units step out of it.",
+                "(the dark cells) cannot be attacked; a unit may",
+                "step in or out of it once a turn.",
             ];
             y = y.max(OY + 190.0);
             for line in lines {
@@ -647,7 +648,7 @@ impl BattleView {
 
         if player_turn {
             let hint = match (targets.is_empty(), moves.is_empty()) {
-                (false, _) => "Click a framed card (right: other action). Space: end",
+                (false, _) => "Click a framed card. Space: end its actions",
                 (true, false) => "Nothing in reach: step to a lit cell, or Space",
                 (true, true) => "Nothing to do: Space to end the turn",
             };
@@ -662,9 +663,11 @@ impl BattleView {
         let (x, y) = (l.panel_x + (panel_w - w).max(0.0) / 2.0, OY + 120.0);
         draw_rectangle(x, y, w, h, Color::new(0.1, 0.09, 0.08, 1.0));
         draw_rectangle_lines(x, y, w, h, 2.0, ACCENT);
-        let (title, sub, color) = match outcome {
-            Outcome::Victory => ("Victory!", "", ACCENT),
-            Outcome::Stalemate => ("Stalemate", "The turns run out. Both sides pull back.", INK),
+        let (title, sub, color) = match (outcome, self.battle.end_reason()) {
+            (Outcome::Victory, Some(EndReason::Surrender(_))) => ("Victory!", "The enemy surrenders.", ACCENT),
+            (Outcome::Victory, Some(EndReason::TurnLimit)) => ("Victory!", "The turns run out; the field is yours.", ACCENT),
+            (Outcome::Victory, _) => ("Victory!", "", ACCENT),
+            (_, Some(EndReason::Surrender(_))) => ("Defeat", "Your army surrenders.", RED),
             _ => ("Defeat", "Your whole army has fallen.", RED),
         };
         text_centered(title, x + w / 2.0, y + 56.0, 50.0, color);

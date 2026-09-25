@@ -853,11 +853,11 @@ impl Game {
         b
     }
 
-    /// Mana from the beaten enemies' `Surrender` values: the surrendered troops pray for
-    /// the victor *(guess: every beaten unit gives its full value; in the footage a fort
-    /// garrison with one unit of `Surrender=20` gave exactly 20 mana)*.
+    /// Mana from the enemies' surrender: when every remaining enemy has `Surrender > 0`
+    /// the side gives up, and those units' values pray for the victor (48bfb4); units killed
+    /// before give none. In the footage a fort garrison of one `Surrender=20` unit gave 20.
     fn surrender_mana(&self, battle: &Battle) -> i32 {
-        battle.fighters.iter().filter(|f| f.team == Team::Enemy).map(|f| self.content.unit(f.unit).surrender.max(0)).sum()
+        battle.surrender_mana(Team::Player)
     }
 
     /// Writes the battle back into the squad: HP, deployed cells, XP and levels. The dead
@@ -1370,7 +1370,9 @@ mod tests {
     }
 
     #[test]
-    fn stalemate_with_a_gang_buys_time_to_escape() {
+    fn reaching_the_turn_limit_against_a_gang_is_a_victory() {
+        // The original has no draw: after the first action of turn `BattleEndTurn` the
+        // player wins if any of his units stand (battle.md §5).
         let mut g = quiet_game(HeroClass::Knight);
         let camp = g.world.index_of("Bandit camp");
         g.world.spawn_gang(camp, (30, 20));
@@ -1380,10 +1382,10 @@ mod tests {
         while b.outcome() == Outcome::Ongoing {
             b.skip();
         }
-        let (level, xp) = (g.hero().level, g.hero().xp);
-        assert!(matches!(g.resolve_battle(&b), BattleResult::Withdrew { lost: 0 }));
-        assert!(g.world.armies[0].ignore_until > g.clock.total_minutes());
-        assert_eq!((g.hero().level, g.hero().xp), (level, xp), "no XP without a victory");
+        assert_eq!(b.round, 25);
+        // The loot itself follows economy.md (half the gang's gold plus its wages).
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { .. }));
+        assert!(g.world.armies.is_empty(), "the gang counts as beaten");
     }
 
     #[test]

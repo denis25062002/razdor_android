@@ -192,15 +192,14 @@ fn unit_card(game: &Game, assets: &Assets, u: &Unit, x: f32, y: f32, w: f32, h: 
 
 /// Cell of a formation grid of cards.
 fn grid_cell(game: &Game, slot: Slot, x: f32, y: f32, cw: f32, ch: f32, gap: f32) -> (f32, f32) {
-    let f = game.content.formation;
-    let r = f.rows().iter().position(|&r| r == slot.row).unwrap_or(0);
-    (x + slot.col as f32 * (cw + gap), y + r as f32 * (ch + gap))
+    let (r, col) = game.content.formation.display(slot);
+    (x + col as f32 * (cw + gap), y + r as f32 * (ch + gap))
 }
 
 fn empty_cells(game: &Game, x: f32, y: f32, cw: f32, ch: f32, gap: f32) {
     let f = game.content.formation;
-    for (r, _) in f.rows().iter().enumerate() {
-        for col in 0..f.cols {
+    for r in 0..f.display_lines() {
+        for col in (0..f.cols).filter(|&c| f.at_display(r, c).is_some()) {
             let (cx, cy) = (x + col as f32 * (cw + gap), y + r as f32 * (ch + gap));
             draw_rectangle(cx, cy, cw, ch, Color::new(0.07, 0.13, 0.11, 1.0));
             draw_rectangle_lines(cx, cy, cw, ch, 1.0, Color::new(0.25, 0.38, 0.32, 1.0));
