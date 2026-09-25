@@ -615,7 +615,7 @@ impl EventWorld for Game {
     fn set_army_speed(&mut self, holder: Holder, correction: i8) {
         if let Holder::Army(a) = holder {
             if let Some(a) = self.army_mut(a) {
-                a.slowness = Army::slowness_for(correction);
+                a.speed = Army::speed_for(correction, a.troops.first().map_or(0, |t| t.unit.0));
             }
         }
     }
@@ -1277,7 +1277,7 @@ mod tests {
         g.drain_events();
         let a = g.world.armies.iter().find(|a| a.id == 2).unwrap();
         assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), vec![UnitId(5), UnitId(3)]);
-        assert_eq!(a.slowness, Army::slowness_for(-3));
+        assert_eq!(a.speed, Army::speed_for(-3, 5), "5 − (−3) = 8");
         assert_eq!((a.faction, a.attitude), (4, 2), "enemy group, then relation 2 towards the player");
         assert_eq!(a.effects, vec![ActiveSpell::new(3, None)]);
         assert_eq!((a.named, a.model), (1, 12));

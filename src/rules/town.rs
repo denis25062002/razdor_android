@@ -422,6 +422,17 @@ mod tests {
         assert_eq!(g.heal(2), Err(ServiceError::NotHere));
     }
 
+    #[test]
+    fn healing_and_resurrection_take_no_time_even_before_noon() {
+        let mut s = map();
+        s.buildings = vec![town(BuildingType::Church, 2, 2, 1)];
+        let mut g = inside(&s);
+        g.pass_time(2.5 * 60.0, &mut Vec::new()); // 09:00 -> 11:30
+        g.squad[1].hp = 1;
+        let t = g.clock.total_minutes();
+        let events = g.heal(1).unwrap();
+        assert!(events.is_empty() && g.clock.total_minutes() == t, "{events:?}");
+    }
 
     #[test]
     fn no_healing_in_taverns_or_villages() {
@@ -1087,8 +1098,12 @@ mod real_maps {
         let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 11);
         g.world.armies.clear();
 
+        // Walking onto another building on the way enters it and ends the walk: walk on.
         let walk_into = |g: &mut Game, l: usize| {
-            if g.location != Some(l) {
+            for _ in 0..10 {
+                if g.location == Some(l) {
+                    break;
+                }
                 assert!(g.set_destination(g.world.locations[l].tile));
                 for _ in 0..50_000 {
                     if !g.moving() {

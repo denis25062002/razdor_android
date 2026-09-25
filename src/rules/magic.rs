@@ -40,7 +40,7 @@ pub const SPELL_SLOTS: usize = 4;
 /// Game time passes in half-hour steps while casting.
 pub const CAST_STEP_MINUTES: u64 = 30;
 /// Slice of game time simulated at once while casting, as for waits.
-const STEP_MINUTES: f32 = 5.0;
+const STEP_MINUTES: f32 = super::game::WAIT_TICK_MINUTES;
 
 /// A lasting spell on an army: which spell, the game minute it ends (`None`: never, e.g. set
 /// by Community opcode 11), and whether it holds only the leader (the first unit).
@@ -695,6 +695,8 @@ mod tests {
     fn an_enemy_reaching_the_hero_interrupts_the_cast() {
         let mut g = game(HeroClass::Knight);
         with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
+        // Bold enough to attack a stronger hero (the AI attacks only battles it wins).
+        g.world.armies.last_mut().unwrap().ai.aggression = 100;
         let mana = g.mana;
         let cast = g.cast(2, CastTarget::Own).unwrap();
         assert_eq!(cast.outcome, CastOutcome::Interrupted);

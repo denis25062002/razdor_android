@@ -28,9 +28,9 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | Area | State |
 |---|---|
 | **Original files** | `.DTm` scenarios (all 15 shipped maps parse byte-exactly and re-serialise identically), `Rus_Units/Artefacts/Spells.ini`, `_Global.ini`, art (`.ugs`, `.lit`, `.spi`; all 421 files decode, pixel-identical to the reference decoder). |
-| **World map** | Scenario terrain, trees, hills, mountains, buildings and army figures drawn with the original art; 8-way square grid (see *Decisions*); A* routes with travel time; army and building tooltips (army formation preview); zoom. |
-| **Time** | The original calendar (30-day months, days from 0, hours). Time passes while walking, waiting and casting (healing is instant, as in the original). Villages refill at 00:00; the income/wages report and an autosave come at 12:00 (as in the footage). |
-| **Ships** | Shipyards rent a ship for `ShipCost` (250 gold). Click the water to board and sail, the shore to land; the ship waits where you land and you board it again by walking onto it; one ship at a time. Pirate, merchant and hero ships of the scenarios sail and cruise; pirates attack like hostile armies, merchants never do. Saved with the game. With ships every building of every shipped map is reachable from every start, except one church in the second tutorial (walled in by thickets and bog). |
+| **World map** | Scenario terrain, trees, hills, mountains, buildings and army figures drawn with the original art. Movement as the original's code (docs/reference/original-mechanics/world.md): 8-way squares, diagonal ×1.5, the original's terrain and object costs (road 15, grass 25, marsh 40 minutes; shallows are water), massifs cover squares; building footprints are walked at road speed and entered from any cell; only ill-disposed castles/forts and ruins not yours bar the route. Routes with travel time; tooltips; zoom. |
+| **Time** | The original calendar (30-day months, days from 0, hours). Time passes while walking (each step is charged the cell left × the hero's speed: knight/archmage 5, ranger 4) and waiting (30-minute ticks), each step or tick played over 150 ms; healing and resurrection take no time. At 00:00 villages refill (slower as they fill), barracks may gain a unit, garrisons heal; the income/wages report and an autosave come at 12:00. |
+| **Ships** | Shipyards rent a ship for `ShipCost` (250 gold). Walk onto it to board, click the water to sail (shallows and coastal water; deep sea blocks ships), the shore to land; on landing the ship is gone (the original returns to land-only routes). Pirate, merchant and hero ships of the scenarios sail and cruise; pirates attack, merchants never do. Saved with the game. |
 | **Fog of war** | Unexplored land is black with a soft edge and cannot be walked; the hero feels his way into the dark; lanterns and scripted reveals light areas. Minimap of the explored land with owner-coloured icons. |
 | **Armies** | Placed from the scenario, active/inactive, factions and attitudes; hostile armies chase and attack; friendly ones greet (events run on meeting). |
 | **Buildings** | All 16 types. Building window with the original's tabs by type: main hall (quests, rumours for 10 gold), barracks (stock that regrows by the original's daily roll, paid healing, resurrection within 7 days), garrison, market + sell shop (the original's attitude price table, stock drawn anew every midnight, towns stock healing potions), sanctuary (learn spells), village tribute (gold and mana, growing by the original's √ rule) and the one offer a visit may bring (innkeeper, priest, long blessing, furs or witch, by the original's rolls), shipyard (rent a ship). Forts at the foot of bridges let you through to the bridge. Capturing forts and castles changes owner and income. Ruins give their treasure. |
@@ -40,38 +40,39 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Events and quests** | The scenario script engine: global / local / quest / rumour events, time windows (in hours) and repeats as the original checks them (a No counts as happened, events without "once" fire on every check), relative and chained events, all condition and result groups, counter flags (`%+X -X =X =/X`), yes/no questions, journal, victory and defeat events. The Community extensions: event opcodes 1–20 (editing other events, AI armies' items/units/speed/groups/spells/XP, spell checks, campaign branches with `Game::next_map()`, random flags, AI targets, teleports) and lifting a spell. Story dialogs with pictures and rewards. On РК1 the opening dialog, the first quest and the journal work. |
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for game time, the mana taken when the spell completes; effects last into battles, a recast adds time, 4 per unit; `OneEnemy` and life drain hit only the leader; instant damage can kill; archmage or Caster discount (not both); event and village spells last 10× (5×) as long. |
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
-| **AI armies** | The scenario's armies choose goals by behaviour style (feudal / rogue / peasant, army byte 59) and target model with the `_Global.ini` priorities: attack you or hostile armies in view, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. Feudal economy: income, wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles with the battle engine on both sides, captures and income changes (your castles can be lost), reports within sight. Beaten lords retreat into a building and return; armies respawn after their days (leader or whole army). 30 simulated days on every shipped map take 0.01–0.33 s each (release). |
+| **AI armies** | The scenario's armies choose goals as the original does: every candidate seeded with its `_Global.ini` priority into one flood, lowest priority + path cost wins; armies and the player within `AIDistance0..2` cells by behaviour style (feudal / rogue / peasant, byte 59), inside the patrol box; an attack only when a simulated battle is won. Goals: attack, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. They walk on minutes banked from your steps (speed `max(1, 5 − correction)`). Feudal economy: income (byte 80 × 10), wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles, captures, reports within sight. Beaten lords retreat and return; armies respawn at their home building's centre. 30 simulated days take 0.01–0.8 s per map (release). |
 | **Map editor (step 1)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms except events; undo/redo; checks before saving; test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **469 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **487 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
 
 - **The wide row by default** (front 6, back 4, reserve 2), because your Community Update install
   and the video use it; the vanilla 3×4 with a reserve row is a supported option.
-- **Square cells with 8 neighbours for scenarios**, not hexes: РК3's bridges are diagonal chains
-  of 1×1 pieces that no hex row parity connects (one is the only way to the capital), and the
-  editor's grid is square. The demo keeps its hex map.
-- **Ships** (all *(guess)*, mechanics.md §8.6): 40 minutes per sea cell for every class; a
-  rented ship waits at the water nearest the shipyard on foot; ship armies always cruise;
-  merchants never attack. **Gates**: a fort standing at the foot of a bridge lets the hero
-  through its walls to the bridge (ДС2, "Другой берег"). **Start building**: the preset's,
-  else the class's flagged building (byte 353) next to the preset's cell.
-- **AI** (all *(guess)*, mechanics.md §8.8): army byte 59 is the behaviour style (it matches
-  the model of every feudal/bandit/peasant army); lower `_Global.ini` priority wins, scored
-  × (10 + distance); view 12/6/3 cells from `AIDistance0..2` by target model; an army
-  attacks when its strength × (100 + aggression) % is at least the enemy's; lords recover 3
-  days in a building; an army's items are worn by its units in battle (yours too); a
-  captured castle gets a garrison of the taker's weakest troops.
+- **Square cells with 8 neighbours for scenarios** (confirmed by the exe, world.md §1). The
+  demo keeps its hex map.
+- **Ships** (*(guess)*, mechanics.md §8.6): a rented ship waits at the water nearest the
+  shipyard on foot; ship armies always cruise; merchants never attack; a preset on the water
+  starts the hero aboard. The earlier guesses about gates, entry cells and start buildings are
+  replaced by the original's rules (world.md §1, §7): a fort at the foot of a bridge is walked
+  into (fight its garrison, or just enter a neutral one) and out on the far side.
+- **AI** (mechanics.md §8.8): army byte 59 is the behaviour style; the scoring, ranges,
+  walking and respawn now follow world.md §4–5. Still *(guess)*: how aggression shifts the
+  simulated battle, no repulsion field around a losing target, lords recover 3 days in a
+  building, an army's items are worn by its units in battle, a captured castle gets a
+  garrison of the taker's weakest troops.
+- **Reachability with the original's rules** (env-gated test, by land and rented ships):
+  unchanged on 11 maps; newly out of reach: the first tutorial's three villages (fords are
+  water), РК3/РК5's altar (massif squares and a lake without a shipyard) and РК7's eastern
+  island (deep sea). Scripted teleports are not counted; check these in the original.
 - **Daily report at 12:00**, villages at 00:00: the footage shows the report and autosave at noon.
 - **A beaten unit gives its `Surrender` value in mana** (fitted to the footage; the battle
   code's rule is not traced). Prices, wages and loot now follow the executable
   (original-mechanics/economy.md).
 - Everything the original leaves unknown is marked *(guess)* in the code and listed in
-  `docs/reference/mechanics.md` §8 (terrain costs, sight radius 7.5
-  cells, level numbering, …).
+  `docs/reference/mechanics.md` §8 (level numbering, …).
 
 Closing the window used to end in a segmentation fault (a native library's exit handler,
 after `main` returned); the game now ends the process directly once everything is written.

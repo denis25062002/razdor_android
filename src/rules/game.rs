@@ -14,21 +14,28 @@ use super::formation::Slot;
 use super::items::{self, EquipError};
 use super::magic::{self, ActiveSpell};
 use super::save::ScenarioRef;
-use super::ships::{Ship, SEA_MINUTES};
-use super::map::{Tile, TileMap};
+use super::ships::Ship;
+use super::map::{step_minutes, Tile, TileMap, ROAD};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
-use super::world::{Owner, Stationed, Troop, World};
+use super::world::{Army, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
 
-/// Game minutes that pass per real second while the party walks (1 h ≈ 0.2 s).
-pub const MINUTES_PER_SECOND: f32 = 300.0;
-/// Hostile armies chase the player inside this many cells *(guess)*.
+/// Real seconds each hero step and each wait tick plays over: the original's
+/// `WalkDelay = 150 + (100 − WalkSpeed) × 2.5` ms at the shipped `WalkSpeed=100` (world.md
+/// §2). Game time per real second follows from the step's own minutes.
+pub const STEP_SECONDS: f32 = 0.15;
+/// Game minutes of a wait tick (world.md §6): waiting 1 h is 2 ticks, 4 h 8 ticks.
+pub const WAIT_TICK_MINUTES: f32 = 30.0;
+/// The hero's speed by class (world.md §2): knight and archmage 5, ranger 4 (his steps
+/// take 80% of the time).
+pub const KNIGHT_SPEED: u32 = 5;
+pub const RANGER_SPEED: u32 = 4;
+/// The demo's gangs chase the player inside this many cells (Razdor's own demo rule).
 pub const CHASE_RADIUS: i32 = 6;
-/// Armies meet (and hostile ones attack) on neighbouring cells (mechanics.md 5.2).
+/// Armies meet (and hostile ones attack) on neighbouring cells, diagonals included
+/// (world.md §4).
 const CONTACT: i32 = 1;
-/// Largest slice of game time simulated at once, so chases stay smooth.
-const STEP_MINUTES: f32 = 5.0;
-/// Cells an AI army's pathfinder may expand per search.
+/// Cells a demo gang's or a ship's pathfinder may expand per search.
 const AI_PATH_NODES: usize = 4000;
 /// A friendly army greets the player again only after he has gone this far away.
 const MEET_AGAIN_DISTANCE: i32 = 4;
@@ -44,8 +51,6 @@ pub const MARKET_STOCK: usize = 6;
 const GANG_LOOT_CHANCE: i32 = 30;
 /// Percent chance that a demo village pays tribute with an item instead of gold.
 pub(crate) const TRIBUTE_ITEM_CHANCE: i32 = 25;
-/// The Ranger hero moves 20% faster on the map (mechanics.md 7).
-const RANGER_SPEED: f32 = 1.2;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HireError {
@@ -243,35 +248,39 @@ pub struct Game {
     pub(crate) offered_at: Option<usize>,
     #[serde(default)]
     pub(crate) last_offer: Option<VillageOffer>,
+    /// Real seconds into the step (or wait tick) under way ([`STEP_SECONDS`] each).
+    #[serde(skip)]
+    pub(crate) step_elapsed: f32,
+    /// Wait ticks still to play in real time ([`Game::begin_wait`]).
+    #[serde(skip)]
+    pub(crate) wait_ticks: u32,
+    /// Real seconds since the world last moved, for drawing armies between cells.
+    #[serde(skip)]
+    pub(crate) since_step: f32,
+    /// The AI's simulated battles of the day (`rules::ai`).
+    #[serde(skip)]
+    pub(crate) sims: ai::Sims,
 }
 
-/// Moves `pos` along `path` for up to `minutes` of game time; `cost` gives the minutes per
-/// cell. Stops early on a cell `stop` accepts (the rest of the path is dropped).
-/// Returns the minutes used.
-fn walk(map: &TileMap, pos: &mut (f32, f32), path: &mut Vec<Tile>, minutes: f32, cost: &dyn Fn(Tile) -> f32, stop: &dyn Fn(Tile) -> bool) -> f32 {
-    let mut left = minutes;
-    while left > 0.0 {
-        let Some(&next) = path.first() else { break };
-        let per_tile = cost(next);
-        let goal = map.center(next);
-        let (dx, dy) = (goal.0 - pos.0, goal.1 - pos.1);
-        let need = (dx * dx + dy * dy).sqrt() * per_tile;
-        if need <= left {
-            *pos = goal;
-            path.remove(0);
-            left -= need;
-            if stop(next) {
-                path.clear();
-                break;
-            }
-        } else {
-            let k = left / need;
-            pos.0 += dx * k;
-            pos.1 += dy * k;
-            left = 0.0;
+/// Army `a` walks its path while its banked minutes cover the next step: `cost(next) ×
+/// speed`, ×1.5 diagonally (world.md §2); `cost` gives the cost units of a cell, `None`
+/// where it cannot go (the route is dropped). Remembers where it stood for drawing.
+fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>) {
+    let start = a.pos;
+    while let Some(&next) = a.path.first() {
+        let Some(c) = cost(next) else {
+            a.path.clear();
+            break;
+        };
+        let need = step_minutes(map.grid, a.tile(map), next, c, a.speed.max(1));
+        if a.budget < need {
+            break;
         }
+        a.budget -= need;
+        a.pos = map.center(next);
+        a.path.remove(0);
     }
-    minutes - left
+    a.shown_from = (a.pos != start).then_some(start);
 }
 
 impl Game {
@@ -313,6 +322,10 @@ impl Game {
             offer: None,
             offered_at: None,
             last_offer: None,
+            step_elapsed: 0.0,
+            wait_ticks: 0,
+            since_step: 0.0,
+            sims: ai::Sims::default(),
         };
         // The hero draws no wage; everyone counts as paid at the start.
         let now = clock.total_minutes() as u64;
@@ -354,13 +367,21 @@ impl Game {
 
     /// A new game on an original scenario, with the hero preset of `hero`.
     pub fn from_scenario(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
-        let world = World::from_scenario(scenario, &content);
+        let mut world = World::from_scenario(scenario, &content);
         let start = world.hero_start(scenario, &content, hero);
+        for &l in &start.owned {
+            world.give_to_player(l);
+        }
         let mut leader = Unit::new(&content, hero.unit(), start.hero_slot);
         leader.heal_full(&content);
         let mut squad = vec![leader];
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
         let mut g = Game::with_world(content, world, squad, start.tile, seed);
+        // A preset on the water ("Тихая пристань") puts him there, at sea: aboard a ship
+        // *(guess: the original plans on its MIXED map while he is on water)*.
+        if g.world.is_sea(start.tile) {
+            g.ship = Some(Ship { tile: start.tile, aboard: true });
+        }
         g.fog = fog::for_scenario(&g.world.map, Some(scenario), true);
         g.look_around();
         g.gold = start.gold;
@@ -433,18 +454,28 @@ impl Game {
         !self.path.is_empty()
     }
 
-    /// Terrain-cost multiplier of the hero's army.
-    pub(crate) fn slowness(&self) -> f32 {
+    /// The hero's speed: minutes per cost unit of an orthogonal step ([`KNIGHT_SPEED`],
+    /// [`RANGER_SPEED`]).
+    pub fn hero_speed(&self) -> u32 {
         if self.hero_class() == Some(HeroClass::Ranger) {
-            1.0 / RANGER_SPEED
+            RANGER_SPEED
         } else {
-            1.0
+            KNIGHT_SPEED
         }
+    }
+
+    /// Game minutes of the hero's step from `from` onto its neighbour `to` (world.md §1–2):
+    /// the cost of the cell he leaves (water at sea, else the land under him) times his
+    /// speed, ×1.5 diagonally.
+    pub fn step_time(&self, from: Tile, to: Tile) -> f32 {
+        let w = &self.world;
+        let left = if w.is_sea(from) { w.map.water_cost(from) } else { w.map.cost(from) };
+        step_minutes(w.map.grid, from, to, left.unwrap_or(ROAD), self.hero_speed())
     }
 
     /// Minutes the hero needs to walk `path`.
     pub fn travel_minutes(&self, path: &[Tile]) -> f32 {
-        self.world.map.path_minutes_by(self.tile(), path, &|t| self.cell_minutes(t)) as f32
+        self.world.map.path_minutes_by(self.tile(), path, &|a, b| self.step_time(a, b)) as f32
     }
 
     /// Minutes left on the current route.
@@ -461,10 +492,10 @@ impl Game {
         }
     }
 
-    /// Walk to `to` along the cheapest path. Clicking a building's walls means its entry.
-    /// Returns false if it can't be reached.
+    /// Walk to `to` along the cheapest path. A click on a building means the building: the
+    /// walk ends on the first of its cells it reaches. Returns false if it can't be reached.
     pub fn set_destination(&mut self, to: Tile) -> bool {
-        let to = self.world.location_covering(to).map(|l| &self.world.locations[l]).filter(|l| !l.kind.is_bridge()).map_or(to, |l| l.tile);
+        let to = self.world.location_at(to).map_or(to, |l| self.world.locations[l].tile);
         let path = self.plan(to);
         if path.is_empty() {
             return false;
@@ -472,127 +503,234 @@ impl Game {
         self.path = path;
         self.goal = Some(to);
         self.location = None;
+        self.wait_ticks = 0;
         true
     }
 
-    /// The route a click on `to` walks now: over explored ground only, towards the nearest
-    /// explored cell if `to` is in the dark ([`fog::plan`]).
-    /// With a ship the route may board it, sail and land ([`Game::step_minutes`]).
+    /// The route a click on `to` walks now (world.md §1, the hero's mask): over explored
+    /// ground only, towards the nearest explored cell if `to` is in the dark ([`fog::plan`]);
+    /// through towns, villages and bridges but not through castles and forts ill-disposed
+    /// towards him, or ruins not his, unless it is the building clicked or the one he stands
+    /// in; around armies that stand guard (patrol radius 0), except the one clicked; at sea
+    /// not under bridges. A click on a building ends on any of its cells. With a ship the
+    /// route may board it, sail and land ([`Game::step_cost`]).
     pub fn plan(&self, to: Tile) -> Vec<Tile> {
         self.plan_from(self.tile(), to)
     }
 
     fn plan_from(&self, from: Tile, to: Tile) -> Vec<Tile> {
-        fog::plan_by(&self.world.map, &self.fog, from, to, &|a, b| self.step_minutes(a, b))
+        let w = &self.world;
+        let target = w.location_at(to);
+        let standing = w.location_at(from);
+        let at_sea = w.is_sea(from);
+        let guards: Vec<Tile> = w.armies.iter().filter(|a| a.patrols && a.patrol_radius == 0).map(|a| a.tile(&w.map)).filter(|&t| t != to).collect();
+        let closed = |t: Tile| {
+            let barred = w.location_covering(t).is_some_and(|l| {
+                let loc = &w.locations[l];
+                (at_sea && loc.kind.is_bridge()) || (Some(l) != target && Some(l) != standing && loc.bars_hero())
+            });
+            barred || guards.contains(&t)
+        };
+        let step = |a: Tile, b: Tile| if closed(b) { None } else { self.step_cost(a, b, at_sea) };
+        match target {
+            Some(l) => {
+                let loc = &w.locations[l];
+                fog::plan_to_any(&w.map, &self.fog, from, &|t| w.location_at(t) == Some(l), loc.tile, &step)
+            }
+            None => fog::plan_by(&w.map, &self.fog, from, to, &step),
+        }
+    }
+
+    /// How far the hero sees, in cells: 9 for the knight, 8 for the archmage, 10 for the
+    /// ranger (world.md §3).
+    pub fn sight_radius(&self) -> i32 {
+        fog::sight_radius(self.hero_class().unwrap_or(HeroClass::Knight))
     }
 
     /// Reveals the hero's surroundings. Returns true if new ground came into view.
     pub fn look_around(&mut self) -> bool {
-        self.fog.reveal_around(self.world.map.grid, self.pos, fog::SIGHT_RADIUS)
+        let r = self.sight_radius();
+        self.fog.reveal(self.tile().0, self.tile().1, r)
     }
 
-    /// Lights a lantern: reveals radius `r` (cell widths) around cell `(x, y)`.
+    /// Lights a lantern: reveals radius `r` (cells) around cell `(x, y)`.
     pub fn reveal(&mut self, x: i32, y: i32, r: i32) {
-        self.fog.reveal(self.world.map.grid, x, y, r);
+        self.fog.reveal(x, y, r);
+    }
+
+    /// The route ends where the click meant: the clicked cell, or a cell of the clicked
+    /// building.
+    fn route_complete(&self, goal: Tile) -> bool {
+        match self.path.last() {
+            Some(&end) => end == goal || self.world.location_at(goal).is_some_and(|l| self.world.location_at(end) == Some(l)),
+            None => false,
+        }
     }
 
     /// After a step: plan the walk to the clicked spot again if new ground came into view
     /// or the route ran out short of it; give up when no explored way gets closer.
-    fn feel_the_way(&mut self, revealed: bool, stopped: bool) {
+    fn feel_the_way(&mut self, revealed: bool) {
         let Some(goal) = self.goal else { return };
         let here = self.tile();
-        if stopped || here == goal || self.foe.is_some() {
+        if here == goal || self.foe.is_some() {
             self.goal = None;
             return;
         }
-        if self.path.last() == Some(&goal) || !(revealed || self.path.is_empty()) {
+        if self.route_complete(goal) || !(revealed || self.path.is_empty()) {
             return;
         }
-        // Finish the step under way (it may be a gate), then follow the new route.
-        let path = match self.path.first() {
-            Some(&next) => {
-                let rest = self.plan_from(next, goal);
-                std::iter::once(next).chain(rest).collect()
-            }
-            None => self.plan(goal),
-        };
+        let path = self.plan(goal);
         if path.is_empty() {
             self.goal = None;
-        } else {
-            self.path = path;
         }
+        self.path = path;
     }
 
     pub fn stop(&mut self) {
         self.path.clear();
         self.goal = None;
+        self.wait_ticks = 0;
+        self.step_elapsed = 0.0;
     }
 
-    /// Advance the world by `real_dt` seconds. Time only flows while the party walks.
+    /// Waits in real time (the UI's 1 h and 4 h): `hours × 2` wait ticks of
+    /// [`WAIT_TICK_MINUTES`], one every [`STEP_SECONDS`], played by [`Game::tick`].
+    pub fn begin_wait(&mut self, hours: u32) {
+        if self.foe.is_some() {
+            return;
+        }
+        self.path.clear();
+        self.goal = None;
+        self.wait_ticks = hours * 2;
+    }
+
+    /// A real-time wait is under way.
+    pub fn waiting(&self) -> bool {
+        self.wait_ticks > 0
+    }
+
+    /// Where to draw the hero: between his cell and the next as the step plays.
+    pub fn display_pos(&self) -> (f32, f32) {
+        match self.path.first() {
+            Some(&next) => {
+                let k = (self.step_elapsed / STEP_SECONDS).clamp(0.0, 1.0);
+                let b = self.world.map.center(next);
+                (self.pos.0 + (b.0 - self.pos.0) * k, self.pos.1 + (b.1 - self.pos.1) * k)
+            }
+            None => self.pos,
+        }
+    }
+
+    /// Where to draw army `a`: from where it stood towards its cell over one step's time.
+    pub fn army_display_pos(&self, a: &Army) -> (f32, f32) {
+        match a.shown_from {
+            Some(p) if self.since_step < STEP_SECONDS => {
+                let k = self.since_step / STEP_SECONDS;
+                (p.0 + (a.pos.0 - p.0) * k, p.1 + (a.pos.1 - p.1) * k)
+            }
+            _ => a.pos,
+        }
+    }
+
+    /// Advance the world by `real_dt` seconds (world.md §2): each hero step and each wait
+    /// tick plays over [`STEP_SECONDS`]; the game time a step takes is its own cost. Time only
+    /// flows while the party walks or waits.
     pub fn tick(&mut self, real_dt: f32) -> Vec<Event> {
         let mut events = Vec::new();
-        if !self.moving() || self.foe.is_some() {
+        self.since_step += real_dt;
+        if self.foe.is_some() || (!self.moving() && self.wait_ticks == 0) {
+            self.step_elapsed = 0.0;
+            self.wait_ticks = if self.foe.is_some() { 0 } else { self.wait_ticks };
             return events;
         }
-        let mut budget = real_dt * MINUTES_PER_SECOND;
-        let slowness = self.slowness();
-        while budget > 0.0 && self.moving() {
-            let slice = budget.min(STEP_MINUTES);
-            let Game { world, pos, path, .. } = self;
-            // A hostile garrison stops the party at its gate.
-            let at_gate = |t: Tile| world.location_at(t).is_some_and(|l| world.locations[l].defended());
-            let before = path.len();
-            let cost = |t: Tile| hero_cell_minutes(world, slowness, t);
-            let used = walk(&world.map, pos, path, slice, &cost, &at_gate);
-            let stopped = path.is_empty() && before > 0 && at_gate(world.map.tile_at(*pos));
-            self.update_ship();
-            budget -= slice;
-            let revealed = self.look_around();
-            self.feel_the_way(revealed, stopped);
-            self.pass_time(used, &mut events);
-            if let Some(e) = self.contact() {
-                self.goal = None;
-                self.meet(e, &mut events);
-                return events;
-            }
-            if !self.moving() {
-                if let Some(l) = self.world.location_at(self.tile()) {
-                    let taken = self.arrive(l);
-                    events.push(Event::Arrived(l));
-                    if taken {
-                        events.push(Event::Captured(l));
-                    }
-                    // Local events of the building.
-                    events.extend(self.run_script());
-                }
-            }
-            if events.iter().any(Event::needs_reading) {
+        self.step_elapsed += real_dt;
+        while self.step_elapsed >= STEP_SECONDS && (self.moving() || self.wait_ticks > 0) {
+            self.step_elapsed -= STEP_SECONDS;
+            self.since_step = 0.0;
+            let go = if self.moving() {
+                self.hero_step(&mut events)
+            } else {
+                self.wait_ticks -= 1;
+                self.wait_tick(&mut events)
+            };
+            if !go || events.iter().any(Event::needs_reading) {
                 // Stop and read: time stands still while a message is open.
                 self.path.clear();
+                self.wait_ticks = 0;
                 break;
             }
+        }
+        if !self.moving() && self.wait_ticks == 0 {
+            self.step_elapsed = 0.0;
         }
         events
     }
 
-    /// Stand still for `hours` (the original's 1 h and 4 h waits): time passes, armies move,
-    /// the daily moments happen. A hostile army reaching the party ends the wait.
+    /// The hero takes the next step of his route (world.md §1): it is charged the cell he
+    /// leaves; stepping onto a cell of another building (not a bridge) enters it and ends the
+    /// walk; the world moves on by the step's time; an army next to him stops him. Returns
+    /// false when the walk ended.
+    fn hero_step(&mut self, events: &mut Vec<Event>) -> bool {
+        let Some(&next) = self.path.first() else { return false };
+        let from = self.tile();
+        let w = &self.world;
+        let allowed = if w.is_sea(next) { self.ship.is_some() } else { w.map.passable(next) };
+        if !allowed {
+            self.path.clear();
+            return false;
+        }
+        let minutes = self.step_time(from, next);
+        let entered = w.location_at(next).filter(|&l| w.location_at(from) != Some(l));
+        self.path.remove(0);
+        self.pos = self.world.map.center(next);
+        self.update_ship();
+        let revealed = self.look_around();
+        if entered.is_some() {
+            self.path.clear();
+            self.goal = None;
+        }
+        self.pass_time(minutes, events);
+        if let Some(e) = self.contact() {
+            self.goal = None;
+            self.meet(e, events);
+            return false;
+        }
+        if let Some(l) = entered {
+            let taken = self.arrive(l);
+            events.push(Event::Arrived(l));
+            if taken {
+                events.push(Event::Captured(l));
+            }
+            // Local events of the building.
+            events.extend(self.run_script());
+            return false;
+        }
+        self.feel_the_way(revealed);
+        self.moving()
+    }
+
+    /// One wait tick: [`WAIT_TICK_MINUTES`] pass, armies move; an army reaching the party
+    /// ends the wait. Returns false when it ended.
+    fn wait_tick(&mut self, events: &mut Vec<Event>) -> bool {
+        self.pass_time(WAIT_TICK_MINUTES, events);
+        if let Some(e) = self.contact() {
+            self.meet(e, events);
+            return false;
+        }
+        !events.iter().any(Event::needs_reading)
+    }
+
+    /// Stand still for `hours` at once (1 h = 2 wait ticks, 4 h = 8; world.md §6): time
+    /// passes, armies move, the daily moments happen. A hostile army reaching the party, or
+    /// a message to read, ends the wait.
     pub fn wait(&mut self, hours: u32) -> Vec<Event> {
         let mut events = Vec::new();
         if self.foe.is_some() {
             return events;
         }
         self.stop();
-        let mut left = hours as f32 * 60.0;
-        while left > 0.0 {
-            let slice = left.min(STEP_MINUTES);
-            left -= slice;
-            self.pass_time(slice, &mut events);
-            if let Some(e) = self.contact() {
-                self.meet(e, &mut events);
-                break;
-            }
-            if events.iter().any(Event::needs_reading) {
+        for _ in 0..hours * 2 {
+            if !self.wait_tick(&mut events) {
                 break;
             }
         }
@@ -622,6 +760,7 @@ impl Game {
         }
         if let Some(e) = &found {
             self.path.clear();
+            self.wait_ticks = 0;
             if let Event::Encounter(i) = e {
                 self.foe = Some(Foe::Army(*i));
             }
@@ -639,18 +778,31 @@ impl Game {
         if loc.defended() {
             self.foe = Some(Foe::Garrison(l));
         } else if loc.kind.capturable() && !loc.owned() && loc.hostile() {
-            loc.owner = Owner::Player;
-            loc.faction = 1;
-            loc.attitude = 3;
+            self.world.give_to_player(l);
             return true;
         }
         false
     }
 
+    /// Game time passes, in slices of at most one wait tick: the day's moments (00:00 and
+    /// 12:00, world.md §6), spells run out, armies move with the minutes banked, the
+    /// scenario's events run.
     pub(crate) fn pass_time(&mut self, minutes: f32, events: &mut Vec<Event>) {
+        let mut left = minutes.max(0.0);
+        loop {
+            let slice = left.min(WAIT_TICK_MINUTES);
+            left -= slice;
+            self.pass_slice(slice, events);
+            if left <= 0.0 {
+                break;
+            }
+        }
+    }
+
+    fn pass_slice(&mut self, minutes: f32, events: &mut Vec<Event>) {
         for tick in self.clock.advance(minutes as f64) {
             match tick {
-                Tick::Midnight(_) => self.economy_midnight(),
+                Tick::Midnight(_) => self.midnight(),
                 Tick::Noon(day) => {
                     let report = self.new_day(day);
                     events.push(Event::NewDay(report));
@@ -664,6 +816,15 @@ impl Game {
         self.move_armies(minutes, events);
         // Time passed: the scenario's events run.
         events.extend(self.run_script());
+    }
+
+    /// 00:00 (world.md §6): villages refill (slower as they fill), barracks may gain a unit,
+    /// garrisons heal `GarrisonAutoHeal`% — the player's and the AI's.
+    fn midnight(&mut self) {
+        // Village refill, barracks growth, market redraw and garrison/medic healing
+        // (economy.md), then the AI's night (world.md §6).
+        self.economy_midnight();
+        self.ai_midnight();
     }
 
     /// Corpses past `MaxTimeResurection` can no longer be raised and are buried.
@@ -701,24 +862,23 @@ impl Game {
         DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
     }
 
-    /// Armies move for `minutes`: the AI plans the routes of the armies it steers
-    /// (`rules::ai`); ships and the demo's gangs chase a nearby hostile hero or patrol. Then
-    /// AI armies act on the goals they reached and fight each other.
+    /// Armies move for `minutes` (world.md §2): each banks them (up to [`AI_BUDGET_CAP`]) and
+    /// takes the steps they cover. The AI plans the routes of the armies it steers
+    /// (`rules::ai`); ships and the demo's gangs chase a nearby hostile hero or patrol. Then AI
+    /// armies act on the goals they reached and fight each other.
     fn move_armies(&mut self, minutes: f32, events: &mut Vec<Event>) {
         self.ai_plan();
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
-        let entries: Vec<Tile> = self.world.locations.iter().map(|l| l.tile).collect();
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;
         let map = &world.map;
         for a in armies.iter_mut() {
+            a.budget = (a.budget + minutes).min(AI_BUDGET_CAP);
             let here = a.tile(map);
             let sails = a.sails();
             if ai::managed(a) {
-                let slowness = a.slowness;
-                let cost = |t: Tile| map.minutes(t).unwrap_or(60) as f32 * slowness;
-                walk(map, &mut a.pos, &mut a.path, minutes, &cost, &|_| false);
+                step_army(map, a, &|t| map.cost(t));
                 continue;
             }
             // Ships stay on the water: they chase the hero to the water next to him.
@@ -726,7 +886,7 @@ impl Game {
             let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS && goal.is_some();
             let route = |from: Tile, to: Tile| {
                 if sails {
-                    map.path_by(from, to, AI_PATH_NODES, &|x, y| world.sea_step(x, y))
+                    map.path_by(from, to, AI_PATH_NODES, &|_, y| world.sea_step(y))
                 } else {
                     map.path_limited(from, to, AI_PATH_NODES)
                 }
@@ -745,7 +905,7 @@ impl Game {
                 for _ in 0..3 {
                     let t = (a.post.0 + self.rng.range(-r, r), a.post.1 + self.rng.range(-r, r));
                     let fits = if sails { world.is_sea(t) } else { map.passable(t) };
-                    if fits && !entries.contains(&t) && map.distance(t, a.post) <= r {
+                    if fits && world.location_at(t).is_none() && map.distance(t, a.post) <= r {
                         a.path = route(here, t);
                         if !a.path.is_empty() {
                             break;
@@ -755,9 +915,11 @@ impl Game {
                 // Rest between patrol legs, or after failing to find one *(guess)*.
                 a.rest_until = now + self.rng.range(30, 180) as f64;
             }
-            let slowness = a.slowness;
-            let cost = |t: Tile| if sails { SEA_MINUTES as f32 * slowness } else { map.minutes(t).unwrap_or(60) as f32 * slowness };
-            walk(map, &mut a.pos, &mut a.path, minutes, &cost, &|_| false);
+            if sails {
+                step_army(map, a, &|t| world.sea_step(t));
+            } else {
+                step_army(map, a, &|t| map.cost(t));
+            }
         }
         self.world.armies = armies;
         self.ai_after_walk(events);
@@ -1078,16 +1240,6 @@ impl Game {
     }
 }
 
-
-/// Minutes per cell the hero spends on `t`: [`SEA_MINUTES`] at sea, else the terrain times
-/// `slowness`.
-pub(crate) fn hero_cell_minutes(world: &World, slowness: f32, t: Tile) -> f32 {
-    if world.is_sea(t) {
-        SEA_MINUTES as f32
-    } else {
-        world.map.minutes(t).unwrap_or(60) as f32 * slowness
-    }
-}
 
 /// The event engine's archetype code of a hero class.
 fn archetype_of(hero: HeroClass) -> u8 {
@@ -1728,9 +1880,9 @@ mod tests {
         b.begin();
         wipe_enemies(&mut b);
         let gold = g.gold;
-        // 120 to start with, plus its daily income at the noon the walk may have passed.
+        // 120 to start with (word 17 is starting gold); a feudal army pays its wages at noon.
         let carried = g.world.armies[0].gold;
-        assert!(carried >= 120);
+        assert!(carried > 0 && carried <= 120, "{carried}");
         // Half its gold (no minimum) and its daily wages.
         let wages = crate::rules::ai::army_wages(&g.content, &g.world.armies[0].troops);
         assert!(wages > 0);
@@ -1760,6 +1912,8 @@ mod tests {
         let mut s = strip();
         let mut foe = army(1, 7, 4, -2, &[troop(4, 0, 1)]);
         foe.patrols = 0;
+        // The AI goes only for battles it would win: a bold one for this.
+        foe.aggression = 100;
         s.armies = vec![foe];
         let mut g = start(&s);
         let events = g.wait(4);
@@ -1780,10 +1934,9 @@ mod tests {
         fort.garrison_extra_defence = 12;
         s.buildings = vec![fort];
         let mut g = start(&s);
-        let entry = g.world.locations[0].tile;
-        assert!(g.set_destination((15, 2)), "clicking the walls means the entry");
-        // The fort is still in the dark: the walk heads for its entry as the fog lifts.
-        assert_eq!(g.goal, Some(entry));
+        let centre = g.world.locations[0].tile;
+        assert!(g.set_destination((15, 2)), "clicking any cell of it means the fort");
+        assert_eq!(g.goal, Some(centre));
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
         assert_eq!(g.foe, Some(Foe::Garrison(0)));
@@ -1809,7 +1962,8 @@ mod tests {
     fn the_fog_lifts_around_the_walking_hero() {
         let mut g = start(&strip());
         g.world.armies.clear();
-        assert!(g.fog.enabled && g.fog.explored((2, 2)) && g.fog.explored((9, 2)) && !g.fog.explored((10, 2)));
+        // The knight sees 9 cells.
+        assert!(g.fog.enabled && g.fog.explored((2, 2)) && g.fog.explored((11, 2)) && !g.fog.explored((12, 2)));
         assert!(!Game::new(content(), HeroClass::Knight, 1).fog.enabled, "the demo has no fog");
         assert!(g.set_destination((22, 3)), "a click into the dark walks towards it");
         assert!(g.path.iter().all(|&t| g.fog.explored(t)), "over explored ground only");
@@ -1834,23 +1988,158 @@ mod tests {
     }
 
     #[test]
-    fn passing_through_a_hostile_gate_stops_the_hero() {
+    fn a_hostile_fort_bars_the_route_unless_clicked_or_stood_in() {
         let mut s = strip();
         let mut fort = building(BuildingType::Fort, 10, 2, (1, 1));
         fort.relations = [-2, 0, 0, 0];
         fort.garrison[0] = troop(4, 0, 1);
         s.buildings = vec![fort];
-        // Water above and below the gate: the only way east is through it.
-        for x in [10u32] {
-            for y in [0u32, 1, 3, 4, 5] {
-                tk::set(&mut s, x, y, crate::dt::dtm::Surface::DeepSea);
-            }
+        // Water above and below the fort: the only way east is through it.
+        for y in [0u32, 1, 3, 4, 5] {
+            tk::set(&mut s, 10, y, crate::dt::dtm::Surface::DeepSea);
         }
         let mut g = start(&s);
-        assert!(g.set_destination((20, 2)));
+        g.fog = Fog::disabled(24, 6);
+        assert!(g.world.locations[0].bars_hero());
+        assert!(!g.set_destination((20, 2)), "no route through an ill-disposed fort");
+        assert!(g.set_destination((10, 2)), "the fort itself can be clicked");
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
         assert_eq!((g.tile(), g.foe), ((10, 2), Some(Foe::Garrison(0))));
+        let mut b = g.start_battle();
+        b.begin();
+        wipe_enemies(&mut b);
+        g.resolve_battle(&b);
+        assert!(!g.world.locations[0].bars_hero(), "taken: his own");
+        assert!(g.set_destination((20, 2)));
+        // A neutral fort (attitude 0, no garrison) bars the way too, but not the hero
+        // standing in it.
+        let mut s2 = s.clone();
+        s2.buildings[0].relations = [0, 0, 0, 0];
+        s2.buildings[0].garrison[0] = troop(0, 0, 0);
+        let mut g = start(&s2);
+        g.fog = Fog::disabled(24, 6);
+        assert!(!g.set_destination((20, 2)));
+        assert!(g.set_destination((10, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!((g.location, g.foe), (Some(0), None));
+        assert!(!g.world.locations[0].owned(), "not ill-disposed: not taken");
+        assert!(g.set_destination((20, 2)), "from inside it he walks on");
+    }
+
+    #[test]
+    fn towns_and_villages_on_the_way_are_entered_from_any_cell() {
+        let mut s = strip();
+        // A 3 × 3 village across the road east (x 9..=11, y 1..=3).
+        let mut v = building(BuildingType::Village, 11, 3, (3, 3));
+        v.relations = [1, 0, 0, 0];
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        let l = &g.world.locations[0];
+        assert!(!l.bars_hero() && l.cells().all(|t| g.world.map.cost(t) == Some(crate::rules::map::ROAD)));
+        // Walking east along row 2 steps onto the village's first cell: it enters it and stops.
+        assert!(g.set_destination((20, 2)));
+        assert!(g.path.iter().any(|&t| g.world.location_at(t) == Some(0)), "the route may cross it");
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Arrived(0)));
+        assert_eq!((g.tile(), g.location), ((9, 2), Some(0)), "the first footprint cell reached");
+        // From inside, the walk across its other cells goes on without entering again.
+        assert!(g.set_destination((20, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_))), "{events:?}");
+        assert_eq!(g.tile(), (20, 2));
+    }
+
+    #[test]
+    fn each_step_plays_over_150_ms_and_costs_the_cell_left() {
+        let mut s = strip();
+        tk::set(&mut s, 2, 2, crate::dt::dtm::Surface::Road);
+        tk::set(&mut s, 3, 2, crate::dt::dtm::Surface::Marsh);
+        let mut g = start(&s);
+        assert!(g.set_destination((5, 2)));
+        assert_eq!(g.path, vec![(3, 2), (4, 2), (5, 2)]);
+        let t0 = g.clock.total_minutes();
+        g.tick(STEP_SECONDS * 0.9);
+        assert_eq!((g.tile(), g.clock.total_minutes()), ((2, 2), t0), "the step is still playing");
+        g.tick(STEP_SECONDS * 0.2);
+        // Leaving the road: 3 × 5 = 15 minutes.
+        assert_eq!((g.tile(), g.clock.total_minutes()), ((3, 2), t0 + 15.0));
+        g.tick(STEP_SECONDS);
+        // Leaving the marsh: 8 × 5 = 40 minutes, though the grass entered costs 25.
+        assert_eq!((g.tile(), g.clock.total_minutes()), ((4, 2), t0 + 55.0));
+        // A diagonal step is 1.5 times as long; the ranger is 4/5 as slow.
+        assert_eq!(g.step_time((4, 2), (5, 3)), 37.5);
+        let mut s = strip();
+        s.header.heroes[2] = s.header.heroes[0].clone();
+        let r = Game::from_scenario(Arc::new(tk::content()), &s, HeroClass::Ranger, 5);
+        assert_eq!((r.hero_speed(), r.step_time((4, 2), (5, 2)), r.step_time((4, 2), (5, 3))), (4, 20.0, 30.0));
+        assert_eq!(r.sight_radius(), 10);
+    }
+
+    #[test]
+    fn waiting_is_ticks_of_half_an_hour_played_in_real_time() {
+        let mut g = start(&strip());
+        let t0 = g.clock.total_minutes();
+        g.wait(1);
+        assert_eq!(g.clock.total_minutes(), t0 + 60.0, "1 h = 2 ticks");
+        g.begin_wait(4);
+        assert!(g.waiting());
+        g.tick(STEP_SECONDS * 3.5);
+        assert_eq!(g.clock.total_minutes(), t0 + 60.0 + 90.0, "three ticks so far");
+        for _ in 0..10 {
+            g.tick(STEP_SECONDS);
+        }
+        assert_eq!(g.clock.total_minutes(), t0 + 60.0 + 240.0, "4 h = 8 ticks");
+        assert!(!g.waiting());
+        g.tick(1.0);
+        assert_eq!(g.clock.total_minutes(), t0 + 300.0, "then time stands still");
+    }
+
+    #[test]
+    fn armies_move_only_on_the_minutes_banked_from_the_hero() {
+        let mut s = strip();
+        // A lord who wanders: patrol radius 8 around (12, 2).
+        let mut lord = army(1, 12, 2, 1, &[troop(4, 0, 1)]);
+        lord.patrols = 1;
+        lord.patrol_radius = 8;
+        s.armies = vec![lord];
+        let mut g = start(&s);
+        let at = g.world.armies[0].pos;
+        g.tick(10.0);
+        assert_eq!(g.world.armies[0].pos, at, "the hero stands still: so does the world");
+        // One orthogonal grass step ahead of it.
+        let a = &mut g.world.armies[0];
+        a.mind.goal = crate::rules::ai::Goal::Wander((13, 2));
+        a.mind.think_at = f64::MAX;
+        a.path = vec![(13, 2)];
+        let mut events = Vec::new();
+        g.pass_time(20.0, &mut events);
+        assert_eq!(g.world.armies[0].pos, at, "20 minutes do not pay a 25-minute grass step");
+        g.pass_time(10.0, &mut events);
+        assert_ne!(g.world.armies[0].pos, at, "30 do");
+        // The bank holds 200 minutes at most.
+        g.world.armies[0].path.clear();
+        g.world.armies[0].mind.goal = crate::rules::ai::Goal::Idle;
+        g.world.armies[0].mind.think_at = f64::MAX;
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert_eq!(g.world.armies[0].budget, 200.0);
+    }
+
+    #[test]
+    fn stationary_guards_block_the_route_except_the_one_clicked() {
+        let mut s = strip();
+        for y in [0u32, 1, 3, 4, 5] {
+            tk::set(&mut s, 10, y, crate::dt::dtm::Surface::DeepSea);
+        }
+        let mut guard = army(1, 10, 2, 1, &[troop(4, 0, 1)]);
+        guard.patrols = 1;
+        guard.patrol_radius = 0;
+        s.armies = vec![guard];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        assert!(!g.set_destination((20, 2)), "a guard standing in the gap");
+        assert!(g.set_destination((10, 2)), "the guard himself can be clicked");
     }
 
     #[test]

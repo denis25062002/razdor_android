@@ -1,20 +1,19 @@
 //! Fog of war: which cells of the world map the player has explored.
 //!
-//! The original (`docs/reference/mechanics.md` §5.2, `video-notes.md` §1): unexplored ground is
-//! black and **counts as impassable** until the hero has seen it; the hero reveals a soft
-//! ellipse around himself; explored ground stays fully visible for good (there is no greyed
-//! "seen before" state); scripted lanterns reveal areas of radius up to 24.
+//! The original (`docs/reference/original-mechanics/world.md` §3): unexplored ground is black
+//! and **counts as impassable to the hero's planner** until he has seen it (the AI ignores the
+//! fog); the hero reveals a disc around himself after every step and at the start; explored
+//! ground stays fully visible for good; lanterns reveal the same kind of disc.
 //!
-//! Razdor's choices *(guess)*, listed in `mechanics.md` §8.2:
-//! - The hero sees [`SIGHT_RADIUS`] cell widths around himself, measured on screen (world
-//!   units), so on the original's 32×22 px cells the revealed area is a circle on screen and an
-//!   ellipse in cells, about a quarter of a 960 px screen wide as in the video. No class or
-//!   ability changes it (nothing in the data files says one does).
-//! - A lantern of radius `r` reveals the same kind of circle, `r` cell widths wide.
+//! - Sight radius by class: knight 9, archmage 8, ranger 10 cells ([`sight_radius`]); the disc
+//!   is a circle in **cells** (an ellipse on the 32×22 px screen).
+//! - A lantern's radius (at most 24) is in cells too.
+//! - The original's edge is soft (a brightness per half-cell); a cell counts as explored within
+//!   about `r + 0.6` cells of the centre ([`EDGE`], M).
 //! - Clicking into the dark plans a route over explored ground only, to the explored cell
 //!   nearest the target ([`plan`]); as the walk reveals ground the route is planned again, so
-//!   the hero feels his way towards the spot and stops when no explored way gets closer.
-//! - Armies keep moving in the dark (the original's AI ignores the fog); they are only hidden.
+//!   the hero feels his way towards the spot and stops when no explored way gets closer
+//!   *(Razdor's handling of such a click)*.
 //! - The built-in demo plays without fog ([`Fog::disabled`]).
 //!
 //! The state is plain data (`w`, `h`, a flag and a `Vec<u64>` bitset) so a save file can store
@@ -22,15 +21,32 @@
 
 use crate::dt::dtm::Scenario;
 
-use super::map::{Grid, Tile, TileMap};
+use super::content::HeroClass;
+use super::map::{Tile, TileMap};
 
-/// How far the hero sees, in cell widths (world units) *(guess, from the video: ~250 px at
-/// 32 px per cell)*.
-pub const SIGHT_RADIUS: f32 = 7.5;
+/// Cells beyond the radius that still come into view: the original's soft edge, a cell being
+/// explored when the average brightness of its half-cells is high enough (world.md §3, M).
+pub const EDGE: f32 = 0.6;
 /// Largest lantern radius the editor allows.
 pub const MAX_LANTERN_RADIUS: i32 = 24;
 /// Point model of an active lantern (`.DTm` point byte 5).
 pub const LANTERN_MODEL: u8 = 8;
+
+/// How far the hero of `class` sees, in cells (world.md §3: 18, 16 and 20 half-cells).
+pub fn sight_radius(class: HeroClass) -> i32 {
+    match class {
+        HeroClass::Knight => 9,
+        HeroClass::Archmage => 8,
+        HeroClass::Ranger => 10,
+    }
+}
+
+/// Cell `b` lies within the disc of radius `r` cells around `a` (with the soft [`EDGE`]).
+pub fn within(a: Tile, b: Tile, r: i32) -> bool {
+    let (dx, dy) = ((a.0 - b.0) as f32, (a.1 - b.1) as f32);
+    let e = r.max(0) as f32 + EDGE;
+    dx * dx + dy * dy <= e * e
+}
 
 /// Explored cells of a `w × h` map, one bit per cell (row by row).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,29 +92,20 @@ impl Fog {
         new && self.enabled
     }
 
-    /// Explores every cell whose centre lies within `radius` world units of `pos` (world
-    /// units: one cell width is 1). Returns true if anything new was revealed.
-    pub fn reveal_around(&mut self, grid: Grid, pos: (f32, f32), radius: f32) -> bool {
-        let r = radius.max(0.0);
-        let rh = grid.row_height();
-        let (y0, y1) = (((pos.1 - r) / rh).floor() as i32 - 1, ((pos.1 + r) / rh).ceil() as i32 + 1);
-        let (x0, x1) = ((pos.0 - r).floor() as i32 - 1, (pos.0 + r).ceil() as i32 + 1);
+    /// Explores the disc of radius `r` cells (at most [`MAX_LANTERN_RADIUS`]) around cell
+    /// `(x, y)`, a circle in cells ([`within`]): the hero's sight or a lantern. Returns true if
+    /// anything new was revealed.
+    pub fn reveal(&mut self, x: i32, y: i32, r: i32) -> bool {
+        let r = r.clamp(0, MAX_LANTERN_RADIUS);
         let mut new = false;
-        for y in y0.max(0)..=y1.min(self.h - 1) {
-            for x in x0.max(0)..=x1.min(self.w - 1) {
-                let c = grid.center((x, y));
-                if (c.0 - pos.0).hypot(c.1 - pos.1) <= r + 1e-4 {
-                    new |= self.mark((x, y));
+        for cy in (y - r - 1).max(0)..=(y + r + 1).min(self.h - 1) {
+            for cx in (x - r - 1).max(0)..=(x + r + 1).min(self.w - 1) {
+                if within((x, y), (cx, cy), r) {
+                    new |= self.mark((cx, cy));
                 }
             }
         }
         new
-    }
-
-    /// A lantern at cell `(x, y)` with radius `r` (in cell widths, at most 24).
-    pub fn reveal(&mut self, grid: Grid, x: i32, y: i32, r: i32) -> bool {
-        let r = r.clamp(0, MAX_LANTERN_RADIUS);
-        self.reveal_around(grid, grid.center((x, y)), r as f32)
     }
 
     /// Number of explored cells (the whole map with the fog off).
@@ -144,7 +151,7 @@ pub fn for_scenario(map: &TileMap, s: Option<&Scenario>, enabled: bool) -> Fog {
     }
     let mut fog = Fog::new(map.w, map.h);
     for ((x, y), r) in s.map(start_lanterns).unwrap_or_default() {
-        fog.reveal(map.grid, x, y, r);
+        fog.reveal(x, y, r);
     }
     fog
 }
@@ -156,7 +163,7 @@ pub fn for_scenario(map: &TileMap, s: Option<&Scenario>, enabled: bool) -> Fog {
 /// path), so walking there reveals more ground and the route can be planned again. Empty when
 /// no explored cell gets closer than `from` itself.
 pub fn plan(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Vec<Tile> {
-    plan_by(map, fog, from, to, &|_, n| map.minutes(n))
+    plan_by(map, fog, from, to, &|_, n| map.cost(n))
 }
 
 /// [`plan`] with the steps a [`TileMap::path_by`] cost function allows (on foot, or with a
@@ -173,10 +180,23 @@ pub fn plan_by(map: &TileMap, fog: &Fog, from: Tile, to: Tile, step: &dyn Fn(Til
     map.path_by(from, goal, usize::MAX, &ok)
 }
 
+/// [`plan_by`] towards any cell `goal` accepts (a building's footprint), over explored
+/// ground: the cheapest way to the nearest explored goal cell; if none can be reached, the
+/// way towards the explored cell nearest `centre`.
+pub fn plan_to_any(map: &TileMap, fog: &Fog, from: Tile, goal: &dyn Fn(Tile) -> bool, centre: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
+    let ok = |a: Tile, n: Tile| step(a, n).filter(|_| fog.explored(n));
+    let p = map.path_to_any(from, &|t| goal(t) && fog.explored(t), usize::MAX, &ok);
+    if !p.is_empty() || !fog.enabled || goal(from) {
+        return p;
+    }
+    let Some(near) = nearest_explored_by(map, fog, from, centre, step) else { return Vec::new() };
+    map.path_by(from, near, usize::MAX, &ok)
+}
+
 /// The explored, passable cell reachable from `from` over explored cells whose centre is
 /// nearest to `to`'s; `None` if that is `from` itself (or `from` is off the map).
 pub fn nearest_explored(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Option<Tile> {
-    nearest_explored_by(map, fog, from, to, &|_, n| map.minutes(n))
+    nearest_explored_by(map, fog, from, to, &|_, n| map.cost(n))
 }
 
 /// [`nearest_explored`] over the steps `step` allows.
@@ -264,28 +284,34 @@ pub fn location_side(l: &super::world::Location) -> Side {
 mod tests {
     use super::*;
     use crate::dt::dtm::{Point, Surface};
+    use crate::rules::map::Grid;
 
     fn open_map(w: i32, h: i32) -> TileMap {
         TileMap::from_codes(Grid::Square8, w, h, &vec![Surface::GrassPlain as u8; (w * h) as usize], vec![])
     }
 
     #[test]
-    fn reveal_is_a_circle_on_screen_and_stays() {
-        let m = open_map(40, 40);
+    fn sight_is_9_8_10_cells_by_class() {
+        assert_eq!(sight_radius(HeroClass::Knight), 9);
+        assert_eq!(sight_radius(HeroClass::Archmage), 8);
+        assert_eq!(sight_radius(HeroClass::Ranger), 10);
+    }
+
+    #[test]
+    fn reveal_is_a_circle_in_cells_and_stays() {
         let mut f = Fog::new(40, 40);
         assert_eq!(f.explored_count(), 0);
-        let hero = m.center((20, 20));
-        assert!(f.reveal_around(m.grid, hero, SIGHT_RADIUS));
-        // 7 columns sideways; rows are 22/32 as tall, so 10 rows up and down.
-        assert!(f.explored((27, 20)) && !f.explored((28, 20)));
-        assert!(f.explored((13, 20)) && !f.explored((12, 20)));
-        assert!(f.explored((20, 30)) && !f.explored((20, 31)));
-        assert!(f.explored((20, 10)) && !f.explored((20, 9)));
-        assert!(!f.explored((27, 27)), "the corners stay dark");
+        assert!(f.reveal(20, 20, 9));
+        // 9 cells every way, rows and columns alike (an ellipse on the 32×22 px screen).
+        assert!(f.explored((29, 20)) && !f.explored((30, 20)));
+        assert!(f.explored((11, 20)) && !f.explored((10, 20)));
+        assert!(f.explored((20, 29)) && !f.explored((20, 30)));
+        assert!(f.explored((20, 11)) && !f.explored((20, 10)));
+        assert!(f.explored((26, 27)) && !f.explored((27, 27)), "a circle: the corners stay dark");
         let n = f.explored_count();
-        assert!(!f.reveal_around(m.grid, hero, SIGHT_RADIUS), "nothing new");
+        assert!(!f.reveal(20, 20, 9), "nothing new");
         // Walking away keeps the old ground explored.
-        f.reveal_around(m.grid, m.center((5, 5)), SIGHT_RADIUS);
+        f.reveal(5, 5, 9);
         assert!(f.explored((20, 20)) && f.explored((5, 5)));
         assert!(f.explored_count() > n);
         assert!(!f.explored((-1, 0)) && !f.explored((40, 0)));
@@ -299,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn lanterns_reveal_their_radius() {
+    fn lanterns_reveal_their_radius_in_cells() {
         let m = open_map(60, 60);
         let mut s = Scenario::default();
         let point = |id, x, y, model, active, radius| Point { x, y, id, model, active, radius, ..blank_point() };
@@ -310,14 +336,16 @@ mod tests {
         assert_eq!(lantern(&s, 9), None);
         let mut f = for_scenario(&m, Some(&s), true);
         assert!(f.explored((10, 10)) && f.explored((13, 10)) && !f.explored((14, 10)));
+        assert!(f.explored((10, 13)) && !f.explored((10, 14)), "rows count as cells too");
+        assert!(f.explored((12, 12)) && !f.explored((13, 12)));
         assert!(!f.explored((40, 40)) && !f.explored((50, 10)));
         // Lighting one later (an event).
         let ((x, y), r) = lantern(&s, 2).unwrap();
-        assert!(f.reveal(m.grid, x, y, r));
+        assert!(f.reveal(x, y, r));
         assert!(f.explored((45, 40)) && !f.explored((46, 40)));
         // Radius is capped at 24.
         let mut g = Fog::new(60, 60);
-        g.reveal(m.grid, 30, 30, 99);
+        g.reveal(30, 30, 99);
         assert!(g.explored((54, 30)) && !g.explored((55, 30)));
         assert!(!for_scenario(&m, Some(&s), false).enabled);
     }
@@ -343,7 +371,7 @@ mod tests {
     fn planning_refuses_unexplored_cells() {
         let m = open_map(30, 10);
         let mut f = Fog::new(30, 10);
-        f.reveal_around(m.grid, m.center((5, 5)), 3.0);
+        f.reveal(5, 5, 3);
         // Explored target: an ordinary path, every step explored.
         let p = plan(&m, &f, (5, 5), (7, 5));
         assert_eq!(p.last(), Some(&(7, 5)));
@@ -354,7 +382,7 @@ mod tests {
         // Standing on that cell already: nothing to do.
         assert!(plan(&m, &f, (8, 5), (25, 5)).is_empty());
         // An explored target with only dark ground between: walk towards it, not through.
-        f.reveal_around(m.grid, m.center((25, 5)), 2.0);
+        f.reveal(25, 5, 2);
         let p = plan(&m, &f, (5, 5), (25, 5));
         assert_eq!(p.last(), Some(&(8, 5)));
         // The plain pathfinder would cross the dark.
@@ -362,6 +390,9 @@ mod tests {
         // With the fog off, the ordinary path.
         let off = Fog::disabled(30, 10);
         assert_eq!(plan(&m, &off, (5, 5), (25, 5)), m.path((5, 5), (25, 5)));
+        // Towards any cell of a footprint: the nearest explored one.
+        let p = plan_to_any(&m, &f, (5, 5), &|t| t.0 >= 7 && t.1 == 5, (9, 5), &|_, n| m.cost(n));
+        assert_eq!(p.last(), Some(&(7, 5)));
     }
 
     #[test]
@@ -369,12 +400,12 @@ mod tests {
         let m = open_map(60, 12);
         let mut f = Fog::new(60, 12);
         let mut here = (2, 6);
-        f.reveal_around(m.grid, m.center(here), SIGHT_RADIUS);
+        f.reveal(here.0, here.1, 9);
         for _ in 0..20 {
             let p = plan(&m, &f, here, (57, 6));
             let Some(&next) = p.last() else { break };
             for &t in &p {
-                f.reveal_around(m.grid, m.center(t), SIGHT_RADIUS);
+                f.reveal(t.0, t.1, 9);
             }
             here = next;
         }
@@ -407,10 +438,9 @@ mod tests {
 
     #[test]
     fn fingerprint_changes_with_the_explored_set() {
-        let m = open_map(10, 10);
         let mut f = Fog::new(10, 10);
         let a = f.fingerprint();
-        f.reveal_around(m.grid, m.center((3, 3)), 1.0);
+        f.reveal(3, 3, 1);
         assert_ne!(a, f.fingerprint());
     }
 }
@@ -458,9 +488,10 @@ mod real_maps {
                 let here = g.tile();
                 let n = g.fog.explored_count();
                 assert!(g.fog.enabled && g.fog.explored(here), "{prefix} {class:?}");
-                // At least the hero's own circle (~7 × 10 cells each way), far from the whole map.
+                // At least the hero's own circle (8–10 cells each way), far from the whole map.
                 assert!(n >= 150 && n < (w * h / 4) as usize, "{prefix} {class:?}: {n} of {}", w * h);
-                for (dx, dy) in [(6, 0), (-6, 0), (0, 9), (0, -9)] {
+                let r = g.sight_radius();
+                for (dx, dy) in [(r, 0), (-r, 0), (0, r), (0, -r)] {
                     let t = (here.0 + dx, here.1 + dy);
                     assert!(!g.world.map.in_bounds(t) || g.fog.explored(t), "{prefix} {class:?}: {t:?}");
                 }

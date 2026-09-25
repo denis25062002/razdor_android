@@ -605,45 +605,48 @@ Each is marked *(guess)* in the code.
     starts.
 - **Community unit fields**: `Evasion` (applied last, 2.4), `MinMagicPower` and `ManaDrain`
   (per-unit floor and drain of magic power) are implemented.
-- **World grid** (Stage 3): scenarios use 8-neighbour rectangular cells (32×22 px, a
-  vertical step is 22/32 of a horizontal one, a diagonal step √(32²+22²)/32); travel time is
-  the cell's cost times the length of the step. The built-in demo keeps its own hex grid
-  (odd rows shifted right).
-- **Terrain costs** (minutes per cell, on foot): road 30; grass lowland, grass plain, dry
-  plain 60; clay, stony soil, scorched land 75; sand 90; marsh, shallows/fords, lava fields,
-  snowy ground 120; coastal water, deep sea, impassable swamp, impassable snowdrifts block.
-- **Objects**: mountains (classes 5, 6), dense thickets (11) and rocks (8) block; hills (1–4)
-  and trees (9, 10) add 50%. A massif (hills, mountains, rocks) of sprite family `f` (tens
-  digit of the sprite id) covers a square of radius `(f − 1) / 2` whose bottom row is its own
-  cell. Road cells are never blocked by objects (a few dozen thickets stand on roads).
-- **Buildings**: the footprint (`size_x × size_y`, up and left of the anchor) blocks, except
-  the **entry cell**: the footprint cell next to the largest open region (judged with all
-  walls up), then one a road arrives at, then the nearest to the bottom-row middle. Stepping
-  onto the entry enters the building; a hostile castle, fort or ruins with a garrison stops
-  the hero there and the garrison fights (its extra defence counts). Winning takes a castle
-  or fort (owner = player, faction 1, its income and mana count from the next noon) and
-  gives ruins' treasure gold and items. Bridge footprints are road.
+- **World grid, movement, time** follow original-mechanics/world.md (`src/rules/map.rs`,
+  `world.rs`, `game.rs`): 8-neighbour squares; the planner weighs an orthogonal step 2 and a
+  diagonal 3 and prices the cell entered (`cost × weight`); walking charges the cell left,
+  `cost × speed` minutes, ×1.5 diagonally. Speed: knight and archmage 5, ranger 4; AI armies
+  `max(1, 5 − correction)`, one less when led by the Archmage unit. Each hero step and each
+  30-minute wait tick plays over 150 ms of real time (1 h = 2 ticks, 4 h = 8); AI armies bank
+  the minutes of every hero step and tick (up to 200) and step when they cover `cost(next) ×
+  speed`. The built-in demo keeps its own hex grid (odd rows shifted right, every step
+  weight 2).
+- **Terrain values** (cost units; minutes on foot = value × 5): road 3, stony soil 4; grass,
+  dry plain, sand, clay, scorched land 5; snowy ground 6; marsh 8. Shallows (2) and coastal
+  water (1) are water: never walked, sailed at their value (10 and 5 minutes). Deep sea, lava,
+  the impassable swamp and snowdrifts block everyone.
+- **Objects**: hills 1–3 set a base of 2 (class 4: 3) that the terrain adds to; trees +4,
+  dead trees +6, class 12 +4 on their own cell; mountains 5–7, rocks 8 and thickets 11 block.
+  A massif (classes 1–8) covers a square of `sprite div 10` cells a side whose bottom-right
+  cell is its own. Nothing keeps a road open under an object.
+- **Buildings**: the footprint (`size_x × size_y` up and left of the anchor, one more row
+  above when wider than tall) is road on foot and for ships; stepping onto any of its cells
+  enters the building (no entry cell) and ends the walk; bridges are walked, never entered.
+  Only castles and forts of attitude ≤ 0 (not his) and ruins not yet his bar the hero's
+  route, unless clicked or the one he stands in; stationary guards (patrol radius 0) bar it
+  too, except the one clicked; at sea he does not pass under bridges. A garrison fights when
+  he enters (its extra defence counts); winning takes a castle or fort (owner = player,
+  faction 1, its income and mana count from the next noon) and gives ruins' treasure. AI
+  armies stand at the footprint's centre `(x0 + sx/2, y0 + sy/2)`.
 - **Villages** start with one day's tribute; at midnight it grows by
-  `Round(income × √(1 − stock/max))` up to the maximum (no maximum: no growth). Collecting
-  takes all of it.
+  `round(income × √(1 − stock/max))`, capped (slower as it fills). Collecting takes all of it.
 - **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile =
-  the army's own attitude towards the player < 0. Hostile armies chase the hero within 6
-  cells (their view, §8.8) and fight on contact (neighbouring cell); others greet once and
-  let him pass. Patrolling armies wander within their patrol radius, resting 30–180 min
-  between legs. Everything else they do is the AI's (§8.8).
-  Speed correction: ±10% per point. Troops: the middle byte of each triple is levels above
-  the first; the leader is a troop of its own. Loot: see "Victory loot" below.
-- **Hero start**: the entry of the preset's start building (preset byte 16) when it names
-  one; else, of the buildings flagged as a start for the class (building byte 353), the one
-  nearest the preset's cell if within 8 cells *(guess: on "Проклятое озеро" each class's
-  preset stands next to its flagged building)*; else the preset's cell (moved to a
-  building's entry if it lies in the walls). Gold (preset offset 8), mana (offset 12),
-  troops, artifacts and spells from the preset; no starting XP (experience.md §5).
-- **Gates**: a building whose walls cut its entry off from open ground holding a bridge or
-  another building gets a passage inside its footprint from the entry to the nearest wall
-  cell on the far side *(guess)*; the passage counts as the entry (a garrison still bars the
-  way). The shipped maps need it for forts at the foot of bridges (ДС2 twice, "Другой
-  берег" once) and one set of ruins on ДС2.
+  the army's own attitude towards the player < 0. Contact on neighbouring cells (diagonals
+  too): hostile ones fight, others greet once. Word 17 is the army's starting gold, byte 80 ×
+  10 its daily income. The demo's gangs chase the hero within 6 cells and patrol, resting
+  30–180 min between legs *(Razdor's demo rule)*. Everything else is the AI's (§8.8).
+  Troops: the middle byte of each triple is levels above the first; the leader is a troop of
+  its own. Loot: see "Victory loot" in the economy notes below.
+- **Hero start**: exactly the preset's cell (no relocation); the preset's start building
+  (byte 16) and every building flagged for his class (building byte 353 + class) become his.
+  A preset on the water ("Тихая пристань") starts him aboard a ship *(guess)*. Gold (preset
+  offset 8), mana (offset 12), troops, artifacts and spells from the preset; no starting XP
+  (experience.md §5).
+- **Sight**: 9 / 8 / 10 cells (knight / archmage / ranger), a circle in cells (+0.6 for the
+  soft edge, M); lanterns the same in cells. Unexplored cells are impassable to the hero only.
 
 Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
 
@@ -699,8 +702,8 @@ rule); `src/rules/economy.rs` holds the formulas. In short:
   items; an army whose home castle or fort stands empty loses it to the player. Between AI
   armies the loser gives all its gold below `MinVictoryGold`, else `gold / VictoryGoldDiv`. A
   beaten garrison pays its treasure (ruins), the building's stock and one day's income.
-  Every beaten enemy unit gives its `Surrender` value in mana *(guess: the battle code's
-  rule is not traced)*.
+  Surrender mana follows original-mechanics/battle.md §5: only the units of a side that
+  surrenders give their `Surrender` value.
 - **Village offers**: entering a village with gold waiting (not the one that made the last
   offer, until its tribute is taken) rolls in order for the innkeeper (1/2), the priest
   (1/3, spell 1), a long blessing (1/6, one of spells 3/5/7/9/11 for 10× or 5× its time),
@@ -856,23 +859,21 @@ events only; texts are read from the scenario at runtime.
 `Fog` is a plain explored bitset (`w`, `h`, `enabled`, `bits: Vec<u64>`) kept in `Game::fog`.
 Explored cells stay explored; there is no "seen before" state (the video).
 
-- **Sight** *(guess)*: the hero explores every cell whose centre lies within 7.5 cell widths of
-  him, measured on screen (world units). On the 32×22 px cells that is a circle of about 240 px
-  radius, as in the video, and an ellipse in cells (7 columns, 10 rows each way).
-  No class, unit ability or item changes it (nothing in the data says one does). The hero looks
-  around at the start and after every step of a walk.
+- **Sight** (world.md §3): the hero explores a circle in cells around him: 9 cells for the
+  knight, 8 for the archmage, 10 for the ranger (the original's 18/16/20 half-cells), plus
+  0.6 for its soft edge (M). On the 32×22 px screen that is an ellipse. He looks around at
+  the start and after every step.
 - **Lanterns**: points with model 8 and the "active at start" flag light their radius when the
-  game starts (9 on the 15 shipped maps). A radius `r` explores the same kind of on-screen
-  circle, `r` cell widths wide *(guess: the unit of the radius is not stated)*, capped at 24.
-  `Game::reveal(x, y, r)` lights one later; `fog::lantern(scenario, point_id)` gives an
-  event's lantern cell and radius.
-- **Movement** *(guess)*: unexplored cells are impassable to the hero's pathfinder. A click on
-  an explored cell walks there over explored ground. A click into the dark (or on an explored
-  cell cut off by dark) walks to the explored cell reachable over explored ground whose centre
-  is nearest the target; the target is kept (`Game::goal`) and whenever the walk reveals new
-  ground, or the route runs out, the route is planned again. So the hero feels his way through
-  the fog and stops when no explored way gets closer. The step under way is always finished
-  first, so a hostile gate still stops him.
+  game starts (9 on the 15 shipped maps). A radius `r` (cells, capped at 24) explores the same
+  kind of disc. `Game::reveal(x, y, r)` lights one later; `fog::lantern(scenario, point_id)`
+  gives an event's lantern cell and radius.
+- **Movement**: unexplored cells are impassable to the hero's pathfinder (world.md §3; the AI
+  ignores the fog). *(Razdor's handling of such clicks)*: a click on an explored cell walks
+  there over explored ground. A click into the dark (or on an explored cell cut off by dark)
+  walks to the explored cell reachable over explored ground whose centre is nearest the
+  target; the target is kept (`Game::goal`) and whenever the walk reveals new ground, or the
+  route runs out, the route is planned again. So the hero feels his way through the fog and
+  stops when no explored way gets closer.
 - **Armies** move in the dark as before (the original AI ignores the fog; chases are not
   changed); they are only hidden, and so are their tooltips. Map objects and buildings whose
   cells are all dark are not drawn.
@@ -988,31 +989,37 @@ Explored cells stay explored; there is no "seen before" state (the video).
 
 ### 8.6 Ships (`src/rules/ships.rs`)
 
-- **Water**: coastal water and deep sea that is not under a building (bridges are land);
-  shallows and fords are walked, as before. On foot water blocks.
+- **Water** (world.md §1): terrain codes 0–2. Shallows (2) and coastal water (1) are sailed
+  and never walked; deep sea blocks ships too. The hero's sea is that water outside building
+  footprints; AI ships sail the original's SHIP map (that water, plus every footprint as road).
 - **Renting**: a friendly shipyard's "Ships" tab rents a ship for `ShipCost` gold. It
-  waits at the water next to the land nearest the entry on foot, within 24 steps
-  *(guess)*; a new rent replaces the old ship (one at a time). "Проклятое озеро"'s lake is
-  shallows, so its two shipyards have no water to offer.
+  waits at the water next to the land nearest the shipyard on foot, within 24 steps
+  *(guess)*; a new rent replaces the old ship (one at a time).
 - **Sailing**: one route plans walking, boarding, sailing and landing: a step from land
   onto water is allowed only onto the waiting ship, a step from the ship onto any walkable
   cell lands. Clicking water sails there (boarding first), clicking land while at sea
-  lands at the best coast cell. The ship stays where the hero left it; walking back onto
-  it boards it. A sea cell costs 40 minutes *(guess)*, the same for every class (the
-  Ranger's bonus is for walking).
+  lands. No speed of its own: a step at sea takes the water's cost × the hero's speed
+  (coastal 5 minutes, shallows 10; the ranger 4 and 8). Planned at sea, land costs 5× and
+  footprints 6 (the MIXED map), and bridges are closed. **On landing the ship is gone**: the
+  original's route map returns to land only (world.md, M).
+- **Start at sea**: a preset on the water ("Тихая пристань") starts the hero aboard a ship
+  *(guess)*.
 - **Fog**: the hero sees as far at sea as on land; routes need explored water as they need
   explored land.
 - **Scenario ships** (army byte 72: 1 hero ship, 2 pirates, 3 merchants): placed on the
-  nearest water within 8 cells, move on water only, always cruise within their patrol
-  radius (8 when the editor gives 0) *(guess)*; hostile ones chase the hero to the water
-  next to him and fight on contact like any army. Merchants never attack (their attitude
-  is raised to at least 0; РК4's merchant is marked −2 in its file) *(guess)*. Events bring
-  waiting ships onto the water.
-- **Saves**: the ship (cell, aboard) is part of the game state; the water mask and building
-  passages are rebuilt from the map.
+  nearest water within 8 cells, move on the SHIP map at the army's speed, always cruise
+  within their patrol radius (8 when the editor gives 0) *(guess)*; hostile ones chase the
+  hero to the water next to him and fight on contact like any army. Merchants never attack
+  (their attitude is raised to at least 0; РК4's merchant is marked −2 in its file)
+  *(guess)*. Events bring waiting ships onto the water.
+- **Saves**: the ship (cell, aboard) is part of the game state; the water mask is rebuilt
+  from the map.
 - **Reachability** (env-gated test): from every class's start, walking and renting a ship
-  at every shipyard reached, every building entry of every shipped map is reachable except
-  the second tutorial's church, which stands in a ring of dense thickets and impassable bog.
+  at every shipyard reached, every building of every shipped map is reachable except: the
+  second tutorial's church (a ring of dense thickets and bog); the first tutorial's three
+  villages (across a river crossed by fords, which are water now); РК3/РК5's altar (shut in
+  by massif squares and a lake without a shipyard); РК7's eastern island (ringed by deep sea,
+  which ships no longer sail). Scripted events are not considered.
 
 ### 8.7 Hero name
 
@@ -1026,45 +1033,53 @@ Explored cells stay explored; there is no "seen before" state (the video).
   **Target model**: byte 85, the index into the `_Global.ini` priority lists.
 - **Who**: the scenario's land armies. Ships and the demo's gangs keep the simple rules
   (chase the hero, patrol).
-- **Goals and priorities** *(guess: how the exe weighs the lists is not decoded)*: lower
-  values win (the shipped lists give aggressive armies the most urgent attacks, passive
-  ones the most urgent healing, hoarders villages and traders shopping). A goal's score is its priority
-  × (10 + distance in cells). Min/Max pairs run from Max at no need to Min at full need:
-  healing by missing HP (only below 75% HP), garrison by how far it is below
-  `garrison_strength`% (byte 82) of the army's strength, purchase by free formation cells
-  (hiring) or by spare gold over `GoldPurchaseTarget` (shopping), villages by tribute over
-  `GoldVillageTarget`. A key missing from a file that has the others reads 0, as the exe
-  would: the shipped misspelt `MixHealingTarget` leaves the healing minimum at 0. Without
-  `_Global.ini` (the demo) Razdor uses its own values.
-- **Goals**: attack the player or a hostile army in view (attitude towards its faction < 0,
-  not flagged "ignored by AI") when `own strength × (100 + aggression) ≥ theirs × 100`
-  (strength = tactical cost × HP share); take a hostile castle or fort in its territory
-  (patrol radius + 2 × view) with the same test, not with its leader alone; rogues go for
-  their lost home fort anywhere, at half the castle priority; heal in its own castle or
-  fort (free) or, feudal, at any friendly healer (paid as the player pays); fill its own
-  garrison, hire, shop (feudal), collect tribute from villages of its faction or linked to
-  its castle (feudal); talk to an army of its faction in view (once a day); wander its
-  patrol; go back to its post when outside its patrol area. Peasants only wander and hunt
-  the player. Flags: "hunts only the player" drops army and castle targets, "no random
-  targets" the patrol, "no socialising" the talks, "no interest in buildings" every
-  building goal.
-- **View**: `CHASE_RADIUS` (6) × `AIDistanceN` / `AIDistance1`: aggressive armies use
-  `AIDistance0` (12 cells), passive ones `AIDistance2` (3), the others `AIDistance1` (6).
+- **Goals and priorities** (world.md §5): every candidate is seeded with its priority into
+  one flood over the foot map from the army; it takes the lowest `priority + path cost`
+  (path cost as the original's flood: the cell left × the step weight, 10 per orthogonal
+  grass cell); lower wins, seeds capped at 32766. Min/Max pairs run from Max at no need to
+  Min at full need: healing by missing HP (only below 75% HP *(guess)*), garrison by how far
+  it is below `garrison_strength`% (byte 82) of the army's strength, purchase by free
+  formation cells (hiring) or by spare gold over `GoldPurchaseTarget` (shopping), villages by
+  tribute over `GoldVillageTarget`. A key missing from a file that has the others reads 0, as
+  the exe would: the shipped misspelt `MixHealingTarget` leaves the healing minimum at 0.
+  Without `_Global.ini` (the demo) Razdor uses its own values on the same scale.
+- **Goals**: attack the player or a hostile army (attitude towards its faction < 0, not
+  flagged "ignored by AI") when a **simulated battle** (the battle engine on both sides, once
+  a day per pair) says it wins: `own_left − theirs_left + (own + theirs) × aggression/100 > 0`
+  *(the use of aggression is M)*; the seed is `(AtackArmy + 1 + lost share × ZeroDensity·30 ×
+  own/theirs) × (relation + 4)`. A lost battle is no target (the original's repulsion field
+  around a danger is not modelled). Take a hostile castle or fort when a simulated fight
+  with its garrison is won (at once if empty), not with its leader alone, seeded
+  `AtackCastle × 50`; rogues go for their lost home anywhere, at half. Heal in its own castle
+  or fort (free) or, feudal, at any friendly healer (paid as the player pays); fill its own
+  garrison, hire, shop (feudal), collect tribute from villages of its faction or linked to its
+  castle (feudal); talk to an army of its faction (once a day); wander (four random points of
+  its patrol box seeded `Random`); go back to its post when outside its patrol box. Peasants
+  only wander and hunt the player. Flags: "hunts only the player" drops army and castle
+  targets, "no random targets" the patrol, "no socialising" the talks, "no interest in
+  buildings" every building goal.
+- **Range**: armies and the player are candidates within `AIDistance0..2` cells (the
+  original's `max + min/2` distance) chosen by the style byte 59: feudal 100, rogue 50,
+  peasant 25 with the shipped values. A patrolling army takes targets only inside its patrol
+  box (`post ± radius`); radius 0 is a stationary guard.
+- **Walking**: armies bank the minutes of every hero step and wait tick (at most 200) and
+  step when they cover `cost(next) × speed` (×1.5 diagonally); speed `max(1, 5 − correction)`,
+  one less when led by the Archmage unit. They stand at a building's footprint centre.
 - **Cadence**: a goal is chosen again every 60 game minutes (staggered), when a hostile
-  army spots the hero or loses him, and when a goal is done or gone. Routes are A* with the
-  army's speed correction, planned only when the goal's cell moved, at most 4 searches per
-  5-minute slice for all armies (chasing the hero is not counted), up to 12 000 cells each;
-  a goal in another region on foot or not found is left alone for a day. Rest between
-  things: `ZeroDensity` × 6..36 minutes (30..180 with the shipped 5).
-- **Economy** (at noon): gold from owned buildings (not villages) and the extra income
-  (byte 17), for every style but peasants. Feudal lords pay wages (`WageKind` as for the
-  player, the leader free); unpaid for `MaxTimeNotUpkeep` (7 noons), the last unit leaves.
-  Hiring (the strongest affordable unit in stock; rogues: rogue units only; never units
-  paid in mana) and shopping (the dearest item a unit can wear, at its cost) keep
-  `NeedUpkeepDay` days of wages. Buildings that hire for the AI: towns, castles, forts,
-  churches, villages, altars that are its own or of a faction it is not ill-disposed
-  towards (never the player's). An army standing in its own castle or fort heals
-  `GarrisonAutoHeal`% a day, as do the garrisons of the AI and of neutral buildings.
+  army spots the hero or loses him, and when a goal is done or gone. The flood gives the
+  route; routes are planned again with A* when the goal's cell moved, at most 4 searches per
+  slice for all armies (chasing the hero is not counted), up to 12 000 cells each; a goal in
+  another region on foot or not found is left alone for a day. Rest between things:
+  `ZeroDensity` × 6..36 minutes (30..180 with the shipped 5).
+- **Economy** (at noon): gold from owned buildings (not villages) and the daily income
+  (byte 80 × 10; word 17 is the starting gold), for every style but peasants. Feudal lords pay
+  wages (`WageKind` as for the player, the leader free); unpaid for `MaxTimeNotUpkeep` (7
+  noons), the last unit leaves. Hiring (the strongest affordable unit in stock; rogues: rogue
+  units only; never units paid in mana) and shopping (the dearest item a unit can wear, at its
+  cost) keep `NeedUpkeepDay` days of wages. Buildings that hire for the AI: towns, castles,
+  forts, churches, villages, altars that are its own or of a faction it is not ill-disposed
+  towards (never the player's). At midnight an army standing in its own castle or fort heals
+  `GarrisonAutoHeal`% *(guess)*, as do the garrisons of the AI and of neutral buildings.
 - **Items**: an army's items are worn in battle by the first unit that can wear each (the
   player's battles against it too); at most 12.
 - **Battles**: two armies on neighbouring cells fight when one is going for the other, or
@@ -1079,14 +1094,17 @@ Explored cells stay explored; there is no "seen before" state (the video).
   faction and income; the taker leaves its weakest troops as a garrison until it holds
   `garrison_strength`% of what it keeps (the leader stays with him). A stalemate: a
   truce of one day between the two (and the other's buildings).
-- **Reports**: a battle within the hero's sight (7.5 cells), or at a building of his, is an
-  event (a message line) and goes into `Game::ai_log` (30 kept).
+- **Reports**: a battle within the hero's sight (his 8–10 cells), or at a building of his, is
+  an event (a message line) and goes into `Game::ai_log` (30 kept).
 - **Beaten armies**: a feudal lord who still owns a building retreats into it (his home,
   else the nearest) with his leader at 1 HP and returns after 3 days at full health *(guess)*;
-  if he lost them all meanwhile he respawns like others or is gone. Others with a respawn
-  time (byte 70, days) come back at their home building (if it is not hostile to them and not
-  the player's) or post after it: the leader alone, or the whole army of the scenario with
-  byte 83, with the extra income as gold. This holds whoever beat them (the player too).
+  if he lost them all meanwhile he respawns like others or is gone. Others with a home
+  building and a respawn time (byte 70, days) come back after it at the **centre of their
+  home** (world.md §5) with full HP: the leader alone, or the whole army of the scenario with
+  byte 83, and `days × daily income` more gold. A feudal army that no longer owns its home
+  uses a town it owns, else a castle, else a fort; owning none, or with no home, it does not
+  come back. Rogues and peasants take their home when it is a village, shipyard, altar or
+  dungeon entrance. This holds whoever beat them (the player too).
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

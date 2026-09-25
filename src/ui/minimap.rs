@@ -187,7 +187,7 @@ pub fn window(game: &Game, view: Rect, view_world: Rect, surface_color: fn(u8) -
     }
 
     // The hero: a blinking white marker.
-    let h = to_mini(game.pos);
+    let h = to_mini(game.display_pos());
     let pulse = 0.6 + 0.4 * (get_time() as f32 * 5.0).sin().abs();
     draw_circle(h.x, h.y, 4.5, BLACK);
     draw_circle(h.x, h.y, 3.5, Color::new(1.0, 1.0, 1.0, pulse));
