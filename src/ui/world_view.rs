@@ -654,6 +654,7 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
         Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
+        Event::Battle(news) => Some(news.text.clone()),
         Event::Arrived(l) => {
             let loc = &game.world.locations[*l];
             game.foe.is_some().then(|| format!("{}: the garrison bars your way!", loc.name))
@@ -691,7 +692,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             }
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
-            Event::Met(_) => {}
+            Event::Met(_) | Event::Battle(_) => {}
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }
     }

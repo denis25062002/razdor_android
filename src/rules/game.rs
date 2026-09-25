@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::dt::dtm::Scenario;
 
+use super::ai::{self, AiNews, AiStats, Beaten};
 use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick, MINUTES_PER_DAY};
 use super::content::{Bonus, Content, HeroClass, ItemId, Source, SpellDef, UnitId};
@@ -158,6 +159,9 @@ pub enum Event {
     /// Something the scenario's event engine did: a message, a question, a quest, the end.
     /// World effects are already applied.
     Script(EventOutcome),
+    /// AI armies fought within the hero's sight, or one took or besieged his building
+    /// (`rules::ai`).
+    Battle(AiNews),
 }
 
 /// Who the next battle is against.
@@ -211,6 +215,15 @@ pub struct Game {
     /// Scenario armies (ids) the player has met / beaten.
     pub(crate) met_armies: BTreeSet<ArmyId>,
     pub(crate) beaten_armies: BTreeSet<ArmyId>,
+    /// Scenario armies beaten by AI armies (`rules::ai`).
+    #[serde(default)]
+    pub(crate) ai_beaten: BTreeSet<ArmyId>,
+    /// What the AI did so far (counts).
+    #[serde(default)]
+    pub ai_stats: AiStats,
+    /// Reports of AI battles the player heard of, newest last.
+    #[serde(default)]
+    pub ai_log: Vec<AiNews>,
     /// 1 knight, 2 archmage, 3 ranger: the class the game started with (events check it).
     pub(crate) archetype: u8,
     /// Lasting world spells on the hero's army (`rules::magic`).
@@ -285,6 +298,9 @@ impl Game {
             pending_reveals: Vec::new(),
             met_armies: BTreeSet::new(),
             beaten_armies: BTreeSet::new(),
+            ai_beaten: BTreeSet::new(),
+            ai_stats: AiStats::default(),
+            ai_log: Vec::new(),
             archetype: 1,
             effects: Vec::new(),
             origin: None,
@@ -733,7 +749,7 @@ impl Game {
         }
         self.bury_old_corpses();
         self.expire_spells();
-        self.move_armies(minutes);
+        self.move_armies(minutes, events);
         // Time passed: the scenario's events run.
         events.extend(self.run_script());
     }
@@ -853,10 +869,15 @@ impl Game {
                 }
             }
         }
+        self.ai_new_day();
         DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
     }
 
-    fn move_armies(&mut self, minutes: f32) {
+    /// Armies move for `minutes`: the AI plans the routes of the armies it steers
+    /// (`rules::ai`); ships and the demo's gangs chase a nearby hostile hero or patrol. Then
+    /// AI armies act on the goals they reached and fight each other.
+    fn move_armies(&mut self, minutes: f32, events: &mut Vec<Event>) {
+        self.ai_plan();
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
         let entries: Vec<Tile> = self.world.locations.iter().map(|l| l.tile).collect();
@@ -866,6 +887,12 @@ impl Game {
         for a in armies.iter_mut() {
             let here = a.tile(map);
             let sails = a.sails();
+            if ai::managed(a) {
+                let slowness = a.slowness;
+                let cost = |t: Tile| map.minutes(t).unwrap_or(60) as f32 * slowness;
+                walk(map, &mut a.pos, &mut a.path, minutes, &cost, &|_| false);
+                continue;
+            }
             // Ships stay on the water: they chase the hero to the water next to him.
             let goal = if sails { Game::sea_chase_goal(world, here, hero_tile) } else { Some(hero_tile) };
             let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS && goal.is_some();
@@ -905,6 +932,7 @@ impl Game {
             walk(map, &mut a.pos, &mut a.path, minutes, &cost, &|_| false);
         }
         self.world.armies = armies;
+        self.ai_after_walk(events);
     }
 
     /// Price to hire unit type `kind`: its `Cost` (in mana for elementals).
@@ -1072,15 +1100,16 @@ impl Game {
     /// makes the player the attacker (the building's extra defence helps the garrison); an
     /// army that catches the player attacks.
     pub fn start_battle(&mut self) -> Battle {
+        // An army fights with its items worn (`ai::army_units`).
         let (enemies, attacker, defence) = match self.foe {
             Some(Foe::Garrison(l)) => {
                 let loc = &self.world.locations[l];
-                (loc.garrison.clone(), Team::Player, loc.garrison_defence)
+                (loc.garrison.iter().map(|t| troop_unit(&self.content, t)).collect(), Team::Player, loc.garrison_defence)
             }
-            Some(Foe::Army(i)) => (self.world.armies[i].troops.clone(), Team::Enemy, 0),
+            Some(Foe::Army(i)) => (ai::army_units(&self.content, &self.world.armies[i]), Team::Enemy, 0),
             None => (Vec::new(), Team::Player, 0),
         };
-        let enemies: Vec<Unit> = enemies.iter().map(|t| troop_unit(&self.content, t)).collect();
+        let enemies: Vec<Unit> = enemies;
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && !u.unpaid)).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
@@ -1190,14 +1219,14 @@ impl Game {
                 BattleResult::Victory { reward, mana, lost, loot, left_behind: dropped_left, level_ups, captured }
             }
             (Outcome::Victory, Some(Foe::Army(i))) => {
-                let army = self.world.armies.remove(i);
-                if army.id != 0 {
-                    self.beaten_armies.insert(army.id);
-                }
-                let reward = self.victory_gold(army.gold);
+                let reward = self.victory_gold(self.world.armies[i].gold);
+                let army = &mut self.world.armies[i];
+                army.gold -= reward;
+                let (id, mut found) = (army.id, std::mem::take(&mut army.items));
+                // Off the map; a lord retreats, others may respawn (`rules::ai`).
+                self.army_beaten(i, Beaten::ByPlayer);
                 self.gold += reward;
-                let mut found = army.items;
-                if army.id == 0 && self.rng.range(1, 100) <= GANG_LOOT_CHANCE {
+                if id == 0 && self.rng.range(1, 100) <= GANG_LOOT_CHANCE {
                     found.extend(self.roll_item(Source::Loot));
                 }
                 let (loot, left_behind) = self.take_items(found);
@@ -1942,9 +1971,12 @@ mod tests {
         b.begin();
         wipe_enemies(&mut b);
         let gold = g.gold;
+        // 120 to start with, plus its daily income at the noon the walk may have passed.
+        let carried = g.world.armies[0].gold;
+        assert!(carried >= 120);
         let r = g.resolve_battle(&b);
-        assert!(matches!(&r, BattleResult::Victory { reward: 60, captured: None, loot, .. } if loot == &vec![ItemId(9)]), "{r:?}");
-        assert_eq!(g.gold, gold + 60, "half its gold");
+        assert!(matches!(&r, BattleResult::Victory { reward, captured: None, loot, .. } if *reward == carried / 2 && loot == &vec![ItemId(9)]), "{r:?}");
+        assert_eq!(g.gold, gold + carried / 2, "half its gold");
         assert!(g.world.armies.is_empty());
     }
 

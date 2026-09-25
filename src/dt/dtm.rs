@@ -726,8 +726,9 @@ pub struct Army {
     pub unknown_53: [u8; 5],
     /// 58: named character (1-based index into the named characters, 0 = none).
     pub named_character: u8,
-    /// 59: 0..2 (U).
-    pub unknown_59: u8,
+    /// 59: behaviour style: 0 feudal, 1 rogue, 2 peasant (L: it matches the map model of every
+    /// model 4, 5 and 6 army of the shipped maps, and model-7 armies carry it too).
+    pub behaviour: u8,
     /// 60: patrols.
     pub patrols: u8,
     /// 61: patrol radius.
@@ -805,7 +806,7 @@ impl Army {
             artifacts: r.arr(50),
             unknown_53: r.arr(53),
             named_character: r.u8(58),
-            unknown_59: r.u8(59),
+            behaviour: r.u8(59),
             patrols: r.u8(60),
             patrol_radius: r.u8(61),
             no_money: r.u8(62),
@@ -855,7 +856,7 @@ impl Army {
         p.bytes(50, &self.artifacts);
         p.bytes(53, &self.unknown_53);
         p.u8(58, self.named_character);
-        p.u8(59, self.unknown_59);
+        p.u8(59, self.behaviour);
         p.u8(60, self.patrols);
         p.u8(61, self.patrol_radius);
         p.u8(62, self.no_money);

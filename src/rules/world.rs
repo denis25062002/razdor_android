@@ -11,6 +11,7 @@ use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 use super::clock::Clock;
 use super::content::{Content, HeroClass, ItemId, UnitId};
 use super::formation::{Row, Slot};
+use super::ai::{AiMind, AiProfile, Respawn};
 use super::magic::ActiveSpell;
 use super::map::{is_water, Decoration, Grid, Tile, TileMap, MIN_MINUTES};
 use super::units::{Stats, Unit};
@@ -30,12 +31,15 @@ pub struct Troop {
     /// Hit points lost to world spells (a troop fights with its maximum minus this).
     #[serde(default)]
     pub hurt: i32,
+    /// Experience towards the next level (AI armies gain it in their own battles).
+    #[serde(default)]
+    pub xp: i32,
 }
 
 impl Troop {
     /// A troop at full health.
     pub fn new(unit: UnitId, level: i32, slot: Slot) -> Troop {
-        Troop { unit, level, slot, hurt: 0 }
+        Troop { unit, level, slot, hurt: 0, xp: 0 }
     }
 }
 
@@ -456,6 +460,13 @@ pub struct Army {
     /// Ship type (`.DTm` army byte 72): 0 a land army, else it sails (`rules::ships::kind`).
     #[serde(default)]
     pub ship: u8,
+    /// What the scenario says about its behaviour (`rules::ai`); `enabled` is false for the
+    /// demo's gangs, which keep the simple chase-and-patrol rules.
+    #[serde(default)]
+    pub ai: AiProfile,
+    /// Its current goal and bookkeeping (`rules::ai`).
+    #[serde(default)]
+    pub mind: AiMind,
 }
 
 impl Army {
@@ -535,6 +546,14 @@ pub struct World {
     pub named_characters: Vec<String>,
     /// Last [`Army::uid`] handed to a spawned demo gang.
     pub next_uid: u32,
+    /// Beaten armies waiting to come back: lords recovering in a building, and armies with
+    /// a respawn time (`rules::ai`).
+    #[serde(default)]
+    pub respawns: Vec<Respawn>,
+    /// Connected region of every passable cell on foot (`TileMap::regions`), to skip goals
+    /// an AI army cannot walk to. Rebuilt from the map.
+    #[serde(skip)]
+    pub(crate) regions: Vec<u32>,
     #[serde(skip)]
     entries: HashMap<Tile, usize>,
     #[serde(skip)]
@@ -617,6 +636,8 @@ impl World {
             points: Vec::new(),
             named_characters: Vec::new(),
             next_uid: FIRST_GANG_UID,
+            respawns: Vec::new(),
+            regions: Vec::new(),
             entries: HashMap::new(),
             footprints: HashMap::new(),
             sea: Vec::new(),
@@ -833,6 +854,7 @@ impl World {
             if troops.is_empty() {
                 continue;
             }
+            let troops_for_ai = troops.clone();
             let at = (a.x as i32, a.y as i32);
             let placed = if a.ship != 0 {
                 world.nearest_sea(at, PLACE_RADIUS)
@@ -873,6 +895,8 @@ impl World {
                 named: a.named_character,
                 effects: Vec::new(),
                 ship: a.ship,
+                ai: AiProfile::from_dt(a, &troops_for_ai),
+                mind: AiMind::default(),
             };
             // An army with no cell of its kind nearby (a land army far out on the water)
             // waits with the inactive.
@@ -882,6 +906,7 @@ impl World {
                 world.inactive.push(army);
             }
         }
+        world.regions = world.map.regions().0;
         world
     }
 
@@ -1034,6 +1059,7 @@ impl World {
         let lair = w.index_of("Bandit lair");
         w.spawn_gang(camp, (39, 16));
         w.spawn_gang(lair, (14, 24));
+        w.regions = w.map.regions().0;
         w
     }
 
@@ -1054,13 +1080,18 @@ impl World {
             l.description.clone_from(&f.description);
         }
         let texts: HashMap<u8, &Army> = fresh.armies.iter().chain(fresh.inactive.iter()).filter(|a| a.id != 0).map(|a| (a.id, a)).collect();
-        for a in self.armies.iter_mut().chain(self.inactive.iter_mut()) {
+        let respawning = self.respawns.iter_mut().map(|r| &mut r.army);
+        for a in self.armies.iter_mut().chain(self.inactive.iter_mut()).chain(respawning) {
             match texts.get(&a.id) {
                 _ if a.id == 0 => a.name = GANG_NAME.to_string(),
                 Some(f) => {
                     a.name.clone_from(&f.name);
                     a.leader_name.clone_from(&f.leader_name);
                     a.description.clone_from(&f.description);
+                    // Saves from before the AI kept no profile: the scenario's.
+                    if !a.ai.enabled {
+                        a.ai = f.ai.clone();
+                    }
                 }
                 None => return Err(format!("army {} is not on the map", a.id)),
             }
@@ -1073,6 +1104,7 @@ impl World {
         self.entries = fresh.entries;
         self.footprints = fresh.footprints;
         self.sea = fresh.sea;
+        self.regions = fresh.regions;
         Ok(())
     }
 
@@ -1139,7 +1171,18 @@ impl World {
             named: 0,
             effects: Vec::new(),
             ship: 0,
+            ai: AiProfile::default(),
+            mind: AiMind::default(),
         });
+    }
+
+    /// Both cells lie in the same region on foot (true when regions are not known).
+    pub fn same_region(&self, a: Tile, b: Tile) -> bool {
+        match (self.map.mask_index(a), self.map.mask_index(b)) {
+            (Some(i), Some(j)) if !self.regions.is_empty() => self.regions[i] == self.regions[j],
+            (Some(_), Some(_)) => true,
+            _ => false,
+        }
     }
 
     pub fn camps(&self) -> impl Iterator<Item = (usize, &Location)> {

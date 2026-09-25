@@ -354,10 +354,7 @@ impl Game {
         }
         let destroyed = a.troops.is_empty();
         if destroyed {
-            let a = self.world.armies.remove(i);
-            if a.id != 0 {
-                self.beaten_armies.insert(a.id);
-            }
+            self.army_beaten(i, crate::rules::ai::Beaten::ByPlayer);
             let events = self.run_script();
             self.pending.extend(events);
         }
@@ -508,6 +505,7 @@ mod tests {
         assert_eq!(s.max_hp(), before.max_hp() + before.max_hp() * 20 / 100);
         // Weakness on the enemy: walk up to it, cast.
         g.world.armies[0].pos = g.world.map.center((4, 2));
+        g.world.armies[0].post = (4, 2); // its post now: it does not walk back while he casts
         g.world.armies[0].ignore_until = f64::MAX; // leaves the hero alone while he casts
         let cast = g.cast(4, CastTarget::Army(uid)).unwrap();
         assert!(matches!(cast.outcome, CastOutcome::Done { .. }), "{cast:?}");

@@ -5,7 +5,7 @@ the original scenarios with the original rules, reading maps, unit/item/spell da
 **your own installed copy** at runtime. Without an install it runs a small built-in demo made of
 our own content.
 
-Branch: `dt-revival` (19 commits on top of `main`; `main` is untouched). About 24 k lines of Rust.
+Branch: `dt-revival` (20 commits on top of `main`; `main` is untouched). About 27 k lines of Rust.
 
 ## How to play
 
@@ -40,9 +40,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Events and quests** | The scenario script engine: global / local / quest / rumour events, time windows and repeats, relative and chained events, all condition and result groups, flags (`%+X -X =X =/X`), yes/no questions, journal, victory and defeat events. Story dialogs with pictures and rewards. On РК1 the opening dialog, the first quest and the journal work. |
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for mana and game time; effects last into battles; archmage and Caster discounts; scripted spells use the same path. |
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
+| **AI armies** | The scenario's armies choose goals by behaviour style (feudal / rogue / peasant, army byte 59) and target model with the `_Global.ini` priorities: attack you or hostile armies in view, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. Feudal economy: income, wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles with the battle engine on both sides, captures and income changes (your castles can be lost), reports within sight. Beaten lords retreat into a building and return; armies respawn after their days (leader or whole army). 30 simulated days on every shipped map take 0.01–0.33 s each (release). |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **278 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **303 library + 16 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -57,6 +58,12 @@ files run only when it is set. `cargo clippy --all-targets` is clean.
   merchants never attack. **Gates**: a fort standing at the foot of a bridge lets the hero
   through its walls to the bridge (ДС2, "Другой берег"). **Start building**: the preset's,
   else the class's flagged building (byte 353) next to the preset's cell.
+- **AI** (all *(guess)*, mechanics.md §8.8): army byte 59 is the behaviour style (it matches
+  the model of every feudal/bandit/peasant army); lower `_Global.ini` priority wins, scored
+  × (10 + distance); view 12/6/3 cells from `AIDistance0..2` by target model; an army
+  attacks when its strength × (100 + aggression) % is at least the enemy's; lords recover 3
+  days in a building; an army's items are worn by its units in battle (yours too); a
+  captured castle gets a garrison of the taker's weakest troops.
 - **Daily report at 12:00**, villages at 00:00: the footage shows the report and autosave at noon.
 - **Prices fitted to the footage** (+15% per attitude step below 1; a fort capture pays one day
   of income; a beaten unit gives its `Surrender` value in mana).
@@ -74,7 +81,13 @@ after `main` returned); the game now ends the process directly once everything i
   ship" type (army byte 72 = 1) means is unknown; such ships sail like friendly armies.
 - The second tutorial's church (building 15) stands in a ring of dense thickets and bog:
   unreachable unless some thicket sprites are passable in the original.
-- **AI lords' economy** (hiring, shopping, taking back forts), AI-vs-AI battles, army respawn.
+- **AI**: "beaten by anyone" in the event engine still reads only the player's battles: the
+  one-line switch to `Game::army_beaten_by_anyone` belongs in `src/rules/script.rs`, which
+  another branch (Community opcodes) is changing; apply it after that merge (a ready patch:
+  `/tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9ee4204d-b333-4316-953b-dbb147f5fd94/scratchpad/army-beaten-by-anyone.patch`,
+  `git apply` it from the repo root). Everything
+  about how the original weighs its AI priorities, uses `AIDistance0..2` and garrisons is a
+  guess (mechanics.md §8.8). AI ships only cruise and chase the hero.
 - The 30 **Community-only unit bonuses** are read but do nothing yet; the Community extra
   **event opcodes** are detected but not run (no shipped map uses them).
 - Which of the five village services a village offers is not decoded: all are offered.
@@ -123,6 +136,6 @@ decoders); the cleaned versions of the notes are already in `docs/reference/`.
 ## Next steps I'd suggest
 
 1. Play РК1 end to end and report problems.
-2. AI lords' economy.
-3. Community bonuses and event opcodes.
+2. Community bonuses and event opcodes (then the "beaten by anyone" switch above).
+3. Watch the AI on a real playthrough: whether lords are too busy or too idle.
 4. Merge `dt-revival` into `main` once you're happy, and publish for the community.

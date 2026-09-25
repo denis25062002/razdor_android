@@ -1,4 +1,5 @@
 //! Pure game rules. Must not depend on macroquad.
+pub mod ai;
 pub mod battle;
 pub mod clock;
 pub mod content;

@@ -1,0 +1,527 @@
+//! The AI on small synthetic scenarios.
+use std::sync::Arc;
+
+use super::*;
+use crate::dt::data::AiTargets;
+use crate::dt::dtm::{Army as DtArmy, BuildingType, Scenario, Troop as DtTroop};
+use crate::rules::content::testkit as ck;
+use crate::rules::content::{ArtefactType, HeroClass, ItemId, UnitDef};
+use crate::rules::world::testkit::{self as tk, building, hero, scenario, troop};
+
+/// Units 1–3 heroes, 4 a weak warrior, 5 a shooter, 6 a strong warrior, 7 a rogue warrior;
+/// item 7 a ring, 9 a potion.
+fn content() -> Content {
+    let units = vec![
+        ck::warrior(1, 20, 5),
+        ck::warrior(2, 20, 5),
+        ck::warrior(3, 20, 5),
+        ck::warrior(4, 10, 2),
+        ck::shooter(5, 8),
+        UnitDef { hits: 120, cost: 200, ..ck::warrior(6, 60, 20) },
+        UnitDef { nature: Nature::Rogue, cost: 60, ..ck::warrior(7, 12, 2) },
+    ];
+    ck::content(units, vec![ck::item(7, ArtefactType::Ring), ck::item(9, ArtefactType::Potion)])
+}
+
+/// A 60 × 20 grass map; the hero stands far away in the corner (0, 0).
+fn map() -> Scenario {
+    let mut s = scenario(60, 20);
+    s.header.heroes[0] = hero(0, 0, 100, &[troop(4, 0, 1)]);
+    s
+}
+
+/// An army of `faction` with `relations` towards the four factions, style byte `style`.
+fn army(id: u8, at: (u16, u16), faction: u8, relations: [i8; 4], style: u8, troops: &[DtTroop]) -> DtArmy {
+    let mut a = tk::army(id, at.0, at.1, relations[0], troops);
+    a.faction = faction;
+    a.relations = relations;
+    a.behaviour = style;
+    a.model = 4 + style;
+    a
+}
+
+const ALLY: [i8; 4] = [1, 3, 1, -2];
+const ENEMY: [i8; 4] = [0, -2, 1, 3];
+
+fn start(s: &Scenario) -> Game {
+    start_with(s, content())
+}
+
+fn start_with(s: &Scenario, c: Content) -> Game {
+    let mut g = Game::from_scenario(Arc::new(c), s, HeroClass::Knight, 7);
+    g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+    g
+}
+
+fn goal(g: &Game, i: usize) -> Goal {
+    choose_goal(&g.world, &g.content, i, g.hero_target(), g.clock.total_minutes())
+}
+
+fn by_id(g: &Game, id: u8) -> Option<&Army> {
+    g.world.armies.iter().find(|a| a.id == id)
+}
+
+#[test]
+fn style_is_byte_59_else_the_map_model() {
+    assert_eq!(Style::of(0, 7), Style::Feudal);
+    assert_eq!(Style::of(1, 4), Style::Rogue);
+    assert_eq!(Style::of(2, 7), Style::Peasant);
+    assert_eq!(Style::of(9, 5), Style::Rogue);
+    assert_eq!(Style::of(9, 6), Style::Peasant);
+    assert_eq!(Style::of(9, 4), Style::Feudal);
+}
+
+#[test]
+fn priorities_by_target_model_and_missing_keys() {
+    let mut o = GlobalOptions::default();
+    assert_eq!(Priorities::of(&o, 1), DEMO_PRIORITIES, "no _Global.ini: our own values");
+    o.ai_targets = AiTargets {
+        min_attack_army: Some([1, 2, 3, 4, 5]),
+        min_random: Some([10, 20, 30, 40, 50]),
+        max_healing: Some([100, 200, 300, 400, 500]),
+        ..AiTargets::default()
+    };
+    let p = Priorities::of(&o, model::PASSIVE);
+    assert_eq!((p.attack_army, p.random, p.heal), (3, 30, (0, 300)), "a missing Min reads 0");
+    assert_eq!(lerp((0, 300), 0), 300);
+    assert_eq!(lerp((0, 300), 1000), 0);
+    assert_eq!(lerp((100, 300), 500), 200);
+}
+
+#[test]
+fn view_radius_follows_ai_distance() {
+    let o = GlobalOptions::default();
+    assert_eq!(view_radius(&o, model::STANDARD), CHASE_RADIUS);
+    assert_eq!(view_radius(&o, model::AGGRESSIVE), 2 * CHASE_RADIUS);
+    assert_eq!(view_radius(&o, model::PASSIVE), CHASE_RADIUS / 2);
+}
+
+#[test]
+fn a_hostile_army_in_view_is_attacked_if_it_dares() {
+    let mut s = map();
+    s.armies = vec![
+        army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]),
+        army(2, (34, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]),
+    ];
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::AttackArmy(2));
+    // The weak one does not dare attack the strong one.
+    assert_ne!(goal(&g, 1), Goal::AttackArmy(1));
+    // Out of view: no attack.
+    g.world.armies[1].pos = g.world.map.center((45, 10));
+    assert_ne!(goal(&g, 0), Goal::AttackArmy(2));
+    // Aggression makes a weak army bold.
+    g.world.armies[1].pos = g.world.map.center((34, 10));
+    g.world.armies[1].ai.aggression = 400;
+    g.world.armies[1].troops = g.world.armies[0].troops.clone();
+    assert_eq!(goal(&g, 1), Goal::AttackArmy(1));
+}
+
+#[test]
+fn flags_remove_goals() {
+    let mut s = map();
+    let mut v = building(BuildingType::Village, 30, 14, (1, 1));
+    v.faction = 2;
+    v.gold_per_day = 80;
+    s.buildings = vec![v];
+    let mut lord = army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]);
+    lord.patrols = 1;
+    lord.patrol_radius = 5;
+    s.armies = vec![lord, army(2, (34, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]), army(3, (28, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::AttackArmy(2));
+    g.world.armies[0].ai.player_only = true;
+    assert_eq!(goal(&g, 0), Goal::Village(0), "hunts only the player: the village next");
+    g.world.armies[0].ai.player_only = false;
+    g.world.armies[1].ai.ignored = true;
+    assert_eq!(goal(&g, 0), Goal::Village(0), "an army ignored by the AI is no target");
+    g.world.armies[0].ai.no_buildings = true;
+    assert_eq!(goal(&g, 0), Goal::Talk(3), "no interest in buildings: a talk with a friend");
+    g.world.armies[0].ai.no_talk = true;
+    assert!(matches!(goal(&g, 0), Goal::Wander(_)));
+    g.world.armies[0].ai.no_random = true;
+    assert_eq!(goal(&g, 0), Goal::Idle);
+}
+
+#[test]
+fn peasants_only_wander_but_hunt_the_player() {
+    let mut s = map();
+    let mut p = army(1, (30, 10), 4, [-2, -2, -2, 3], 2, &[troop(6, 0, 3)]);
+    p.patrols = 1;
+    p.patrol_radius = 4;
+    s.armies = vec![p, army(2, (33, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
+    s.header.heroes[0] = hero(35, 12, 100, &[troop(4, 0, 1)]);
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::AttackPlayer);
+    g.pos = g.world.map.center((2, 2));
+    assert!(matches!(goal(&g, 0), Goal::Wander(_)), "never goes for other armies");
+}
+
+#[test]
+fn passive_armies_heal_first_aggressive_ones_attack() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 30, 14, (1, 1));
+    castle.faction = 2;
+    castle.owner_army = 1;
+    s.buildings = vec![castle];
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), army(2, (33, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    // Passive: healing (Min 0 at full need) beats attacking; the enemy is 3 cells away.
+    let mut c = content();
+    c.options.ai_targets = AiTargets {
+        min_attack_army: Some([2, 2, 90, 40, 40]),
+        max_healing: Some([120, 280, 110, 90, 60]),
+        min_random: Some([450, 700, 420, 450, 450]),
+        ..AiTargets::default()
+    };
+    let mut g = start_with(&s, c);
+    let c = g.content.clone();
+    for t in g.world.armies[0].troops.iter_mut() {
+        t.hurt = troop_max_hp(&c, t) * 8 / 10;
+    }
+    g.world.armies[0].ai.model = model::PASSIVE;
+    assert_eq!(goal(&g, 0), Goal::Heal(0));
+    g.world.armies[0].ai.model = model::AGGRESSIVE;
+    // Wounded, the lord is weaker; aggression lets him attack anyway.
+    g.world.armies[0].ai.aggression = 100;
+    assert_eq!(goal(&g, 0), Goal::AttackArmy(2));
+}
+
+#[test]
+fn rogues_go_back_for_their_lost_fort() {
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 50, 10, (1, 1));
+    fort.faction = 2;
+    s.buildings = vec![fort];
+    let mut r = army(1, (10, 10), 4, ENEMY, 1, &[troop(6, 0, 2)]);
+    r.home_building = 1;
+    s.armies = vec![r];
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::Capture(0), "its home, far out of view");
+    // It walks there (40 cells) and takes it (nobody guards it).
+    g.wait(48);
+    assert_eq!(g.world.locations[0].owner, Owner::Army(1));
+    assert_eq!(g.world.locations[0].faction, 4);
+    assert_eq!(g.ai_stats.captures, 1);
+}
+
+#[test]
+fn feudal_lords_collect_tribute_and_hoarders_prefer_it() {
+    let mut s = map();
+    let mut v = building(BuildingType::Village, 32, 12, (1, 1));
+    v.faction = 2;
+    v.gold_per_day = 10;
+    let mut m = building(BuildingType::Market, 28, 12, (1, 1));
+    m.faction = 2;
+    m.artifact_slots[0] = 7;
+    s.buildings = vec![v, m];
+    let mut lord = army(1, (30, 10), 2, ALLY, 0, &[troop(4, 0, 2)]);
+    lord.gold_income = 400;
+    s.armies = vec![lord];
+    let mut c = content();
+    c.options.ai_targets = AiTargets {
+        min_purchase: Some([110, 240, 160, 240, 60]),
+        max_purchase: Some([260, 480, 310, 480, 390]),
+        gold_purchase: Some([450; 5]),
+        min_village: Some([20, 140, 60, 2, 20]),
+        max_village: Some([240, 480, 240, 110, 210]),
+        gold_village: Some([120; 5]),
+        ..AiTargets::default()
+    };
+    let mut g = start_with(&s, c);
+    g.world.armies[0].ai.model = model::TRADING;
+    assert_eq!(goal(&g, 0), Goal::Shop(1), "a trader shops first");
+    g.world.armies[0].ai.model = model::HOARDING;
+    assert_eq!(goal(&g, 0), Goal::Village(0), "a hoarder collects first");
+    let gold = g.world.armies[0].gold;
+    g.wait(2);
+    assert_eq!(g.world.locations[0].tribute_gold, 0);
+    assert_eq!(g.world.armies[0].gold, gold + 10);
+}
+
+#[test]
+fn a_lord_buys_an_item_one_of_his_units_can_wear() {
+    let mut s = map();
+    let mut m = building(BuildingType::Market, 32, 10, (1, 1));
+    m.faction = 2;
+    m.artifact_slots[0] = 9;
+    m.artifact_slots[1] = 7;
+    s.buildings = vec![m];
+    let mut lord = army(1, (30, 10), 2, ALLY, 0, &[troop(4, 0, 1)]);
+    lord.gold_income = 300;
+    s.armies = vec![lord];
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::Shop(0));
+    g.wait(2);
+    let a = by_id(&g, 1).unwrap();
+    assert_eq!(a.items, vec![ItemId(7)], "the ring, not the potion");
+    assert_eq!(a.gold, 300 - 100);
+    assert_eq!(g.ai_stats.bought, 1);
+    // The ring is worn in battle.
+    let units = army_units(&g.content, a);
+    assert_eq!(units[0].items.iter().flatten().count(), 1);
+}
+
+#[test]
+fn noon_pays_income_and_wages_and_hiring_keeps_the_reserve() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 30, 12, (1, 1));
+    castle.faction = 2;
+    castle.owner_army = 1;
+    castle.gold_per_day = 100;
+    castle.has_barracks = 1;
+    castle.barracks[0] = crate::dt::dtm::RecruitSlot { unit: 4, start_count: 10, max_count: 10 };
+    s.buildings = vec![castle];
+    let mut lord = army(1, (30, 12), 2, ALLY, 0, &[troop(6, 0, 1)]);
+    lord.gold_income = 50;
+    s.armies = vec![lord];
+    let mut g = start(&s);
+    let c = g.content.clone();
+    // Standing in his castle, the lord hires at noon while his gold stays above five days
+    // of wages.
+    g.world.armies[0].pos = g.world.map.center(g.world.locations[0].tile);
+    g.world.armies[0].gold = 200;
+    g.wait(4); // 09:00 → 13:00, past the noon
+    let a = by_id(&g, 1).unwrap();
+    let castle = &g.world.locations[0];
+    // Into his army, and into the castle's garrison (half his strength, the default).
+    let (army, garrison) = (a.troops.len() - 1, castle.garrison.len());
+    assert!(army > 0 && garrison > 0, "hired {army} + {garrison}");
+    assert_eq!(castle.recruits[0].stock, Some(10 - (army + garrison) as i32));
+    let keep = reserve(&c, a, &a.troops);
+    assert!(a.gold >= keep, "kept {} (reserve {keep})", a.gold);
+    let mut more = a.troops.clone();
+    more.push(a.troops[1]);
+    assert!(a.gold - 50 < reserve(&c, a, &more), "one more would eat into the reserve");
+    // 200 + 100 castle + 50 own income − wages at noon − 50 a head.
+    let spent = 350 - a.gold - 50 * (army + garrison) as i32;
+    assert!((0..=army as i32 * 6).contains(&spent), "wages {spent}");
+}
+
+#[test]
+fn rogues_pay_no_wages_and_hire_only_rogues() {
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 30, 12, (1, 1));
+    fort.faction = 4;
+    fort.owner_army = 1;
+    fort.has_barracks = 1;
+    fort.barracks[0] = crate::dt::dtm::RecruitSlot { unit: 4, start_count: 5, max_count: 5 };
+    fort.barracks[1] = crate::dt::dtm::RecruitSlot { unit: 7, start_count: 2, max_count: 2 };
+    s.buildings = vec![fort];
+    s.armies = vec![army(1, (30, 12), 4, ENEMY, 1, &[troop(6, 0, 1), troop(7, 0, 1)])];
+    let mut g = start(&s);
+    g.world.armies[0].pos = g.world.map.center(g.world.locations[0].tile);
+    g.world.armies[0].gold = 1000;
+    g.wait(4);
+    let a = by_id(&g, 1).unwrap();
+    assert!(a.troops.iter().skip(1).all(|t| t.unit == UnitId(7)), "rogue units only");
+    assert_eq!(a.troops.len(), 4, "both rogues in stock");
+    assert_eq!(a.gold, 1000 - 2 * 60, "no wages");
+}
+
+#[test]
+fn unpaid_lords_lose_units() {
+    let mut s = map();
+    s.armies = vec![army(1, (30, 12), 2, ALLY, 0, &[troop(6, 0, 1), troop(6, 0, 2)])];
+    let mut g = start(&s);
+    g.world.armies[0].gold = 0;
+    g.world.armies[0].ai.extra_income = 0;
+    g.wait(24 * 8);
+    assert_eq!(by_id(&g, 1).unwrap().troops.len(), 2, "one left after seven unpaid days");
+}
+
+#[test]
+fn hostile_armies_that_meet_fight_and_the_loser_leaves() {
+    let mut s = map();
+    let mut weak = army(2, (31, 10), 4, ENEMY, 1, &[troop(4, 0, 1)]);
+    weak.gold_income = 80;
+    weak.artifacts = [7, 0, 0];
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), weak];
+    let mut g = start(&s);
+    g.world.armies[0].gold = 0;
+    g.world.armies[0].ai.extra_income = 0;
+    let events = g.wait(1);
+    assert_eq!(g.ai_stats.battles, 1);
+    assert!(by_id(&g, 2).is_none(), "the loser is off the map");
+    let w = by_id(&g, 1).unwrap();
+    assert_eq!(w.gold, 40, "half the loser's gold");
+    assert_eq!(w.items, vec![ItemId(7)]);
+    assert!(w.troops.iter().any(|t| t.xp > 0 || t.level > 1), "the winners gained experience");
+    assert!(g.army_beaten_by_anyone(2));
+    assert!(!g.beaten_armies.contains(&2), "not by the player");
+    assert!(events.iter().all(|e| !matches!(e, Event::Battle(_))), "far from the hero: not reported");
+    assert!(g.ai_log.is_empty());
+}
+
+#[test]
+fn battles_within_sight_are_reported() {
+    let mut s = map();
+    s.header.heroes[0] = hero(30, 14, 100, &[troop(4, 0, 1)]);
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), army(2, (31, 10), 4, ENEMY, 1, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let events = g.wait(1);
+    assert!(events.iter().any(|e| matches!(e, Event::Battle(n) if n.text.contains("defeated"))), "{events:?}");
+    assert_eq!(g.ai_log.len(), 1);
+}
+
+#[test]
+fn an_ai_army_storms_a_hostile_fort_and_takes_it() {
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 34, 10, (1, 1));
+    fort.faction = 4;
+    fort.garrison[0] = troop(4, 0, 1);
+    fort.gold_per_day = 70;
+    s.buildings = vec![fort];
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)])];
+    let mut g = start(&s);
+    assert_eq!(goal(&g, 0), Goal::Capture(0));
+    g.wait(6);
+    let f = &g.world.locations[0];
+    assert_eq!((f.owner, f.faction), (Owner::Army(1), 2));
+    assert!(!f.garrison.is_empty() && f.garrison.iter().all(|t| t.unit == UnitId(6)), "it leaves some of its own troops there");
+    assert!(by_id(&g, 1).unwrap().troops.len() < 3);
+    assert_eq!((g.ai_stats.battles, g.ai_stats.captures), (1, 1));
+    // Its income goes to the lord from now on.
+    let gold = by_id(&g, 1).unwrap().gold;
+    g.wait(24);
+    assert!(by_id(&g, 1).unwrap().gold >= gold + 70 - army_wages(&g.content, &by_id(&g, 1).unwrap().troops));
+}
+
+#[test]
+fn the_players_castle_can_be_lost_and_he_hears_of_it() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 34, 10, (1, 1));
+    castle.faction = 1;
+    castle.gold_per_day = 100;
+    s.buildings = vec![castle];
+    s.armies = vec![army(1, (30, 10), 4, [-2, -2, 1, 3], 0, &[troop(6, 0, 3)])];
+    let mut g = start(&s);
+    assert!(g.world.locations[0].owned());
+    let income = g.daily_income();
+    let mut events = Vec::new();
+    for _ in 0..6 {
+        events.extend(g.wait(1));
+    }
+    assert_eq!(g.world.locations[0].owner, Owner::Army(1));
+    assert!(g.daily_income() < income);
+    assert!(events.iter().any(|e| matches!(e, Event::Battle(n) if n.text.contains("took"))), "{events:?}");
+}
+
+#[test]
+fn a_beaten_lord_retreats_to_his_castle_and_returns() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 20, 10, (1, 1));
+    castle.faction = 4;
+    castle.owner_army = 2;
+    s.buildings = vec![castle];
+    let mut lord = army(2, (31, 10), 4, ENEMY, 0, &[troop(4, 0, 1), troop(4, 0, 2)]);
+    lord.home_building = 1;
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), lord];
+    let mut g = start(&s);
+    g.wait(1);
+    assert!(by_id(&g, 2).is_none());
+    assert_eq!(g.world.respawns.len(), 1);
+    assert!(g.world.respawns[0].lord);
+    assert_eq!(g.world.respawns[0].army.troops.len(), 1, "the leader alone");
+    assert_eq!(g.ai_stats.retreats, 1);
+    // Keep the victor away from the castle.
+    g.world.armies[0].ai.no_buildings = true;
+    g.world.armies[0].ai.no_random = true;
+    g.wait(24 * RECOVER_DAYS as u32 + 2);
+    let back = by_id(&g, 2).expect("back from his castle");
+    assert!(back.troops.iter().all(|t| t.hurt == 0), "recovered");
+    assert_eq!(g.world.locations[0].owner, Owner::Army(2));
+}
+
+#[test]
+fn a_lord_without_buildings_falls_for_good() {
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), army(2, (31, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    g.wait(1);
+    assert!(by_id(&g, 2).is_none());
+    assert!(g.world.respawns.is_empty());
+}
+
+#[test]
+fn armies_respawn_after_their_days_leader_or_whole() {
+    for whole in [false, true] {
+        let mut s = map();
+        let mut gang = army(2, (31, 10), 4, ENEMY, 1, &[troop(4, 0, 1), troop(5, 0, 2)]);
+        gang.respawn_days = 2;
+        gang.respawn_all = whole as u8;
+        s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(6, 0, 3)]), gang];
+        let mut g = start(&s);
+        g.wait(1);
+        assert!(by_id(&g, 2).is_none());
+        // The victor stays put so it does not beat the gang again at once.
+        g.world.armies[0].pos = g.world.map.center((50, 3));
+        g.world.armies[0].post = (50, 3);
+        g.wait(47);
+        assert!(by_id(&g, 2).is_none(), "not yet");
+        g.wait(2);
+        let back = by_id(&g, 2).expect("respawned");
+        assert_eq!(back.troops.len(), if whole { 3 } else { 1 });
+        assert_eq!(back.tile(&g.world.map), (31, 10), "at its post");
+        assert_eq!(g.ai_stats.respawns, 1);
+    }
+}
+
+#[test]
+fn the_player_beating_a_lord_sends_him_home_too() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 20, 10, (1, 1));
+    castle.faction = 4;
+    castle.owner_army = 1;
+    s.buildings = vec![castle];
+    s.armies = vec![army(1, (5, 5), 4, [-2, -2, 1, 3], 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    g.foe = Some(Foe::Army(0));
+    let mut b = g.start_battle();
+    b.begin();
+    for f in b.fighters.iter_mut().filter(|f| f.team == Team::Enemy) {
+        f.hp = 0;
+    }
+    g.resolve_battle(&b);
+    assert!(g.world.armies.is_empty());
+    assert!(g.beaten_armies.contains(&1) && g.army_beaten_by_anyone(1));
+    assert_eq!(g.world.respawns.len(), 1);
+}
+
+#[test]
+fn write_back_keeps_the_leader_while_his_army_lives() {
+    let c = content();
+    let slot = |k| crate::rules::formation::Slot::new(crate::rules::formation::Row::Front, k);
+    let mut troops = vec![Troop::new(UnitId(6), 1, slot(0)), Troop::new(UnitId(4), 1, slot(1)), Troop::new(UnitId(4), 1, slot(2))];
+    write_back(&c, &mut troops, &[(0, 120), (20, 50), (0, 50)], &[0, 1000, 0], 100);
+    assert_eq!(troops.len(), 2, "the dead warrior leaves");
+    assert_eq!(troops[0].hurt, 119, "the leader is back with 1 HP");
+    assert!(troops[1].level > 1, "1000 XP levels up");
+    // Everybody dead: the army keeps its troops for the caller (the leader retreats).
+    let mut troops = vec![Troop::new(UnitId(6), 1, slot(0))];
+    write_back(&c, &mut troops, &[(0, 120)], &[0], 100);
+    assert_eq!(troops.len(), 1);
+}
+
+#[test]
+fn routes_are_planned_once_per_goal() {
+    let mut s = map();
+    let mut p = army(1, (30, 10), 2, ALLY, 0, &[troop(4, 0, 1)]);
+    p.patrols = 1;
+    p.patrol_radius = 12;
+    s.armies = vec![p];
+    let mut g = start(&s);
+    g.wait(24);
+    // A patrol leg is one search, not one per slice (288 slices in a day).
+    assert!(g.ai_stats.paths < 40, "{} searches", g.ai_stats.paths);
+    assert!(g.ai_stats.paths > 0);
+}
+
+#[test]
+fn hostile_armies_still_chase_the_hero() {
+    let mut s = map();
+    s.header.heroes[0] = hero(30, 14, 100, &[troop(4, 0, 1)]);
+    s.armies = vec![army(1, (30, 9), 4, [-2, -2, 1, 3], 1, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let events = g.wait(4);
+    assert!(events.iter().any(|e| matches!(e, Event::Encounter(0))), "{events:?}");
+}

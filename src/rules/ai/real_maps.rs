@@ -1,0 +1,102 @@
+//! The AI on the player's maps; skipped without `RAZDOR_DT_DIR`. Numbers only.
+use std::sync::Arc;
+use std::time::Instant;
+
+use super::*;
+use crate::dt::install::DtInstall;
+use crate::rules::content::HeroClass;
+
+/// Days simulated on every map.
+const DAYS: u64 = 30;
+/// Seconds a map may take in a release build.
+const RELEASE_BUDGET_SECS: f64 = 5.0;
+
+/// Auto-plays the player's pending battle, the AI on both sides.
+fn fight_it_out(g: &mut Game) -> Outcome {
+    let mut b = g.start_battle();
+    b.begin();
+    for _ in 0..MAX_BATTLE_STEPS {
+        if b.outcome() != Outcome::Ongoing {
+            break;
+        }
+        b.ai_step();
+    }
+    g.resolve_battle(&b);
+    b.outcome()
+}
+
+/// Every shipped map for 30 days with the hero standing at his start (he fights whoever
+/// comes, answers yes to every question): no panic, every map within the time budget
+/// (release builds), and the AI does something.
+#[test]
+fn thirty_days_on_every_map() {
+    let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
+    let dt = DtInstall::load(std::path::Path::new(&dir)).unwrap();
+    let c = Arc::new(Content::from_dt(&dt));
+    let mut totals = AiStats::default();
+    for m in &dt.maps {
+        let s = m.load().unwrap();
+        let t0 = Instant::now();
+        let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 11);
+        let end = g.clock.total_minutes() + (DAYS * MINUTES_PER_DAY) as f64;
+        let armies = g.world.armies.len();
+        let mut player_battles = 0;
+        let mut player_lost = false;
+        let mut calls = 0;
+        while g.clock.total_minutes() < end && calls < 200_000 {
+            calls += 1;
+            if g.pending_question().is_some() {
+                g.answer_question(true);
+                continue;
+            }
+            if g.foe.is_some() {
+                player_battles += 1;
+                if fight_it_out(&mut g) == Outcome::Defeat {
+                    // The game would be over; the world goes on without the player.
+                    player_lost = true;
+                    g.world.armies.iter_mut().for_each(|a| a.ignore_until = f64::MAX);
+                }
+                continue;
+            }
+            if player_lost {
+                g.world.armies.iter_mut().for_each(|a| a.ignore_until = f64::MAX);
+            }
+            g.drain_events();
+            g.wait(4);
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        let st = g.ai_stats;
+        println!(
+            "{:<28} {:>3}x{:<3} armies {:>2}→{:>2} waiting {:>2}: AI battles {:>3}, captures {:>2}, retreats {:>2}, respawns {:>2}, hired {:>3}, bought {:>2}, routes {:>5}; player battles {:>2}{}; {:.2} s",
+            m.name,
+            s.width(),
+            s.height(),
+            armies,
+            g.world.armies.len(),
+            g.world.respawns.len(),
+            st.battles,
+            st.captures,
+            st.retreats,
+            st.respawns,
+            st.hired,
+            st.bought,
+            st.paths,
+            player_battles,
+            if player_lost { " (lost)" } else { "" },
+            secs
+        );
+        assert!(g.clock.total_minutes() >= end, "{}: the simulation stalled", m.name);
+        if !cfg!(debug_assertions) {
+            assert!(secs < RELEASE_BUDGET_SECS, "{}: {secs:.2} s for {DAYS} days", m.name);
+        }
+        totals.battles += st.battles;
+        totals.captures += st.captures;
+        totals.respawns += st.respawns;
+        totals.retreats += st.retreats;
+        totals.paths += st.paths;
+        totals.hired += st.hired;
+        totals.bought += st.bought;
+    }
+    println!("total: {totals:?}");
+    assert!(totals.paths > 0 && totals.hired > 0, "the AI moved and hired somewhere");
+}

@@ -358,7 +358,7 @@ fn check_content(g: &Game) -> Result<(), String> {
         u.items.iter().flatten().chain(&u.potions).try_for_each(|&i| item(i))?;
     }
     g.pack.iter().try_for_each(|&i| item(i))?;
-    let armies = w.armies.iter().chain(w.inactive.iter());
+    let armies = w.armies.iter().chain(w.inactive.iter()).chain(w.respawns.iter().map(|r| &r.army));
     let troops = w.locations.iter().flat_map(|l| l.garrison.iter()).chain(armies.clone().flat_map(|a| a.troops.iter())).chain(w.gang.iter());
     for t in troops {
         unit(t.unit)?;

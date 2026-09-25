@@ -255,7 +255,7 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 50 | u8[3] | artifacts carried | C |
 | 53 | 5 B | always 0 | U |
 | 58 | u8 | named character (1-based index into the named-character list, 0 = none) | C |
-| 59 | u8 | 0..2 | U |
+| 59 | u8 | behaviour style: 0 feudal, 1 rogue, 2 peasant. It equals the model (4, 5, 6) in all 231 such armies of the shipped maps; model-7 armies carry it too | L |
 | 60 | u8 | patrols | C |
 | 61 | u8 | patrol radius | C |
 | 62 | u8 | units carry no money | C |
@@ -280,7 +280,7 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 85 | u8 | target-selection model: 0 standard, 1 aggressive, 2 passive, 3 hoarding, 4 trading | C |
 | 86 | 3 B | always 0 | U |
 
-The behaviour style (feudal, robber or peasant) is not stored separately. It appears to be implied by the model byte (L).
+The behaviour style (feudal, robber or peasant) is byte 59; the model byte (4–6) repeats it for armies on the map, and model-7 (inactive) armies need byte 59 (L).
 
 Garrisons are not armies. They are stored inside the building records (section 6, offset 314).
 

@@ -108,6 +108,22 @@ start building when the map names one, and the class screen takes a name for him
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 
+## AI armies
+The scenario's armies live their own lives while you walk (`src/rules/ai.rs`). Each one
+picks a goal about every game hour from its behaviour style (feudal lord, rogue, peasant),
+its target model (standard, aggressive, passive, hoarding, trading) and the priorities in
+your `_Global.ini`: attack you or a hostile army it sees, take a hostile castle or fort,
+heal, fill its garrison, hire, buy an item, collect a village's tribute, talk to a friend,
+patrol, go home; the editor's flags (ignored by the AI, hunts only the player, no random
+targets, no socialising, no interest in buildings) are respected. Feudal lords earn their
+buildings' income, pay wages and keep five days of them in reserve; rogues pay no wages and
+hire only rogues; peasants just wander. Hostile armies that meet fight it out with the
+battle engine (both sides played by the AI), off-screen; castles and forts change hands and
+their income with them, and your own castles can be lost. You hear of battles within your
+sight and of attacks on your buildings. A beaten lord who still owns a building retreats
+there and comes back after three days; armies with a respawn time come back after it (the
+leader alone, or the whole army when the map says so).
+
 ## Spells
 Learn spells for gold at a sanctuary (the **Sanctuary** tab of towns and churches; the book
 holds 15). Open the spell book from the map with **Spells (B)** or B: every spell shows its
