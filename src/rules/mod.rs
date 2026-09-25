@@ -14,6 +14,8 @@ pub mod magic;
 pub mod map;
 pub mod rng;
 pub mod save;
+#[cfg(test)]
+mod replay;
 pub mod script;
 pub mod ships;
 pub mod town;
