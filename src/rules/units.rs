@@ -181,9 +181,11 @@ pub struct Unit {
     pub slot: Slot,
     /// Missed the last payday: refuses to fight until paid.
     pub unpaid: bool,
-    /// Paydays missed in a row.
-    pub unpaid_days: i32,
-    /// Hiring kind for the wage formula.
+    /// Game minute of the last payday it was paid (or it joined). A unit whose last pay is
+    /// more than `MaxTimeNotUpkeep` ago leaves at a noon when money is short.
+    #[serde(default)]
+    pub last_paid: u64,
+    /// Hiring kind for the wage formula (the hero is [`WageKind::Leader`]).
     pub wage_kind: WageKind,
     /// Game minute of death; a corpse (HP 0) stays in the army until it is resurrected or
     /// buried (mechanics.md 2.5).
@@ -209,7 +211,7 @@ impl Unit {
             hp,
             slot,
             unpaid: false,
-            unpaid_days: 0,
+            last_paid: 0,
             wage_kind,
             died_at: None,
             items: [None; SLOTS],

@@ -5,8 +5,9 @@ use crate::dt::dtm::Scenario;
 
 use super::ai::{self, AiNews, AiStats, Beaten};
 use super::battle::{Battle, Outcome, Team};
-use super::clock::{Clock, Tick, MINUTES_PER_DAY};
-use super::content::{Bonus, Content, HeroClass, ItemId, Source, SpellDef, UnitId};
+use super::clock::{Clock, Tick};
+use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId, WageKind};
+use super::economy::VillageOffer;
 use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
 use super::formation::Slot;
@@ -17,7 +18,7 @@ use super::ships::{Ship, SEA_MINUTES};
 use super::map::{Tile, TileMap};
 use super::rng::Rng;
 use super::units::{PromoteError, Stats, Unit};
-use super::world::{LocationKind, Owner, Stationed, Troop, World};
+use super::world::{Owner, Stationed, Troop, World};
 
 /// Game minutes that pass per real second while the party walks (1 h ≈ 0.2 s).
 pub const MINUTES_PER_SECOND: f32 = 300.0;
@@ -33,26 +34,16 @@ const AI_PATH_NODES: usize = 4000;
 const MEET_AGAIN_DISTANCE: i32 = 4;
 const SPAWN_EVERY_DAYS: u64 = 3;
 const MAX_GANGS_PER_CAMP: usize = 2;
-/// Markets re-roll their random goods every 7 days *(guess: the original's restock rule is
-/// not known)*.
-pub const RESTOCK_EVERY_DAYS: u64 = 7;
-/// Unworn items the hero's backpack holds. The original's size is not known; its inventory
-/// grid is 5 wide and scrolls, and the footage shows more than 25 items *(guess: 40)*.
-pub const PACK_SIZE: usize = 40;
-/// Spells the book holds: the original's spell book window has 3 × 5 cells.
+/// Unworn items the hero's backpack holds: 256 slots, shown as a scrolling grid 5 wide.
+pub const PACK_SIZE: usize = 256;
+/// Spells the book holds (the original's message comes at 15).
 pub const SPELL_BOOK_SIZE: usize = 15;
 /// Items on sale in each demo market after a restock.
 pub const MARKET_STOCK: usize = 6;
 /// Percent chance that a beaten demo gang drops an item.
 const GANG_LOOT_CHANCE: i32 = 30;
 /// Percent chance that a demo village pays tribute with an item instead of gold.
-const TRIBUTE_ITEM_CHANCE: i32 = 25;
-/// A village's long blessing lasts this many times its spell's own time *(guess)*.
-pub const BLESSING_FACTOR: u64 = 3;
-/// A village's furs fetch this percentage of its gold tribute *(guess)*.
-pub const FURS_PERCENT: i32 = 150;
-/// The magic ritual gives one mana for this much of the gold tribute *(guess)*.
-pub const RITUAL_GOLD_PER_MANA: i32 = 2;
+pub(crate) const TRIBUTE_ITEM_CHANCE: i32 = 25;
 /// The Ranger hero moves 20% faster on the map (mechanics.md 7).
 const RANGER_SPEED: f32 = 1.2;
 
@@ -243,6 +234,15 @@ pub struct Game {
     /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
     #[serde(default)]
     pub hero_name: Option<String>,
+    /// The offer of the village the hero stands in, made on entering (`rules::economy`).
+    #[serde(default)]
+    pub(crate) offer: Option<(usize, VillageOffer)>,
+    /// The village that made the last offer (cleared when its tribute is taken) and what
+    /// was offered.
+    #[serde(default)]
+    pub(crate) offered_at: Option<usize>,
+    #[serde(default)]
+    pub(crate) last_offer: Option<VillageOffer>,
 }
 
 /// Moves `pos` along `path` for up to `minutes` of game time; `cost` gives the minutes per
@@ -310,10 +310,17 @@ impl Game {
             autosave_due: None,
             ship: None,
             hero_name: None,
+            offer: None,
+            offered_at: None,
+            last_offer: None,
         };
-        // The scenario garrisons of the player's own buildings are his troops there, already
-        // past their paid first day.
-        let since = (clock.total_minutes() as u64).saturating_sub(MINUTES_PER_DAY);
+        // The hero draws no wage; everyone counts as paid at the start.
+        let now = clock.total_minutes() as u64;
+        g.squad[0].wage_kind = WageKind::Leader;
+        g.squad.iter_mut().for_each(|u| u.last_paid = now);
+        // The scenario garrisons of the player's own buildings are his troops there (never
+        // paid).
+        let since = now;
         let c = g.content.clone();
         for l in g.world.locations.iter_mut().filter(|l| l.owned() && !l.garrison.is_empty()) {
             let troops = std::mem::take(&mut l.garrison);
@@ -399,22 +406,6 @@ impl Game {
         self.squad.iter().any(|u| u.alive() && u.stats(&self.content).has(b))
     }
 
-    /// Daily wage of unit `u`: from its cost and hiring kind (mechanics.md 1.5), in mana
-    /// for elementals; `AddPayment` in the army cuts every wage by 30%. Corpses are not paid.
-    pub fn unit_wage(&self, u: &Unit) -> Price {
-        let w = if u.alive() { self.content.wage_for(u.def, u.wage_kind) } else { 0 };
-        let w = if self.squad_has(&Bonus::AddPayment) { w * 70 / 100 } else { w };
-        Price::for_unit(&self.content, u.def, w)
-    }
-
-    /// Daily wage of squad member `i` (the hero is free), in its currency.
-    pub fn wage(&self, i: usize) -> i32 {
-        if i == 0 {
-            return 0;
-        }
-        self.unit_wage(&self.squad[i]).amount
-    }
-
     pub fn can_afford(&self, p: Price) -> bool {
         match p.currency {
             Currency::Gold => self.gold >= p.amount,
@@ -432,36 +423,6 @@ impl Game {
             Currency::Mana => self.mana -= p.amount,
         }
         true
-    }
-
-    /// Price markup of a building by its attitude towards the player: none from 1 up, then
-    /// +15% for each step below (+15% at 0, +45% at −2). Fitted to the footage *(guess)*:
-    /// with the hero's −30% trader discount, two markets of attitude 1 sell at exactly 70%
-    /// of the base price and one of attitude −2 at 70% × 1.45.
-    pub fn relation_markup(attitude: i8) -> i32 {
-        (1 - attitude as i32).max(0) * 15
-    }
-
-    /// Price to buy `item` here: its cost with the building's relation markup; a `Merchant`
-    /// in the army takes 30% off.
-    pub fn buy_price(&self, item: ItemId) -> i32 {
-        let attitude = self.location.map_or(3, |l| self.world.locations[l].attitude);
-        let p = self.content.item(item).cost.max(0) * (100 + Self::relation_markup(attitude)) / 100;
-        if self.squad_has(&Bonus::Merchant) {
-            p * 70 / 100
-        } else {
-            p
-        }
-    }
-
-    /// Price a market pays for `item`: `ItemSaleCost`%, +50% with a `Merchant`.
-    pub fn sell_price(&self, item: ItemId) -> i32 {
-        let p = items::sell_price(&self.content, item);
-        if self.squad_has(&Bonus::Merchant) {
-            p * 150 / 100
-        } else {
-            p
-        }
     }
 
     pub fn tile(&self) -> Tile {
@@ -498,53 +459,6 @@ impl Game {
             Some(l) if !l.hostile() && l.hires() => l.recruits.iter().filter(|r| r.stock != Some(0)).map(|r| r.unit).collect(),
             _ => Vec::new(),
         }
-    }
-
-    /// Wages due at the next report: the squad, and units left in a garrison since the last
-    /// report (a garrison unit is paid at one noon only, mechanics.md 1.5). Gold and mana.
-    fn wages_due(&self) -> (i32, i32) {
-        let now = self.clock.total_minutes() as u64;
-        let half = MINUTES_PER_DAY / 2;
-        let noon_today = now / MINUTES_PER_DAY * MINUTES_PER_DAY + half;
-        let last_noon = if noon_today <= now { noon_today } else { noon_today.saturating_sub(MINUTES_PER_DAY) };
-        let squad = self.squad.iter().skip(1);
-        let stationed = self
-            .world
-            .locations
-            .iter()
-            .filter(|l| l.owned())
-            .flat_map(|l| l.stationed.iter())
-            .filter(|s| s.since > last_noon)
-            .map(|s| &s.unit);
-        let (mut gold, mut mana) = (0, 0);
-        for u in squad.chain(stationed) {
-            let p = self.unit_wage(u);
-            match p.currency {
-                Currency::Gold => gold += p.amount,
-                Currency::Mana => mana += p.amount,
-            }
-        }
-        (gold, mana)
-    }
-
-    /// Gold wages due at the next report.
-    pub fn daily_wages(&self) -> i32 {
-        self.wages_due().0
-    }
-
-    /// Mana wages due at the next report (elementals).
-    pub fn daily_mana_wages(&self) -> i32 {
-        self.wages_due().1
-    }
-
-    /// Gold the player's buildings pay each day.
-    pub fn daily_income(&self) -> i32 {
-        self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.gold_income).sum()
-    }
-
-    /// Mana the player's buildings give each day.
-    pub fn daily_mana(&self) -> i32 {
-        self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.mana_income).sum()
     }
 
     /// Walk to `to` along the cheapest path. Clicking a building's walls means its entry.
@@ -720,6 +634,7 @@ impl Game {
     /// barracks (see `rules::town`). Returns true when a building was taken.
     fn arrive(&mut self, l: usize) -> bool {
         self.location = Some(l);
+        self.visit_village(l);
         let loc = &mut self.world.locations[l];
         if loc.defended() {
             self.foe = Some(Foe::Garrison(l));
@@ -735,13 +650,7 @@ impl Game {
     pub(crate) fn pass_time(&mut self, minutes: f32, events: &mut Vec<Event>) {
         for tick in self.clock.advance(minutes as f64) {
             match tick {
-                Tick::Midnight(_) => {
-                    let days = self.content.options.max_day_count_for_new_unit;
-                    for l in self.world.locations.iter_mut() {
-                        l.refill();
-                        l.recruits.iter_mut().for_each(|r| r.regrow(days));
-                    }
-                }
+                Tick::Midnight(_) => self.economy_midnight(),
                 Tick::Noon(day) => {
                     let report = self.new_day(day);
                     events.push(Event::NewDay(report));
@@ -772,98 +681,13 @@ impl Game {
         }
     }
 
-    fn heal_all(&mut self) {
-        let c = self.content.clone();
-        self.squad.iter_mut().for_each(|u| u.heal_full(&c));
-    }
-
-    /// Percent of max HP the army heals each day: 15 with an `ArmyMedic`, 20 with a Ranger
-    /// hero (mechanics.md 1.2, 1.3). They do not add up *(guess)*.
-    pub fn daily_heal_percent(&self) -> i32 {
-        let medic = if self.squad_has(&Bonus::ArmyMedic) { 15 } else { 0 };
-        let ranger = if self.hero_class() == Some(HeroClass::Ranger) { 20 } else { 0 };
-        medic.max(ranger)
-    }
-
-    /// The noon report: income and mana from the player's buildings, then wages. A unit
-    /// that cannot be paid is marked unpaid and sits out battles; one unpaid for
-    /// `MaxTimeNotUpkeep` leaves the army *(guess: the original's consequence is not
-    /// decoded)*, its items going to the pack. Units left in a garrison are paid on their
-    /// first day there only. Then the daily healing (medic or ranger; garrisons
-    /// `GarrisonAutoHeal`%), and every 7 days the markets restock.
+    /// The noon report: the player's income and wages (`Game::pay_noon`: a unit that
+    /// cannot be paid sits out battles; on a short day units long unpaid leave), then the
+    /// Ranger's daily heal.
     fn new_day(&mut self, day: u64) -> DayReport {
-        let income = self.daily_income();
-        let mana = self.daily_mana();
-        self.gold += income;
-        self.mana += mana;
-        let now = self.clock.total_minutes() as u64;
-        let (mut wages, mut mana_wages, mut unpaid) = (0, 0, 0);
-        let mut pay = |g: &mut Game, p: Price| -> bool {
-            if p.amount <= 0 {
-                return true;
-            }
-            let ok = g.spend(p);
-            if ok {
-                match p.currency {
-                    Currency::Gold => wages += p.amount,
-                    Currency::Mana => mana_wages += p.amount,
-                }
-            }
-            ok
-        };
-        for i in 1..self.squad.len() {
-            if !self.squad[i].alive() {
-                continue;
-            }
-            let p = self.unit_wage(&self.squad[i]);
-            let paid = pay(self, p);
-            let u = &mut self.squad[i];
-            u.unpaid = !paid;
-            u.unpaid_days = if paid { 0 } else { u.unpaid_days + 1 };
-            unpaid += usize::from(!paid);
-        }
-        for l in 0..self.world.locations.len() {
-            if !self.world.locations[l].owned() {
-                continue;
-            }
-            for k in 0..self.world.locations[l].stationed.len() {
-                let s = &self.world.locations[l].stationed[k];
-                if now.saturating_sub(s.since) < MINUTES_PER_DAY {
-                    let p = self.unit_wage(&s.unit);
-                    let paid = pay(self, p);
-                    self.world.locations[l].stationed[k].unit.unpaid = !paid;
-                }
-            }
-        }
-        let limit = self.content.options.max_time_not_upkeep.max(1) as i64;
-        let mut deserted = Vec::new();
-        let mut i = 1;
-        while i < self.squad.len() {
-            if self.squad[i].unpaid_days as i64 * MINUTES_PER_DAY as i64 >= limit {
-                let u = self.squad.remove(i);
-                self.take_items(u.items.iter().flatten().copied().collect());
-                deserted.push(u.def);
-            } else {
-                i += 1;
-            }
-        }
-        let c = self.content.clone();
-        let heal = self.daily_heal_percent();
-        if heal > 0 {
-            for u in self.squad.iter_mut().filter(|u| u.alive()) {
-                let max = u.max_hp(&c);
-                u.hp = (u.hp + max * heal / 100).min(max);
-            }
-        }
-        let garrison_heal = c.options.garrison_auto_heal;
-        for s in self.world.locations.iter_mut().flat_map(|l| l.stationed.iter_mut()) {
-            let max = s.unit.max_hp(&c);
-            s.unit.hp = (s.unit.hp + max * garrison_heal / 100).min(max);
-        }
+        let pay = self.pay_noon();
+        self.noon_heal();
         let n = day.saturating_sub(self.start_day) + 1; // the game's first noon is day 1
-        if (n - 1).is_multiple_of(RESTOCK_EVERY_DAYS) && n > 1 {
-            self.restock_markets();
-        }
         if self.world.demo && n.is_multiple_of(SPAWN_EVERY_DAYS) {
             let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
             for (camp, tile) in camps {
@@ -873,6 +697,7 @@ impl Game {
             }
         }
         self.ai_new_day();
+        let super::economy::NoonPay { income, mana, wages, mana_wages, unpaid, deserted } = pay;
         DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
     }
 
@@ -965,7 +790,9 @@ impl Game {
                 }
             }
         }
-        self.squad.push(Unit::new(&self.content, kind, slot));
+        let mut u = Unit::new(&self.content, kind, slot);
+        u.last_paid = self.clock.total_minutes() as u64;
+        self.squad.push(u);
         Ok(())
     }
 
@@ -980,126 +807,6 @@ impl Game {
         let removed = u.promote(&c, to)?;
         self.pack.extend(removed);
         Ok(())
-    }
-
-    /// Village here with tribute waiting.
-    fn village_ready(&self) -> Option<usize> {
-        let l = self.location?;
-        let v = &self.world.locations[l];
-        (v.kind == LocationKind::Village && (v.tribute_gold > 0 || v.tribute_mana > 0) && !v.hostile()).then_some(l)
-    }
-
-    /// Tribute the village here would pay now, if any is waiting.
-    pub fn tribute_available(&self) -> Option<i32> {
-        self.village_ready().map(|l| self.world.locations[l].tribute_gold)
-    }
-
-    /// Takes the village's waiting tribute: (gold, mana).
-    fn use_village(&mut self) -> Option<(i32, i32)> {
-        let l = self.village_ready()?;
-        let v = &mut self.world.locations[l];
-        let got = (v.tribute_gold, v.tribute_mana);
-        v.tribute_gold = 0;
-        v.tribute_mana = 0;
-        Some(got)
-    }
-
-    /// Collects the waiting tribute: gold and mana; in the demo sometimes an item instead
-    /// (gold if the pack is full).
-    pub fn collect_tribute(&mut self) -> Option<Tribute> {
-        let (gold, mana) = self.use_village()?;
-        self.mana += mana;
-        if self.world.demo && self.pack.len() < PACK_SIZE && self.rng.range(1, 100) <= TRIBUTE_ITEM_CHANCE {
-            if let Some(item) = self.roll_item(Source::Tribute) {
-                self.pack.push(item);
-                return Some(Tribute::Item(item));
-            }
-        }
-        self.gold += gold;
-        Some(Tribute::Gold(gold))
-    }
-
-    /// The village priest heals the squad instead of tribute being collected.
-    pub fn priest_heal(&mut self) -> bool {
-        let used = self.use_village().is_some();
-        if used {
-            self.heal_all();
-        }
-        used
-    }
-
-    /// The village innkeeper pays off the unpaid units instead of the tribute being
-    /// collected (mechanics.md 5.3). Returns how many were paid off, `None` if the village
-    /// has nothing to give today.
-    pub fn innkeeper_pay(&mut self) -> Option<usize> {
-        self.use_village()?;
-        let mut n = 0;
-        for u in self.squad.iter_mut().filter(|u| u.unpaid) {
-            u.unpaid = false;
-            u.unpaid_days = 0;
-            n += 1;
-        }
-        Some(n)
-    }
-
-    /// The spell a village's long blessing casts: the cheapest (in mana, then by id) lasting
-    /// spell on the hero's own army whose modifiers are all gains *(guess: the original's
-    /// blessing is not in the data files)*.
-    pub fn village_blessing(&self) -> Option<&SpellDef> {
-        self.content
-            .spells
-            .iter()
-            .filter(|s| !magic::targets_enemy(s) && magic::is_lasting(s) && magic::Duration::of(s) != magic::Duration::Permanent)
-            .filter(|s| s.add.values().chain(s.percent.values()).all(|&v| v >= 0) && s.life_lose_percent.is_none())
-            .min_by_key(|s| (s.cost_mana, s.id))
-    }
-
-    /// Instead of the tribute: the village's long blessing ([`Game::village_blessing`]) is
-    /// cast on the army for free, lasting [`BLESSING_FACTOR`] times the spell's own time
-    /// *(guess)*. Returns the spell, `None` if the village has nothing to give today or the
-    /// game has no such spell.
-    pub fn village_bless(&mut self) -> Option<u32> {
-        self.village_ready()?;
-        let spell = self.village_blessing()?.clone();
-        self.use_village()?;
-        self.apply_spell_to_army(&spell);
-        let now = self.clock.total_minutes() as u64;
-        if let magic::Duration::Minutes(m) = magic::Duration::of(&spell) {
-            for e in self.effects.iter_mut().filter(|e| e.spell == spell.id) {
-                e.until = Some(now + m * BLESSING_FACTOR);
-            }
-        }
-        Some(spell.id)
-    }
-
-    /// Gold the village's furs fetch now: [`FURS_PERCENT`]% of the waiting gold tribute.
-    pub fn furs_value(&self) -> Option<i32> {
-        self.village_ready().map(|l| self.world.locations[l].tribute_gold * FURS_PERCENT / 100)
-    }
-
-    /// Instead of the tribute: the village's furs, worth more gold than the tribute but no
-    /// mana *(guess)*. Returns the gold.
-    pub fn sell_furs(&mut self) -> Option<i32> {
-        let gold = self.furs_value()?;
-        self.use_village()?;
-        self.gold += gold;
-        Some(gold)
-    }
-
-    /// Mana the village's magic ritual gives now: the waiting mana plus one per
-    /// [`RITUAL_GOLD_PER_MANA`] gold of the tribute.
-    pub fn ritual_value(&self) -> Option<i32> {
-        let v = &self.world.locations[self.village_ready()?];
-        Some(v.tribute_mana + v.tribute_gold / RITUAL_GOLD_PER_MANA)
-    }
-
-    /// Instead of the tribute: a magic power ritual turns the whole tribute into mana
-    /// *(guess)*. Returns the mana.
-    pub fn magic_ritual(&mut self) -> Option<i32> {
-        let mana = self.ritual_value()?;
-        self.use_village()?;
-        self.mana += mana;
-        Some(mana)
     }
 
     /// Battle against the pending foe. Unpaid units refuse to fight. Walking into a garrison
@@ -1129,26 +836,21 @@ impl Game {
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
         b.set_xp_correction(correction);
         // Lasting world spells change the stats of both sides.
+        // Spells on a leader alone (`OneEnemy`, `p-LifeLose`) hold its first unit.
         b.apply_spells(Team::Player, &self.army_spells());
+        if let Some(f) = b.fighters.iter_mut().find(|f| f.squad_index == Some(0)) {
+            magic::apply_to_fighter(f, &self.leader_spells());
+        }
         if let Some(Foe::Army(i)) = self.foe {
             b.apply_spells(Team::Enemy, &self.spells_on_army(i));
+            if let Some(f) = b.fighters.iter_mut().find(|f| f.team == Team::Enemy) {
+                magic::apply_to_fighter(f, &self.spells_on_leader(i));
+            }
         }
         if defence > 0 {
             b.set_building_defence(Team::Enemy, defence);
         }
         b
-    }
-
-    /// Gold the victor takes from a beaten army carrying `gold`: `gold / VictoryGoldDiv`, at
-    /// least `MinVictoryGold`, or everything when it has less (mechanics.md 2.6).
-    pub fn victory_gold(&self, gold: i32) -> i32 {
-        let o = &self.content.options;
-        let gold = gold.max(0);
-        if gold <= o.min_victory_gold {
-            gold
-        } else {
-            (gold / o.victory_gold_div.max(1)).max(o.min_victory_gold)
-        }
     }
 
     /// Mana from the beaten enemies' `Surrender` values: the surrendered troops pray for
@@ -1201,7 +903,6 @@ impl Game {
                 u.hp = 0;
                 u.died_at = Some(now);
                 u.unpaid = false;
-                u.unpaid_days = 0;
                 dropped.extend(u.items.iter_mut().filter_map(Option::take));
                 lost += 1;
             }
@@ -1216,14 +917,15 @@ impl Game {
                 let loc = &mut self.world.locations[l];
                 loc.cleared = true;
                 loc.garrison.clear();
-                let mut reward = std::mem::take(&mut loc.treasure_gold);
+                // The garrison's gold (ruins: their treasure), the building's stock and one
+                // day's income; no division.
+                let reward = std::mem::take(&mut loc.treasure_gold) + std::mem::take(&mut loc.tribute_gold) + loc.gold_income.max(0);
                 let treasure = std::mem::take(&mut loc.treasure);
                 let rolls = std::mem::take(&mut loc.loot_rolls);
                 let captured = loc.kind.capturable().then(|| {
                     loc.owner = Owner::Player;
                     loc.faction = 1;
                     loc.attitude = 3;
-                    reward += loc.gold_income;
                     l
                 });
                 self.gold += reward;
@@ -1234,10 +936,17 @@ impl Game {
                 BattleResult::Victory { reward, mana, lost, loot, left_behind: dropped_left, level_ups, captured }
             }
             (Outcome::Victory, Some(Foe::Army(i))) => {
-                let reward = self.victory_gold(self.world.armies[i].gold);
+                let (gold, wages) = self.player_victory_gold(&self.world.armies[i]);
+                let reward = gold + wages;
+                // An army whose home castle or fort stands empty loses it to the player.
+                let home = self.world.armies[i].home.filter(|&h| {
+                    let l = &self.world.locations[h];
+                    l.kind.capturable() && !l.owned() && l.garrison.is_empty()
+                });
                 let army = &mut self.world.armies[i];
-                army.gold -= reward;
+                army.gold -= gold;
                 let (id, mut found) = (army.id, std::mem::take(&mut army.items));
+                // Every item its units wore goes too (`ai::army_units` puts them on).
                 // Off the map; a lord retreats, others may respawn (`rules::ai`).
                 self.army_beaten(i, Beaten::ByPlayer);
                 self.gold += reward;
@@ -1246,7 +955,13 @@ impl Game {
                 }
                 let (loot, left_behind) = self.take_items(found);
                 dropped_left += left_behind;
-                BattleResult::Victory { reward, mana, lost, loot, left_behind: dropped_left, level_ups, captured: None }
+                if let Some(h) = home {
+                    let loc = &mut self.world.locations[h];
+                    loc.owner = Owner::Player;
+                    loc.faction = 1;
+                    loc.attitude = 3;
+                }
+                BattleResult::Victory { reward, mana, lost, loot, left_behind: dropped_left, level_ups, captured: home }
             }
             (Outcome::Victory, None) => {
                 BattleResult::Victory { reward: 0, mana, lost, loot: Vec::new(), left_behind: dropped_left, level_ups, captured: None }
@@ -1266,7 +981,7 @@ impl Game {
     }
 
     /// A random item of the given source, if the table has any.
-    fn roll_item(&mut self, source: Source) -> Option<ItemId> {
+    pub(crate) fn roll_item(&mut self, source: Source) -> Option<ItemId> {
         let pool = self.content.items_from(source);
         if pool.is_empty() {
             return None;
@@ -1275,7 +990,7 @@ impl Game {
     }
 
     /// Puts found items into the pack. Returns (kept, left behind).
-    fn take_items(&mut self, found: Vec<ItemId>) -> (Vec<ItemId>, usize) {
+    pub(crate) fn take_items(&mut self, found: Vec<ItemId>) -> (Vec<ItemId>, usize) {
         let mut kept = Vec::new();
         let mut left_behind = 0;
         for item in found {
@@ -1289,37 +1004,9 @@ impl Game {
         (kept, left_behind)
     }
 
-    /// Every shop: its fixed goods (those not sold yet) plus `random` different market
-    /// items whose base price lies in the shop's range (mechanics.md 4). Fixed goods, once
-    /// bought, are gone for good; the random part is drawn anew at each restock *(guess)*.
-    pub(crate) fn restock_markets(&mut self) {
-        let market = self.content.items_from(Source::Market);
-        for l in 0..self.world.locations.len() {
-            let Some(shop) = &self.world.locations[l].shop else { continue };
-            let (random, (lo, hi)) = (shop.random, shop.price);
-            let mut stock = shop.fixed.clone();
-            let mut pool: Vec<ItemId> = market
-                .iter()
-                .copied()
-                .filter(|&i| hi <= 0 || (lo..=hi).contains(&self.content.item(i).cost))
-                .filter(|i| !stock.contains(i))
-                .collect();
-            for _ in 0..random {
-                if pool.is_empty() {
-                    break;
-                }
-                let k = self.rng.range(0, pool.len() as i32 - 1) as usize;
-                stock.push(pool.swap_remove(k));
-            }
-            if let Some(shop) = &mut self.world.locations[l].shop {
-                shop.stock = stock;
-            }
-        }
-    }
-
     /// Items for sale where the party stands, if there is a market. Ill-disposed markets
-    /// trade too, at a markup ([`Game::relation_markup`]; the footage shows a market of
-    /// attitude −2 trading).
+    /// trade too, dearer ([`Game::buy_price`]; the footage shows a market of attitude −2
+    /// trading).
     pub fn market_here(&self) -> Option<&[ItemId]> {
         let loc = &self.world.locations[self.location?];
         loc.shop.as_ref().map(|s| s.stock.as_slice())
@@ -1349,7 +1036,7 @@ impl Game {
     pub fn sell(&mut self, pack_index: usize) -> Result<i32, TradeError> {
         self.market_here().ok_or(TradeError::NoMarket)?;
         let item = *self.pack.get(pack_index).ok_or(TradeError::NoSuchItem)?;
-        if self.content.item(item).is_personal() {
+        if !self.can_sell(item) {
             return Err(TradeError::NotForSale);
         }
         let price = self.sell_price(item);
@@ -1550,7 +1237,7 @@ mod tests {
         let mut g = quiet_game(HeroClass::Knight);
         g.location = Some(g.world.index_of("Millbrook"));
         assert_eq!(g.tribute_available(), Some(10));
-        assert!(g.priest_heal());
+        assert!(g.collect_tribute().is_some());
         assert_eq!(g.tribute_available(), None);
         let mut events = Vec::new();
         g.pass_time(15.0 * 60.0, &mut events); // 08:00 -> 23:00: the noon report only
@@ -1580,9 +1267,11 @@ mod tests {
         g.squad[0].hp = 10;
         let mut events = Vec::new();
         g.pass_time(4.0 * 60.0, &mut events); // noon
-        assert_eq!(g.hero().hp, 10 + 55 * 20 / 100);
-        let k = quiet_game(HeroClass::Knight);
-        assert_eq!(k.daily_heal_percent(), 0);
+        assert_eq!(g.hero().hp, 10 + 55 * 15 / 100, "15% at noon");
+        let mut k = quiet_game(HeroClass::Knight);
+        k.squad[0].hp = 10;
+        k.pass_time(4.0 * 60.0, &mut events);
+        assert_eq!(k.hero().hp, 10, "only the Ranger");
     }
 
     #[test]
@@ -1608,8 +1297,7 @@ mod tests {
             Some(Tribute::Item(item)) => assert_eq!(g.pack, vec![item]),
             other => panic!("{other:?}"),
         }
-        assert_eq!(g.collect_tribute(), None);
-        assert!(!g.priest_heal(), "already used today");
+        assert_eq!(g.collect_tribute(), None, "already collected");
         let mut events = Vec::new();
         g.pass_time(24.0 * 60.0, &mut events);
         assert_eq!(g.tribute_available(), Some(10));
@@ -1672,8 +1360,10 @@ mod tests {
         b.begin();
         wipe_all_but_hero(&mut b);
         let gold = g.gold;
-        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { reward: GANG_REWARD, lost: 0, captured: None, .. }));
-        assert_eq!(g.gold, gold + GANG_REWARD);
+        // Half its gold, and its daily wages.
+        let want = GANG_REWARD + crate::rules::ai::army_wages(&g.content, &g.world.armies[0].troops);
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { reward, lost: 0, captured: None, .. } if reward == want));
+        assert_eq!(g.gold, gold + want);
         assert!(g.world.armies.is_empty());
         assert_eq!(g.foe, None);
         assert!(g.hero().xp > 0 || g.hero().level > 1, "XP after the battle");
@@ -1851,7 +1541,7 @@ mod tests {
     }
 
     #[test]
-    fn markets_stock_market_items_and_restock_weekly() {
+    fn markets_stock_market_items_and_restock_every_midnight() {
         let mut g = quiet_game(HeroClass::Knight);
         at_oakford(&mut g);
         let stock = g.market_here().unwrap().to_vec();
@@ -1861,10 +1551,12 @@ mod tests {
         g.buy(0).unwrap();
         assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1);
         let mut events = Vec::new();
-        g.pass_time((4 + 24 * 6) as f32 * 60.0, &mut events); // the 7th noon
-        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not a week yet");
-        g.pass_time(24.0 * 60.0, &mut events);
-        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK);
+        g.pass_time(15.0 * 60.0, &mut events); // 08:00 -> 23:00
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not midnight yet");
+        g.pass_time(60.0, &mut events);
+        assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK, "drawn anew at midnight");
+        let stock = g.market_here().unwrap();
+        assert!(stock.windows(2).all(|w| g.content.item(w[0]).cost <= g.content.item(w[1]).cost), "sorted by price");
     }
 
     #[test]
@@ -1874,13 +1566,15 @@ mod tests {
         assert_eq!(g.buy(0), Err(TradeError::NoMarket), "on the road");
         at_oakford(&mut g);
         let item = g.market_here().unwrap()[0];
-        let price = g.content.item(item).cost;
+        let cost = g.content.item(item).cost;
+        let price = g.buy_price(item);
+        assert_eq!(price, crate::rules::economy::relation_price(cost, 3, true), "his own castle: ×0.75");
         g.gold = price - 1;
         assert_eq!(g.buy(0), Err(TradeError::NotEnoughGold));
         g.gold = price;
         assert_eq!(g.buy(0), Ok(item));
         assert_eq!((g.gold, g.pack.clone()), (0, vec![item]));
-        assert_eq!(g.sell(0), Ok(price / 4), "ItemSaleCost 25%");
+        assert_eq!(g.sell(0), Ok(cost / 4), "ItemSaleCost 25% (the demo's F is 100)");
         assert!(g.pack.is_empty());
         assert_eq!(g.sell(0), Err(TradeError::NoSuchItem));
         g.pack = vec![item; PACK_SIZE];
@@ -1901,7 +1595,8 @@ mod tests {
         g.equip(0, 1).unwrap();
         assert_eq!(g.pack, vec![axe, bow]);
         assert_eq!(g.hero().max_hp(&g.content), 75);
-        g.heal_all();
+        let c = g.content.clone();
+        g.squad.iter_mut().for_each(|u| u.heal_full(&c));
         let shield_slot = g.hero().items.iter().position(|i| *i == Some(shield)).unwrap();
         g.unequip(0, shield_slot).unwrap();
         assert_eq!(g.hero().hp, 70, "HP capped to the new max");
@@ -2034,9 +1729,12 @@ mod tests {
         // 120 to start with, plus its daily income at the noon the walk may have passed.
         let carried = g.world.armies[0].gold;
         assert!(carried >= 120);
+        // Half its gold (no minimum) and its daily wages.
+        let wages = crate::rules::ai::army_wages(&g.content, &g.world.armies[0].troops);
+        assert!(wages > 0);
         let r = g.resolve_battle(&b);
-        assert!(matches!(&r, BattleResult::Victory { reward, captured: None, loot, .. } if *reward == carried / 2 && loot == &vec![ItemId(9)]), "{r:?}");
-        assert_eq!(g.gold, gold + carried / 2, "half its gold");
+        assert!(matches!(&r, BattleResult::Victory { reward, captured: None, loot, .. } if *reward == carried / 2 + wages && loot == &vec![ItemId(9)]), "{r:?}");
+        assert_eq!(g.gold, gold + carried / 2 + wages);
         assert!(g.world.armies.is_empty());
     }
 
@@ -2095,13 +1793,14 @@ mod tests {
         assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { captured: Some(0), .. }));
         let fort = &g.world.locations[0];
         assert!(fort.owned() && !fort.defended() && fort.garrison.is_empty());
-        assert_eq!((g.daily_income(), g.daily_mana()), (40, 5));
+        // Income ×F/100 for the player (F = 120 without "impossible difficulty").
+        assert_eq!((g.daily_income(), g.daily_mana()), (48, 5));
         let (gold, mana) = (g.gold, g.mana);
         let mut events = Vec::new();
         g.pass_time(24.0 * 60.0, &mut events);
-        assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 40, mana: 5, .. })]), "{events:?}");
+        assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 48, mana: 5, .. })]), "{events:?}");
         assert_eq!(g.mana, mana + 5);
-        assert!(g.gold >= gold + 40 - g.daily_wages());
+        assert!(g.gold >= gold + 48 - g.daily_wages());
     }
 
     #[test]
@@ -2150,57 +1849,6 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
         assert_eq!((g.tile(), g.foe), ((10, 2), Some(Foe::Garrison(0))));
-    }
-
-    fn at_village(gold: i32, mana: i32) -> Game {
-        let mut s = strip();
-        let mut v = building(BuildingType::Village, 6, 2, (1, 1));
-        v.gold_per_day = gold as u16;
-        v.gold_max = gold as u16;
-        v.mana_per_day = mana as u8;
-        v.mana_max = mana as u8;
-        v.relations = [1, 0, 0, 0];
-        s.buildings = vec![v];
-        let mut g = start(&s);
-        g.set_destination((6, 2));
-        walk_until_stopped(&mut g);
-        assert_eq!(g.location, Some(0));
-        g
-    }
-
-    #[test]
-    fn village_furs_and_ritual_replace_the_tribute() {
-        let mut g = at_village(40, 6);
-        let (gold, mana) = (g.gold, g.mana);
-        assert_eq!((g.furs_value(), g.ritual_value()), (Some(60), Some(26)));
-        assert_eq!(g.sell_furs(), Some(60));
-        assert_eq!((g.gold, g.mana), (gold + 60, mana), "more gold than the tribute, no mana");
-        assert_eq!((g.sell_furs(), g.magic_ritual(), g.collect_tribute()), (None, None, None), "once a day");
-        g.wait(24);
-        assert_eq!(g.magic_ritual(), Some(26));
-        assert_eq!((g.gold, g.mana), (gold + 60 - g.daily_wages(), mana + 26));
-        assert_eq!(g.village_bless(), None, "already used today");
-    }
-
-    #[test]
-    fn village_blessing_is_a_long_lasting_spell() {
-        let mut g = at_village(40, 6);
-        // The testkit has no spells: no blessing, and the tribute is kept.
-        assert_eq!(g.village_bless(), None);
-        assert_eq!(g.tribute_available(), Some(40));
-        // The demo's cheapest blessing is spell 3 (8 hours): blessed for three times as long.
-        let mut d = quiet_game(HeroClass::Knight);
-        d.location = Some(d.world.index_of("Millbrook"));
-        let spell = d.village_blessing().map(|s| (s.id, s.time_work));
-        assert_eq!(spell, Some((3, Some(8))));
-        let now = d.clock.total_minutes() as u64;
-        assert_eq!(d.village_bless(), Some(3));
-        assert_eq!(d.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, Some(now + 3 * 8 * 60))]);
-        assert_eq!(d.tribute_available(), None);
-        d.wait(12);
-        assert_eq!(d.active_spells().len(), 1, "still blessed after its own 8 hours");
-        d.wait(12);
-        assert!(d.active_spells().is_empty());
     }
 
     #[test]

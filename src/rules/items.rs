@@ -30,30 +30,30 @@ pub enum EquipError {
     NoSuchItem,
 }
 
-/// Applies worn items and active potions to `stats`. The original's order of `f-`/`d-`/`p-`
-/// is unknown; our guess: first every worn item's `f-` sets its stat, then all `d-` values
-/// (items and potions) are added, then all `p-` percentages are summed and applied to the
-/// result. A potion's `f-Hits` is its healing and does not count here. Item bonuses are
-/// added to the unit's, and an item's magic school replaces the unit's.
+/// Applies worn items and active potions to `stats` in the original's order
+/// (original-mechanics/economy.md §5): each worn item's `f-` in slot order replaces its stat
+/// when above 0 (a later slot wins); the potions' `d-`, then the items' `d-`; the potions'
+/// `p-`, then each item's `p-` in turn, compounding (`x += x·p/100`, truncated each time).
+/// A potion's `f-Hits` is its healing and does not count here. Item bonuses are added to the
+/// unit's, and an item's magic school replaces the unit's. Spells come after
+/// (`magic::apply`).
 pub fn apply(content: &Content, stats: &mut Stats, worn: &[ItemId], potions: &[ItemId]) {
     let worn: Vec<&ArtefactDef> = worn.iter().map(|&i| content.item(i)).collect();
     let potions: Vec<&ArtefactDef> = potions.iter().map(|&i| content.item(i)).collect();
     for d in &worn {
         for (&st, &v) in &d.fixed {
-            stats[st] = v;
+            if v > 0 {
+                stats[st] = v;
+            }
         }
     }
-    for d in worn.iter().chain(&potions) {
+    for d in potions.iter().chain(&worn) {
         stats.add(&d.add, 1);
     }
-    let mut pct = std::collections::BTreeMap::<Stat, i32>::new();
-    for d in worn.iter().chain(&potions) {
+    for d in potions.iter().chain(&worn) {
         for (&st, &v) in &d.percent {
-            *pct.entry(st).or_default() += v;
+            stats[st] += stats[st] * v / 100;
         }
-    }
-    for (st, p) in pct {
-        stats[st] += stats[st] * p / 100;
     }
     for d in &worn {
         if let Some(b) = &d.bonus {
@@ -123,7 +123,8 @@ pub fn drink(content: &Content, unit: &mut Unit, item: ItemId) -> Result<i32, Eq
     Ok(unit.hp - before)
 }
 
-/// Price the market pays: `ItemSaleCost`% of the price.
+/// Price the market pays before the difficulty factor and a Merchant: `ItemSaleCost`% of the
+/// price (`Game::sell_price` has the whole rule).
 pub fn sell_price(content: &Content, item: ItemId) -> i32 {
     (content.item(item).cost * content.options.item_sale_cost / 100).max(0)
 }
@@ -231,6 +232,17 @@ mod tests {
         // attack: (20 + 5) × 1.5; defence: fixed 26, +2, then +10%.
         assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow]), (37, 30));
         assert!(s.has(&Bonus::ArmorIgnore));
+    }
+
+    #[test]
+    fn item_percentages_compound_one_item_at_a_time() {
+        let (c, mut w, _) = setup();
+        let mut ring2 = item(10, ArtefactType::Amulet);
+        ring2.percent = StatMods::from([(Stat::AttackBlow, 50)]);
+        let c = content(c.units.clone(), c.items.iter().cloned().chain([ring2]).collect());
+        w.items = [Some(ItemId(5)), Some(ItemId(10)), None, None];
+        // 20 → +50% = 30 → +50% = 45 (summed it would be 40).
+        assert_eq!(w.stats(&c)[Stat::AttackBlow], 45);
     }
 
     #[test]

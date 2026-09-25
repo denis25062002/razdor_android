@@ -59,25 +59,31 @@ impl HeroClass {
     }
 }
 
-/// The two hiring kinds of the wage code (mechanics.md 1.5). Which units the original puts
-/// in which kind is unknown; Razdor's guess: `Nature=Rogue` units are mercenaries, everyone
-/// else a recruit ([`WageKind::of`]).
+/// The hiring kinds of the wage code (original-mechanics/economy.md §1). The kind is kept
+/// per unit; it does not depend on the unit type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum WageKind {
-    /// Kind 1: `round(Cost / CostRecrutDiv × f)` with the cost brackets.
+    /// Kind 0: the hero and the AI army leaders. Never paid.
+    Leader,
+    /// Kind 1: `round(Cost / CostRecrutDiv × f)` with the cost brackets. Everything the
+    /// player hires, the starting army, the garrisons and the AI's troops at load.
     Recruit,
-    /// Kind 2: `Cost / CostMercenaryDiv`.
+    /// Kind 2: `Cost / CostMercenaryDiv`. Only an AI army hiring in a building it does not own.
     Mercenary,
+    /// Kind 3: a unit an event added. Never paid.
+    Event,
 }
 
 impl WageKind {
-    /// Razdor's guess for a unit type's hiring kind: rogues are mercenaries.
-    pub fn of(def: &UnitDef) -> WageKind {
-        if def.nature == Nature::Rogue {
-            WageKind::Mercenary
-        } else {
-            WageKind::Recruit
-        }
+    /// The kind of a unit hired or present at load: a recruit, whatever its type (the
+    /// original does not look at `Nature`).
+    pub fn of(_def: &UnitDef) -> WageKind {
+        WageKind::Recruit
+    }
+
+    /// Kinds 0 and 3 draw no wage.
+    pub fn is_paid(self) -> bool {
+        matches!(self, WageKind::Recruit | WageKind::Mercenary)
     }
 }
 
@@ -266,6 +272,7 @@ impl Content {
         match kind {
             WageKind::Recruit => self.wage(id),
             WageKind::Mercenary => self.unit(id).cost.max(0) / self.options.cost_mercenary_div.max(1),
+            WageKind::Leader | WageKind::Event => 0,
         }
     }
 
@@ -276,7 +283,7 @@ impl Content {
     }
 
     /// Daily wage of a unit type (mechanics.md 1.5, hiring kind 1):
-    /// `round(Cost / CostRecrutDiv × f)`, f = 0.25 / 0.5 / 0.75 / 1 for cost ≤50 / ≤100 / ≤150 / more.
+    /// `Round(Cost / CostRecrutDiv × f)`, f = 0.25 / 0.5 / 0.75 / 1 for cost ≤50 / ≤100 / ≤150 / more.
     /// The hero is free; the caller handles that and `AddPayment`.
     pub fn wage(&self, id: UnitId) -> i32 {
         let c = self.unit(id).cost.max(0);
@@ -287,8 +294,8 @@ impl Content {
             _ => 4,
         };
         let div = self.options.cost_recrut_div.max(1);
-        // round(c / div × quarters / 4) in integers.
-        (2 * c * quarters + 4 * div) / (8 * div)
+        // Round(c / div × quarters / 4), halves to even as Delphi's Round does (22.5 → 22).
+        super::economy::round_ratio((c * quarters) as i64, (4 * div) as i64) as i32
     }
 }
 
@@ -447,12 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn rogues_are_mercenaries_and_elementals_are_paid_in_mana() {
-        let rogue = UnitDef { nature: Nature::Rogue, ..unit(1, "rogue") };
+    fn every_hired_unit_is_a_recruit_and_elementals_are_paid_in_mana() {
+        let rogue = UnitDef { cost: 60, nature: Nature::Rogue, ..unit(1, "rogue") };
         let elemental = UnitDef { nature: Nature::Elemental, ..unit(2, "golem") };
         let c = content(vec![rogue, elemental, unit(3, "militia")], vec![]);
-        assert_eq!(WageKind::of(c.unit(UnitId(1))), WageKind::Mercenary);
+        assert_eq!(WageKind::of(c.unit(UnitId(1))), WageKind::Recruit, "Nature does not make a mercenary");
         assert_eq!(WageKind::of(c.unit(UnitId(3))), WageKind::Recruit);
+        assert_eq!((c.wage_for(UnitId(1), WageKind::Leader), c.wage_for(UnitId(1), WageKind::Event)), (0, 0), "kinds 0 and 3 are free");
         assert!(c.paid_in_mana(UnitId(2)) && !c.paid_in_mana(UnitId(1)));
     }
 

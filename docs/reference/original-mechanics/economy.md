@@ -319,43 +319,46 @@ The header bytes 0x110..0x116 decide:
 
 ## Razdor now → original
 
-| Topic | Razdor now (mechanics.md §8, rules/*.rs) | Original (this exe) |
-|---|---|---|
-| Wage kind | Nature=Rogue → kind 2 | The player's units are always kind 1. Kind 2 only for AI hiring in foreign buildings. The hero and leaders are 0, event units are 3, and kinds 0 and 3 are free. |
-| Short gold | Paid in order, the rest unpaid | Everything is deducted, then the **cheapest** units are refunded (unpaid) until gold ≥ 0, and gold is set to 0 |
-| Desertion | After 7 unpaid noons in a row | When last paid + MaxTimeNotUpkeep < now, checked only on short noons |
-| Garrison wage | Paid on the first noon | Never paid |
-| Elemental wage | Paid in mana | Mana for kind 1 only. When mana runs out, the elementals go unpaid. |
-| Rear Service | Not modelled / −30% | ×0.695 when the player's income ≠ 0, ×0.305 when it is 0 |
-| Market markup | `max(0,1−att)×15%` | Table: 1.7 / 1.45 / 1.25 / 1.1 / 1.0 / 0.9 / 0.75 (own = 0.75) |
-| Spell and barracks price | CostGold / Cost | The same, with no relation factor and no Merchant (Razdor matches) |
-| Sale | ItemSaleCost% (+50% Merchant) | Also ×F/100 (F = 120 unless "impossible") |
-| Market restock | Random part every 7 days | **Every midnight**. Towns also get healing potions. |
-| Barracks regrowth | Deterministic, full in 10 days | Each slot +1 per day with chance 1/(10 div max) |
-| Heal cost/time | ceil(...), HealingTime per unit | Round(...)÷(F/100), at least 1, **no game time** for the player (L/M) |
-| Resurrection | Town or church, HealingTime | Town or church, ÷(F/100), instant |
-| Medic / Ranger | 15% / 20% | **10%** at midnight (every army) / **15%** at noon |
-| Village growth | +income per day | +income×√(1−stock/max) |
-| Village options | All 5, every day | One per visit, chosen by the rolls and conditions in §3. Fixed spells #1 and #3/5/7/9/11, furs = item 135, witch 300–500 mana. A Rogue hero gets nothing. |
-| Linked villages | Not modelled | Emptied into the linked castle owner's noon income |
-| Victory gold | max(min, gold/div) | Player: gold div VictoryGoldDiv (no minimum) + the enemy's wage total. AI: all if < min, else div. |
-| Castle capture gold | One day's income | Garrison gold + stock + one day's income |
-| Empty home castle | Not modelled | Beating an army whose home castle or fort is empty takes that building |
-| Spell cost modifiers | Archmage ×0.5 and Caster ×0.8 stack | Archmage ÷2, **or** Caster ×0.8 (only when not Archmage) |
-| Mana payment | Before casting | When the spell completes |
-| Recasting a spell | Restarts its time | **Adds** TimeWork to what is left; 4 slots per unit |
-| OneEnemy | Like Enemy | Only the first unit (leader); p-LifeLose spells also hit only the leader |
-| Instant spell damage | (capped) | Can kill |
-| Village and event long spell | 3× TimeWork | ×10 (TimeWork < 8) or ×5 |
-| Item p- | Summed | Compounded per item, then per spell |
-| Item f- | Set first | Set first, later slot wins (Razdor matches) |
-| Backpack | 40 | 256 |
-| Spell book | 15 | 15 (Razdor matches) |
-| "No" answer | Not "happened"; can be asked again | Counts as happened; a once event is used up |
-| Repeat without once | Re-armed on a new window, failed check or new visit | Fires again on every later check while the window is open and the conditions hold |
-| Duration 0 | No end | No end until the first firing, then a 60-minute refire guard |
-| Flags | Set/clear | Counters (digit after the name) |
-| Carry-over [3]/[4] | Level+XP / negative-price items | XP+level **and the spell book** / **worn items** |
+The last column says what Razdor does since the economy pass of 2026-09-25 (`src/rules/economy.rs`
+and the files named there). "Done" means Razdor follows the original column.
+
+| Topic | Razdor before (mechanics.md §8, rules/*.rs) | Original (this exe) | Razdor now |
+|---|---|---|---|
+| Wage kind | Nature=Rogue → kind 2 | The player's units are always kind 1. Kind 2 only for AI hiring in foreign buildings. The hero and leaders are 0, event units are 3, and kinds 0 and 3 are free. | Done for the player (`WageKind`: hero Leader, event units Event, the rest Recruit). AI troops are all kind 1: which troops an AI hired in a foreign building is not tracked (the troop record is the world/AI code's). |
+| Short gold | Paid in order, the rest unpaid | Everything is deducted, then the **cheapest** units are refunded (unpaid) until gold ≥ 0, and gold is set to 0 | Done (`Game::pay_noon`; free units are left out of the refunds *(guess)*). |
+| Desertion | After 7 unpaid noons in a row | When last paid + MaxTimeNotUpkeep < now, checked only on short noons | Done (`Unit::last_paid`). |
+| Garrison wage | Paid on the first noon | Never paid | Done. |
+| Elemental wage | Paid in mana | Mana for kind 1 only. When mana runs out, the elementals go unpaid. | Done. |
+| Rear Service | Not modelled / −30% | ×0.695 when the player's income ≠ 0, ×0.305 when it is 0 | Done (178/256 and 78/256, per unit, truncated). |
+| Market markup | `max(0,1−att)×15%` | Table: 1.7 / 1.45 / 1.25 / 1.1 / 1.0 / 0.9 / 0.75 (own = 0.75) | Done (`relation_price`, Delphi rounding); the old footage fit is gone. AI hiring prices are the AI code's. |
+| Spell and barracks price | CostGold / Cost | The same, with no relation factor and no Merchant (Razdor matches) | Matches. |
+| Sale | ItemSaleCost% (+50% Merchant) | Also ×F/100 (F = 120 unless "impossible") | Done; only items worth more than 1 sell. |
+| Market restock | Random part every 7 days | **Every midnight**. Towns also get healing potions. | Done (count minus fixed goods, potions 98–100 and 96/97/114/115 in towns, at most 2 alike or 1 above 500, sorted by price). The upper-part bias of 0x4be4bf is not reproduced: draws are uniform in the window. |
+| Barracks regrowth | Deterministic, full in 10 days | Each slot +1 per day with chance 1/(10 div max) | Done (`economy::regrow`). |
+| Heal cost/time | ceil(...), HealingTime per unit | Round(...)÷(F/100), at least 1, **no game time** for the player (L/M) | Done. |
+| Resurrection | Town or church, HealingTime | Town or church, ÷(F/100), instant | Done. |
+| Medic / Ranger | 15% / 20% | **10%** at midnight (every army) / **15%** at noon | Done (the player's army and AI armies; garrisons heal at midnight). |
+| Village growth | +income per day | +income×√(1−stock/max) | Done (no maximum: no growth). |
+| Village options | All 5, every day | One per visit, chosen by the rolls and conditions in §3. Fixed spells #1 and #3/5/7/9/11, furs = item 135, witch 300–500 mana. A Rogue hero gets nothing. | Done (`Game::visit_village`, `accept_offer`); an option whose spell or item the data lack is not offered. |
+| Linked villages | Not modelled | Emptied into the linked castle owner's noon income | Done for the player (gold and mana). AI owners: the AI code's. |
+| Victory gold | max(min, gold/div) | Player: gold div VictoryGoldDiv (no minimum) + the enemy's wage total. AI: all if < min, else div. | Done. The wage total is left out for peasant armies and "units carry no money" armies *(guess: the flag at +0x3822 is not decoded)*. |
+| Castle capture gold | One day's income | Garrison gold + stock + one day's income | Done (Razdor garrisons carry no gold of their own; ruins' treasure counts as it). |
+| Empty home castle | Not modelled | Beating an army whose home castle or fort is empty takes that building | Done. |
+| Spell cost modifiers | Archmage ×0.5 and Caster ×0.8 stack | Archmage ÷2, **or** Caster ×0.8 (only when not Archmage) | Done (in half-hour steps). |
+| Mana payment | Before casting | When the spell completes | Done (an interrupted or lost cast costs nothing; not enough mana left then: no spell *(guess)*). |
+| Recasting a spell | Restarts its time | **Adds** TimeWork to what is left; 4 slots per unit | Done (spells are kept per army with a leader-only flag, so the 4 slots are counted per army and for the leader). |
+| OneEnemy | Like Enemy | Only the first unit (leader); p-LifeLose spells also hit only the leader | Done, in battles too (`magic::apply_to_fighter`); AI-vs-AI battles ignore leader-only spells. |
+| Instant spell damage | (capped) | Can kill | Done (the hero keeps 1 HP *(guess)*); a `DeltaPercentHits` loss takes a share of the current HP. |
+| Village and event long spell | 3× TimeWork | ×10 (TimeWork < 8) or ×5 | Done. |
+| Item p- | Summed | Compounded per item, then per spell | Done. Spells' `d-` still come after the items' `p-` (the battle adds spells on top of the item stats). |
+| Item f- | Set first | Set first, later slot wins (Razdor matches) | Matches (only values above 0 replace). |
+| Backpack | 40 | 256 | Done. |
+| Spell book | 15 | 15 (Razdor matches) | Matches. |
+| "No" answer | Not "happened"; can be asked again | Counts as happened; a once event is used up | Done. |
+| Repeat without once | Re-armed on a new window, failed check or new visit | Fires again on every later check while the window is open and the conditions hold | Done (a building's events are checked on entering it). |
+| Duration 0 | No end | No end until the first firing, then a 60-minute refire guard | Done (durations are hours). |
+| Flags | Set/clear | Counters (digit after the name) | Done; the Community "set a digit" patch is not. |
+| Carry-over [3]/[4] | Level+XP / negative-price items | XP+level **and the spell book** / **worn items** | Done; [6] brings the army paid as of the new map's start. |
 
 ## Unknowns left
 - The enemy spell range check (0x4ccb9c).

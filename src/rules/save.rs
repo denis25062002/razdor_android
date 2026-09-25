@@ -342,6 +342,11 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
     }
     game.content = content;
     game.origin = Some(meta.scenario.clone());
+    // Saves from before the last-pay minute count everyone as paid now.
+    let now = game.clock.total_minutes() as u64;
+    for u in game.squad.iter_mut().filter(|u| u.last_paid == 0) {
+        u.last_paid = now;
+    }
     check_content(&game).map_err(SaveError::Mismatch)?;
     Ok(game)
 }

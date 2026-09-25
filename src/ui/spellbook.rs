@@ -54,7 +54,6 @@ pub fn effect_summary(s: &SpellDef) -> String {
 pub fn duration_text(s: &SpellDef) -> String {
     match Duration::of(s) {
         Duration::Instant => "instant".into(),
-        Duration::Permanent => "lasts for good".into(),
         Duration::Minutes(m) => format!("lasts {}", duration_label(m as f64)),
     }
 }
@@ -193,6 +192,7 @@ pub fn frame(
                         }
                         CastOutcome::Interrupted => "An enemy fell on you while you were casting: the spell is lost.".into(),
                         CastOutcome::TargetLost => "The target got away before the spell was ready.".into(),
+                        CastOutcome::OutOfMana => "Not enough mana left when the spell was ready.".into(),
                     });
                     next = world_view::handle_events(game, cast.events, message, dialogs).or(Some(Screen::WorldMap));
                 }

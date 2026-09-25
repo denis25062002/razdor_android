@@ -368,16 +368,15 @@ pub trait EventWorld {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct EventState {
-    /// The last answer, if the event ever fired or was declined.
+    /// The last answer (`No` only after a No; opening the question clears it).
     answer: Option<Answer>,
-    /// Times the event took effect.
+    /// Times the event fired, a No included (a No counts as happened).
     times: u32,
     /// Start time set by another event's "relative event" result.
     start: Option<u64>,
-    /// May fire (again); cleared when it fires, set by a new window, a failed check or a visit.
-    armed: bool,
-    /// The window occurrence seen at the last check.
-    window: Option<u64>,
+    /// Game minute it last fired (or was answered No).
+    #[serde(default)]
+    last_fired: Option<u64>,
 }
 
 /// The script state of a scenario: see the module docs. A save keeps the state only; the
@@ -398,6 +397,10 @@ pub struct EventEngine {
     defeat: EventId,
     pending: Option<EventId>,
     last_place: Option<Place>,
+    /// The hero just entered the building he stands in: its events are checked in this run
+    /// only (the original does not check them again while the building's window is open).
+    #[serde(default)]
+    fresh_visit: bool,
     ended: Option<EventOutcome>,
     #[serde(skip)]
     extensions: Vec<(EventId, Extension)>,
@@ -418,11 +421,25 @@ pub struct EventEngine {
     carry_over: [u8; 7],
 }
 
-/// `Some(occurrence)` while the window is open at `now`. Duration 0 means "no end" *(guess)*.
-fn window(start: u64, repeat: u64, duration: u64, now: u64) -> Option<u64> {
-    let t = now.checked_sub(start)?;
-    let (index, into) = if repeat == 0 { (0, t) } else { (t / repeat, t % repeat) };
-    (duration == 0 || into < duration).then_some(index)
+/// Minutes in a day: an event's repeat counts in whole days.
+const DAY: u64 = 1440;
+/// A duration-0 event fires again at the earliest this many minutes after it fired.
+const REFIRE_MINUTES: u64 = 60;
+
+/// Whether the time window is open at `now` (economy.md §6): never before `start`; with a
+/// repeat of R minutes, on every (R / 1440)-th day since the start, for `max(duration, 1)`
+/// hours from the start's time of day; without one, until `start + max(duration, 1)` hours,
+/// or with no end for duration 0 while the event never fired.
+fn window_open(start: u64, repeat: u64, duration_hours: u64, fired: bool, now: u64) -> bool {
+    let Some(t) = now.checked_sub(start) else { return false };
+    let length = duration_hours.max(1) * 60;
+    if repeat > 0 {
+        let every = (repeat / DAY).max(1);
+        let k = t / DAY;
+        k.is_multiple_of(every) && t - k * DAY <= length
+    } else {
+        (duration_hours == 0 && !fired) || t <= length
+    }
 }
 
 /// The sign encodes ≥ (positive) or ≤ (negative); 0 disables the check.
@@ -501,7 +518,7 @@ impl EventEngine {
         }
         let extensions = Self::extensions_of(&events);
         EventEngine {
-            state: vec![EventState { armed: true, ..EventState::default() }; n],
+            state: vec![EventState::default(); n],
             events,
             places: map,
             flags: BTreeSet::new(),
@@ -511,6 +528,7 @@ impl EventEngine {
             defeat,
             pending: None,
             last_place: None,
+            fresh_visit: false,
             ended: None,
             extensions,
             edits: Vec::new(),
@@ -608,12 +626,19 @@ impl EventEngine {
         &mut self.state[id as usize - 1]
     }
 
-    /// The last answer of an event that fired or was declined.
+    /// Whether the event happened, and how: `No` after a No answer, `Yes` otherwise;
+    /// `None` if it never fired (a No counts as happened).
     pub fn happened(&self, id: EventId) -> Option<Answer> {
-        self.event(id).and_then(|_| self.st(id).answer)
+        self.event(id)?;
+        let st = self.st(id);
+        match (st.times, st.answer) {
+            (0, _) => None,
+            (_, Some(Answer::No)) => Some(Answer::No),
+            _ => Some(Answer::Yes),
+        }
     }
 
-    /// How many times the event took effect.
+    /// How many times the event fired (a No answer included).
     pub fn times_fired(&self, id: EventId) -> u32 {
         self.event(id).map_or(0, |_| self.st(id).times)
     }
@@ -623,12 +648,48 @@ impl EventEngine {
         self.state.iter().map(|s| s.times).sum()
     }
 
+    /// Whether flag `name` is set: exactly (`X2`, `RAND5`), or as a counter `name` + digit.
     pub fn flag(&self, name: &str) -> bool {
-        self.flags.contains(name)
+        self.flags.contains(name) || self.counter(name).is_some()
     }
 
+    /// The flags as stored: counters carry their digit (`Foo1`).
     pub fn flags(&self) -> impl Iterator<Item = &str> {
         self.flags.iter().map(String::as_str)
+    }
+
+    /// The stored flag and value of counter `name` (`name` + one digit).
+    fn counter(&self, name: &str) -> Option<(String, u32)> {
+        self.flags.iter().find_map(|f| {
+            let rest = f.strip_prefix(name)?;
+            let mut c = rest.chars();
+            let d = c.next()?.to_digit(10)?;
+            c.next().is_none().then(|| (f.clone(), d))
+        })
+    }
+
+    /// `+X`: sets `X1`, or raises the digit of `X` (up to 9).
+    fn raise_flag(&mut self, name: &str) {
+        let d = match self.counter(name) {
+            Some((f, d)) => {
+                self.flags.remove(&f);
+                (d + 1).min(9)
+            }
+            None => 1,
+        };
+        self.flags.insert(format!("{name}{d}"));
+    }
+
+    /// `-X`: lowers the digit of `X`, removing it at 0 (a plain flag `X` is removed).
+    fn lower_flag(&mut self, name: &str) {
+        if let Some((f, d)) = self.counter(name) {
+            self.flags.remove(&f);
+            if d > 1 {
+                self.flags.insert(format!("{name}{}", d - 1));
+            }
+        } else {
+            self.flags.remove(name);
+        }
     }
 
     /// Active quests (quest events that fired and are not completed), in the order received.
@@ -681,11 +742,9 @@ impl EventEngine {
         out
     }
 
-    /// A new visit to `place` (re-entering the same building): its local events may fire again.
+    /// The hero enters building `place` (again): its events are checked in the next run.
     pub fn visit(&mut self, place: Place) {
-        for id in self.places.get(&place).cloned().unwrap_or_default() {
-            self.st_mut(id).armed = true;
-        }
+        self.fresh_visit = matches!(place, Place::Building(_));
     }
 
     /// Answer the pending question, then run the events on.
@@ -709,7 +768,7 @@ impl EventEngine {
                 let e = &self.events[id as usize - 1];
                 e.kind() == Some(EventKind::Rumour)
                     && !self.done(id)
-                    && (e.subordinate != 0 || self.window_of(id, now).is_some())
+                    && (e.subordinate != 0 || self.is_open(id, now))
                     && self.conditions_hold(id, w)
             })
             .collect()
@@ -740,61 +799,63 @@ impl EventEngine {
             fired += 1;
             self.start(id, w, out, 0);
         }
+        if self.pending.is_none() {
+            self.fresh_visit = false;
+        }
     }
 
-    /// Done for good: a once-event that took effect.
+    /// Done for good: a once-event that fired (a No uses it up too).
     fn done(&self, id: EventId) -> bool {
-        self.events[id as usize - 1].fires_once() && self.st(id).answer == Some(Answer::Yes)
+        self.events[id as usize - 1].fires_once() && self.st(id).times > 0
     }
 
-    fn window_of(&self, id: EventId, now: u64) -> Option<u64> {
+    /// The time window is open at `now` ([`window_open`]).
+    fn is_open(&self, id: EventId, now: u64) -> bool {
         let e = &self.events[id as usize - 1];
-        let start = self.st(id).start.unwrap_or(e.start_time as u64);
-        window(start, e.repeat as u64, e.duration as u64, now)
+        let st = self.st(id);
+        let start = st.start.unwrap_or(e.start_time as u64);
+        window_open(start, e.repeat as u64, e.duration as u64, st.times > 0, now)
     }
 
-    /// Whether the loop checks this event where the player stands. Global events are checked
-    /// anywhere; local events and quests only at a place that lists them; rumours never (the
-    /// player picks them); subordinate events only through a chain.
-    fn in_scope(&self, id: EventId, place: Option<Place>) -> bool {
-        let e = &self.events[id as usize - 1];
-        if e.subordinate != 0 {
-            return false;
+    /// The firing guard: not again in the same minute; a duration-0 event not within
+    /// [`REFIRE_MINUTES`] of its last firing.
+    fn may_refire(&self, id: EventId, now: u64) -> bool {
+        match self.st(id).last_fired {
+            None => true,
+            Some(t) if self.events[id as usize - 1].duration == 0 => now >= t + REFIRE_MINUTES,
+            Some(t) => now > t,
         }
-        match e.kind() {
-            Some(EventKind::Global) => true,
-            Some(EventKind::Local | EventKind::Quest) => {
-                place.and_then(|p| self.places.get(&p)).is_some_and(|ids| ids.contains(&id))
+    }
+
+    /// The events the loop checks where the player stands, in the original's order: the
+    /// global events in file order, then the local events and quests of the event point or
+    /// building he stands on, in its list order (a building's only on entering it). Rumours
+    /// are never checked (the player picks them); subordinate events only through a chain.
+    fn candidates(&self, place: Option<Place>) -> Vec<EventId> {
+        let own = |id: &EventId| self.events[*id as usize - 1].subordinate == 0;
+        let mut ids: Vec<EventId> = (1..=self.events.len() as EventId)
+            .filter(|id| own(id) && self.events[*id as usize - 1].kind() == Some(EventKind::Global))
+            .collect();
+        let here = match place {
+            Some(Place::Building(_)) if !self.fresh_visit => None,
+            p => p.and_then(|p| self.places.get(&p)),
+        };
+        for &id in here.into_iter().flatten() {
+            if own(&id) && matches!(self.events[id as usize - 1].kind(), Some(EventKind::Local | EventKind::Quest)) {
+                ids.push(id);
             }
-            Some(EventKind::Rumour) | None => false,
         }
+        ids
     }
 
-    /// The first event that may fire. Every event in scope is checked, so that each one sees
-    /// its conditions fail (and re-arms) even when an earlier one is picked.
+    /// The first event that may fire: in scope, not done, its window open, past its firing
+    /// guard, its conditions holding. An event without "once" fires again on every later
+    /// check while all that holds.
     fn first_eligible(&mut self, w: &dyn EventWorld) -> Option<EventId> {
         let now = w.now();
-        let place = w.place();
-        let mut first = None;
-        for id in 1..=self.events.len() as EventId {
-            if !self.in_scope(id, place) || self.done(id) {
-                continue;
-            }
-            let Some(occurrence) = self.window_of(id, now) else { continue };
-            if self.st(id).window != Some(occurrence) {
-                let st = self.st_mut(id);
-                st.window = Some(occurrence);
-                st.armed = true;
-            }
-            let holds = self.conditions_hold(id, w);
-            if !holds {
-                // Re-armed: a repeatable event fires again once its conditions hold again.
-                self.st_mut(id).armed = true;
-            } else if self.st(id).armed && first.is_none() {
-                first = Some(id);
-            }
-        }
-        first
+        self.candidates(w.place())
+            .into_iter()
+            .find(|&id| !self.done(id) && self.is_open(id, now) && self.may_refire(id, now) && self.conditions_hold(id, w))
     }
 
     /// Fire an event, or ask its question first.
@@ -802,7 +863,8 @@ impl EventEngine {
         let e = &self.events[id as usize - 1];
         let asked_yes = self.st(id).answer == Some(Answer::Yes) && e.results.repeat_after_yes == 0;
         if e.conditions.confirm_question != 0 && !asked_yes {
-            self.st_mut(id).armed = false;
+            // Opening the question clears the last answer.
+            self.st_mut(id).answer = None;
             self.pending = Some(id);
             out.push(EventOutcome::Question(id));
         } else {
@@ -812,26 +874,23 @@ impl EventEngine {
 
     fn fire(&mut self, id: EventId, answer: Answer, w: &mut dyn EventWorld, out: &mut Vec<EventOutcome>, depth: usize) {
         let now = w.now();
-        let occurrence = self.window_of(id, now);
         let st = self.st_mut(id);
         st.answer = Some(answer);
-        st.armed = false;
-        if occurrence.is_some() {
-            st.window = occurrence;
-        }
+        // A No counts as happened too: it uses up a once-event and starts the guard.
+        st.times += 1;
+        st.last_fired = Some(now);
         if answer == Answer::No {
             out.push(EventOutcome::Declined(id));
             return;
         }
-        st.times += 1;
         let e = self.events[id as usize - 1].clone();
         out.push(EventOutcome::Fired { event: id, message: !e.message.is_empty() });
         if let Some(f) = &e.flags {
             if let Some(x) = &f.set {
-                self.flags.insert(x.clone());
+                self.raise_flag(x);
             }
             if let Some(x) = &f.clear {
-                self.flags.remove(x);
+                self.lower_flag(x);
             }
         }
         self.apply(id, &e, w);
@@ -847,10 +906,7 @@ impl EventEngine {
         }
         let rel = e.results.relative_event;
         if self.event(rel).is_some() {
-            let st = self.st_mut(rel);
-            st.start = Some(now + e.results.relative_delay_hours as u64 * 60);
-            st.armed = true;
-            st.window = None;
+            self.st_mut(rel).start = Some(now + e.results.relative_delay_hours as u64 * 60);
         }
         if id == self.victory || id == self.defeat {
             let end = if id == self.victory { EventOutcome::Victory(id) } else { EventOutcome::Defeat(id) };
@@ -1113,10 +1169,10 @@ impl EventEngine {
             return false;
         }
         if let Some(f) = &e.flags {
-            if f.require_set.as_ref().is_some_and(|x| !self.flags.contains(x)) {
+            if f.require_set.as_ref().is_some_and(|x| !self.flag(x)) {
                 return false;
             }
-            if f.require_unset.as_ref().is_some_and(|x| self.flags.contains(x)) {
+            if f.require_unset.as_ref().is_some_and(|x| self.flag(x)) {
                 return false;
             }
         }
@@ -1495,27 +1551,41 @@ mod tests {
 
     #[test]
     fn time_window_and_repeat() {
+        // Daily from minute 1000, open for 1 hour: a many-event fires on every later check.
         let mut e = many(global());
-        (e.start_time, e.repeat, e.duration) = (1000, DAY as u16, 60);
+        (e.start_time, e.repeat, e.duration) = (1000, DAY as u16, 1);
         let mut g = engine(vec![e]);
         let mut w = MockWorld::new();
         assert!(tick_at(&mut g, &mut w, 999).is_empty(), "before the start");
         assert_eq!(tick_at(&mut g, &mut w, 1000), vec![1]);
-        assert!(tick_at(&mut g, &mut w, 1030).is_empty(), "once per window");
-        assert!(tick_at(&mut g, &mut w, 1100).is_empty(), "window closed");
+        assert!(tick_at(&mut g, &mut w, 1000).is_empty(), "not twice in the same minute");
+        assert_eq!(tick_at(&mut g, &mut w, 1030), vec![1], "again on a later check");
+        assert!(tick_at(&mut g, &mut w, 1061).is_empty(), "the hour is over");
         assert_eq!(tick_at(&mut g, &mut w, 1000 + DAY + 59), vec![1], "next day's window");
-        assert_eq!(g.times_fired(1), 2);
+        assert_eq!(g.times_fired(1), 3);
 
-        // No repeat: one window only. Duration 0: no end.
+        // Every second day.
+        let mut e = many(global());
+        (e.start_time, e.repeat, e.duration) = (0, 2 * DAY as u16, 2);
+        let mut g = engine(vec![e]);
+        assert!(tick_at(&mut g, &mut w, DAY + 10).is_empty());
+        assert_eq!(tick_at(&mut g, &mut w, 2 * DAY + 10), vec![1]);
+
+        // No repeat: one window. Duration 0: no end until it fires, then a 60-minute guard
+        // and a one-hour window.
         let mut once = many(global());
-        (once.start_time, once.repeat, once.duration) = (0, 0, 60);
+        (once.start_time, once.repeat, once.duration) = (0, 0, 1);
         let mut open = many(global());
-        (open.start_time, open.repeat, open.duration) = (100, 0, 0);
+        (open.start_time, open.repeat, open.duration) = (0, 0, 0);
         let mut g = engine(vec![once, open]);
-        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1]);
-        assert_eq!(tick_at(&mut g, &mut w, 5 * DAY), vec![2]);
-        assert!(tick_at(&mut g, &mut w, 6 * DAY).is_empty());
-        assert_eq!((g.times_fired(1), g.times_fired(2)), (1, 1));
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1, 2]);
+        assert_eq!(tick_at(&mut g, &mut w, 30), vec![1], "duration 0: 60 minutes between firings");
+        assert!(tick_at(&mut g, &mut w, 70).is_empty(), "both windows closed");
+        let mut late = many(global());
+        (late.start_time, late.repeat, late.duration) = (100, 0, 0);
+        let mut g = engine(vec![late]);
+        assert_eq!(tick_at(&mut g, &mut w, 5 * DAY), vec![1], "never fired: open with no end");
+        assert!(tick_at(&mut g, &mut w, 5 * DAY + 60).is_empty(), "fired: its hour after the start is long past");
     }
 
     #[test]
@@ -1526,7 +1596,7 @@ mod tests {
             tick_at(&mut g, &mut w, day * DAY + 5);
             tick_at(&mut g, &mut w, day * DAY + 600);
         }
-        assert_eq!((g.times_fired(1), g.times_fired(2)), (1, 3));
+        assert_eq!((g.times_fired(1), g.times_fired(2)), (1, 6), "a many-event fires on every check");
     }
 
     type Setup = fn(&mut Event);
@@ -1724,9 +1794,14 @@ mod tests {
         (on_yes.conditions.happened_yes_check, on_yes.conditions.happened_yes) = (1, [1, 0]);
         let mut on_no = global();
         (on_no.conditions.happened_no_check, on_no.conditions.happened_no) = (1, [1, 0]);
+        let mut not = global();
+        (not.conditions.not_happened_check, not.conditions.not_happened) = (1, [1, 0]);
+        not.start_time = 20;
 
-        // No: nothing happens, the No branch runs, and the question comes back the next day.
-        let mut g = engine(vec![ask, on_yes, on_no]);
+        // No: nothing is applied, but it counts as happened: the No branch runs and a
+        // once-question is used up.
+        let events = vec![ask, on_yes, on_no, not];
+        let mut g = engine(events.clone());
         let mut w = MockWorld { gold: 300, ..MockWorld::new() };
         w.now = 10;
         assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
@@ -1735,18 +1810,33 @@ mod tests {
         let out = g.answer(&mut w, false);
         assert_eq!(out[0], EventOutcome::Declined(1));
         assert_eq!(fired(&out), vec![3]);
-        assert_eq!(g.happened(1), Some(Answer::No));
+        assert_eq!((g.happened(1), g.times_fired(1)), (Some(Answer::No), 1));
         assert!(w.log.is_empty());
-        assert!(tick_at(&mut g, &mut w, 600).is_empty(), "not asked again the same day");
-        w.now = DAY + 10;
-        assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
+        assert!(tick_at(&mut g, &mut w, DAY + 10).is_empty(), "used up; 'not happened' does not hold");
 
         // Yes: the results apply and the Yes branch runs; a once-event is done.
+        let mut g = engine(events);
+        w.now = 10;
+        assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
         let out = g.answer(&mut w, true);
         assert_eq!(fired(&out), vec![1, 2]);
         assert_eq!(w.log, vec![Fx::Gold(-150), Fx::GiveItem(14)]);
         assert_eq!(g.happened(1), Some(Answer::Yes));
         assert!(tick_at(&mut g, &mut w, 3 * DAY).is_empty());
+    }
+
+    #[test]
+    fn a_many_question_answered_no_comes_back_on_a_later_check() {
+        let mut ask = many(global());
+        ask.conditions.confirm_question = 1;
+        let mut g = engine(vec![ask]);
+        let mut w = MockWorld::new();
+        assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
+        g.answer(&mut w, false);
+        assert!(g.tick(&mut w).is_empty(), "not in the same minute");
+        w.now = 5;
+        assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
+        assert_eq!(g.happened(1), Some(Answer::Yes), "opening the question clears the No");
     }
 
     #[test]
@@ -1792,22 +1882,31 @@ mod tests {
     }
 
     #[test]
-    fn local_events_fire_at_their_place_once_per_visit() {
+    fn local_events_fire_at_points_on_every_check_and_in_buildings_on_entering() {
         let at = Place::Point(3);
-        let mut g = EventEngine::from_parts(vec![many(ev(EventKind::Local)), global()], vec![(at, vec![1])], 0, 0);
+        let inn = Place::Building(5);
+        let mut g = EventEngine::from_parts(
+            vec![many(ev(EventKind::Local)), global(), many(ev(EventKind::Local))],
+            vec![(at, vec![1]), (inn, vec![3])],
+            0,
+            0,
+        );
         let mut w = MockWorld::new();
         assert_eq!(tick_at(&mut g, &mut w, 0), vec![2], "the global fires anywhere, the local does not");
         w.place = Some(Place::Point(4));
         assert!(tick_at(&mut g, &mut w, 10).is_empty());
         w.place = Some(at);
         assert_eq!(tick_at(&mut g, &mut w, 20), vec![1]);
-        assert!(tick_at(&mut g, &mut w, 30).is_empty(), "same stay");
+        assert_eq!(tick_at(&mut g, &mut w, 30), vec![1], "standing on the point: every check");
+        w.place = Some(inn);
+        assert_eq!(tick_at(&mut g, &mut w, 40), vec![3], "on entering");
+        assert!(tick_at(&mut g, &mut w, 50).is_empty(), "not again while he is inside");
         w.place = None;
-        tick_at(&mut g, &mut w, 40);
-        w.place = Some(at);
-        assert_eq!(tick_at(&mut g, &mut w, 50), vec![1], "a new visit");
-        g.visit(at);
-        assert_eq!(tick_at(&mut g, &mut w, 60), vec![1], "re-entered without leaving the cell");
+        tick_at(&mut g, &mut w, 60);
+        w.place = Some(inn);
+        assert_eq!(tick_at(&mut g, &mut w, 70), vec![3], "a new visit");
+        g.visit(inn);
+        assert_eq!(tick_at(&mut g, &mut w, 80), vec![3], "re-entered without leaving the cell");
     }
 
     #[test]
@@ -1831,12 +1930,35 @@ mod tests {
     }
 
     #[test]
-    fn loop_guard_stops_a_flag_ping_pong() {
+    fn a_flag_ping_pong_fires_each_once_a_minute_and_the_guard_stops_long_runs() {
         let mut g = engine(vec![many(titled(global(), "+A=/A")), many(titled(global(), "-A=A"))]);
         let mut w = MockWorld::new();
+        assert_eq!(fired(&g.tick(&mut w)), vec![1, 2]);
+        assert_eq!(tick_at(&mut g, &mut w, 1), vec![1, 2]);
+        let mut g = engine(vec![many(global()); LOOP_GUARD + 10]);
         let out = g.tick(&mut w);
         assert_eq!(fired(&out).len(), LOOP_GUARD);
         assert_eq!(out.last(), Some(&EventOutcome::LoopGuard));
+    }
+
+    #[test]
+    fn flags_are_counters() {
+        let mut g = engine(vec![
+            many(titled(global(), "+Foo")),  // 1
+            titled(global(), "=Foo2"),       // 2: needs the counter at 2
+            many(titled(global(), "-Foo")), // 3
+        ]);
+        let mut w = MockWorld::new();
+        g.raise_flag("Foo");
+        assert_eq!(g.flags().collect::<Vec<_>>(), ["Foo1"]);
+        g.raise_flag("Foo");
+        assert!(g.flag("Foo") && g.flag("Foo2") && !g.flag("Foo1"));
+        g.lower_flag("Foo");
+        g.lower_flag("Foo");
+        assert!(!g.flag("Foo") && g.flags().next().is_none(), "removed at 0");
+        // +Foo and -Foo each fire once a check: Foo goes 1 → 0; 2 never sees Foo2.
+        tick_at(&mut g, &mut w, 0);
+        assert_eq!(g.times_fired(2), 0);
     }
 
     #[test]

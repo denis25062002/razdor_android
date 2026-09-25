@@ -126,24 +126,9 @@ impl Game {
         self.offers(Tab::Barracks) && self.here().is_some_and(Location::resurrects)
     }
 
-    /// Price to heal squad member `i` fully: `Cost × HealingConst% × missing / max`, rounded
-    /// up (mechanics.md 1.6), in mana for elementals. `None` if it is dead or unhurt.
-    pub fn heal_price(&self, i: usize) -> Option<Price> {
-        let u = self.squad.get(i)?;
-        let max = u.max_hp(&self.content);
-        if !u.alive() || u.hp >= max {
-            return None;
-        }
-        let cost = self.content.unit(u.def).cost.max(0) as i64;
-        let pct = self.content.options.healing_const.max(0) as i64;
-        let missing = (max - u.hp) as i64;
-        let denom = 100 * max as i64;
-        let amount = (cost * pct * missing + denom - 1) / denom;
-        Some(Price::for_unit(&self.content, u.def, amount as i32))
-    }
-
-    /// Heals squad member `i` to full HP for [`Game::heal_price`]; it takes `HealingTime`
-    /// minutes of game time. Returns what happened meanwhile (a noon report …).
+    /// Heals squad member `i` to full HP for [`Game::heal_price`], paid at once. No game
+    /// time passes (the exe uses `HealingTime` only for AI armies). The returned events are
+    /// always empty; the signature keeps room for a timed service.
     pub fn heal(&mut self, i: usize) -> Result<Vec<Event>, ServiceError> {
         if !self.heals_here() {
             return Err(ServiceError::NotHere);
@@ -158,7 +143,7 @@ impl Game {
         }
         let c = self.content.clone();
         self.squad[i].heal_full(&c);
-        Ok(self.spend_minutes(c.options.healing_time))
+        Ok(Vec::new())
     }
 
     /// Minutes left to resurrect squad member `i`, if it is a corpse that can still be raised.
@@ -169,18 +154,8 @@ impl Game {
         end.checked_sub(self.clock.total_minutes() as u64)
     }
 
-    /// Price to resurrect squad member `i`: `Cost × ResurectConst%` (mechanics.md 1.6).
-    /// `None` if it is alive or past the window.
-    pub fn resurrect_price(&self, i: usize) -> Option<Price> {
-        self.resurrection_minutes_left(i)?;
-        let u = &self.squad[i];
-        let amount = self.content.unit(u.def).cost.max(0) * self.content.options.resurect_const.max(0) / 100;
-        Some(Price::for_unit(&self.content, u.def, amount))
-    }
-
     /// Raises the corpse of squad member `i` in a town or church, within `MaxTimeResurection`
-    /// of its death. It comes back with full HP, and it takes `HealingTime` minutes, as a
-    /// heal does *(guess)*.
+    /// of its death, for [`Game::resurrect_price`]. It comes back at once with full HP.
     pub fn resurrect(&mut self, i: usize) -> Result<Vec<Event>, ServiceError> {
         if !self.resurrects_here() {
             return Err(ServiceError::NotHere);
@@ -197,14 +172,7 @@ impl Game {
         let u = &mut self.squad[i];
         u.died_at = None;
         u.heal_full(&c);
-        Ok(self.spend_minutes(c.options.healing_time))
-    }
-
-    /// Game time spent on a service in a building.
-    fn spend_minutes(&mut self, minutes: i32) -> Vec<Event> {
-        let mut events = Vec::new();
-        self.pass_time(minutes.max(0) as f32, &mut events);
-        events
+        Ok(Vec::new())
     }
 
     /// The player's troops in the garrison here.
@@ -216,8 +184,7 @@ impl Game {
     }
 
     /// Leaves squad member `i` in the garrison of the castle or fort here. It keeps its
-    /// items; its wage stops after its first day there, and it heals `GarrisonAutoHeal`% a
-    /// day.
+    /// items; a garrison is never paid, and it heals `GarrisonAutoHeal`% every midnight.
     pub fn leave_in_garrison(&mut self, i: usize) -> Result<(), ServiceError> {
         if !self.offers(Tab::Garrison) {
             return Err(ServiceError::NotHere);
@@ -329,8 +296,10 @@ mod tests {
 
     /// Units: 1–3 heroes; 4 militia (cost 50); 5 archer (cost 90); 6 priest (cost 60,
     /// Surrender 20); 7 merchant (cost 100, Merchant); 8 golem (cost 80, Elemental); 9 bandit
-    /// (cost 55, Rogue). Items: 20 sword (100), 21 ring (40), 22 potion (60), 23 ring (300),
-    /// 24 amulet (1000). Spells 1 (200 gold) and 2 (500 gold).
+    /// (cost 55, Rogue); 10 quartermaster (cost 100, AddPayment); 11 medic (cost 40,
+    /// ArmyMedic). Items: 20 sword (100), 21 ring (40), 22 potion (60), 23 ring (300), 24 amulet
+    /// (1000), 25 trinket (1), 135 furs (1000, goods). Spells 1 (200 gold, +30 hits), 2 (500
+    /// gold), 3 (a 4-hour blessing, d-DefenceBlow +2).
     fn content() -> Content {
         let mut units = vec![
             ck::warrior(1, 20, 5),
@@ -342,6 +311,8 @@ mod tests {
             UnitDef { cost: 100, bonus: Some(Bonus::Merchant), ..ck::warrior(7, 5, 1) },
             UnitDef { cost: 80, nature: Nature::Elemental, ..ck::warrior(8, 12, 4) },
             UnitDef { cost: 55, nature: Nature::Rogue, ..ck::warrior(9, 9, 1) },
+            UnitDef { cost: 100, bonus: Some(Bonus::AddPayment), ..ck::warrior(10, 5, 1) },
+            UnitDef { cost: 40, bonus: Some(Bonus::ArmyMedic), ..ck::warrior(11, 5, 1) },
         ];
         for u in &mut units[..3] {
             u.cost = 0;
@@ -353,8 +324,17 @@ mod tests {
             item(22, ArtefactType::Potion, 60),
             item(23, ArtefactType::Ring, 300),
             item(24, ArtefactType::Amulet, 1000),
+            item(25, ArtefactType::Ring, 1),
+            item(135, ArtefactType::Item, 1000),
         ];
-        let spells = vec![ck::spell(1, 200), ck::spell(2, 500)];
+        let heal = crate::rules::content::SpellDef { delta_fixed_hits: Some(30), ..ck::spell(1, 200) };
+        let bless = crate::rules::content::SpellDef {
+            delta_fixed_hits: None,
+            time_work: Some(4),
+            add: crate::rules::content::StatMods::from([(crate::rules::content::Stat::DefenceBlow, 2)]),
+            ..ck::spell(3, 100)
+        };
+        let spells = vec![heal, ck::spell(2, 500), bless];
         Content::new(units, items, spells, Default::default(), crate::rules::formation::Formation::WIDE)
     }
 
@@ -421,19 +401,20 @@ mod tests {
     }
 
     #[test]
-    fn heal_costs_a_share_of_the_unit_cost_and_an_hour() {
+    fn heal_costs_a_share_of_the_unit_cost_over_f_and_no_time() {
         let mut s = map();
         s.buildings = vec![town(BuildingType::Town, 2, 2, 1)];
         let mut g = inside(&s);
+        assert_eq!(g.difficulty(), 120, "no impossible difficulty");
         assert_eq!(g.heal_price(1), None, "unhurt");
-        g.squad[1].hp = 10; // 30 of 40 missing: 50 × 50% × 30/40 = 18.75 → 19
-        assert_eq!(g.heal_price(1), Some(Price::gold(19)));
-        g.squad[2].hp = 39; // 50 × 50% × 1/40 = 0.625 → 1
+        g.squad[1].hp = 10; // 30 of 40 missing: 30/40 × 50 × 50% × 100/120 = 15.6 → 16
+        assert_eq!(g.heal_price(1), Some(Price::gold(16)));
+        g.squad[2].hp = 39; // 0.52 → 1, and never below 1
         assert_eq!(g.heal_price(2), Some(Price::gold(1)));
         let (gold, t) = (g.gold, g.clock.total_minutes());
-        g.heal(1).unwrap();
-        assert_eq!((g.squad[1].hp, g.gold), (40, gold - 19));
-        assert_eq!(g.clock.total_minutes(), t + 60.0, "HealingTime");
+        assert_eq!(g.heal(1), Ok(Vec::new()));
+        assert_eq!((g.squad[1].hp, g.gold), (40, gold - 16));
+        assert_eq!(g.clock.total_minutes(), t, "no game time passes");
         assert_eq!(g.heal(1), Err(ServiceError::NotWounded));
         g.gold = 0;
         assert_eq!(g.heal(2), Err(ServiceError::CannotAfford));
@@ -441,16 +422,6 @@ mod tests {
         assert_eq!(g.heal(2), Err(ServiceError::NotHere));
     }
 
-    #[test]
-    fn healing_across_noon_brings_the_report() {
-        let mut s = map();
-        s.buildings = vec![town(BuildingType::Church, 2, 2, 1)];
-        let mut g = inside(&s);
-        g.pass_time(2.5 * 60.0, &mut Vec::new()); // 09:00 -> 11:30
-        g.squad[1].hp = 1;
-        let events = g.heal(1).unwrap();
-        assert!(matches!(events.as_slice(), [Event::NewDay(_)]), "{events:?}");
-    }
 
     #[test]
     fn no_healing_in_taverns_or_villages() {
@@ -498,19 +469,19 @@ mod tests {
         assert!(!corpse.alive() && corpse.died_at.is_some());
         assert!(corpse.items.iter().all(Option::is_none) && g.pack.contains(&ItemId(20)), "the dead hold no items");
         assert_eq!(g.heal_price(1), None);
-        // Resurrection: Cost × 300%.
-        assert_eq!(g.resurrect_price(1), Some(Price::gold(150)));
+        // Resurrection: Round(Cost × 300% × 100 / F) = 50 × 3 / 1.2.
+        assert_eq!(g.resurrect_price(1), Some(Price::gold(125)));
         assert_eq!(g.resurrection_minutes_left(1), Some(10_080));
         g.location = Some(1);
         assert_eq!(g.resurrect(1), Err(ServiceError::NotHere), "castles heal but do not resurrect");
         g.location = Some(0);
         let gold = g.gold;
         g.resurrect(1).unwrap();
-        assert_eq!((g.squad[1].hp, g.squad[1].died_at, g.gold), (40, None, gold - 150));
+        assert_eq!((g.squad[1].hp, g.squad[1].died_at, g.gold), (40, None, gold - 125));
         assert_eq!(g.resurrect(1), Err(ServiceError::NotDead));
-        // Corpses do not fight and are not paid.
+        // Corpses do not fight, but the wage bill counts them.
         lose_unit_in_battle(&mut g, 2);
-        assert_eq!(g.wage(2), 0);
+        assert_eq!(g.wage(2), 6);
         let b = g.start_battle();
         assert!(b.fighters.iter().all(|f| f.squad_index != Some(2)));
     }
@@ -529,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn barracks_stock_goes_down_and_regrows() {
+    fn barracks_stock_goes_down_and_regrows_by_chance() {
         let mut s = map();
         let mut t = town(BuildingType::Town, 2, 2, 1);
         t.barracks[0] = RecruitSlot { unit: 4, start_count: 1, max_count: 5 };
@@ -540,17 +511,21 @@ mod tests {
         g.hire(UnitId(4)).unwrap();
         assert_eq!(g.gold, 950);
         assert_eq!(g.hire(UnitId(4)), Err(crate::rules::game::HireError::NotOffered), "sold out");
-        // MaxDayCountForNewUnit = 10: 5 militia regrow in 10 days, one every 2 days.
+        // MaxDayCountForNewUnit = 10: 5 militia gain one with chance 1/2 a day, an archer
+        // (max 1) with 1/10.
         let day = 24.0 * 60.0;
+        let (mut militia, mut archers) = (Vec::new(), Vec::new());
         g.pass_time(15.0 * 60.0, &mut Vec::new()); // the first midnight
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(0));
-        g.pass_time(day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(1));
-        g.pass_time(7.0 * day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(4));
-        g.pass_time(10.0 * day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(5), "capped at the maximum");
-        assert_eq!(g.world.locations[0].recruits[1].stock, Some(1), "one archer in 10 days");
+        for _ in 0..60 {
+            militia.push(g.world.locations[0].recruits[0].stock.unwrap());
+            archers.push(g.world.locations[0].recruits[1].stock.unwrap());
+            g.pass_time(day, &mut Vec::new());
+        }
+        assert!(militia.windows(2).all(|w| w[1] - w[0] <= 1 && w[1] >= w[0]), "one at a time: {militia:?}");
+        let full = militia.iter().position(|&n| n == 5).expect("full in 60 days");
+        assert!((4..30).contains(&full), "about 2 days a unit: {militia:?}");
+        assert_eq!(*militia.last().unwrap(), 5, "capped at the maximum");
+        assert_eq!(*archers.last().unwrap(), 1);
     }
 
     #[test]
@@ -565,14 +540,14 @@ mod tests {
         g.mana = 100;
         g.hire(UnitId(8)).unwrap();
         assert_eq!((g.mana, g.gold), (20, 1000));
-        g.squad[3].hp = 25; // of 50: 80 × 50% × 1/2 = 20 mana
-        assert_eq!(g.heal_price(3), Some(Price { amount: 20, currency: Currency::Mana }));
+        g.squad[3].hp = 25; // of 50: 1/2 × 80 × 50% × 100/120 = 16.7 → 17 mana
+        assert_eq!(g.heal_price(3), Some(Price { amount: 17, currency: Currency::Mana }));
         // Wage 80/2 × ½ = 20 mana a day.
         assert_eq!((g.daily_wages(), g.daily_mana_wages()), (12, 20));
     }
 
     #[test]
-    fn noon_pays_both_wage_kinds_and_reports_the_balance() {
+    fn noon_pays_recruits_whatever_their_nature_and_reports_the_balance() {
         let mut s = map();
         s.header.heroes[0] = hero(2, 2, 100, &[troop(4, 0, 1), troop(9, 0, 1)]);
         let mut fort = town(BuildingType::Fort, 8, 2, 3);
@@ -583,49 +558,55 @@ mod tests {
         village.gold_per_day = 500; // tribute, not income
         s.buildings = vec![fort, village];
         let mut g = start(&s);
-        // Militia kind 1: 50/2 × ¼ = 6.25 → 6. Bandit (rogue) kind 2: 55/2 = 27.
-        assert_eq!((g.wage(1), g.wage(2)), (6, 27));
-        assert_eq!((g.daily_income(), g.daily_mana(), g.daily_wages()), (40, 7, 33));
+        // Militia 50/2 × ¼ = 6.25 → 6. The bandit (a rogue) is a recruit too: 55/2 × ½ = 13.75 → 14.
+        assert_eq!((g.wage(0), g.wage(1), g.wage(2)), (0, 6, 14));
+        assert_eq!(g.squad[0].wage_kind, crate::rules::content::WageKind::Leader);
+        // The fort's 40 × F/100.
+        assert_eq!((g.daily_income(), g.daily_mana(), g.daily_wages()), (48, 7, 20));
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events); // 09:00 -> 12:00
         let day = g.clock.day_index();
         let want = DayReport {
             day,
-            income: 40,
+            income: 48,
             mana: 7,
-            wages: 33,
+            wages: 20,
             mana_wages: 0,
             unpaid: 0,
             deserted: vec![],
-            gold: 100 + 40 - 33,
+            gold: 100 + 48 - 20,
             mana_total: 7,
         };
         assert_eq!(events, vec![Event::NewDay(want)]);
     }
 
     #[test]
-    fn unpaid_units_sit_out_and_desert_after_a_week() {
+    fn unpaid_units_sit_out_and_desert_a_week_after_their_last_pay() {
         let mut s = map();
         s.header.heroes[0] = hero(2, 2, 0, &[troop(4, 0, 2)]);
         s.buildings = vec![town(BuildingType::Village, 12, 2, 1)];
         let mut g = start(&s);
-        g.squad[2].items[0] = Some(ItemId(21));
+        g.squad[1].items[0] = Some(ItemId(21));
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
         let Event::NewDay(r) = &events[0] else { panic!() };
-        assert_eq!((r.wages, r.unpaid), (0, 2));
+        assert_eq!((r.wages, r.unpaid, r.gold), (0, 2, 0));
         assert!(g.squad[1].unpaid && g.squad[2].unpaid);
         let b = g.start_battle();
         assert_eq!(b.fighters.iter().filter(|f| f.team == Team::Player).count(), 1, "only the hero fights");
-        // Paid again as soon as there is gold.
+        // 6 gold for a bill of 12: the cheapest (the first of two equals) gets his back.
         g.gold = 6;
         events.clear();
         g.pass_time(24.0 * 60.0, &mut events);
-        assert!(!g.squad[1].unpaid && g.squad[2].unpaid);
-        // MaxTimeNotUpkeep = 7 days unpaid: the second militia leaves; its ring stays.
-        g.gold = 0;
+        let Event::NewDay(r) = &events[0] else { panic!() };
+        assert_eq!((r.wages, r.unpaid, g.gold), (6, 1, 0));
+        assert!(g.squad[1].unpaid && !g.squad[2].unpaid);
+        // MaxTimeNotUpkeep = 7 days since the last pay: the first militia (last paid at the
+        // start, 09:00) leaves at the 7th noon; his ring stays. The other was paid a day later.
         events.clear();
         g.pass_time(5.0 * 24.0 * 60.0, &mut events);
+        assert_eq!(g.squad.len(), 3, "not yet");
+        g.pass_time(24.0 * 60.0, &mut events);
         let deserted: Vec<UnitId> = events.iter().flat_map(|e| match e {
             Event::NewDay(r) => r.deserted.clone(),
             _ => vec![],
@@ -636,19 +617,193 @@ mod tests {
     }
 
     #[test]
-    fn the_village_innkeeper_pays_off_the_unpaid_instead_of_tribute() {
+    fn a_short_noon_refunds_the_cheapest_and_keeps_the_dearest_paid() {
         let mut s = map();
-        let mut v = town(BuildingType::Village, 2, 2, 1);
+        // Militia 6, archer 90/2 × ½ = 22.5 → 22, merchant 100/2 × ½ = 25.
+        s.header.heroes[0] = hero(2, 2, 30, &[troop(4, 0, 1), troop(5, 0, 1), troop(7, 0, 1)]);
+        let mut g = start(&s);
+        assert_eq!(g.daily_wages(), 53);
+        let mut events = Vec::new();
+        g.pass_time(3.0 * 60.0, &mut events);
+        // 30 − 53 = −23: the militia's 6 back (−17), the archer's 22 back (+5): gold set to 0.
+        let Event::NewDay(r) = &events[0] else { panic!() };
+        assert_eq!((r.wages, r.unpaid, r.gold), (25, 2, 0));
+        assert!(g.squad[1].unpaid && g.squad[2].unpaid && !g.squad[3].unpaid);
+    }
+
+    #[test]
+    fn event_units_and_the_hero_are_free_and_garrisons_are_never_paid() {
+        let mut s = map();
+        let mut castle = town(BuildingType::Castle, 2, 2, 3);
+        castle.faction = 1;
+        s.buildings = vec![castle];
+        let mut g = inside(&s);
+        g.squad[2].wage_kind = crate::rules::content::WageKind::Event;
+        assert_eq!((g.wage(0), g.wage(1), g.wage(2)), (0, 6, 0));
+        g.leave_in_garrison(1).unwrap();
+        assert_eq!(g.daily_wages(), 0);
+    }
+
+    #[test]
+    fn rear_service_cuts_the_wage_bill_and_more_without_income() {
+        let mut s = map();
+        s.header.heroes[0] = hero(2, 2, 1000, &[troop(10, 0, 1), troop(5, 0, 1)]);
+        let mut fort = town(BuildingType::Fort, 8, 2, 3);
+        fort.faction = 1;
+        fort.gold_per_day = 10;
+        s.buildings = vec![fort];
+        let mut g = start(&s);
+        // 25 and 22 gold: ×178/256 with income, ×78/256 without.
+        assert_eq!((g.wage(1), g.wage(2)), (25 * 178 / 256, 22 * 178 / 256));
+        g.world.locations[0].owner = crate::rules::world::Owner::Neutral;
+        assert_eq!(g.daily_income(), 0);
+        assert_eq!((g.wage(1), g.wage(2)), (25 * 78 / 256, 22 * 78 / 256));
+    }
+
+    #[test]
+    fn elementals_go_unpaid_when_the_mana_runs_out() {
+        let mut s = map();
+        s.header.heroes[0] = hero(2, 2, 100, &[troop(8, 0, 2), troop(4, 0, 1)]);
+        let mut g = start(&s);
+        g.mana = 30; // two golems want 20 each
+        let mut events = Vec::new();
+        g.pass_time(3.0 * 60.0, &mut events);
+        let Event::NewDay(r) = &events[0] else { panic!() };
+        assert_eq!((g.mana, r.unpaid, r.wages), (0, 2, 6));
+        assert!(g.squad[1].unpaid && g.squad[2].unpaid && !g.squad[3].unpaid);
+    }
+
+    #[test]
+    fn villages_linked_to_the_players_castle_pay_into_his_noon_income() {
+        let mut s = map();
+        let mut castle = town(BuildingType::Castle, 8, 2, 3);
+        castle.faction = 1;
+        let mut v = town(BuildingType::Village, 14, 2, 1);
         v.gold_per_day = 30;
         v.gold_max = 90;
+        v.mana_per_day = 4;
+        v.mana_max = 10;
+        v.linked_building = 1;
+        s.buildings = vec![castle, v];
+        let mut g = start(&s);
+        assert_eq!((g.daily_income(), g.daily_mana()), (30, 4), "its stock");
+        let mut events = Vec::new();
+        g.pass_time(3.0 * 60.0, &mut events);
+        assert!(matches!(&events[..], [Event::NewDay(DayReport { income: 30, mana: 4, .. })]), "{events:?}");
+        assert_eq!((g.world.locations[1].tribute_gold, g.world.locations[1].tribute_mana), (0, 0));
+    }
+
+    #[test]
+    fn a_medic_heals_ten_percent_at_midnight() {
+        let mut s = map();
+        s.header.heroes[0] = hero(2, 2, 1000, &[troop(4, 0, 1), troop(11, 0, 1)]);
+        let mut g = start(&s);
+        g.squad[1].hp = 10; // of 40
+        g.pass_time(14.0 * 60.0, &mut Vec::new()); // 09:00 -> 23:00: noon is not a heal
+        assert_eq!(g.squad[1].hp, 10);
+        g.pass_time(60.0, &mut Vec::new());
+        assert_eq!(g.squad[1].hp, 14);
+    }
+
+    /// A village with `gold`/`mana` waiting, the hero entering it with `rng` seed `seed`.
+    fn visit_village(gold: u16, mana: u8, seed: u64, setup: &dyn Fn(&mut Game)) -> Game {
+        let mut s = map();
+        let mut v = town(BuildingType::Village, 2, 2, 1);
+        (v.gold_per_day, v.gold_max, v.mana_per_day, v.mana_max) = (gold, gold, mana, mana);
         s.buildings = vec![v];
         let mut g = inside(&s);
-        g.squad[1].unpaid = true;
-        g.squad[1].unpaid_days = 3;
-        assert_eq!(g.innkeeper_pay(), Some(1));
-        assert!(!g.squad[1].unpaid && g.squad[1].unpaid_days == 0);
-        assert_eq!(g.tribute_available(), None, "used up for today");
-        assert_eq!(g.innkeeper_pay(), None);
+        g.rng = crate::rules::rng::Rng::new(seed);
+        setup(&mut g);
+        g.visit_village(0);
+        g
+    }
+
+    #[test]
+    fn a_village_makes_at_most_one_offer_by_its_rolls_and_conditions() {
+        use crate::rules::economy::{OfferResult, VillageOffer};
+        let mut seen = std::collections::BTreeMap::new();
+        for seed in 0..400 {
+            let g = visit_village(40, 5, seed, &|_| {});
+            *seen.entry(g.village_offer()).or_insert(0) += 1;
+        }
+        // No one unpaid or hurt: never the innkeeper or the priest. The witch needs 3 spells.
+        assert!(!seen.contains_key(&Some(VillageOffer::Innkeeper)) && !seen.contains_key(&Some(VillageOffer::Priest)));
+        assert!(!seen.contains_key(&Some(VillageOffer::Witch)));
+        let bless = seen[&Some(VillageOffer::Blessing)];
+        assert!((40..110).contains(&bless), "about 1 in 6: {seen:?}");
+        assert!(seen[&Some(VillageOffer::Furs)] > 30 && seen[&None] > 200, "{seen:?}");
+
+        // The unpaid, broke army: the innkeeper (1 in 2) pays everyone and the village is emptied.
+        let broke = |g: &mut Game| {
+            g.gold = 0;
+            g.squad.iter_mut().skip(1).for_each(|u| u.unpaid = true);
+        };
+        let mut g = (0..50).map(|seed| visit_village(40, 5, seed, &broke)).find(|g| g.village_offer() == Some(VillageOffer::Innkeeper)).unwrap();
+        assert_eq!(g.accept_offer(), Some(OfferResult::Paid(3)));
+        assert!(g.squad.iter().all(|u| !u.unpaid));
+        assert_eq!((g.world.locations[0].tribute_gold, g.world.locations[0].tribute_mana), (0, 0));
+        assert_eq!(g.village_offer(), None);
+
+        // The wounded army: the priest casts spell 1 (+30 each).
+        let hurt = |g: &mut Game| g.squad.iter_mut().for_each(|u| u.hp = 5);
+        let mut g = (0..50).map(|seed| visit_village(40, 5, seed, &hurt)).find(|g| g.village_offer() == Some(VillageOffer::Priest)).unwrap();
+        assert!(matches!(g.accept_offer(), Some(OfferResult::Healed(h)) if h > 0));
+        assert_eq!(g.squad[1].hp, 35);
+
+        // Furs: item 135. The witch: 300–500 mana, when mana < gold and 3 spells are known.
+        let mut g = (0..80).map(|seed| visit_village(40, 5, seed, &|_| {})).find(|g| g.village_offer() == Some(VillageOffer::Furs)).unwrap();
+        assert_eq!(g.accept_offer(), Some(OfferResult::Furs(ItemId(135))));
+        assert_eq!(g.pack, vec![ItemId(135)]);
+        let learned = |g: &mut Game| g.spells = vec![1, 2, 3];
+        let mut g = (0..200).map(|seed| visit_village(40, 5, seed, &learned)).find(|g| g.village_offer() == Some(VillageOffer::Witch)).unwrap();
+        let mana = g.mana;
+        let Some(OfferResult::Mana(m)) = g.accept_offer() else { panic!() };
+        assert!((300..=500).contains(&m) && m % 50 == 0 && g.mana == mana + m);
+    }
+
+    #[test]
+    fn the_village_blessing_lasts_ten_times_its_time() {
+        use crate::rules::economy::{OfferResult, VillageOffer};
+        let mut g = (0..80).map(|seed| visit_village(40, 5, seed, &|_| {})).find(|g| g.village_offer() == Some(VillageOffer::Blessing)).unwrap();
+        let now = g.clock.total_minutes() as u64;
+        assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "the only one of 3/5/7/9/11 the content has");
+        // TimeWork 4 h × 10.
+        assert_eq!(g.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, Some(now + 40 * 60))]);
+    }
+
+    #[test]
+    fn the_village_that_made_the_last_offer_makes_none_until_its_tribute_is_taken() {
+        use crate::rules::economy::VillageOffer;
+        let seed = (0..80).find(|&seed| visit_village(40, 5, seed, &|_| {}).village_offer().is_some()).unwrap();
+        let mut g = visit_village(40, 5, seed, &|_| {});
+        let first = g.village_offer().unwrap();
+        for _ in 0..30 {
+            g.visit_village(0);
+            assert_eq!(g.village_offer(), None, "the same village again");
+        }
+        assert!(g.collect_tribute().is_some());
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        let mut again = Vec::new();
+        for _ in 0..60 {
+            g.visit_village(0);
+            if let Some(o) = g.village_offer() {
+                again.push(o);
+                g.collect_tribute();
+                g.pass_time(24.0 * 60.0, &mut Vec::new());
+            }
+        }
+        assert!(again.first().is_some_and(|&o| o != first), "never the same kind twice in a row: {first:?} then {again:?}");
+        assert!(again.windows(2).all(|w| w[0] != w[1]));
+        let _ = VillageOffer::Witch;
+    }
+
+    #[test]
+    fn a_rogue_hero_gets_nothing_from_villages() {
+        let mut g = visit_village(40, 5, 1, &|_| {});
+        assert!(g.tribute_available().is_some());
+        g.squad[0].def = UnitId(9);
+        assert_eq!(g.tribute_available(), None);
+        assert_eq!(g.collect_tribute(), None);
     }
 
     #[test]
@@ -662,7 +817,11 @@ mod tests {
         s.buildings = vec![v];
         let mut g = inside(&s);
         assert_eq!(g.tribute_available(), Some(30), "one day's worth at the start");
-        g.pass_time(5.0 * 24.0 * 60.0, &mut Vec::new());
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        let v = &g.world.locations[0];
+        // 30 + 30 × √(1 − 30/70) = 52.7 → 53; mana 10 + 10 × √(1 − 10/25) = 17.7 → 18.
+        assert_eq!((v.tribute_gold, v.tribute_mana), (53, 18), "slower as it fills");
+        g.pass_time(4.0 * 24.0 * 60.0, &mut Vec::new());
         let v = &g.world.locations[0];
         assert_eq!((v.tribute_gold, v.tribute_mana), (70, 25), "capped");
         let (gold, mana) = (g.gold, g.mana);
@@ -672,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn garrisons_take_troops_whose_wage_stops_after_a_day_and_who_heal() {
+    fn garrisons_take_troops_who_are_never_paid_and_heal_at_midnight() {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 2, 2, 3);
         castle.faction = 1;
@@ -682,17 +841,15 @@ mod tests {
         g.squad[2].hp = 20; // of 40
         g.leave_in_garrison(2).unwrap();
         assert_eq!((g.squad.len(), g.garrison_here().len()), (2, 1));
-        assert_eq!(g.daily_wages(), 12, "still paid on its first day");
+        assert_eq!(g.daily_wages(), 6, "the garrison is not paid");
         let mut events = Vec::new();
-        g.pass_time(3.0 * 60.0, &mut events); // noon: 3 h after leaving
-        assert!(matches!(&events[..], [Event::NewDay(DayReport { wages: 12, .. })]), "{events:?}");
+        g.pass_time(3.0 * 60.0, &mut events); // noon
+        assert!(matches!(&events[..], [Event::NewDay(DayReport { wages: 6, .. })]), "{events:?}");
+        assert_eq!(g.garrison_here()[0].unit.hp, 20, "no heal at noon");
+        g.pass_time(12.0 * 60.0, &mut events); // midnight
         assert_eq!(g.garrison_here()[0].unit.hp, 24, "GarrisonAutoHeal 10%");
-        assert_eq!(g.daily_wages(), 6, "from its second day, free");
-        events.clear();
-        g.pass_time(24.0 * 60.0, &mut events);
-        assert!(matches!(&events[..], [Event::NewDay(DayReport { wages: 6, .. })]));
         g.take_from_garrison(0).unwrap();
-        assert_eq!((g.squad.len(), g.squad[2].hp), (3, 28));
+        assert_eq!((g.squad.len(), g.squad[2].hp), (3, 24));
         assert_eq!(g.take_from_garrison(0), Err(ServiceError::NoSuchUnit));
         g.location = Some(1);
         assert_eq!(g.leave_in_garrison(1), Err(ServiceError::NotHere), "not the player's castle");
@@ -715,7 +872,7 @@ mod tests {
         let mut s = map();
         let mut t = town(BuildingType::Market, 2, 2, attitude);
         t.artifact_slots[0] = 24;
-        t.random_artifacts_for_sale = 2;
+        t.random_artifacts_for_sale = 3;
         t.price_min = 50;
         t.price_max = 400;
         s.buildings = vec![t];
@@ -726,46 +883,66 @@ mod tests {
     fn markets_stock_fixed_goods_and_random_items_in_their_price_range() {
         let g = inside(&shop_town(2));
         let stock = g.market_here().unwrap().to_vec();
+        // The count (3) includes the fixed amulet: two random goods.
         assert_eq!(stock.len(), 3);
-        assert_eq!(stock[0], ItemId(24), "the fixed goods, whatever their price");
-        let mut random = stock[1..].to_vec();
-        random.sort();
-        // Market items between 50 and 400: the sword (100), the potion (60), the ring (300).
-        assert!(random.iter().all(|i| [20, 22, 23].contains(&i.0)), "{random:?}");
-        assert_ne!(random[0], random[1], "different items");
+        assert_eq!(stock[2], ItemId(24), "the fixed goods, whatever their price; sorted by price");
+        // Market items between 50 and 400 (or 401): the sword (100), the potion (60), the ring (300).
+        assert!(stock[..2].iter().all(|i| [20, 22, 23].contains(&i.0)), "{stock:?}");
+        assert!(stock.windows(2).all(|w| g.content.item(w[0]).cost <= g.content.item(w[1]).cost));
     }
 
     #[test]
-    fn fixed_goods_do_not_come_back_but_the_random_ones_restock_weekly() {
+    fn fixed_goods_do_not_come_back_but_the_random_ones_are_drawn_every_midnight() {
         let mut g = inside(&shop_town(2));
         g.gold = 100_000;
-        g.buy(0).unwrap();
+        let amulet = g.market_here().unwrap().iter().position(|&i| i == ItemId(24)).unwrap();
+        g.buy(amulet).unwrap();
         assert_eq!(g.pack, vec![ItemId(24)]);
         g.buy(0).unwrap();
         assert_eq!(g.market_here().unwrap().len(), 1);
-        // The 8th noon from the start: a week after the first.
-        g.pass_time(7.0 * 24.0 * 60.0 + 3.0 * 60.0, &mut Vec::new());
+        g.pass_time(14.0 * 60.0, &mut Vec::new()); // 09:00 -> 23:00
+        assert_eq!(g.market_here().unwrap().len(), 1, "not yet");
+        g.pass_time(60.0, &mut Vec::new());
         let stock = g.market_here().unwrap().to_vec();
-        assert_eq!(stock.len(), 2, "two random items again");
+        assert_eq!(stock.len(), 3, "no fixed goods left: three random ones");
         assert!(!stock.contains(&ItemId(24)), "the fixed amulet is sold for good");
     }
 
     #[test]
+    fn towns_stock_healing_potions_first() {
+        // Items 98–100 are the healing potions the exe gives towns.
+        let mut c = content();
+        c.items.extend([98, 99, 100].map(|id| crate::rules::content::ArtefactDef { cost: 50, ..ck::item(id, ArtefactType::Potion) }));
+        let c = Content::new(c.units.clone(), c.items.clone(), c.spells.clone(), Default::default(), crate::rules::formation::Formation::WIDE);
+        let mut s = map();
+        let mut t = town(BuildingType::Town, 2, 2, 1);
+        t.random_artifacts_for_sale = 10;
+        (t.price_min, t.price_max) = (1000, 2000);
+        s.buildings = vec![t];
+        let g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight, 3);
+        let stock = g.world.locations[0].shop.as_ref().unwrap().stock.clone();
+        // 10 div 5 + 1 = 3 potions; the rest from the price window (the amulet, once: > 500).
+        let potions = stock.iter().filter(|i| (98..=100).contains(&i.0)).count();
+        assert_eq!((potions, stock.len()), (3, 4), "{stock:?}");
+    }
+
+    #[test]
     fn prices_follow_relation_merchant_and_sale_percent() {
-        for (attitude, want) in [(3, 1000), (1, 1000), (0, 1150), (-2, 1450)] {
+        for (attitude, want) in [(3, 750), (2, 900), (1, 1000), (0, 1100), (-1, 1250), (-2, 1450), (-3, 1700)] {
             let g = inside(&shop_town(attitude));
             assert_eq!(g.buy_price(ItemId(24)), want, "attitude {attitude}");
         }
         let mut s = shop_town(-2);
         s.header.heroes[0] = hero(2, 2, 5000, &[troop(7, 0, 1)]);
         let mut g = inside(&s);
-        // The footage: a trader hero pays 122 for a 120 dagger at an attitude −2 market.
-        assert_eq!(g.buy_price(ItemId(24)), 1450 * 70 / 100, "Merchant: −30%");
-        g.pack = vec![ItemId(23)];
-        assert_eq!(g.sell_price(ItemId(23)), 300 * 25 / 100 * 150 / 100, "ItemSaleCost 25%, Merchant +50%");
-        assert_eq!(g.sell(0), Ok(112));
+        assert_eq!(g.buy_price(ItemId(24)), 1450 - 1450 * 30 / 100, "Merchant: −30%");
+        g.pack = vec![ItemId(23), ItemId(25)];
+        // Cost × ItemSaleCost × F / 10000 = 300 × 25 × 120 / 10000 = 90; Merchant + 45.
+        assert_eq!(g.sell_price(ItemId(23)), 135);
+        assert_eq!(g.sell(1), Err(crate::rules::game::TradeError::NotForSale), "worth 1: not sold");
+        assert_eq!(g.sell(0), Ok(135));
         let g = inside(&shop_town(1));
-        assert_eq!(g.sell_price(ItemId(23)), 75);
+        assert_eq!(g.sell_price(ItemId(23)), 90, "the relation does not count");
     }
 
     #[test]
@@ -801,7 +978,7 @@ mod tests {
         }
         assert!(events.contains(&Event::Captured(0)), "{events:?}");
         assert!(g.world.locations[0].owned() && g.foe.is_none());
-        assert_eq!(g.daily_income(), 25);
+        assert_eq!(g.daily_income(), 30, "25 × F/100");
     }
 
     #[test]
@@ -836,10 +1013,33 @@ mod tests {
     }
 
     #[test]
-    fn victory_loot_is_half_the_gold_with_a_floor_or_all_of_it() {
+    fn ai_victory_gold_is_all_below_the_minimum_else_half() {
         let g = start(&map());
-        // VictoryGoldDiv 2, MinVictoryGold 25.
-        assert_eq!([0, 10, 25, 40, 50, 120].map(|x| g.victory_gold(x)), [0, 10, 25, 25, 25, 60]);
+        // VictoryGoldDiv 2, MinVictoryGold 25: a threshold, not a floor.
+        assert_eq!([0, 10, 24, 25, 30, 50, 120].map(|x| g.victory_gold(x)), [0, 10, 24, 12, 15, 25, 60]);
+    }
+
+    #[test]
+    fn beating_an_army_whose_home_castle_is_empty_takes_the_castle() {
+        let mut s = map();
+        let mut castle = town(BuildingType::Castle, 12, 2, -2);
+        castle.faction = 4;
+        let mut foe = army(1, 20, 6, -2, &[troop(9, 0, 1)]);
+        foe.gold_income = 11;
+        foe.home_building = 1;
+        s.armies = vec![foe];
+        s.buildings = vec![castle];
+        let mut g = start(&s);
+        assert_eq!(g.world.armies[0].home, Some(0));
+        g.foe = Some(Foe::Army(0));
+        let mut b = g.start_battle();
+        b.begin();
+        b.fighters.iter_mut().filter(|f| f.team == Team::Enemy).for_each(|f| f.hp = 0);
+        let gold = g.world.armies[0].gold;
+        let r = g.resolve_battle(&b);
+        // Half its gold, no minimum; its leader draws no wage.
+        assert!(matches!(r, BattleResult::Victory { reward, captured: Some(0), .. } if reward == gold / 2), "{r:?}");
+        assert!(g.world.locations[0].owned());
     }
 
     #[test]
@@ -860,7 +1060,7 @@ mod tests {
         let r = g.resolve_battle(&b);
         assert!(matches!(r, BattleResult::Victory { reward: 30, mana: 20, captured: Some(0), .. }), "{r:?}");
         assert_eq!((g.gold, g.mana), (gold + 30, mana + 20));
-        assert_eq!(g.daily_income(), 30, "its income counts at once");
+        assert_eq!(g.daily_income(), 36, "its income (× F/100) counts at once");
         assert_eq!(g.tabs_here(), vec![Tab::MainHall, Tab::Barracks, Tab::Garrison]);
     }
 }
@@ -873,7 +1073,7 @@ mod real_maps {
 
     use super::*;
     use crate::dt::install::DtInstall;
-    use crate::rules::content::{Content, HeroClass, UnitId};
+    use crate::rules::content::{Content, HeroClass, ItemId, UnitId};
     use crate::rules::world::LocationKind;
 
     #[test]
@@ -926,13 +1126,35 @@ mod real_maps {
         assert_eq!(g.recruits_here(), offered);
         if b.random_artifacts_for_sale > 0 || b.artifacts().next().is_some() {
             assert!(tabs.contains(&Tab::Market));
-            let stock = g.market_here().unwrap();
-            let fixed: Vec<u16> = b.artifacts().collect();
-            assert_eq!(stock.len(), fixed.len() + b.random_artifacts_for_sale as usize);
-            for item in &stock[fixed.len()..] {
+            let stock = g.market_here().unwrap().to_vec();
+            let fixed: Vec<ItemId> = b.artifacts().map(|i| ItemId(i as u32)).filter(|&i| c.try_item(i).is_some()).collect();
+            // The building's count includes the fixed goods; towns add healing potions first.
+            let random = (b.random_artifacts_for_sale as usize).saturating_sub(fixed.len());
+            assert!(fixed.iter().all(|i| stock.contains(i)));
+            assert!(stock.len() <= fixed.len() + random, "{stock:?}");
+            let potions = |i: &ItemId| crate::rules::economy::TOWN_POTIONS.contains(&i.0) || crate::rules::economy::TOWN_EXTRAS.contains(&i.0);
+            let (lo, hi) = ((b.price_min as i32).max(5), (b.price_max as i32).min(5000) + 1);
+            for item in stock.iter().filter(|i| !fixed.contains(i) && !potions(i)) {
                 let cost = c.item(*item).cost;
-                assert!((b.price_min as i32..=b.price_max as i32).contains(&cost), "{cost} outside the range");
+                assert!((lo.min(hi)..=hi).contains(&cost), "{cost} outside the range");
             }
+            let loc = &g.world.locations[l];
+            for &item in &stock {
+                let want = crate::rules::economy::relation_price(c.item(item).cost, loc.attitude, loc.owned());
+                let want = if g.squad_has(&crate::rules::content::Bonus::Merchant) { crate::rules::economy::merchant_price(want) } else { want };
+                assert_eq!(g.buy_price(item), want);
+            }
+        }
+        // "Impossible difficulty" is on in this install: F = 100.
+        assert_eq!(g.difficulty(), 100);
+        let wounded = g.squad.iter().position(|u| u.alive()).unwrap();
+        let u = &mut g.squad[wounded];
+        let max = u.max_hp(&c);
+        u.hp = max / 2;
+        let cost = c.unit(u.def).cost as i64;
+        let want = crate::rules::economy::round_ratio((max - max / 2) as i64 * cost * c.options.healing_const as i64, max as i64 * 100).max(1);
+        if g.heals_here() {
+            assert_eq!(g.heal_price(wounded).map(|p| p.amount as i64), Some(want));
         }
         let spells: Vec<u32> = b.spells_for_sale.iter().filter(|&&x| x != 0).map(|&x| x as u32).collect();
         assert_eq!(g.spells_here().iter().map(|sp| sp.id).collect::<Vec<_>>(), spells);

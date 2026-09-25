@@ -389,8 +389,8 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         }
     }
     let note = match (heals, raises) {
-        (true, true) => format!("Healing and raising the dead take {} min each.", c.options.healing_time),
-        (true, false) => format!("Healing takes {} min. The dead are raised in towns and churches.", c.options.healing_time),
+        (true, true) => "Healing and raising the dead are paid at once.".to_string(),
+        (true, false) => "Healing is paid at once. The dead are raised in towns and churches.".to_string(),
         _ => "No healing here.".into(),
     };
     text(&note, x, f.y + f.h - 6.0, 15.0, DIM);
@@ -542,7 +542,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     } else {
         game.market_here().unwrap_or(&[]).iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string())).collect()
     };
-    text_centered(if view.selling { "Your pack: sell for a quarter of the price" } else { "Goods for sale" }, lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
+    text_centered(if view.selling { "Your pack: what the market pays" } else { "Goods for sale" }, lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
     if let Some(k) = price_list(Some(assets), &rows, view.pick, &mut view.scroll, lx, y + 26.0, lw, 8) {
         view.pick = Some(k);
     }
@@ -666,36 +666,35 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
         });
     }
     by += 52.0;
-    if button(x, by, 420.0, 42.0, "Instead: the priest heals the army", ready) {
-        game.priest_heal();
-        *message = Some("The priest tends to your wounded.".into());
+    // The one offer this visit may bring (instead of the tribute: it empties the village).
+    if let Some(offer) = game.village_offer() {
+        use razdor::rules::economy::{OfferResult, VillageOffer, BLESSING_SPELLS, FURS_ITEM, PRIEST_SPELL};
+        let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
+        let label = match offer {
+            VillageOffer::Innkeeper => "Instead: the innkeeper pays your army".to_string(),
+            VillageOffer::Priest => format!("Instead: the priest heals ({})", spell_name(PRIEST_SPELL)),
+            VillageOffer::Blessing => {
+                let names: Vec<String> = BLESSING_SPELLS.iter().map(|&s| spell_name(s)).filter(|n| !n.is_empty()).collect();
+                format!("Instead: a long blessing ({})", names.join(" / "))
+            }
+            VillageOffer::Furs => format!("Instead: furs ({})", game.content.try_item(razdor::rules::content::ItemId(FURS_ITEM)).map_or("", |i| i.name.as_str())),
+            VillageOffer::Witch => "Instead: the witch's gift of mana".to_string(),
+        };
+        if button(x, by, 420.0, 42.0, &label, true) {
+            let result = game.accept_offer();
+            let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
+            *message = result.map(|r| match r {
+                OfferResult::Paid(n) => format!("The innkeeper pays off your {n} men."),
+                OfferResult::Healed(h) => format!("The priest tends to your wounded: {h:+} hits."),
+                OfferResult::Blessing(id) => format!("The villagers pray for you: {}.", spell_name(id)),
+                OfferResult::Furs(item) => format!("You get {}.", game.content.item(item).name),
+                OfferResult::Mana(m) => format!("The witch gives {m} mana."),
+            });
+        }
+        by += 52.0;
     }
-    by += 52.0;
-    let unpaid = game.squad.iter().filter(|u| u.unpaid).count();
-    if button(x, by, 420.0, 42.0, &format!("Instead: the innkeeper pays {unpaid} unpaid"), ready && unpaid > 0) {
-        *message = game.innkeeper_pay().map(|n| format!("The innkeeper pays off {n} of your men."));
-    }
-    by += 52.0;
-    let blessing = game.village_blessing().map(|s| s.name.clone());
-    let label = match &blessing {
-        Some(name) => format!("Instead: a long blessing ({name})"),
-        None => "Instead: a long blessing (no such spell)".to_string(),
-    };
-    if button(x, by, 420.0, 42.0, &label, ready && blessing.is_some()) && game.village_bless().is_some() {
-        *message = Some(format!("The villagers pray for you: {}.", blessing.unwrap_or_default()));
-    }
-    by += 52.0;
-    let furs = game.furs_value().unwrap_or(0);
-    if button(x, by, 420.0, 42.0, &format!("Instead: furs worth {furs} gold"), ready) {
-        *message = game.sell_furs().map(|g| format!("The furs fetch {g} gold."));
-    }
-    by += 52.0;
-    let ritual = game.ritual_value().unwrap_or(0);
-    if button(x, by, 420.0, 42.0, &format!("Instead: a magic ritual, {ritual} mana"), ready) {
-        *message = game.magic_ritual().map(|m| format!("The ritual gives {m} mana."));
-    }
-    by += 56.0;
-    text("The tribute grows every midnight up to the village's maximum. One service a day.", x, by, 16.0, DIM);
+    by += 4.0;
+    text("The tribute grows every midnight, slower as it nears the village's maximum.", x, by, 16.0, DIM);
     let dy = by + 24.0;
     description_box(&v.description, x, dy, w, f.y + f.h - dy - 10.0);
 }

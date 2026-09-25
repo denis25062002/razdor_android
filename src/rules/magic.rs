@@ -1,18 +1,21 @@
-//! World-map spells (`docs/reference/mechanics.md` §3.1–3.2): the hero casts a spell of his
-//! book on his own army (`Target=Hero`) or on a nearby enemy army (`Target=Enemy`,
-//! `OneEnemy`). Casting costs mana **and game time**: the world moves on meanwhile (armies
-//! walk, the noon report comes, the scenario's events run), so the target may run off or reach
-//! the hero first.
+//! World-map spells (`docs/reference/mechanics.md` §3.1–3.2, original-mechanics/economy.md
+//! §4): the hero casts a spell of his book on his own army (`Target=Hero`) or on a nearby
+//! enemy army (`Target=Enemy`, `OneEnemy`). Casting costs mana **and game time**: the world
+//! moves on meanwhile (armies walk, the noon report comes, the scenario's events run), so the
+//! target may run off or reach the hero first.
 //!
-//! - Cost: `CostMana`, time: `TimeCast` hours. The Archmage casts twice as fast for half the
-//!   mana; a `Caster` in the army takes another 20% off both ([`cast_cost`]).
-//! - Duration: `TimeWork` hours; empty or 0 is instant, 9999 or more lasts for good
-//!   ([`Duration`]). Lasting `d-`/`p-` modifiers change the stats of the army's units in its
-//!   next battles while they last ([`apply`], hooked into [`Game::start_battle`]).
-//! - `DeltaFixedHits` / `DeltaPercentHits` heal or wound every living unit at once when the
-//!   spell is ready.
-//! - The scenario's events cast spells on the player's army through the same path
-//!   ([`Game::apply_spell_to_army`]), for free and at once.
+//! - Cost: `CostMana div d` mana and `TimeCast × 2 div d` half-hour steps, d = 2 for the
+//!   Archmage hero; otherwise a `Caster` in the army takes 20% off both (they do not stack,
+//!   [`cast_cost`]). The mana is taken when the spell completes.
+//! - Duration: exactly `TimeWork` hours; empty or 0 is instant ([`Duration`]). Casting a spell
+//!   already on the army adds another `TimeWork`; a unit holds at most [`SPELL_SLOTS`].
+//!   Lasting `d-`/`p-` modifiers change the stats of the army's units in its next battles
+//!   while they last ([`apply`], hooked into [`Game::start_battle`]).
+//! - `DeltaFixedHits` / `DeltaPercentHits` heal or wound at once when the spell is ready, and
+//!   can kill. `OneEnemy` spells, and any spell with `p-LifeLose`, touch only the leader.
+//! - The scenario's events and the villages cast spells on the player's army through the same
+//!   path ([`Game::apply_spell_to_army_ext`]), for free and at once, lasting 10 times as long
+//!   (5 times when `TimeWork` ≥ 8).
 //!
 //! Choices where the sources are silent are marked *(guess)* and listed in mechanics.md §8.3.
 
@@ -20,30 +23,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::dt::data::SpellTarget;
 
+use super::battle::Fighter;
 use super::clock::MINUTES_PER_HOUR;
 use super::content::{Bonus, HeroClass, SpellDef, Stat};
 use super::game::{troop_unit, Event, Game};
 use super::units::Stats;
 
-/// `TimeWork` at or above this lasts for good (the data use 9999).
-pub const PERMANENT_HOURS: i32 = 9999;
 /// An enemy army can be targeted within this many cells of the hero, if he can see it
-/// *(guess: the original's range is not known; 3 cells is about the distance at which the
-/// footage shows armies closing in)*.
+/// *(guess: the original's range check is not decoded; 3 cells is about the distance at which
+/// the footage shows armies closing in)*.
 pub const CAST_RANGE: i32 = 3;
 /// The Community bonus token of units that cast world spells 20% faster and cheaper.
 pub const CASTER_BONUS: &str = "Caster";
+/// Lasting spells a unit can hold at once.
+pub const SPELL_SLOTS: usize = 4;
+/// Game time passes in half-hour steps while casting.
+pub const CAST_STEP_MINUTES: u64 = 30;
 /// Slice of game time simulated at once while casting, as for waits.
 const STEP_MINUTES: f32 = 5.0;
 
-/// A lasting spell on an army: which spell, and the game minute it ends (`None`: never).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A lasting spell on an army: which spell, the game minute it ends (`None`: never, e.g. set
+/// by Community opcode 11), and whether it holds only the leader (the first unit).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveSpell {
     pub spell: u32,
     pub until: Option<u64>,
+    #[serde(default)]
+    pub leader: bool,
 }
 
 impl ActiveSpell {
+    /// A spell on the whole army.
+    pub fn new(spell: u32, until: Option<u64>) -> ActiveSpell {
+        ActiveSpell { spell, until, leader: false }
+    }
+
     pub fn lasts_at(&self, now: u64) -> bool {
         self.until.is_none_or(|t| now < t)
     }
@@ -54,17 +68,23 @@ impl ActiveSpell {
 pub enum Duration {
     Instant,
     Minutes(u64),
-    Permanent,
 }
 
 impl Duration {
-    /// From `TimeWork` (hours at caster level 0; the level scaling is unknown and not
-    /// applied *(guess)*).
+    /// Exactly `TimeWork` hours (no scaling by the caster's level; 9999 is simply 9999 h).
     pub fn of(spell: &SpellDef) -> Duration {
         match spell.time_work {
             None | Some(..=0) => Duration::Instant,
-            Some(h) if h >= PERMANENT_HOURS => Duration::Permanent,
             Some(h) => Duration::Minutes(h as u64 * MINUTES_PER_HOUR),
+        }
+    }
+
+    /// Cast by an event or a village on the player's army: `TimeWork × 10` hours, or × 5
+    /// when `TimeWork` ≥ 8.
+    pub fn extended(spell: &SpellDef) -> Duration {
+        match spell.time_work {
+            None | Some(..=0) => Duration::Instant,
+            Some(h) => Duration::Minutes(h as u64 * if h >= 8 { 5 } else { 10 } * MINUTES_PER_HOUR),
         }
     }
 }
@@ -76,26 +96,29 @@ pub struct CastCost {
     pub minutes: u64,
 }
 
-/// `CostMana` and `TimeCast` hours; the Archmage halves both, a `Caster` takes 20% off
-/// both. The two stack (×0.5 × 0.8) *(guess)*; results are rounded to whole mana and minutes.
+/// `CostMana div d` mana and `TimeCast × 2 div d` half-hour steps, d = 2 for the Archmage;
+/// otherwise a `Caster` in the army makes both `floor(× 0.8)`. The two do not stack.
 pub fn cast_cost(spell: &SpellDef, archmage: bool, caster: bool) -> CastCost {
-    let mut mana = spell.cost_mana.max(0) as f64;
-    let mut minutes = spell.time_cast.unwrap_or(0).max(0) as f64 * MINUTES_PER_HOUR as f64;
-    if archmage {
-        mana /= 2.0;
-        minutes /= 2.0;
-    }
-    if caster {
-        mana *= 0.8;
-        minutes *= 0.8;
-    }
-    CastCost { mana: mana.round() as i32, minutes: minutes.round() as u64 }
+    let mana = spell.cost_mana.max(0) as u64;
+    let steps = spell.time_cast.unwrap_or(0).max(0) as u64 * 2;
+    let (mana, steps) = if archmage {
+        (mana / 2, steps / 2)
+    } else if caster {
+        (mana * 8 / 10, steps * 8 / 10)
+    } else {
+        (mana, steps)
+    };
+    CastCost { mana: mana as i32, minutes: steps * CAST_STEP_MINUTES }
 }
 
-/// Casts on an enemy army (`Enemy`, and `OneEnemy`, which Razdor treats alike *(guess)*);
-/// everything else on the hero's own army.
+/// Casts on an enemy army (`Enemy` and `OneEnemy`); everything else on the hero's own army.
 pub fn targets_enemy(spell: &SpellDef) -> bool {
     matches!(spell.target, Some(SpellTarget::Enemy | SpellTarget::OneEnemy))
+}
+
+/// The spell touches only the first unit (the leader): `OneEnemy`, or any `p-LifeLose`.
+pub fn leader_only(spell: &SpellDef) -> bool {
+    spell.target == Some(SpellTarget::OneEnemy) || spell.life_lose_percent.is_some_and(|p| p != 0)
 }
 
 /// The spell changes stats for a while (it has modifiers and a duration).
@@ -104,32 +127,68 @@ pub fn is_lasting(spell: &SpellDef) -> bool {
     mods && Duration::of(spell) != Duration::Instant
 }
 
-/// Applies lasting spells to `stats`: all `d-` values are added, then the `p-` percentages
-/// of all spells are summed per stat and applied, as for items. A negative `p-LifeLose` (the
-/// scripted curses) counts as a percent loss of maximum HP *(guess)*.
+/// Applies lasting spells to `stats` (economy.md §5): all `d-` values are added, then each
+/// spell's `p-` in turn, compounding (`x += x·p/100`, truncated each time). A negative
+/// `p-LifeLose` (the scripted curses) cuts maximum HP by that percent.
 pub fn apply(stats: &mut Stats, spells: &[&SpellDef]) {
     for s in spells {
         stats.add(&s.add, 1);
     }
-    let mut pct = std::collections::BTreeMap::<Stat, i32>::new();
     for s in spells {
         for (&st, &v) in &s.percent {
-            *pct.entry(st).or_default() += v;
+            stats[st] += stats[st] * v / 100;
         }
         if let Some(p) = s.life_lose_percent.filter(|&p| p < 0) {
-            *pct.entry(Stat::Hits).or_default() += p;
+            stats[Stat::Hits] += stats[Stat::Hits] * p / 100;
         }
-    }
-    for (st, p) in pct {
-        stats[st] += stats[st] * p / 100;
     }
     stats.clamp();
 }
 
-/// Instant HP change of a spell for a unit of maximum `max`: `DeltaFixedHits` plus
-/// `DeltaPercentHits`% of the maximum.
-fn instant_hits(spell: &SpellDef, max: i32) -> i32 {
-    spell.delta_fixed_hits.unwrap_or(0) + max * spell.delta_percent_hits.unwrap_or(0) / 100
+/// Applies lasting spells to a fighter before the battle begins, as `Battle::apply_spells`
+/// does for a whole side: a higher maximum HP raises its HP by as much, a lower one caps it.
+pub fn apply_to_fighter(f: &mut Fighter, spells: &[&SpellDef]) {
+    if spells.is_empty() {
+        return;
+    }
+    let before = f.base.max_hp();
+    apply(&mut f.base, spells);
+    let after = f.base.max_hp();
+    f.stats = f.base.clone();
+    f.power = f.base[Stat::MagicPower];
+    if f.alive() {
+        f.hp = (f.hp + (after - before).max(0)).min(after);
+    }
+}
+
+/// HP after a spell's instant effect: `DeltaFixedHits` is added, then `DeltaPercentHits`%
+/// of the maximum (a gain) or of the current HP (a loss). At or above the maximum it is the
+/// maximum; 0 or less means dead.
+pub fn instant_hp(spell: &SpellDef, hp: i32, max: i32) -> i32 {
+    let mut hp = hp + spell.delta_fixed_hits.unwrap_or(0);
+    match spell.delta_percent_hits.unwrap_or(0) {
+        p if p > 0 => hp += max * p / 100,
+        p if p < 0 => hp += hp.max(0) * p / 100,
+        _ => {}
+    }
+    hp.min(max)
+}
+
+/// Adds lasting spell `e` to `effects` (expired ones are dropped first): the same spell again
+/// adds `minutes` to what is left; a new one needs a free slot ([`SPELL_SLOTS`] per unit).
+fn add_effect(effects: &mut Vec<ActiveSpell>, e: ActiveSpell, minutes: u64, now: u64) {
+    effects.retain(|x| x.lasts_at(now));
+    if let Some(x) = effects.iter_mut().find(|x| x.spell == e.spell && x.leader == e.leader) {
+        if let Some(t) = x.until.as_mut() {
+            *t += minutes;
+        }
+        return;
+    }
+    // The leader holds every spell; the others only the army-wide ones.
+    let used = if e.leader { effects.len() } else { effects.iter().filter(|x| !x.leader).count() };
+    if used < SPELL_SLOTS {
+        effects.push(e);
+    }
 }
 
 /// Whom to cast on.
@@ -157,15 +216,15 @@ pub enum CastError {
 /// How a cast ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CastOutcome {
-    /// The spell took effect. `hits`: HP healed (+) or dealt (−) in all; `killed`: enemy
-    /// troops that fell; `destroyed`: the whole enemy army fell.
+    /// The spell took effect. `hits`: HP healed (+) or dealt (−) in all; `killed`: units
+    /// that fell; `destroyed`: the whole enemy army fell.
     Done { hits: i32, killed: usize, destroyed: bool },
-    /// An enemy caught the hero while he was casting: the mana is spent, the spell is lost
-    /// *(guess)*.
+    /// An enemy caught the hero while he was casting: the spell is lost, no mana is taken.
     Interrupted,
-    /// The target left the range (or the map) before the spell was ready; the mana is spent
-    /// *(guess)*.
+    /// The target left the range (or the map) before the spell was ready; no mana is taken.
     TargetLost,
+    /// The mana was spent meanwhile: not enough left when the spell was ready *(guess)*.
+    OutOfMana,
 }
 
 /// A finished cast: how it ended, and what happened while time passed.
@@ -187,7 +246,7 @@ impl Game {
     }
 
     /// What casting `spell` costs this hero: see [`cast_cost`]. The `Caster` bonus counts
-    /// when any living unit of the army has it *(guess)*.
+    /// when any living unit of the army has it.
     pub fn cast_cost(&self, spell: &SpellDef) -> CastCost {
         let archmage = self.hero_class() == Some(HeroClass::Archmage);
         cast_cost(spell, archmage, self.squad_has(&Bonus::parse(CASTER_BONUS)))
@@ -216,22 +275,39 @@ impl Game {
         &self.effects
     }
 
-    /// Definitions of the lasting spells on the hero's army now.
+    fn defs<'a>(&'a self, effects: &'a [ActiveSpell], leader: bool) -> Vec<&'a SpellDef> {
+        let now = self.clock.total_minutes() as u64;
+        effects.iter().filter(|e| e.lasts_at(now) && e.leader == leader).filter_map(|e| self.spell(e.spell)).collect()
+    }
+
+    /// Definitions of the lasting spells on the whole of the hero's army now.
     pub fn army_spells(&self) -> Vec<&SpellDef> {
-        let now = self.clock.total_minutes() as u64;
-        self.effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| self.spell(e.spell)).collect()
+        self.defs(&self.effects, false)
     }
 
-    /// Definitions of the lasting spells on army `i` of the map now.
+    /// Lasting spells on the hero alone (the leader).
+    pub fn leader_spells(&self) -> Vec<&SpellDef> {
+        self.defs(&self.effects, true)
+    }
+
+    /// Definitions of the lasting spells on the whole of army `i` of the map now.
     pub fn spells_on_army(&self, i: usize) -> Vec<&SpellDef> {
-        let now = self.clock.total_minutes() as u64;
-        self.world.armies[i].effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| self.spell(e.spell)).collect()
+        self.defs(&self.world.armies[i].effects, false)
     }
 
-    /// Stats of squad member `u` with the lasting spells on the army (what it fights with).
+    /// Lasting spells on the leader of army `i`.
+    pub fn spells_on_leader(&self, i: usize) -> Vec<&SpellDef> {
+        self.defs(&self.world.armies[i].effects, true)
+    }
+
+    /// Stats of squad member `u` with the lasting spells on it (what it fights with).
     pub fn stats_with_spells(&self, u: usize) -> Stats {
         let mut s = self.squad[u].stats(&self.content);
-        apply(&mut s, &self.army_spells());
+        let mut spells = self.army_spells();
+        if u == 0 {
+            spells.extend(self.leader_spells());
+        }
+        apply(&mut s, &spells);
         s
     }
 
@@ -245,19 +321,17 @@ impl Game {
         }
     }
 
-    fn effect_of(&self, spell: &SpellDef) -> Option<ActiveSpell> {
+    /// The lasting effect of `spell` (and its minutes) if it has one.
+    fn effect_of(&self, spell: &SpellDef, extended: bool) -> Option<(ActiveSpell, u64)> {
         let now = self.clock.total_minutes() as u64;
-        let until = match Duration::of(spell) {
-            Duration::Instant => return None,
-            Duration::Minutes(m) => Some(now + m),
-            Duration::Permanent => None,
-        };
-        is_lasting(spell).then_some(ActiveSpell { spell: spell.id, until })
+        let d = if extended { Duration::extended(spell) } else { Duration::of(spell) };
+        let Duration::Minutes(m) = d else { return None };
+        is_lasting(spell).then_some((ActiveSpell { spell: spell.id, until: Some(now + m), leader: leader_only(spell) }, m))
     }
 
-    /// Casts `spell` of the book on `target`: pays the mana, lets [`CastCost::minutes`] of
-    /// game time pass (armies move, events run; an enemy reaching the hero interrupts it),
-    /// then the spell takes effect if the target is still there.
+    /// Casts `spell` of the book on `target`: lets [`CastCost::minutes`] of game time pass
+    /// (armies move, events run; an enemy reaching the hero interrupts it), then, if the
+    /// target is still there, takes the mana and the spell takes effect.
     pub fn cast(&mut self, spell: u32, target: CastTarget) -> Result<Cast, CastError> {
         if self.foe.is_some() {
             return Err(CastError::Busy);
@@ -278,7 +352,6 @@ impl Game {
         if self.mana < cost.mana {
             return Err(CastError::NotEnoughMana);
         }
-        self.mana -= cost.mana;
         self.stop();
         let mut events = Vec::new();
         let mut left = cost.minutes as f32;
@@ -293,64 +366,102 @@ impl Game {
                 return Ok(Cast { outcome: CastOutcome::Interrupted, events });
             }
         }
-        let outcome = match target {
-            CastTarget::Own => {
-                let hits = self.apply_spell_to_army(&def);
-                CastOutcome::Done { hits, killed: 0, destroyed: false }
-            }
+        let aim = match target {
+            CastTarget::Own => None,
             CastTarget::Army(uid) => match self.spell_targets().into_iter().find(|&i| self.world.armies[i].uid == uid) {
-                Some(i) => self.apply_spell_to_enemy(&def, i),
-                None => CastOutcome::TargetLost,
+                Some(i) => Some(i),
+                None => return Ok(Cast { outcome: CastOutcome::TargetLost, events }),
             },
+        };
+        if self.mana < cost.mana {
+            return Ok(Cast { outcome: CastOutcome::OutOfMana, events });
+        }
+        self.mana -= cost.mana;
+        let outcome = match aim {
+            None => {
+                let before = self.squad.iter().filter(|u| u.alive()).count();
+                let hits = self.apply_spell_to_army(&def);
+                let killed = before - self.squad.iter().filter(|u| u.alive()).count();
+                CastOutcome::Done { hits, killed, destroyed: false }
+            }
+            Some(i) => self.apply_spell_to_enemy(&def, i),
         };
         Ok(Cast { outcome, events })
     }
 
-    /// The spell takes effect on the hero's army: instant healing or wounds on every living
-    /// unit (wounds leave at least 1 HP *(guess)*), and its lasting modifiers (a spell cast
-    /// again starts its time anew). A positive `p-LifeLose` lifts the life-draining curses
-    /// *(guess)*. Returns the HP change in all. Events cast spells through this too.
+    /// A spell the hero casts takes effect on his army ([`Game::apply_spell_to_army_ext`]
+    /// with the spell's own duration).
     pub fn apply_spell_to_army(&mut self, spell: &SpellDef) -> i32 {
+        self.apply_spell_to_army_ext(spell, false)
+    }
+
+    /// The spell takes effect on the hero's army (the leader alone for a `p-LifeLose`
+    /// spell): the instant hits on each living unit (they can kill: a unit left with no HP
+    /// is a corpse; the hero keeps 1 HP *(guess)*), a positive `p-LifeLose` lifts the
+    /// life-draining curses, and the lasting modifiers. `extended`: cast by an event or a
+    /// village, lasting [`Duration::extended`] (own-army spells only). Returns the HP change
+    /// in all.
+    pub fn apply_spell_to_army_ext(&mut self, spell: &SpellDef, extended: bool) -> i32 {
         let c = self.content.clone();
+        let now = self.clock.total_minutes() as u64;
+        let only_leader = leader_only(spell);
         let mut total = 0;
-        for u in self.squad.iter_mut().filter(|u| u.alive()) {
+        let mut dropped = Vec::new();
+        for (i, u) in self.squad.iter_mut().enumerate() {
+            if !u.alive() || (only_leader && i > 0) {
+                continue;
+            }
             let max = u.max_hp(&c);
-            let d = instant_hits(spell, max);
-            let hp = (u.hp + d).clamp(1, max.max(1));
+            let mut hp = instant_hp(spell, u.hp, max);
+            if hp <= 0 && i == 0 {
+                hp = 1;
+            }
+            let hp = hp.max(0);
             total += hp - u.hp;
             u.hp = hp;
+            if hp == 0 {
+                u.died_at = Some(now);
+                u.unpaid = false;
+                dropped.extend(u.items.iter_mut().filter_map(Option::take));
+            }
         }
+        self.take_items(dropped);
         if spell.life_lose_percent.is_some_and(|p| p > 0) {
-            self.effects.retain(|e| c.spells.iter().find(|s| s.id == e.spell).is_none_or(|s| s.life_lose_percent.is_none_or(|p| p >= 0)));
+            self.effects.retain(|e| !e.leader || c.spells.iter().find(|s| s.id == e.spell).is_none_or(|s| s.life_lose_percent.is_none_or(|p| p >= 0)));
         }
-        if let Some(e) = self.effect_of(spell) {
-            self.effects.retain(|x| x.spell != e.spell);
-            self.effects.push(e);
+        if let Some((e, m)) = self.effect_of(spell, extended && !targets_enemy(spell)) {
+            add_effect(&mut self.effects, e, m, now);
         }
         total
     }
 
-    /// The spell takes effect on army `i` of the map: instant wounds (a troop they kill
-    /// falls; an army with nobody left is beaten, with no loot to take *(guess)*) and its
-    /// lasting modifiers.
+    /// The spell takes effect on army `i` of the map (its first troop alone for `OneEnemy`
+    /// and `p-LifeLose` spells): instant hits (a troop they kill falls; an army with nobody
+    /// left is beaten, with no loot to take *(guess)*) and its lasting modifiers.
     fn apply_spell_to_enemy(&mut self, spell: &SpellDef, i: usize) -> CastOutcome {
         let c = self.content.clone();
-        let effect = self.effect_of(spell);
+        let now = self.clock.total_minutes() as u64;
+        let effect = self.effect_of(spell, false);
+        let only_leader = leader_only(spell);
         let a = &mut self.world.armies[i];
         let (mut hits, mut killed) = (0, 0);
+        let mut k = 0;
         a.troops.retain_mut(|t| {
+            k += 1;
+            if only_leader && k > 1 {
+                return true;
+            }
             let max = troop_unit(&c, t).max_hp(&c);
             let hp = max - t.hurt;
-            let new = (hp + instant_hits(spell, max)).min(max);
+            let new = instant_hp(spell, hp, max);
             hits += new.max(0) - hp;
             t.hurt = max - new;
             let alive = new > 0;
             killed += usize::from(!alive);
             alive
         });
-        if let Some(e) = effect {
-            a.effects.retain(|x| x.spell != e.spell);
-            a.effects.push(e);
+        if let Some((e, m)) = effect {
+            add_effect(&mut a.effects, e, m, now);
         }
         let destroyed = a.troops.is_empty();
         if destroyed {
@@ -430,14 +541,18 @@ mod tests {
         let s = spell(1, 200, 4, None);
         assert_eq!(cast_cost(&s, false, false), CastCost { mana: 200, minutes: 240 });
         assert_eq!(cast_cost(&s, true, false), CastCost { mana: 100, minutes: 120 }, "twice as fast for half the mana");
-        assert_eq!(cast_cost(&s, false, true), CastCost { mana: 160, minutes: 192 }, "Caster: -20%");
-        assert_eq!(cast_cost(&s, true, true), CastCost { mana: 80, minutes: 96 });
+        // Caster: floor(× 0.8) of the mana and of the 8 half-hour steps.
+        assert_eq!(cast_cost(&s, false, true), CastCost { mana: 160, minutes: 180 }, "Caster: -20%");
+        assert_eq!(cast_cost(&s, true, true), CastCost { mana: 100, minutes: 120 }, "they do not stack");
 
         let mut g = game(HeroClass::Archmage);
         assert_eq!(g.hero_class(), Some(HeroClass::Archmage));
         assert_eq!(g.cast_cost(g.spell(1).unwrap()), CastCost { mana: 100, minutes: 120 });
         g.squad[1].def = crate::rules::content::UnitId(12);
-        assert_eq!(g.cast_cost(g.spell(1).unwrap()), CastCost { mana: 80, minutes: 96 });
+        assert_eq!(g.cast_cost(g.spell(1).unwrap()), CastCost { mana: 100, minutes: 120 });
+        let mut k = game(HeroClass::Knight);
+        k.squad[1].def = crate::rules::content::UnitId(12);
+        assert_eq!(k.cast_cost(k.spell(1).unwrap()), CastCost { mana: 160, minutes: 180 });
     }
 
     #[test]
@@ -458,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn instant_heal_is_capped_and_wounds_leave_one_hp() {
+    fn instant_heal_is_capped_and_wounds_can_kill() {
         let mut g = game(HeroClass::Knight);
         let max = g.squad[1].max_hp(&g.content);
         g.squad[1].hp = max - 10;
@@ -468,7 +583,17 @@ mod tests {
         assert_eq!((g.squad[1].hp, g.squad[2].hp), (max, 0));
         let wound = SpellDef { delta_fixed_hits: Some(-1000), ..heal };
         g.apply_spell_to_army(&wound);
-        assert_eq!(g.squad[1].hp, 1);
+        assert!(!g.squad[1].alive() && g.squad[1].died_at.is_some(), "a world spell can kill");
+        assert_eq!(g.squad[0].hp, 1, "the hero keeps 1 HP");
+        // A percent loss takes a share of the current HP, a gain a share of the maximum.
+        let max = g.squad[0].max_hp(&g.content);
+        g.squad[0].hp = 40;
+        let half = SpellDef { delta_fixed_hits: None, delta_percent_hits: Some(-50), ..wound.clone() };
+        g.apply_spell_to_army(&half);
+        assert_eq!(g.squad[0].hp, 20);
+        let tenth = SpellDef { delta_percent_hits: Some(10), ..half };
+        g.apply_spell_to_army(&tenth);
+        assert_eq!(g.squad[0].hp, 20 + max / 10);
     }
 
     #[test]
@@ -476,19 +601,22 @@ mod tests {
         let mut g = game(HeroClass::Knight);
         g.cast(2, CastTarget::Own).unwrap();
         let now = g.clock.total_minutes() as u64;
-        assert_eq!(g.active_spells(), &[ActiveSpell { spell: 2, until: Some(now + 600) }]);
+        assert_eq!(g.active_spells(), &[ActiveSpell::new(2, Some(now + 600))]);
         g.wait(9);
         assert_eq!(g.army_spells().len(), 1);
         g.wait(1);
         assert!(g.active_spells().is_empty(), "10 h later");
-        // Permanent curses stay until lifted.
+        // 9999 hours is no special case, only long; a life-draining curse holds the leader.
         let curse = g.spell(5).unwrap().clone();
         g.apply_spell_to_army(&curse);
-        assert_eq!(g.active_spells(), &[ActiveSpell { spell: 5, until: None }]);
+        g.gold = 1_000_000; // a month of wages
+        let now = g.clock.total_minutes() as u64;
+        assert_eq!(g.active_spells(), &[ActiveSpell { spell: 5, until: Some(now + 9999 * 60), leader: true }]);
         g.wait(24 * 30);
         assert_eq!(g.active_spells().len(), 1);
         let max = g.squad[0].max_hp(&g.content);
         assert_eq!(g.stats_with_spells(0).max_hp(), max - max * 20 / 100);
+        assert_eq!(g.stats_with_spells(1).max_hp(), g.squad[1].max_hp(&g.content), "the others are not drained");
         let lift = g.spell(6).unwrap().clone();
         g.apply_spell_to_army(&lift);
         assert!(g.active_spells().is_empty());
@@ -571,7 +699,40 @@ mod tests {
         let cast = g.cast(2, CastTarget::Own).unwrap();
         assert_eq!(cast.outcome, CastOutcome::Interrupted);
         assert!(cast.events.iter().any(|e| matches!(e, Event::Encounter(_))));
-        assert_eq!(g.mana, mana - 300);
+        assert_eq!(g.mana, mana, "the mana is taken only when the spell completes");
         assert!(g.active_spells().is_empty());
+    }
+
+    #[test]
+    fn recasting_adds_time_and_a_unit_holds_four_spells() {
+        let mut g = game(HeroClass::Knight);
+        let armour = g.spell(2).unwrap().clone();
+        let now = g.clock.total_minutes() as u64;
+        g.apply_spell_to_army(&armour);
+        g.apply_spell_to_army(&armour);
+        assert_eq!(g.active_spells(), &[ActiveSpell::new(2, Some(now + 2 * 600))], "another 10 h on top");
+        for id in 20..25 {
+            let s = SpellDef { id, ..armour.clone() };
+            g.apply_spell_to_army(&s);
+        }
+        assert_eq!(g.active_spells().len(), SPELL_SLOTS, "no free slot: nothing happens");
+        assert_eq!(g.active_spells().iter().map(|e| e.spell).collect::<Vec<_>>(), [2, 20, 21, 22]);
+    }
+
+    #[test]
+    fn one_enemy_spells_hit_only_the_leader() {
+        let mut g = game(HeroClass::Knight);
+        let bolt = SpellDef { delta_fixed_hits: Some(-15), target: Some(SpellTarget::OneEnemy), ..spell(7, 100, 1, None) };
+        let mut spells = g.content.spells.clone();
+        spells.push(bolt);
+        let c = &g.content;
+        g.content = Arc::new(Content::new(c.units.clone(), c.items.clone(), spells, c.options.clone(), Formation::WIDE));
+        g.spells.push(7);
+        let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 3)]);
+        g.world.armies[0].ignore_until = f64::MAX;
+        let cast = g.cast(7, CastTarget::Army(uid)).unwrap();
+        assert_eq!(cast.outcome, CastOutcome::Done { hits: -15, killed: 0, destroyed: false });
+        let hurt: Vec<i32> = g.world.armies[0].troops.iter().map(|t| t.hurt).collect();
+        assert_eq!(hurt, [15, 0, 0]);
     }
 }

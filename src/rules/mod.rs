@@ -3,6 +3,7 @@ pub mod ai;
 pub mod battle;
 pub mod clock;
 pub mod content;
+pub mod economy;
 pub mod events;
 pub mod experience;
 pub mod fog;

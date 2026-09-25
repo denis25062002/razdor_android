@@ -9,7 +9,7 @@
 //!
 //! Choices where the sources are silent are marked *(guess)* and listed in mechanics.md §8.1.
 
-use super::content::{ItemId, UnitId};
+use super::content::{ItemId, UnitId, WageKind};
 use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitPick, SIDE_PLAYER};
 use super::magic::ActiveSpell;
 use super::game::{troop_unit, Event, Foe, Game, PACK_SIZE, SPELL_BOOK_SIZE};
@@ -365,9 +365,10 @@ impl EventWorld for Game {
         self.unit_gains(0, xp);
     }
 
-    /// Gold never goes below 0 *(guess)*.
+    /// The event's gold is added as it is (the noon payment settles a debt); mana does not
+    /// go below 0.
     fn add_gold(&mut self, gold: i64) {
-        self.gold = (self.gold as i64 + gold).clamp(0, i32::MAX as i64) as i32;
+        self.gold = (self.gold as i64 + gold).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     }
 
     fn add_mana(&mut self, mana: i64) {
@@ -394,6 +395,9 @@ impl EventWorld for Game {
         let mut u = troop_unit(&c, &Troop::new(id, level, slot));
         u.named = named;
         u.from_event = true;
+        // Kind 3: an event's unit draws no wage.
+        u.wage_kind = WageKind::Event;
+        u.last_paid = self.clock.total_minutes() as u64;
         self.squad.push(u);
     }
 
@@ -456,11 +460,11 @@ impl EventWorld for Game {
         }
     }
 
-    /// The spell takes effect on the army at once and for free, as a cast of it would
-    /// ([`Game::apply_spell_to_army`]); an unknown spell does nothing.
+    /// The spell takes effect on the army at once and for free, lasting 10 (or 5) times as
+    /// long as a cast ([`Game::apply_spell_to_army_ext`]); an unknown spell does nothing.
     fn apply_spell(&mut self, spell: u8) {
         if let Some(def) = self.spell(spell as u32).cloned() {
-            self.apply_spell_to_army(&def);
+            self.apply_spell_to_army_ext(&def, true);
         }
     }
 
@@ -664,7 +668,7 @@ impl EventWorld for Game {
     /// World spells are kept per army, so a spell for one unit goes on its whole army
     /// *(guess)*; garrisons hold none.
     fn set_spells(&mut self, holder: Holder, _unit: Option<u8>, spells: &[u8]) {
-        let list: Vec<ActiveSpell> = spells.iter().map(|&s| ActiveSpell { spell: s as u32, until: None }).collect();
+        let list: Vec<ActiveSpell> = spells.iter().map(|&s| ActiveSpell::new(s as u32, None)).collect();
         match holder {
             Holder::Player => self.effects = list,
             Holder::Army(a) => {
@@ -807,10 +811,11 @@ pub struct NextMap {
     pub mana: Option<i32>,
     /// Fame carries over (Razdor has no fame yet).
     pub fame: bool,
-    /// The hero's (level, XP).
+    /// The hero's (level, XP) and his whole spell book (header byte 3).
     pub hero: Option<(i32, i32)>,
-    /// Personal items (negative price), worn or in the pack.
-    pub personal_items: Vec<ItemId>,
+    pub spells: Option<Vec<u8>>,
+    /// The hero's four worn items (byte 4); off, his slots are emptied.
+    pub hero_items: Option<[Option<ItemId>; crate::rules::items::SLOTS]>,
     /// The pack.
     pub inventory: Vec<ItemId>,
     /// The squad without the hero, living units only.
@@ -848,8 +853,6 @@ impl Game {
             None => engine.next_map_name().trim().to_string(),
         };
         let carry = engine.carry_over().map(|b| b != 0);
-        let personal = |i: &ItemId| self.content.try_item(*i).is_some_and(|d| d.cost < 0);
-        let worn = self.squad.iter().flat_map(|u| u.items.iter().flatten().copied());
         let hero = self.hero();
         Some(NextMap {
             name,
@@ -858,7 +861,8 @@ impl Game {
             mana: carry[1].then_some(self.mana),
             fame: carry[2],
             hero: carry[3].then_some((hero.level, hero.xp)),
-            personal_items: if carry[4] { worn.chain(self.pack.iter().copied()).filter(personal).collect() } else { Vec::new() },
+            spells: carry[3].then(|| self.spells.clone()),
+            hero_items: carry[4].then_some(hero.items),
             inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
             army: if carry[6] { self.squad.iter().skip(1).filter(|u| u.alive()).cloned().collect() } else { Vec::new() },
         })
@@ -875,27 +879,36 @@ impl Game {
     }
 
     /// Starts this (next) campaign map with what `prev` carries over (header 0x110): the
-    /// hero keeps his level and XP only when the scenario carries them (else level 1 with
-    /// no XP), gold is added, mana set, items go to the pack, and the carried army joins
-    /// with its levels and XP where the formation has room.
+    /// hero keeps his level, XP and spell book only when the scenario carries them (else
+    /// level 1 with no XP, and this map's book), and his worn items when it carries them;
+    /// gold is added, mana set, the pack's items go to the pack, and the carried army joins
+    /// with its levels and XP where the formation has room, all of it paid as of now.
     pub fn apply_carry_over(&mut self, prev: &NextMap) {
         let c = self.content.clone();
+        let now = self.clock.total_minutes() as u64;
         let hero = &mut self.squad[0];
         (hero.level, hero.xp) = prev.hero.unwrap_or((1, 0));
+        if let Some(items) = prev.hero_items {
+            hero.items = items;
+        }
         hero.heal_full(&c);
+        if let Some(book) = &prev.spells {
+            self.spells = book.clone();
+        }
         if let Some(g) = prev.gold {
             self.gold += g;
         }
         if let Some(m) = prev.mana {
             self.mana = m;
         }
-        let items: Vec<ItemId> = prev.personal_items.iter().chain(&prev.inventory).copied().collect();
-        self.pack.extend(items);
+        self.pack.extend(prev.inventory.iter().copied());
         for u in &prev.army {
             let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
             let Some(slot) = c.formation.free_slot(&taken, u.base_stats(&c).preferred_row()) else { break };
             let mut u = u.clone();
             u.slot = slot;
+            u.unpaid = false;
+            u.last_paid = now;
             self.squad.push(u);
         }
     }
@@ -988,10 +1001,13 @@ mod tests {
         let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight, 1);
         let now = g.clock.total_minutes() as u64;
         assert_eq!(fired(&g.drain_events()), vec![1]);
-        assert_eq!(g.active_spells(), &[crate::rules::magic::ActiveSpell { spell: 1, until: Some(now + 300) }]);
+        // An event's spell lasts TimeWork × 10 (5 h → 50 h).
+        assert_eq!(g.active_spells(), &[crate::rules::magic::ActiveSpell::new(1, Some(now + 50 * 60))]);
         let plain = g.squad[1].stats(&g.content)[Stat::Initiative];
         assert_eq!(g.stats_with_spells(1)[Stat::Initiative], plain + 2);
         g.wait(5);
+        assert_eq!(g.active_spells().len(), 1, "longer than a cast of it");
+        g.wait(45);
         assert!(g.active_spells().is_empty());
     }
 
@@ -1226,7 +1242,7 @@ mod tests {
         assert_eq!((g.squad[1].def, g.squad[1].named), (UnitId(5), 1), "replaced by type 3, then named character 1 of type 5");
         assert_eq!((g.squad[0].xp, g.squad[1].xp), (10, 10));
         assert_eq!(g.spells, vec![6]);
-        assert_eq!(g.active_spells(), &[ActiveSpell { spell: 1, until: None }]);
+        assert_eq!(g.active_spells(), &[ActiveSpell::new(1, None)]);
         assert!(g.has_spells(Holder::Player, None, &[1]) && !g.has_spells(Holder::Player, None, &[1, 2]));
         assert_eq!(g.tile(), (10, 5));
         assert_eq!(g.gold, 100, "the resources are arguments");
@@ -1263,7 +1279,7 @@ mod tests {
         assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), vec![UnitId(5), UnitId(3)]);
         assert_eq!(a.slowness, Army::slowness_for(-3));
         assert_eq!((a.faction, a.attitude), (4, 2), "enemy group, then relation 2 towards the player");
-        assert_eq!(a.effects, vec![ActiveSpell { spell: 3, until: None }]);
+        assert_eq!(a.effects, vec![ActiveSpell::new(3, None)]);
         assert_eq!((a.named, a.model), (1, 12));
         assert_eq!(a.post, (14, 10));
         assert!(!a.path.is_empty(), "it sets off");
@@ -1323,15 +1339,20 @@ mod tests {
             mana: Some(9),
             fame: false,
             hero: Some((g.squad[0].level, g.squad[0].xp)),
-            personal_items: Vec::new(),
+            spells: Some(vec![2, 5]),
+            hero_items: Some([Some(ItemId(7)), None, None, None]),
             inventory: vec![ItemId(7)],
-            army: vec![g.squad[1].clone()],
+            army: vec![Unit { unpaid: true, last_paid: 0, ..g.squad[1].clone() }],
         };
         let mut fresh = start(&world(vec![]));
         fresh.squad.truncate(1);
         let gold = fresh.gold;
         fresh.apply_carry_over(&next);
         assert_eq!((fresh.squad[0].level, fresh.squad[0].xp), (4, 33));
+        assert_eq!(fresh.spells, vec![2, 5], "byte 3 keeps the spell book");
+        assert_eq!(fresh.squad[0].items[0], Some(ItemId(7)), "byte 4: the hero's worn items");
+        let now = fresh.clock.total_minutes() as u64;
+        assert!(!fresh.squad[1].unpaid && fresh.squad[1].last_paid == now, "the army comes paid");
         assert_eq!((fresh.gold, fresh.mana), (gold + 70, 9));
         assert_eq!(fresh.squad.len(), 2);
         assert_eq!(fresh.squad[1].level, 3, "the army keeps its levels");
@@ -1339,8 +1360,10 @@ mod tests {
         // Without the flag the hero starts over at level 1.
         let mut again = start(&world(vec![]));
         again.squad[0].level = 5;
-        again.apply_carry_over(&NextMap { hero: None, army: Vec::new(), inventory: Vec::new(), gold: None, mana: None, ..next });
+        let book = again.spells.clone();
+        again.apply_carry_over(&NextMap { hero: None, spells: None, hero_items: None, army: Vec::new(), inventory: Vec::new(), gold: None, mana: None, ..next });
         assert_eq!((again.squad[0].level, again.squad[0].xp), (1, 0));
+        assert_eq!((again.spells.clone(), again.squad[0].items), (book, [None; 4]));
     }
 
     #[test]
@@ -1361,7 +1384,8 @@ mod tests {
         assert_eq!((next.gold, next.mana, next.fame), (Some(100), None, false));
         assert_eq!(next.hero, Some((1, 0)));
         assert_eq!(next.army.len(), 1);
-        assert!(next.inventory.is_empty() && next.personal_items.is_empty());
+        assert!(next.inventory.is_empty() && next.hero_items.is_none());
+        assert_eq!(next.spells, Some(g.spells.clone()), "byte 3: the book goes with the level");
 
         // No branch: the scenario's next map; none before a victory.
         let mut win = ev(EventKind::Global);

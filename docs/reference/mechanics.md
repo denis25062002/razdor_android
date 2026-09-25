@@ -563,17 +563,21 @@ Each is marked *(guess)* in the code.
   level, free, back to level 1 with no XP and HP kept; items the new class cannot wear go to
   the pack *(guess)*. The AI's Militia and Infantry picks that land on an empty slot promote
   nobody *(guess)*.
-- **Item modifiers**: every worn item's `f-` sets its stat first, then all `d-` are added,
-  then all `p-` are summed and applied. An item's `Magic` replaces the unit's school.
-  Potions: `f-Hits` heals at once; other modifiers last until the next battle ends.
+- **Item modifiers** (economy.md §5): each worn item's `f-` above 0 replaces its stat in slot
+  order (a later slot wins); the potions' `d-`, the items' `d-`; the potions' `p-`, then each
+  item's `p-` in turn, compounding (truncated each time); lasting spells come after (their
+  `d-` added, their `p-` compounding; the original adds spells' `d-` before the items' `p-`).
+  An item's `Magic` replaces the unit's school. Potions: `f-Hits` heals at once; other
+  modifiers last until the next battle ends.
 - **Tactical cost** and **battle XP**: as in experience.md §1 and §3, with the whole pool
   term (the exe's damage-exchange fields are never written, so they are 0). A Razdor "wait"
   spends the unit's remaining actions as passes. The tactical cost of a type at a level is
   cached. The difficulty factor F is read from `Rus_DiscordTimes.ini` `[Options]
   OptValue10` (100 when set, else 120); the demo uses 100 and a player modifier of 100.
   An army's experience correction of 0 is read as 100 *(guess: no shipped army has 0)*.
-- **Wages**: see the Stage 4 notes below for the two hiring kinds. Medic 15% and Ranger
-  20% daily healing do not add up (the larger applies).
+- **Wages and daily healing**: see the Stage 4 notes below (`src/rules/economy.rs`). A Medic
+  heals every wounded unit of its army 10% at midnight, the Ranger hero his army 15% at
+  noon; both can happen the same day.
 - **Battle turn limit**: `BattleEndTurn` full turns are played, then a stalemate; nobody
   wins, the player withdraws.
 - **Hero**: at 0 HP he leaves the field like any unit; if anyone of his army survives he
@@ -689,16 +693,16 @@ Each is marked *(guess)* in the code.
   the hero there and the garrison fights (its extra defence counts). Winning takes a castle
   or fort (owner = player, faction 1, its income and mana count from the next noon) and
   gives ruins' treasure gold and items. Bridge footprints are road.
-- **Villages** start with one day's tribute; at midnight it grows by `gold/mana per day` up to
-  the maximum. Collecting takes all of it.
+- **Villages** start with one day's tribute; at midnight it grows by
+  `Round(income × √(1 − stock/max))` up to the maximum (no maximum: no growth). Collecting
+  takes all of it.
 - **Armies**: model 7 / byte 63 = off the map at start; ships (byte 72) sail, see §8.6. Hostile =
   the army's own attitude towards the player < 0. Hostile armies chase the hero within 6
   cells (their view, §8.8) and fight on contact (neighbouring cell); others greet once and
   let him pass. Patrolling armies wander within their patrol radius, resting 30–180 min
   between legs. Everything else they do is the AI's (§8.8).
   Speed correction: ±10% per point. Troops: the middle byte of each triple is levels above
-  the first; the leader is a troop of its own. Loot: `gold income / VictoryGoldDiv`, at least
-  `MinVictoryGold`, plus the army's artifacts.
+  the first; the leader is a troop of its own. Loot: see "Victory loot" below.
 - **Hero start**: the entry of the preset's start building (preset byte 16) when it names
   one; else, of the buildings flagged as a start for the class (building byte 353), the one
   nearest the preset's cell if within 8 cells *(guess: on "Проклятое озеро" each class's
@@ -721,50 +725,58 @@ Stage 4 (buildings and economy, `rules/town.rs`, `rules/game.rs`):
   opens no window. An ill-disposed castle or fort with no garrison is taken by walking in.
 - **Main hall**: lists the building's quest and rumour events (`World::local_events`);
   local events fire by themselves and are not listed. Running them is the event engine's.
-- **Wage kinds**: `Nature=Rogue` units are kind 2 (mercenary: `Cost / CostMercenaryDiv`),
-  everyone else kind 1. The kind is kept per unit. Elementals are hired, healed, raised and
-  paid in mana (Community). Corpses are not paid. When gold runs short the squad is paid in
-  order and the rest are unpaid; paid again at the next noon with enough gold.
-- **Desertion**: a unit unpaid at `MaxTimeNotUpkeep / 1440` noons in a row (7) leaves; its
-  items go to the pack. The village innkeeper option clears the unpaid state.
-- **Garrison**: a unit left there is paid at the first noon after it was left, then never;
-  it heals `GarrisonAutoHeal`% of max HP at every noon. Scenario garrisons of buildings the
-  player owns at the start become his (already past their paid day). Capacity: the
-  formation's.
-- **Barracks regrowth**: at every midnight a type below its maximum gains `max` progress;
-  every `MaxDayCountForNewUnit` progress is one unit, so an empty barracks is full again
-  after `MaxDayCountForNewUnit` days (5 militia: one every 2 days). The editor's
-  "all types" flag is read but has no effect.
-- **Healing**: `ceil(Cost × HealingConst% × missing / max)` for a full heal of one unit,
-  `HealingTime` minutes of game time per unit. No free healing on arrival.
+The economy follows `original-mechanics/economy.md` (its "Razdor now" column lists every
+rule); `src/rules/economy.rs` holds the formulas. In short:
+
+- **Wage kinds**: everything the player hires, his starting army and all AI troops are
+  recruits (kind 1, the cost brackets, Delphi rounding: halves to even); the hero is kind 0
+  and units an event added kind 3, both free. Kind 2 (`Cost / CostMercenaryDiv`) exists for
+  an AI army hiring in a foreign building, which Razdor does not track yet. Corpses are
+  billed. Kind-1 elementals are paid in mana (Community); out of mana, all of them go
+  unpaid. Rear Service (`AddPayment`): gold wages ×178/256, ×78/256 when the player's daily
+  income is 0 (a Community quirk kept as it is).
+- **Noon**: income (the player's buildings ×F/100, plus the stock of villages linked to his
+  castles) comes in, all wages go out. If the gold is then negative, the cheapest units get
+  their wage back and go unpaid until it is not, and the gold is set to 0; free units are
+  not refunded *(guess)*. Only on such a short noon, every unit last paid more than
+  `MaxTimeNotUpkeep` ago leaves (its items to the pack). The village innkeeper pays everyone.
+- **Garrison**: never paid; heals `GarrisonAutoHeal`% at midnight. Scenario garrisons of
+  buildings the player owns at the start are his. Capacity: the formation's.
+- **Barracks regrowth**: at midnight each slot below its maximum gains one unit with chance
+  `1 / (MaxDayCountForNewUnit div max)` (always when that is 0 or 1). The editor's "all
+  types" flag is read but has no effect.
+- **Difficulty factor F** (100 with "impossible difficulty", else 120): healing
+  `max(1, Round(missing/max × Cost × HealingConst% × 100/F))` and resurrection
+  `Round(Cost × ResurectConst% × 100/F)` are paid at once and take no game time; sales pay
+  `Cost × ItemSaleCost × F / 10000` (a Merchant half again); the player's building income
+  ×F/100. Castle and fort stocks are not modelled: an owned building pays its daily income.
 - **Corpses and resurrection**: the dead stay in the army (HP 0, still in their cell) and
-  drop their items into the pack (what does not fit is lost). Raising costs
-  `Cost × ResurectConst%`, takes `HealingTime`, restores full HP, and is possible until
-  `MaxTimeResurection` minutes after death; later the body is buried automatically. The
-  army screen can bury (dismiss) a corpse.
-- **Market prices**: markup `max(0, 1 − attitude) × 15%` on the base price, then the
-  Merchant's −30%. Fitted to the footage: with a trader hero, two markets of attitude 1
-  sell at exactly 70% of the base price, one of attitude −2 at 70% × 1.45 (120 → 122,
-  200 → 203, 210 → 213). Selling pays `ItemSaleCost`% (+50% with a Merchant), whatever the
-  relation. The footage's spell prices do not match `CostGold` of the Community data (some
-  are twice it), probably a data difference between versions; Razdor charges `CostGold`.
-- **Market stock**: the fixed goods plus `random` different market items whose base price
-  lies in `[min, max]`. Fixed goods once bought are gone for good; every 7 days the random
-  part is drawn anew (demo and scenarios alike).
-- **Backpack**: 40 items (the original's inventory is a scrolling 5-wide grid with more
-  than 25 items in the footage). **Spell book**: 15 spells (its window has 3 × 5 cells).
-- **Victory loot**: an army pays `gold / VictoryGoldDiv`, at least `MinVictoryGold`, or all
-  of it when it has less, plus its items. A captured castle or fort pays one day of its
-  gold income (the footage: +30 for a fort of income 30, +125 for a castle of income 125).
-  Every beaten enemy unit gives its `Surrender` value in mana (the footage: +20 mana from a
-  fort garrison with one unit of `Surrender=20`).
-- **Village alternatives** *(guess: which of the five a village offers is not decoded;
-  Razdor offers all of them, once a day, each instead of the tribute and using it up)*:
-  collect the tribute (gold and mana); the priest heals the army; the innkeeper pays off the
-  unpaid; a **long blessing**: the cheapest (in mana) lasting spell on the own army whose
-  modifiers are all gains, cast for free through the world-spell path (§8.3) for 3 times
-  its `TimeWork`; **furs** worth 150% of the gold tribute (no mana); a **magic ritual**
-  giving the mana tribute plus 1 mana per 2 gold of it.
+  drop their items into the pack (what does not fit is lost). Raising (towns and churches)
+  restores full HP and is possible until `MaxTimeResurection` minutes after death; later the
+  body is buried automatically. The army screen can bury (dismiss) a corpse.
+- **Market prices**: `Round(base × m)` with m = 1.7, 1.45, 1.25, 1.1, 1.0, 0.9, 0.75 for
+  attitude −3..3 (a building the player owns counts as 3), then a Merchant takes 30% off.
+  Spells cost `CostGold`, hires `Cost`. Items worth 1 or less (personal items) cannot be sold.
+- **Market stock**: every midnight the fixed goods still unsold stay and the random ones are
+  drawn anew: the building's count minus the fixed goods, towns first taking `count div 5 +
+  1` healing potions (items 98–100) and maybe one of 96/97/114/115; the rest are market items
+  priced in `[max(min, 5), min(max, 5000)]` (the top +1 one time in five), at most twice the
+  same (once above 500); the list is sorted by price. The draw is uniform in the window
+  (the original leans towards its top; not reproduced).
+- **Backpack**: 256 items (a scrolling 5-wide grid). **Spell book**: 15 spells.
+- **Victory loot**: from an army, `gold / VictoryGoldDiv` (no minimum) plus its daily wage
+  total (not for peasant armies or armies whose units carry no money *(guess)*) and its
+  items; an army whose home castle or fort stands empty loses it to the player. Between AI
+  armies the loser gives all its gold below `MinVictoryGold`, else `gold / VictoryGoldDiv`. A
+  beaten garrison pays its treasure (ruins), the building's stock and one day's income.
+  Every beaten enemy unit gives its `Surrender` value in mana *(guess: the battle code's
+  rule is not traced)*.
+- **Village offers**: entering a village with gold waiting (not the one that made the last
+  offer, until its tribute is taken) rolls in order for the innkeeper (1/2), the priest
+  (1/3, spell 1), a long blessing (1/6, one of spells 3/5/7/9/11 for 10× or 5× its time),
+  furs (1/6, item 135) and the witch (1/6, 300–500 mana), each with its conditions; the
+  first that passes is offered, never the same kind twice in a row. Accepting it empties the
+  village. A Rogue hero gets nothing from villages.
 - **Not used yet**: `CostGoldDiv`, "dark forces only"
   items, named units that cannot be left in a garrison.
 
@@ -778,20 +790,25 @@ events only; texts are read from the scenario at runtime.
   stands at a building or point that lists them; rumours only when the player picks one from
   `rumours()`; subordinate events only through a chain. An unlisted local event never fires on
   its own *(guess)*.
-- **Window**: open when `now ≥ start` and `(now − start) mod repeat < duration` (no repeat: one
-  window); duration 0 means no end *(guess)*. Relative events are ordinary events whose start
+- **Window** (economy.md §6): never before the start; with a repeat of R minutes, on every
+  (R/1440)-th day since the start, for `max(duration, 1)` **hours** from the start's time of
+  day; without one, until `start + max(duration, 1)` hours, or with no end for duration 0
+  while it never fired. Relative events are ordinary events whose start
   (a far-future "never" in the files) is moved to `now + delay hours`.
-- **Repeats** *(guess)*: a many-event fires again only after it is re-armed: by a new window
-  occurrence, by a check where its conditions fail, or (local events) by a new visit to its
-  place. A once-event is done once it took effect. A chained event ignores window and place
-  but not its conditions or "once".
-- **Loop**: fire the first eligible event (file order), start over, until none fires; at most
-  256 firings per run (then `LoopGuard`). Chains are cut at depth 32.
-- **Questions**: the engine stops with `Question(id)` until `answer(yes)`. No records "happened,
-  answer No", applies nothing, and the event may be asked again later (a once-event too, until
-  a Yes) *(guess)*. After a Yes the question is asked again only with "repeat after Yes"
-  *(guess)*. Events without a question count as answered Yes. The "happened" conditions use the
-  last answer.
+- **Repeats**: an event without "once" fires again on every later check (not twice in the same
+  minute; a duration-0 event not within 60 minutes) while its window is open and its
+  conditions hold. A once-event is done once it fired, a No answer included. A chained event
+  ignores window and place but not its conditions or "once".
+- **Loop**: fire the first eligible event (global events in file order, then the local events
+  of the point or building the hero stands on, in its list order; a building's only on
+  entering it), start over, until none fires; at most 256 firings per run (then `LoopGuard`).
+  Chains are cut at depth 32.
+- **Questions**: the engine stops with `Question(id)` until `answer(yes)`. A No applies
+  nothing but counts as happened (it uses up a once-event); opening a question clears the
+  last No. After a Yes the question is asked again only with "repeat after Yes" *(guess)*.
+  "Happened with Yes" = fired and the last answer not No; "with No" = the last answer No.
+- **Flags** are counters: `+X` sets `X1` or raises the digit, `-X` lowers it and removes it at
+  0; `=X` holds for any digit (or an exact `=X2`). The Community "set a digit" patch is not in.
 - **Conditions**: signed thresholds mean `≥ n` (positive) or `≤ |n|` (negative); squad count
   and army strength are checked when non-zero, level/gold/mana only with the "current stats"
   box; the level is compared 0-based as in the exe (a threshold of 2 means level 3). Owner
@@ -840,11 +857,11 @@ events only; texts are read from the scenario at runtime.
     usually fires the victory event. `Game::next_map()` then names the map: the scenario's
     next-map name with its leading `N-V` replaced (or `N-V` alone) *(guess: the guide's
     "N-V" naming)*, plus what the header's carry-over flags (0x110) keep: gold, mana for
-    "gods' favour" *(guess)*, fame (flag only), hero level and XP, personal items (negative
-    price), the pack, the living army. Without a branch the scenario's next map is named as
+    "gods' favour" *(guess)*, fame (flag only), hero level and XP with the spell book, the
+    hero's worn items, the pack, the living army (paid as of the new start). Without a branch the scenario's next map is named as
     it is; `None` before a victory or with no next map. `Game::apply_carry_over` starts the
-    next map's game with it (the hero's level and XP, else level 1; gold added, mana set,
-    items to the pack, the army with its levels and XP). The UI does not offer it yet.
+    next map's game with it (the hero's level, XP and book, else level 1 and the new map's
+    book; his worn items; gold added, mana set, the pack; the army with its levels and XP). The UI does not offer it yet.
   - **16** the listed spells leave the spell book.
   - **17** model `g` for army `x` (the hero's figure: no-op).
   - **18** flag `RAND` + one character, drawn from codes `x..=g` (cp1251); an existing
@@ -880,8 +897,8 @@ events only; texts are read from the scenario at runtime.
   the player or in an AI battle (§8.8; `Game::army_beaten_by_anyone`, the query in
   `script.rs` switches to it once the event-opcode work there is merged); an army waiting off the map is "at home", one on the map
   is at home within a cell of its home building's entry.
-- **Effects**: gold and mana never go below 0 *(guess)*; XP goes to the hero; an added unit
-  takes a free cell of its row (none if the army is full) and, taken from an army, keeps its
+- **Effects**: gold is added as it is (a debt is settled at noon), mana never goes below 0;
+  XP goes to the hero; an added unit (kind 3, no wage) takes a free cell of its row (none if the army is full) and, taken from an army, keeps its
   level there; "unit added by an event" and "any unit" remove the last such one to join,
   its items going to the pack; a unit sent to an army joins that army's troops; items go to
   the pack (from the pack, else from whoever wears it, when taken); spells go into the book
@@ -890,7 +907,8 @@ events only; texts are read from the scenario at runtime.
   level, XP and items and loses the class bonuses; a battle an event starts is against the
   army as it stands after all the event's effects; a delay passes time (armies move, the
   noon report comes) with the hero standing still. A spell cast on the army takes effect at
-  once and for free through the world-spell path (§8.3). Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
+  once and for free through the world-spell path (§8.3), lasting 10× its `TimeWork` (5× from
+  8 hours). Lanterns and shown armies are recorded as reveals (x, y, radius; a lantern
   without a radius reveals 5 cells, an army 3 *(guess)*) for the fog of war.
 - **Rumours** cost 10 gold (the footage) and are listed in the main hall with the building's
   quests in the journal and those done.
@@ -942,38 +960,38 @@ Explored cells stay explored; there is no "seen before" state (the video).
 ### 8.3 World spells (Stage 7, `src/rules/magic.rs`, `src/ui/spellbook.rs`)
 
 - **Where**: from the spell book on the world map (bottom-bar "Spells (B)" or B), never in
-  battle. `Target=Hero` spells go on the hero's own army; `Enemy` and `OneEnemy` on a whole
-  hostile army *(guess: `OneEnemy` is treated like `Enemy`)* that stands within **3 cells** of
-  the hero on explored ground *(guess: the range is not known)*.
-- **Cost and time**: `CostMana` and `TimeCast` hours. The Archmage hero halves both; a unit
-  with the Community `Caster` bonus anywhere in the living army takes 20% off both; the two
-  stack (×0.5 × 0.8), rounded to whole mana and minutes *(guess)*. The mana is paid first.
-  `TimeCast`/`TimeWork` are "at caster level 0"; the level scaling is unknown and not applied
-  *(guess)*.
+  battle. `Target=Hero` spells go on the hero's own army; `Enemy` on a whole hostile army,
+  `OneEnemy` on its leader (first unit) only, within **3 cells** of the hero on explored
+  ground *(guess: the original's range check is not decoded)*.
+- **Cost and time** (economy.md §4): `CostMana div d` mana and `TimeCast × 2 div d`
+  half-hour steps, d = 2 for the Archmage; otherwise a `Caster` in the living army makes both
+  `floor(× 0.8)`. The two do not stack. No level scaling.
 - **Casting passes time** in 5-minute slices like a wait: armies move, the noon report comes,
-  the scenario's events run. A hostile army reaching the hero interrupts the cast and the
-  battle follows; the mana is lost *(guess)*. If the target army left the range or the map by
-  the time the spell is ready, it is lost too *(guess)*.
-- **Duration**: `TimeWork` hours from the moment the spell is ready; empty or 0 is instant,
-  9999 or more lasts for good. Casting a spell that is already on the army starts its time
-  anew; different spells add up *(guess)*. Effects are kept per army with their end minute and
-  dropped when time passes beyond it.
+  the scenario's events run. The mana is taken when the spell completes: a hostile army
+  reaching the hero interrupts the cast (the battle follows) and a target that left the range
+  or the map loses it, both for free; not enough mana left then: no spell *(guess)*.
+- **Duration**: exactly `TimeWork` hours from the moment the spell is ready (9999 is simply
+  long); empty or 0 is instant. Casting a spell already on the army adds another `TimeWork`
+  to what is left. A unit holds 4 lasting spells; with none free, nothing happens (effects
+  are kept per army, with a leader-only flag, so the slots count per army and for the
+  leader). Effects are dropped when time passes beyond their end.
 - **Stats**: while a spell lasts, its `d-` values are added to each unit's stats (after items
-  and potions), then the `p-` percentages of all lasting spells are summed per stat and
-  applied, as for items *(guess)*. This happens when a battle starts (both sides: the
-  hero's army and a hostile army under the hero's curses). A higher maximum HP raises the
-  unit's HP by the same amount for that battle, a lower one caps it *(guess)*.
-- **Instant hits**: `DeltaFixedHits` (plus `DeltaPercentHits`% of the maximum) heal or wound
-  every living unit of the target when the spell is ready. Healing is capped at the maximum
-  and does not raise the dead. On the own army, wounds leave at least 1 HP *(guess)*. On an
-  enemy army a troop that loses all its HP falls; its wounds stay with the troop (it fights
-  with them) and do not heal on the map *(guess)*; an army with nobody left counts as beaten
-  by the player, with no loot *(guess)*.
-- **`p-LifeLose`** (scenario-only curses): a negative value is a lasting percent loss of
-  maximum HP (like `p-Hits`); a positive value lifts the lasting life-draining curses from
-  the army *(guess: the scenario-only curse and the spell lifting it come as a −20 / +20 pair)*.
-- **Events** that cast a spell on the army ("cast spell" result) use the same path, for free
-  and at once, with the spell's normal duration.
+  and potions), then each spell's `p-` compounds in turn. This happens when a battle starts
+  (both sides: the hero's army and a hostile army under the hero's curses; leader-only
+  spells on the first unit). A higher maximum HP raises the unit's HP by the same amount for
+  that battle, a lower one caps it *(guess)*. AI-vs-AI battles ignore leader-only spells.
+- **Instant hits**: `DeltaFixedHits` is added, then `DeltaPercentHits`% of the maximum (a
+  gain) or of the current HP (a loss), on every living unit of the target (the leader only
+  for `OneEnemy` and `p-LifeLose` spells). Healing is capped at the maximum and does not
+  raise the dead. Wounds can kill: a unit of the own army becomes a corpse (the hero keeps
+  1 HP *(guess)*); an enemy troop falls; wounds stay with the troop and do not heal on the
+  map *(guess)*; an army with nobody left counts as beaten by the player, with no loot
+  *(guess)*.
+- **`p-LifeLose`** (scenario-only curses) holds the leader alone: a negative value is a
+  lasting percent loss of maximum HP; a positive value lifts the life-draining curses from
+  him *(guess: the curse and the spell lifting it come as a −20 / +20 pair)*.
+- **Events and villages** that cast a spell on the army use the same path, for free and at
+  once; an own-army (`Hero`) spell lasts `TimeWork × 10` hours, × 5 from 8 hours.
 - **Potions** keep their Stage 4 rule: modifiers last until the end of the next battle.
 - **Demo spells**: `data/spells.ini`, our own (a heal, two blessings, a fire bolt, a curse),
   taught at St. Beor's church and Greywall; the demo's Archmage starts with two

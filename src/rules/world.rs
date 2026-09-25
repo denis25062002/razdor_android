@@ -177,33 +177,13 @@ pub struct Recruit {
     pub stock: Option<i32>,
     /// The editor's maximum (at least the start count).
     pub max: i32,
-    /// Regrowth progress, in units × days (see [`Recruit::regrow`]).
+    /// Unused (the regrowth is a daily roll, `rules::economy::regrow`); kept for saves.
     pub progress: i32,
 }
 
 impl Recruit {
     pub fn new(unit: UnitId, start: i32, max: i32) -> Recruit {
         Recruit { unit, stock: Some(start.max(0)), max: max.max(start).max(0), progress: 0 }
-    }
-
-    /// One day passes: the stock grows back towards its maximum so that an empty barracks is
-    /// full again after `days_to_refill` days (`MaxDayCountForNewUnit`), one whole unit at a
-    /// time *(guess: the original's regrowth rule is not decoded)*.
-    pub fn regrow(&mut self, days_to_refill: i32) {
-        let Some(stock) = self.stock.as_mut() else { return };
-        if *stock >= self.max {
-            self.progress = 0;
-            return;
-        }
-        let days = days_to_refill.max(1);
-        self.progress += self.max;
-        while self.progress >= days && *stock < self.max {
-            *stock += 1;
-            self.progress -= days;
-        }
-        if *stock >= self.max {
-            self.progress = 0;
-        }
     }
 }
 
@@ -399,14 +379,6 @@ impl Location {
     /// Income the owner receives each day (villages pay tribute instead).
     pub fn pays_income(&self) -> bool {
         !matches!(self.kind, LocationKind::Village)
-    }
-
-    /// Midnight: the village tribute grows by a day's worth, up to the maximum.
-    pub fn refill(&mut self) {
-        if self.kind == LocationKind::Village {
-            self.tribute_gold = (self.tribute_gold + self.gold_income).min(self.gold_max.max(self.gold_income));
-            self.tribute_mana = (self.tribute_mana + self.mana_income).min(self.mana_max.max(self.mana_income));
-        }
     }
 }
 
@@ -1430,41 +1402,6 @@ mod tests {
         s.buildings.truncate(1);
         let w = World::from_scenario(&s, &content());
         assert!(w.locations[0].gates.is_empty());
-    }
-
-    #[test]
-    fn village_tribute_refills_up_to_the_maximum() {
-        let mut s = scenario(4, 4);
-        let mut v = building(BuildingType::Village, 1, 1, (1, 1));
-        v.gold_per_day = 20;
-        v.gold_max = 50;
-        v.mana_per_day = 5;
-        v.mana_max = 8;
-        s.buildings = vec![v];
-        let mut w = World::from_scenario(&s, &content());
-        let v = &mut w.locations[0];
-        v.refill();
-        v.refill();
-        assert_eq!((v.tribute_gold, v.tribute_mana), (50, 8));
-    }
-
-    #[test]
-    fn barracks_refill_over_max_day_count_days() {
-        let mut r = Recruit::new(UnitId(4), 0, 3);
-        let mut seen = Vec::new();
-        for _ in 0..12 {
-            r.regrow(10);
-            seen.push(r.stock.unwrap());
-        }
-        // 3 units over 10 days: one on days 4, 7 and 10.
-        assert_eq!(seen, [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
-        let mut full = Recruit::new(UnitId(4), 5, 2);
-        assert_eq!(full.max, 5, "the maximum is at least the start count");
-        full.regrow(10);
-        assert_eq!((full.stock, full.progress), (Some(5), 0));
-        let mut demo = Recruit { unit: UnitId(4), stock: None, max: 0, progress: 0 };
-        demo.regrow(10);
-        assert_eq!(demo.stock, None, "unlimited stays unlimited");
     }
 
     #[test]
