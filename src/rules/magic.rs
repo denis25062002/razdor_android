@@ -34,7 +34,7 @@ pub const CAST_RANGE: i32 = 3;
 /// The Community bonus token of units that cast world spells 20% faster and cheaper.
 pub const CASTER_BONUS: &str = "Caster";
 /// Slice of game time simulated at once while casting, as for waits.
-const STEP_MINUTES: f32 = 5.0;
+const STEP_MINUTES: f32 = super::game::WAIT_TICK_MINUTES;
 
 /// A lasting spell on an army: which spell, and the game minute it ends (`None`: never).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +567,8 @@ mod tests {
     fn an_enemy_reaching_the_hero_interrupts_the_cast() {
         let mut g = game(HeroClass::Knight);
         with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
+        // Bold enough to attack a stronger hero (the AI attacks only battles it wins).
+        g.world.armies.last_mut().unwrap().ai.aggression = 100;
         let mana = g.mana;
         let cast = g.cast(2, CastTarget::Own).unwrap();
         assert_eq!(cast.outcome, CastOutcome::Interrupted);

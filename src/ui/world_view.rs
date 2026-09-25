@@ -109,7 +109,7 @@ struct Camera {
 
 impl Camera {
     fn follow(game: &Game, zoom: f32) -> Camera {
-        Camera::looking_at(game, zoom, game.pos)
+        Camera::looking_at(game, zoom, game.display_pos())
     }
 
     /// Centred on world position `at` (clamped to the map).
@@ -392,16 +392,17 @@ fn draw_ship(cam: &Camera, pos: (f32, f32), sail: Color) {
 
 fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let next = a.path.first().map(|&t| game.world.map.center(t));
+    let pos = game.army_display_pos(a);
     if a.sails() {
         let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
-        draw_ship(cam, a.pos, sail);
-    } else if !draw_figure(art, figure_stem(a.model), a.pos, next, cam) {
-        let c = cam.to_screen(a.pos);
+        draw_ship(cam, pos, sail);
+    } else if !draw_figure(art, figure_stem(a.model), pos, next, cam) {
+        let c = cam.to_screen(pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
         }
     }
-    let c = cam.to_screen(a.pos);
+    let c = cam.to_screen(pos);
     let ring = if a.hostile() { faction_color(4) } else { faction_color(a.faction) };
     draw_circle_lines(c.x, c.y + 4.0, 7.0 * cam.scale / PX + 3.0, 2.0, ring);
     if a.chasing {
@@ -416,13 +417,13 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
         _ => 1,
     };
     let next = game.path.first().map(|&t| game.world.map.center(t));
-    let c = cam.to_screen(game.pos);
+    let c = cam.to_screen(game.display_pos());
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
     if game.aboard() {
-        draw_ship(cam, game.pos, HERO_SAIL);
+        draw_ship(cam, game.display_pos(), HERO_SAIL);
         return;
     }
-    if !draw_figure(art, figure_stem(model), game.pos, next, cam) {
+    if !draw_figure(art, figure_stem(model), game.display_pos(), next, cam) {
         assets.draw_unit(game.hero().def, Team::Player, c.x, c.y - 10.0, 30.0);
     }
 }
@@ -453,12 +454,12 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     }
     // Armies in the dark keep moving but are not shown.
     for (i, a) in game.world.armies.iter().enumerate().filter(|(_, a)| fog.explored(a.tile(map))) {
-        items.push((a.pos.1 + 0.02, Drawable::Army(i)));
+        items.push((game.army_display_pos(a).1 + 0.02, Drawable::Army(i)));
     }
     if let Some(ship) = game.ship.filter(|s| !s.aboard && fog.explored(s.tile)) {
         items.push((map.center(ship.tile).1 + 0.02, Drawable::Ship));
     }
-    items.push((game.pos.1 + 0.03, Drawable::Hero));
+    items.push((game.display_pos().1 + 0.03, Drawable::Hero));
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (_, d) in &items {
         match d {
@@ -621,7 +622,7 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
     }
     let near = 22.0 * (cam.scale / PX).max(0.6);
     let map = &game.world.map;
-    if let Some(a) = game.world.armies.iter().filter(|a| game.fog.explored(a.tile(map))).find(|a| (cam.to_screen(a.pos) - vec2(0.0, 12.0 * cam.scale / PX) - m).length() < near) {
+    if let Some(a) = game.world.armies.iter().filter(|a| game.fog.explored(a.tile(map))).find(|a| (cam.to_screen(game.army_display_pos(a)) - vec2(0.0, 12.0 * cam.scale / PX) - m).length() < near) {
         return Some(army_tooltip(game, a));
     }
     let t = cam.tile_under_mouse().filter(|&t| game.fog.explored(t))?;
@@ -744,20 +745,20 @@ pub fn backdrop(game: &Game, assets: &Assets) {
     resource_strip(game);
 }
 
-fn bottom_bar(game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+fn bottom_bar(game: &mut Game, message: &mut Option<String>) -> Option<Screen> {
     let (w, h) = (screen_width(), screen_height());
     let y = h - BAR_H;
     draw_rectangle(0.0, y, w, BAR_H, Color::new(0.08, 0.10, 0.09, 1.0));
     draw_line(0.0, y, w, y, 2.0, Color::new(0.35, 0.45, 0.4, 1.0));
     let mut next = None;
     let idle = game.foe.is_none();
-    if button(8.0, y + 8.0, 96.0, 40.0, "Wait 1 h", idle) || (idle && key(KeyCode::Key1)) {
-        let events = game.wait(1);
-        next = handle_events(game, events, message, dialogs);
+    // Waits play in real time, a 30-minute tick every 150 ms (`Game::tick`).
+    let can_wait = idle && !game.waiting();
+    if button(8.0, y + 8.0, 96.0, 40.0, "Wait 1 h", can_wait) || (can_wait && key(KeyCode::Key1)) {
+        game.begin_wait(1);
     }
-    if button(110.0, y + 8.0, 96.0, 40.0, "Wait 4 h", idle) || (idle && key(KeyCode::Key4)) {
-        let events = game.wait(4);
-        next = handle_events(game, events, message, dialogs);
+    if button(110.0, y + 8.0, 96.0, 40.0, "Wait 4 h", can_wait) || (can_wait && key(KeyCode::Key4)) {
+        game.begin_wait(4);
     }
     if (button(212.0, y + 8.0, 104.0, 40.0, "Spells (B)", idle) || (idle && key(KeyCode::B))) && next.is_none() {
         game.stop();
@@ -783,6 +784,8 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDe
     if game.moving() {
         let left = format!("Path left: {}", duration_label(game.minutes_left() as f64));
         text_centered(&left, cx, y + 45.0, 17.0, ACCENT);
+    } else if game.waiting() {
+        text_centered("waiting…", cx, y + 45.0, 17.0, ACCENT);
     } else {
         text_centered("time stands still", cx, y + 45.0, 16.0, DIM);
     }
@@ -824,7 +827,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     if key(KeyCode::M) {
         view.minimap = !view.minimap;
     }
-    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.pos));
+    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(mouse_position()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     if clicked() && !on_minimap {
@@ -853,7 +856,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
     let mut next = handle_events(game, events, message, dialogs);
 
-    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.pos));
+    let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     draw_world(game, assets, &cam);
     cam.draw_fog(game);
 
@@ -912,7 +915,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         text(line, x + 15.0, panel_h - 80.0 + i as f32 * 18.0, 15.0, DIM);
     }
 
-    let bar = bottom_bar(game, message, dialogs);
+    let bar = bottom_bar(game, message);
     next = next.or(bar);
     if minimap::toggle_button(screen_width() - 492.0, screen_height() - BAR_H + 8.0, view.minimap) {
         view.minimap = !view.minimap;

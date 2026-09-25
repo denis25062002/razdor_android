@@ -253,7 +253,7 @@ pub fn army_panel(state: &mut PanelState, s: &Scenario, id: u8, ctx: &Ctx, rect:
                 f.note(&format!("Strength (tactical cost): {}", records::army_strength(&a, c)), INK);
             }
             f.note(&format!("Stored editor values: {} / {}", a.tactical_cost_1, a.tactical_cost_2), DIM);
-            f.num("gold", "Extra gold per day", &mut a.gold_income, 0, 65_535);
+            f.num("gold", "Starting gold", &mut a.gold_income, 0, 65_535);
             f.heading("Hiring and garrison");
             f.num("hire_xp", "Experience for hired units", &mut a.hire_bonus_exp, 0, 65_535);
             f.flag("xp_like", "Hired units get the player's experience", &mut a.exp_like_player);

@@ -705,7 +705,7 @@ pub struct Army {
     pub exp_like_player: u8,
     /// 15: always 0 (U).
     pub unknown_15: [u8; 2],
-    /// 17: extra daily gold income.
+    /// 17: starting gold (world.md §5; the daily income is byte 80 × 10).
     pub gold_income: u16,
     /// 19: bonus experience for hired units.
     pub hire_bonus_exp: u16,
@@ -763,7 +763,7 @@ pub struct Army {
     pub no_random_targets: u8,
     /// 79: no socialising with other armies.
     pub no_socialising: u8,
-    /// 80: 0..45 (U).
+    /// 80: daily gold income in tens (world.md §5: income = byte 80 × 10).
     pub unknown_80: u8,
     /// 81: no interest in buildings.
     pub no_building_interest: u8,

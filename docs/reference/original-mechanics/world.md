@@ -214,31 +214,38 @@ building enters it (`0x68dc74`). The step time charged is the cost of the cell b
 
 ## Razdor now → original
 
-| Topic | Razdor now | Original |
-|---|---|---|
-| Grid | 8-neighbour squares; diagonal = √(32²+22²)/32 | 8-neighbour squares; diagonal ×1.5, vertical = horizontal |
-| Road / grass / marsh | 30 / 60 / 120 min | 15 / 25 / 40 min (value×5) |
-| Clay, stony, scorched | 75 | 25, 20, 25 |
-| Sand / snow | 90 / 120 | 25 / 30 |
-| Shallows | walked, 120 | **water**: ship only (10 min), not on foot |
-| Lava | walked, 120 | blocked |
-| Deep sea | ship water | blocked for ships too |
-| Hills / trees | +50% | +2 (+3 class 4) / +4 (+6 dead trees) cost units, additive |
-| Massif cover | disc radius (f−1)/2, bottom on cell | square side f, object = bottom-right |
-| Step time | cost of entered cell | cost of the cell left (planner: entered) |
-| Ranger | ×1/1.2 | speed 4 vs 5 (×0.8) |
-| Speed correction | ±10%/pt | `max(1, 5−c)/5`; archmage-led AI −1 |
-| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route |
-| Hero start | building entry / nearest flagged building | preset x/y; flagged buildings become his |
-| Sight | 7.5 cell widths on screen | 9/8/10 cells (knight/archmage/ranger), circle in cells |
-| Lantern unit | cell widths, guess | cells (×2 half-cells) |
-| Unexplored impassable | yes | yes (hero only) |
-| Chase / view | 6 × AIDistance by model | AIDistance by style: 100/50/25 cells scoring range; contact = adjacent |
-| Goal score | priority × (10 + distance) | priority + path cost (flood), battle simulated |
-| Wait 1h/4h | as is | 2 / 8 ticks of 30 min |
-| Heal / resurrect time | HealingTime per unit | none for the player |
-| Village refill | +income/day to max, at 00:00 | +income·√(1−stock/max) at 00:00 |
-| Barracks | deterministic progress | random per night, p = 1/(10 div max) |
-| Garrison heal | at noon | at 00:00 |
-| Army word 17 | extra income | starting gold; income = byte 80 × 10 |
-| Ship after landing | waits, re-boardable | route map returns to land-only on landing (M) |
+Status after the world/movement/AI pass (branch `worktree-agent-a61eafdd222cb793e`): **done**
+unless noted. "Before" is what Razdor did until then.
+
+| Topic | Before | Original | Status |
+|---|---|---|---|
+| Grid | 8-neighbour squares; diagonal = √(32²+22²)/32 | 8-neighbour squares; diagonal ×1.5, vertical = horizontal | done (`Grid::weight` 2/3, `map::step_minutes`) |
+| Road / grass / marsh | 30 / 60 / 120 min | 15 / 25 / 40 min (value×5) | done (`map::surface_value`) |
+| Clay, stony, scorched | 75 | 25, 20, 25 | done |
+| Sand / snow | 90 / 120 | 25 / 30 | done |
+| Shallows | walked, 120 | **water**: ship only (10 min), not on foot | done (`is_water`, SHIP map) |
+| Lava | walked, 120 | blocked | done |
+| Deep sea | ship water | blocked for ships too | done |
+| Hills / trees | +50% | +2 (+3 class 4) / +4 (+6 dead trees) cost units, additive | done (`object_effect`; hills set a base, plants and massifs add) |
+| Massif cover | disc radius (f−1)/2, bottom on cell | square side f, object = bottom-right | done (`object_cells`); the "roads stay open under objects" guess is reverted |
+| Step time | cost of entered cell | cost of the cell left (planner: entered) | done (`Game::step_time`, `TileMap::search`) |
+| Ranger | ×1/1.2 | speed 4 vs 5 (×0.8) | done (`KNIGHT_SPEED`, `RANGER_SPEED`) |
+| Speed correction | ±10%/pt | `max(1, 5−c)/5`; archmage-led AI −1 | done (`Army::speed_for`, also for the event that changes it) |
+| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route | done (`place_buildings`, `Location::bars_hero`, the hero's mask in `Game::plan`); entry cells and gates removed; stationary guards and bridges at sea closed too |
+| Hero start | building entry / nearest flagged building | preset x/y; flagged buildings become his | done (`World::start_buildings`, `give_to_player`); a preset on water starts him aboard *(guess)* |
+| Sight | 7.5 cell widths on screen | 9/8/10 cells (knight/archmage/ranger), circle in cells | done (`fog::sight_radius`, edge +0.6 M) |
+| Lantern unit | cell widths, guess | cells (×2 half-cells) | done |
+| Unexplored impassable | yes | yes (hero only) | done (unchanged) |
+| Chase / view | 6 × AIDistance by model | AIDistance by style: 100/50/25 cells scoring range; contact = adjacent | done (`ai::target_range`, octile distance, patrol box); the demo's gangs keep their 6-cell chase |
+| Goal score | priority × (10 + distance) | priority + path cost (flood), battle simulated | done (`ai::choose`, `flood`, `simulate`, `battle_seed`); the repulsion field around a losing target is not modelled (it is simply no target) |
+| Wait 1h/4h | as is | 2 / 8 ticks of 30 min | done (`WAIT_TICK_MINUTES`; the UI plays them at 150 ms each, `begin_wait`); casting uses the same ticks |
+| Heal / resurrect time | HealingTime per unit | none for the player | done (`town.rs`) |
+| Village refill | +income/day to max, at 00:00 | +income·√(1−stock/max) at 00:00 | done (`Location::refill`) |
+| Barracks | deterministic progress | random per night, p = 1/(10 div max) | done (`Recruit::regrow`) |
+| Garrison heal | at noon | at 00:00 | done (`Game::midnight`, `ai_midnight`) |
+| Army word 17 | extra income | starting gold; income = byte 80 × 10 | done (`AiProfile::extra_income`) |
+| Ship after landing | waits, re-boardable | route map returns to land-only on landing (M) | done: landing dismisses the ship |
+
+Also done from §2/§5: real-time pacing (`STEP_SECONDS` = 150 ms per step or wait tick), the
+AI clock (banked minutes, cap 200), respawn at the home building's centre (feudal fallbacks,
+rogues take their home), AI armies standing at the footprint centre.

@@ -142,8 +142,9 @@ impl Game {
         Some(Price::for_unit(&self.content, u.def, amount as i32))
     }
 
-    /// Heals squad member `i` to full HP for [`Game::heal_price`]; it takes `HealingTime`
-    /// minutes of game time. Returns what happened meanwhile (a noon report …).
+    /// Heals squad member `i` to full HP for [`Game::heal_price`]. It takes no game time: the
+    /// original reads `HealingTime` for the AI only (world.md §6). Returns what happened
+    /// meanwhile (nothing; kept for the callers).
     pub fn heal(&mut self, i: usize) -> Result<Vec<Event>, ServiceError> {
         if !self.heals_here() {
             return Err(ServiceError::NotHere);
@@ -158,7 +159,7 @@ impl Game {
         }
         let c = self.content.clone();
         self.squad[i].heal_full(&c);
-        Ok(self.spend_minutes(c.options.healing_time))
+        Ok(Vec::new())
     }
 
     /// Minutes left to resurrect squad member `i`, if it is a corpse that can still be raised.
@@ -179,8 +180,8 @@ impl Game {
     }
 
     /// Raises the corpse of squad member `i` in a town or church, within `MaxTimeResurection`
-    /// of its death. It comes back with full HP, and it takes `HealingTime` minutes, as a
-    /// heal does *(guess)*.
+    /// of its death. It comes back with full HP, at once: the player's resurrection takes no
+    /// game time (world.md §6).
     pub fn resurrect(&mut self, i: usize) -> Result<Vec<Event>, ServiceError> {
         if !self.resurrects_here() {
             return Err(ServiceError::NotHere);
@@ -197,14 +198,7 @@ impl Game {
         let u = &mut self.squad[i];
         u.died_at = None;
         u.heal_full(&c);
-        Ok(self.spend_minutes(c.options.healing_time))
-    }
-
-    /// Game time spent on a service in a building.
-    fn spend_minutes(&mut self, minutes: i32) -> Vec<Event> {
-        let mut events = Vec::new();
-        self.pass_time(minutes.max(0) as f32, &mut events);
-        events
+        Ok(Vec::new())
     }
 
     /// The player's troops in the garrison here.
@@ -421,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn heal_costs_a_share_of_the_unit_cost_and_an_hour() {
+    fn heal_costs_a_share_of_the_unit_cost_and_no_time() {
         let mut s = map();
         s.buildings = vec![town(BuildingType::Town, 2, 2, 1)];
         let mut g = inside(&s);
@@ -433,7 +427,7 @@ mod tests {
         let (gold, t) = (g.gold, g.clock.total_minutes());
         g.heal(1).unwrap();
         assert_eq!((g.squad[1].hp, g.gold), (40, gold - 19));
-        assert_eq!(g.clock.total_minutes(), t + 60.0, "HealingTime");
+        assert_eq!(g.clock.total_minutes(), t, "no game time: HealingTime is for the AI only (world.md §6)");
         assert_eq!(g.heal(1), Err(ServiceError::NotWounded));
         g.gold = 0;
         assert_eq!(g.heal(2), Err(ServiceError::CannotAfford));
@@ -442,14 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn healing_across_noon_brings_the_report() {
+    fn healing_and_resurrection_take_no_time_even_before_noon() {
         let mut s = map();
         s.buildings = vec![town(BuildingType::Church, 2, 2, 1)];
         let mut g = inside(&s);
         g.pass_time(2.5 * 60.0, &mut Vec::new()); // 09:00 -> 11:30
         g.squad[1].hp = 1;
+        let t = g.clock.total_minutes();
         let events = g.heal(1).unwrap();
-        assert!(matches!(events.as_slice(), [Event::NewDay(_)]), "{events:?}");
+        assert!(events.is_empty() && g.clock.total_minutes() == t, "{events:?}");
     }
 
     #[test]
@@ -540,17 +535,22 @@ mod tests {
         g.hire(UnitId(4)).unwrap();
         assert_eq!(g.gold, 950);
         assert_eq!(g.hire(UnitId(4)), Err(crate::rules::game::HireError::NotOffered), "sold out");
-        // MaxDayCountForNewUnit = 10: 5 militia regrow in 10 days, one every 2 days.
+        // MaxDayCountForNewUnit = 10 (world.md §6): each night a militia comes with chance
+        // 1 / (10 div 5) = 1/2, an archer (maximum 1) with 1/10.
         let day = 24.0 * 60.0;
+        let stock = |g: &Game, k: usize| g.world.locations[0].recruits[k].stock.unwrap();
+        let mut seen = Vec::new();
         g.pass_time(15.0 * 60.0, &mut Vec::new()); // the first midnight
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(0));
-        g.pass_time(day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(1));
-        g.pass_time(7.0 * day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(4));
-        g.pass_time(10.0 * day, &mut Vec::new());
-        assert_eq!(g.world.locations[0].recruits[0].stock, Some(5), "capped at the maximum");
-        assert_eq!(g.world.locations[0].recruits[1].stock, Some(1), "one archer in 10 days");
+        seen.push(stock(&g, 0));
+        for _ in 0..30 {
+            g.pass_time(day, &mut Vec::new());
+            seen.push(stock(&g, 0));
+        }
+        assert!(seen.windows(2).all(|w| w[1] - w[0] <= 1), "one at most a night: {seen:?}");
+        assert!(seen[4] < 5, "not all back in five nights: {seen:?}");
+        assert_eq!(stock(&g, 0), 5, "capped at the maximum");
+        g.pass_time(30.0 * day, &mut Vec::new());
+        assert_eq!(stock(&g, 1), 1, "an archer in the end");
     }
 
     #[test]
@@ -686,13 +686,13 @@ mod tests {
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events); // noon: 3 h after leaving
         assert!(matches!(&events[..], [Event::NewDay(DayReport { wages: 12, .. })]), "{events:?}");
-        assert_eq!(g.garrison_here()[0].unit.hp, 24, "GarrisonAutoHeal 10%");
+        assert_eq!(g.garrison_here()[0].unit.hp, 20, "garrisons heal at midnight, not at noon");
         assert_eq!(g.daily_wages(), 6, "from its second day, free");
         events.clear();
         g.pass_time(24.0 * 60.0, &mut events);
         assert!(matches!(&events[..], [Event::NewDay(DayReport { wages: 6, .. })]));
         g.take_from_garrison(0).unwrap();
-        assert_eq!((g.squad.len(), g.squad[2].hp), (3, 28));
+        assert_eq!((g.squad.len(), g.squad[2].hp), (3, 24), "GarrisonAutoHeal 10% at the midnight between");
         assert_eq!(g.take_from_garrison(0), Err(ServiceError::NoSuchUnit));
         g.location = Some(1);
         assert_eq!(g.leave_in_garrison(1), Err(ServiceError::NotHere), "not the player's castle");
@@ -885,8 +885,12 @@ mod real_maps {
         let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 11);
         g.world.armies.clear();
 
+        // Walking onto another building on the way enters it and ends the walk: walk on.
         let walk_into = |g: &mut Game, l: usize| {
-            if g.location != Some(l) {
+            for _ in 0..10 {
+                if g.location == Some(l) {
+                    break;
+                }
                 assert!(g.set_destination(g.world.locations[l].tile));
                 for _ in 0..50_000 {
                     if !g.moving() {

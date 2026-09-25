@@ -1,17 +1,16 @@
 //! Cell grid of the world map and pathfinding.
 //!
-//! The original stores a plain W×H grid. Its editor draws the grid as plain 32×22 px cells
-//! (`Graphics/Editor/Grid*.tga`, no stagger), its path arrows (`Way_Arrows.ugs`) and map
-//! sprites have 8 directions, its roads are thin 4-connected strokes with diagonal steps, and
-//! its 1×1 bridge pieces run diagonally across rivers one column per row, which no staggered
-//! (hex) layout connects. So scenarios use [`Grid::Square8`]: rectangular cells, 8 neighbours,
-//! travel time proportional to the distance walked *(guess, from that evidence; the files do
-//! not state the topology)*. The built-in demo keeps its hex layout ([`Grid::HexOddR`], odd
-//! rows shifted half a cell right), as `data/kingdom.txt` was drawn for it.
+//! The original (`docs/reference/original-mechanics/world.md` §1) uses plain squares of 32×22
+//! px with 8 neighbours: [`Grid::Square8`]. Its planner weighs an orthogonal step 2 and a
+//! diagonal one 3 (×1.5, vertical and horizontal alike), and prices the cell entered; walking
+//! charges the cell left, `cost × speed` minutes (×1.5 diagonally). The built-in demo keeps its
+//! hex layout ([`Grid::HexOddR`], odd rows shifted half a cell right, every step weight 2), as
+//! `data/kingdom.txt` was drawn for it.
 //!
 //! Tile `(col, row)`; world positions are in units where one column is 1 wide. Each cell has
-//! a surface (the original's terrain code, `dt::dtm::Surface`) and a travel cost in game
-//! minutes, derived from the surface and the map objects on it.
+//! a surface (the original's terrain code, `dt::dtm::Surface`) and costs in the original's
+//! units on foot (its LAND map) and by ship (its SHIP map), from the surface and the map
+//! objects on it ([`TileMap::from_codes`]).
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -149,45 +148,94 @@ impl Grid {
         }
     }
 
-    /// Length of the step between two neighbouring cells, in world units.
+    /// Length of the step between two neighbouring cells, in world units (drawing only).
     pub fn step_length(self, a: Tile, b: Tile) -> f32 {
         let (p, q) = (self.center(a), self.center(b));
         (p.0 - q.0).hypot(p.1 - q.1)
     }
+
+    /// Planner weight of a step between neighbours (world.md §1): 2 orthogonal, 3 diagonal
+    /// on the original's squares (a diagonal is ×1.5, vertical and horizontal alike); every
+    /// hex step is 2.
+    pub fn weight(self, a: Tile, b: Tile) -> u32 {
+        match self {
+            Grid::Square8 if a.0 != b.0 && a.1 != b.1 => DIAGONAL_WEIGHT,
+            _ => ORTHOGONAL_WEIGHT,
+        }
+    }
+
+    /// The original's distance (world.md §4): `max(|dx|,|dy|) + min(|dx|,|dy|)/2` cells on
+    /// squares; hex steps on the demo's grid.
+    pub fn octile(self, a: Tile, b: Tile) -> i32 {
+        match self {
+            Grid::HexOddR => hex_distance(a, b),
+            Grid::Square8 => {
+                let (dx, dy) = ((a.0 - b.0).abs(), (a.1 - b.1).abs());
+                dx.max(dy) + dx.min(dy) / 2
+            }
+        }
+    }
+
+    /// Lower bound of the planner weights between two cells (for A*).
+    fn weight_bound(self, a: Tile, b: Tile) -> u32 {
+        match self {
+            Grid::HexOddR => ORTHOGONAL_WEIGHT * hex_distance(a, b) as u32,
+            Grid::Square8 => {
+                let (dx, dy) = ((a.0 - b.0).unsigned_abs(), (a.1 - b.1).unsigned_abs());
+                ORTHOGONAL_WEIGHT * dx.max(dy) + (DIAGONAL_WEIGHT - ORTHOGONAL_WEIGHT) * dx.min(dy)
+            }
+        }
+    }
 }
 
-/// Minutes to walk onto a cell of this surface on foot, `None` if impassable.
-///
-/// The original's per-terrain costs are not in its data files or found in the exe; these
-/// are *(guess)*: road fastest, grass and fields normal, soils a little slower, sand, marsh,
-/// shallows, lava and snow slow; coastal and deep water, the impassable swamp and the
-/// impassable snowdrifts block.
-pub fn surface_minutes(s: Surface) -> Option<u16> {
+/// Planner weight of an orthogonal step; a diagonal one is [`DIAGONAL_WEIGHT`].
+pub const ORTHOGONAL_WEIGHT: u32 = 2;
+pub const DIAGONAL_WEIGHT: u32 = 3;
+
+/// The original's terrain value of a surface (world.md §1, cost units): shallows 2, coastal
+/// water 1, road 3, stony soil 4, grass, dry plain, sand, clay and scorched land 5, snowy
+/// ground 6, marsh 8; deep sea, lava, the impassable swamp and snowdrifts −32 (blocked).
+pub fn surface_value(s: Surface) -> i32 {
     use Surface::*;
-    Some(match s {
-        Road => 30,
-        GrassLowland | GrassPlain | DryPlain => 60,
-        ClaySoil | StonySoil | ScorchedLand => 75,
-        SandDunes => 90,
-        Marsh | ShallowsFords | LavaFields | SnowyGround => 120,
-        CoastalWater | DeepSea | ImpassableSwamp | ImpassableSnowdrifts => return None,
-    })
+    match s {
+        ShallowsFords => 2,
+        CoastalWater => 1,
+        Road => 3,
+        StonySoil => 4,
+        GrassLowland | GrassPlain | DryPlain | SandDunes | ClaySoil | ScorchedLand => 5,
+        SnowyGround => 6,
+        Marsh => 8,
+        DeepSea | LavaFields | ImpassableSwamp | ImpassableSnowdrifts => BLOCKED,
+    }
 }
 
-/// Open water a ship sails on: coastal water and deep sea (shallows and fords are walked).
+/// The value that blocks a cell whatever else is on it.
+pub const BLOCKED: i32 = -32;
+/// Cost units of a road, and of every building footprint.
+pub const ROAD: u16 = 3;
+/// The knight's speed: game minutes per cost unit of an orthogonal step (the hero's step
+/// time is `cost × speed` minutes, ×1.5 diagonally; world.md §2).
+pub const BASE_SPEED: u16 = 5;
+
+/// Water (terrain codes 0–2): never walked; ships sail the shallows and coastal water.
 pub fn is_water(s: Surface) -> bool {
-    matches!(s, Surface::CoastalWater | Surface::DeepSea)
+    matches!(s, Surface::ShallowsFords | Surface::CoastalWater | Surface::DeepSea)
 }
 
-/// Cheapest cost of any passable cell, for the A* heuristic.
-pub const MIN_MINUTES: u16 = 30;
+/// Minutes per orthogonal step on foot at the knight's speed 5, `None` for water and
+/// blocking surfaces (road 15, grass 25, marsh 40 …).
+pub fn surface_minutes(s: Surface) -> Option<u16> {
+    let v = surface_value(s);
+    (!is_water(s) && v > 0).then(|| v as u16 * BASE_SPEED)
+}
 
-/// What a map object does to the cells it covers.
+/// What a map object does to the cells it covers (world.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectEffect {
-    /// Extra travel time in percent.
-    Slow(u16),
-    Block,
+    /// Hills: the cell's cost starts from this value instead of 0 (the terrain adds to it).
+    Base(i32),
+    /// Added to the cell's cost ([`BLOCKED`] blocks it).
+    Add(i32),
 }
 
 /// Map object classes (`.DTm` objects, `Objects.ugs` section A categories).
@@ -204,35 +252,34 @@ pub mod object_class {
     pub const THICKET: u8 = 11;
 }
 
-/// Effect of an object class *(guess for the numbers; which classes block and which slow
-/// follows the manual)*: mountains, dense thickets and rocks block; hills and trees slow.
+/// Effect of an object class (world.md §1): hills 1–3 are a base of 2, class 4 of 3;
+/// mountains 5–7 and rocks 8 block; trees 9 add 4, dead trees 10 add 6, thickets 11 block,
+/// class 12 adds 4.
 pub fn object_effect(class: u8) -> Option<ObjectEffect> {
-    use object_class::*;
     match class {
-        MOUNTAINS | DARK_MOUNTAINS | THICKET | ROCKS => Some(ObjectEffect::Block),
-        HILLS | GREEN_HILL | ROCKY_HILLS | YELLOW_HILL | TREES | DEAD_TREES => Some(ObjectEffect::Slow(50)),
+        1..=3 => Some(ObjectEffect::Base(2)),
+        4 => Some(ObjectEffect::Base(3)),
+        5..=8 | 11 => Some(ObjectEffect::Add(BLOCKED)),
+        9 | 12 => Some(ObjectEffect::Add(4)),
+        10 => Some(ObjectEffect::Add(6)),
         _ => None,
     }
 }
 
-/// How many cells around its base an object covers. Hills, mountains and rocks come in
-/// size families by the tens digit of the sprite id (10–19 are 64 px wide, 20–29 96 px, …
-/// 60 is 224 px, about `family + 1` cells of 32 px). A massif covers a disk of radius
-/// `(family − 1) / 2` whose bottom is the object's cell, i.e. the object stands at the front
-/// (bottom) of its sprite *(guess: the smallest cover that keeps the stony massif areas
-/// mostly closed without cutting the roads between them)*. Trees cover their own cell.
-pub fn object_radius(class: u8, sprite: u8) -> i32 {
-    use object_class::*;
+/// A massif (classes 1–8: hills, mountains, rocks) covers a square of `sprite div 10` cells a
+/// side whose bottom-right cell is the object's own; plants (9–12) cover their own cell.
+pub fn object_side(class: u8, sprite: u8) -> i32 {
     match class {
-        HILLS | GREEN_HILL | ROCKY_HILLS | YELLOW_HILL | MOUNTAINS | DARK_MOUNTAINS | ROCKS => ((sprite / 10) as i32 - 1).max(0) / 2,
-        _ => 0,
+        1..=8 => (sprite / 10) as i32,
+        _ => 1,
     }
 }
 
-/// Cells an object covers: [`object_radius`] around a centre `radius` rows above it.
-pub fn object_cells(grid: Grid, o: &Decoration) -> Vec<Tile> {
-    let r = object_radius(o.class, o.sprite);
-    grid.disk((o.tile.0, o.tile.1 - r), r)
+/// Cells an object covers (in bounds or not): rows `y−f+1..=y`, columns `x−f+1..=x`.
+pub fn object_cells(o: &Decoration) -> impl Iterator<Item = Tile> {
+    let f = object_side(o.class, o.sprite);
+    let (x, y) = o.tile;
+    (0..f).flat_map(move |j| (0..f).map(move |i| (x - i, y - j)))
 }
 
 /// A map object (hill, mountain, tree, rock) standing on a cell.
@@ -249,8 +296,11 @@ pub struct TileMap {
     pub w: i32,
     pub h: i32,
     surface: Vec<u8>,
-    /// Minutes to walk onto the cell; 0 = impassable.
-    cost: Vec<u16>,
+    /// The original's LAND map: cost units of a step onto the cell on foot; 0 = impassable.
+    land: Vec<u16>,
+    /// Its SHIP map: cost units on water (shallows 2, coastal 1; building footprints road);
+    /// 0 = not sailable.
+    water: Vec<u16>,
     /// Sorted by (row, col).
     pub objects: Vec<Decoration>,
     /// `objects[row_start[r]..row_start[r + 1]]` stand in row `r`.
@@ -267,12 +317,16 @@ impl Default for TileMap {
 }
 
 impl TileMap {
-    /// A map from terrain codes (`w*h`, row by row) and objects. Costs follow
-    /// [`surface_minutes`], [`object_effect`] and [`object_radius`].
+    /// A map from terrain codes (`w*h`, row by row) and objects, costed as the original
+    /// builds its maps at load (world.md §1): hills set a base over their square, every cell
+    /// adds its terrain value (below 0 blocks), plants add theirs on their cell and mountains,
+    /// rocks and thickets block; water goes to the ship map, the rest to the foot map.
+    /// Buildings are laid over it by `rules::world` ([`TileMap::pave`]).
     pub fn from_codes(grid: Grid, w: i32, h: i32, codes: &[u8], objects: Vec<Decoration>) -> TileMap {
         assert_eq!(codes.len(), (w * h) as usize, "terrain size");
         let mut objects = objects;
         objects.retain(|o| o.tile.0 >= 0 && o.tile.1 >= 0 && o.tile.0 < w && o.tile.1 < h);
+        let file_order = objects.clone();
         objects.sort_by_key(|o| (o.tile.1, o.tile.0));
         let mut row_start = Vec::with_capacity(h as usize + 1);
         let mut i = 0;
@@ -282,39 +336,44 @@ impl TileMap {
             }
             row_start.push(i);
         }
-        let mut m = TileMap {
-            grid,
-            w,
-            h,
-            surface: codes.to_vec(),
-            cost: vec![0; codes.len()],
-            objects,
-            row_start,
-            markers: Vec::new(),
-        };
-        let mut slow = vec![0u16; codes.len()];
-        let mut blocked = vec![false; codes.len()];
-        for o in &m.objects {
-            let Some(effect) = object_effect(o.class) else { continue };
-            for t in object_cells(grid, o) {
-                let Some(i) = m.index(t) else { continue };
-                match effect {
-                    ObjectEffect::Block => blocked[i] = true,
-                    ObjectEffect::Slow(p) => slow[i] = slow[i].max(p),
+        let n = codes.len();
+        let mut m = TileMap { grid, w, h, surface: codes.to_vec(), land: vec![0; n], water: vec![0; n], objects, row_start, markers: Vec::new() };
+        let index = |t: Tile| (t.0 >= 0 && t.1 >= 0 && t.0 < w && t.1 < h).then(|| (t.1 * w + t.0) as usize);
+        // Hills set the base of their square (later objects over earlier ones).
+        let mut v = vec![0i32; n];
+        for o in &file_order {
+            if let Some(ObjectEffect::Base(b)) = object_effect(o.class) {
+                for i in object_cells(o).filter_map(index) {
+                    v[i] = b;
                 }
             }
         }
-        for i in 0..codes.len() {
-            let base = Surface::from_code(codes[i]).and_then(surface_minutes);
-            // Roads stay open under objects: the shipped maps put a few dozen thickets on
-            // roads, and no mountain *(guess)*.
-            if codes[i] == Surface::Road as u8 {
-                blocked[i] = false;
-            }
-            m.cost[i] = match base {
-                Some(b) if !blocked[i] => (b as u32 * (100 + slow[i] as u32) / 100) as u16,
-                _ => 0,
+        // The terrain adds its value; below 0 blocks.
+        for i in 0..n {
+            v[i] = match Surface::from_code(codes[i]) {
+                Some(s) => (v[i] + surface_value(s)).max(0),
+                None => 0,
             };
+        }
+        // Plants add theirs on their own cell (if it is still open), massifs over their
+        // square.
+        for o in &file_order {
+            let Some(ObjectEffect::Add(a)) = object_effect(o.class) else { continue };
+            let cells: Vec<usize> = if o.class >= object_class::TREES { index(o.tile).into_iter().collect() } else { object_cells(o).filter_map(index).collect() };
+            for i in cells {
+                if v[i] > 0 {
+                    v[i] = (v[i] + a).max(0);
+                }
+            }
+        }
+        // Water on the ship map, the rest on the foot map.
+        for i in 0..n {
+            let c = v[i].min(u16::MAX as i32) as u16;
+            if Surface::from_code(codes[i]).is_some_and(is_water) {
+                m.water[i] = c;
+            } else {
+                m.land[i] = c;
+            }
         }
         m
     }
@@ -377,26 +436,46 @@ impl TileMap {
         Surface::from_code(self.surface_code(t)).unwrap_or(Surface::DeepSea)
     }
 
-    /// Minutes to walk onto the cell, `None` if impassable.
+    /// Cost units of a step onto the cell on foot (the LAND map), `None` if impassable.
+    pub fn cost(&self, t: Tile) -> Option<u16> {
+        self.index(t).map(|i| self.land[i]).filter(|&c| c > 0)
+    }
+
+    /// Cost units of sailing onto the cell (the SHIP map), `None` if a ship cannot.
+    pub fn water_cost(&self, t: Tile) -> Option<u16> {
+        self.index(t).map(|i| self.water[i]).filter(|&c| c > 0)
+    }
+
+    /// Minutes of an orthogonal step on foot on the cell at the knight's speed, `None` if
+    /// impassable.
     pub fn minutes(&self, t: Tile) -> Option<u16> {
-        self.index(t).map(|i| self.cost[i]).filter(|&c| c > 0)
+        self.cost(t).map(|c| c * BASE_SPEED)
     }
 
     pub fn passable(&self, t: Tile) -> bool {
-        self.minutes(t).is_some()
+        self.cost(t).is_some()
     }
 
-    /// Makes a cell impassable (a building's walls).
+    /// Makes a cell impassable on foot and by ship.
     pub fn block(&mut self, t: Tile) {
         if let Some(i) = self.index(t) {
-            self.cost[i] = 0;
+            self.land[i] = 0;
+            self.water[i] = 0;
         }
     }
 
-    /// Makes a cell passable at the given cost (a bridge, a building's entry).
-    pub fn open(&mut self, t: Tile, minutes: u16) {
+    /// A building's footprint: road on the foot and on the ship map (world.md §1 step 6).
+    pub fn pave(&mut self, t: Tile) {
         if let Some(i) = self.index(t) {
-            self.cost[i] = minutes.max(1);
+            self.land[i] = ROAD;
+            self.water[i] = ROAD;
+        }
+    }
+
+    /// Makes a cell passable on foot at `cost` units.
+    pub fn open(&mut self, t: Tile, cost: u16) {
+        if let Some(i) = self.index(t) {
+            self.land[i] = cost.max(1);
         }
     }
 
@@ -416,7 +495,8 @@ impl TileMap {
         (0..=radius).find_map(|r| g.disk(t, r).into_iter().filter(|&n| g.distance(t, n) == r).find(|&n| self.passable(n)))
     }
 
-    /// Cheapest path from `from` to `to` (A*), excluding `from`. Empty if unreachable or equal.
+    /// Cheapest path on foot from `from` to `to`, excluding `from`. Empty if unreachable or
+    /// equal.
     pub fn path(&self, from: Tile, to: Tile) -> Vec<Tile> {
         self.path_limited(from, to, usize::MAX)
     }
@@ -426,27 +506,34 @@ impl TileMap {
         self.path_where(from, to, max_nodes, &|_| true)
     }
 
-    /// [`TileMap::path_limited`] stepping only onto cells `allowed` accepts (the fog of war:
-    /// explored cells, `rules::fog`).
+    /// [`TileMap::path_limited`] stepping only onto cells `allowed` accepts.
     pub fn path_where(&self, from: Tile, to: Tile, max_nodes: usize, allowed: &dyn Fn(Tile) -> bool) -> Vec<Tile> {
         if !self.passable(to) || !allowed(to) {
             return Vec::new();
         }
-        self.path_by(from, to, max_nodes, &|_, n| self.minutes(n).filter(|_| allowed(n)))
+        self.search(from, &|t| t == to, Some(to), ROAD as u32, max_nodes, &|_, n| self.cost(n).filter(|_| allowed(n)))
     }
 
-    /// Cheapest path (A*) where `step(from, onto)` gives the minutes per cell of a step
-    /// between neighbours, `None` if it is not allowed (ships: `rules::ships`). Costs must be
-    /// at least [`MIN_MINUTES`]. Excludes `from`; empty if unreachable or equal.
+    /// Cheapest path (A*) where `step(from, onto)` gives the cost units of a step between
+    /// neighbours (the planner prices the cell entered, times [`Grid::weight`]), `None` if it
+    /// is not allowed. Excludes `from`; empty if unreachable or equal.
     pub fn path_by(&self, from: Tile, to: Tile, max_nodes: usize, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
-        let (Some(start), Some(goal)) = (self.index(from), self.index(to)) else { return Vec::new() };
-        if from == to {
+        self.search(from, &|t| t == to, Some(to), 1, max_nodes, step)
+    }
+
+    /// Cheapest path to the nearest cell `goal` accepts (Dijkstra), as [`TileMap::path_by`].
+    pub fn path_to_any(&self, from: Tile, goal: &dyn Fn(Tile) -> bool, max_nodes: usize, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
+        self.search(from, goal, None, 1, max_nodes, step)
+    }
+
+    fn search(&self, from: Tile, goal: &dyn Fn(Tile) -> bool, target: Option<Tile>, min_cost: u32, max_nodes: usize, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
+        let Some(start) = self.index(from) else { return Vec::new() };
+        if goal(from) || target.is_some_and(|t| self.index(t).is_none()) {
             return Vec::new();
         }
         let g = self.grid;
-        // Every step costs at least the cheapest cell times its length: admissible.
-        let h = |t: Tile| (MIN_MINUTES as f32 * g.step_length(t, to)) as u32;
-        let n = self.cost.len();
+        let h = |t: Tile| target.map_or(0, |to| min_cost * g.weight_bound(t, to));
+        let n = self.land.len();
         let mut best = vec![u32::MAX; n];
         let mut parent = vec![u32::MAX; n];
         best[start] = 0;
@@ -454,9 +541,13 @@ impl TileMap {
         let mut expanded = 0;
         while let Some(Reverse((_, gc, i))) = open.pop() {
             let i = i as usize;
-            if i == goal {
+            if gc > best[i] {
+                continue;
+            }
+            let here = self.tile_of(i);
+            if i != start && goal(here) {
                 let mut path = Vec::new();
-                let mut cur = goal;
+                let mut cur = i;
                 while cur != start {
                     path.push(self.tile_of(cur));
                     cur = parent[cur] as usize;
@@ -464,18 +555,14 @@ impl TileMap {
                 path.reverse();
                 return path;
             }
-            if gc > best[i] {
-                continue;
-            }
             expanded += 1;
             if expanded > max_nodes {
                 break;
             }
-            let here = self.tile_of(i);
-            for nb in self.grid.neighbours(here) {
+            for nb in g.neighbours(here) {
                 let Some(j) = self.index(nb) else { continue };
                 let Some(c) = step(here, nb).filter(|&c| c > 0) else { continue };
-                let ng = gc + (c as f32 * self.grid.step_length(here, nb)).round() as u32;
+                let ng = gc + c as u32 * g.weight(here, nb);
                 if ng < best[j] {
                     best[j] = ng;
                     parent[j] = i as u32;
@@ -486,18 +573,29 @@ impl TileMap {
         Vec::new()
     }
 
-    /// Travel time (minutes) of `path` from `from`, as [`TileMap::path`] returns it: each
-    /// cell's cost times the length of the step onto it.
-    pub fn path_minutes(&self, from: Tile, path: &[Tile]) -> u32 {
-        self.path_minutes_by(from, path, &|t| self.minutes(t).unwrap_or(0) as f32)
+    /// Planner cost of `path` from `from` on foot: every cell entered times its step weight.
+    pub fn path_cost(&self, from: Tile, path: &[Tile]) -> u32 {
+        let mut prev = from;
+        let mut total = 0;
+        for &t in path {
+            total += self.cost(t).unwrap_or(0) as u32 * self.grid.weight(prev, t);
+            prev = t;
+        }
+        total
     }
 
-    /// [`TileMap::path_minutes`] with the minutes per cell given by `cost`.
-    pub fn path_minutes_by(&self, from: Tile, path: &[Tile], cost: &dyn Fn(Tile) -> f32) -> u32 {
+    /// Walking time (minutes) of `path` from `from` at the knight's speed: each step costs
+    /// the cell being left, ×1.5 diagonally (world.md §1).
+    pub fn path_minutes(&self, from: Tile, path: &[Tile]) -> u32 {
+        self.path_minutes_by(from, path, &|a, b| step_minutes(self.grid, a, b, self.cost(a).unwrap_or(ROAD), BASE_SPEED as u32))
+    }
+
+    /// Minutes of `path` from `from`, `step(from, to)` minutes per step.
+    pub fn path_minutes_by(&self, from: Tile, path: &[Tile], step: &dyn Fn(Tile, Tile) -> f32) -> u32 {
         let mut prev = from;
         let mut total = 0.0;
         for &t in path {
-            total += cost(t) * self.grid.step_length(prev, t);
+            total += step(prev, t);
             prev = t;
         }
         total.round() as u32
@@ -520,14 +618,14 @@ impl TileMap {
 
     /// Cells reachable on foot from `from` (a flood fill), as a `w*h` mask.
     pub fn reachable(&self, from: Tile) -> Vec<bool> {
-        let mut seen = vec![false; self.cost.len()];
+        let mut seen = vec![false; self.land.len()];
         let Some(start) = self.index(from) else { return seen };
         seen[start] = true;
         let mut stack = vec![start];
         while let Some(i) = stack.pop() {
             for nb in self.grid.neighbours(self.tile_of(i)) {
                 if let Some(j) = self.index(nb) {
-                    if !seen[j] && self.cost[j] > 0 {
+                    if !seen[j] && self.land[j] > 0 {
                         seen[j] = true;
                         stack.push(j);
                     }
@@ -540,10 +638,10 @@ impl TileMap {
     /// Connected regions of passable cells: a label per cell (`u32::MAX` for impassable ones)
     /// and the size of each region.
     pub fn regions(&self) -> (Vec<u32>, Vec<usize>) {
-        let mut label = vec![u32::MAX; self.cost.len()];
+        let mut label = vec![u32::MAX; self.land.len()];
         let mut sizes = Vec::new();
-        for s in 0..self.cost.len() {
-            if self.cost[s] == 0 || label[s] != u32::MAX {
+        for s in 0..self.land.len() {
+            if self.land[s] == 0 || label[s] != u32::MAX {
                 continue;
             }
             let id = sizes.len() as u32;
@@ -553,7 +651,7 @@ impl TileMap {
             while let Some(i) = stack.pop() {
                 for nb in self.grid.neighbours(self.tile_of(i)) {
                     if let Some(j) = self.index(nb) {
-                        if label[j] == u32::MAX && self.cost[j] > 0 {
+                        if label[j] == u32::MAX && self.land[j] > 0 {
                             label[j] = id;
                             n += 1;
                             stack.push(j);
@@ -570,6 +668,12 @@ impl TileMap {
     pub fn mask_index(&self, t: Tile) -> Option<usize> {
         self.index(t)
     }
+}
+
+/// Game minutes of a step from `a` to its neighbour `b` for an army of `speed` when the step
+/// is charged `cost` units: `cost × speed`, ×1.5 diagonally (world.md §2).
+pub fn step_minutes(grid: Grid, a: Tile, b: Tile, cost: u16, speed: u32) -> f32 {
+    cost as f32 * speed as f32 * grid.weight(a, b) as f32 / ORTHOGONAL_WEIGHT as f32
 }
 
 #[cfg(test)]
@@ -600,9 +704,9 @@ TTTTT
         assert_eq!(m.objects.len(), 5, "a tree on every forest cell");
         assert_eq!(m.markers, vec![('X', (2, 2))]);
         assert_eq!(m.surface((2, 2)), Surface::Road);
-        assert_eq!(m.minutes((1, 3)), Some(30));
-        assert_eq!(m.minutes((0, 0)), Some(60));
-        assert_eq!(m.minutes((0, 4)), Some(90), "trees slow by half");
+        assert_eq!(m.minutes((1, 3)), Some(15));
+        assert_eq!(m.minutes((0, 0)), Some(25));
+        assert_eq!(m.minutes((0, 4)), Some(45), "a tree adds 4 units to grass's 5");
         assert_eq!(m.minutes((1, 1)), None);
         assert_eq!(m.objects_in_rows(4, 5).len(), 5);
         assert!(m.objects_in_rows(0, 4).is_empty());
@@ -618,6 +722,7 @@ TTTTT
             assert_eq!(hex_distance((2, 1), n), 1);
             let (a, b) = (Grid::HexOddR.center((2, 1)), Grid::HexOddR.center(n));
             assert!(((a.0 - b.0).hypot(a.1 - b.1) - 1.0).abs() < 1e-4, "neighbour centres are 1 apart");
+            assert_eq!(Grid::HexOddR.weight((2, 1), n), 2);
         }
         assert_eq!(hex_distance((0, 0), (4, 0)), 4);
         assert_eq!(hex_distance((0, 0), (0, 4)), 4);
@@ -633,47 +738,87 @@ TTTTT
                 for g in [Grid::HexOddR, Grid::Square8] {
                     assert_eq!(g.tile_at(g.center((c, r))), (c, r));
                     let (x, y) = g.center((c, r));
-                    assert_eq!(g.tile_at((x + 0.3, y - 0.2)), (c, r), "near the centre stays inside");
+                    assert!(g.tile_at((x + 0.3, y - 0.2)) == (c, r), "near the centre stays inside");
                 }
             }
         }
     }
 
+    fn row(surfaces: &[Surface]) -> TileMap {
+        let codes: Vec<u8> = surfaces.iter().map(|s| *s as u8).collect();
+        TileMap::from_codes(Grid::Square8, codes.len() as i32, 1, &codes, vec![])
+    }
+
     #[test]
-    fn surfaces_and_objects_set_the_cost() {
+    fn terrain_values_are_the_originals() {
         use Surface::*;
-        let codes = [Road, GrassPlain, DeepSea, ImpassableSwamp, ImpassableSnowdrifts, ShallowsFords, CoastalWater, Marsh];
-        let codes: Vec<u8> = codes.iter().map(|s| *s as u8).collect();
-        let m = TileMap::from_codes(Grid::HexOddR, 8, 1, &codes, vec![]);
-        let costs: Vec<Option<u16>> = (0..8).map(|x| m.minutes((x, 0))).collect();
-        assert_eq!(costs, [Some(30), Some(60), None, None, None, Some(120), None, Some(120)]);
-        // Objects on a 9×5 grass field.
-        let obj = |x, y, class, sprite| Decoration { tile: (x, y), class, sprite };
+        let all = Surface::ALL;
+        let m = row(&all);
+        let foot: Vec<Option<u16>> = (0..16).map(|x| m.minutes((x, 0))).collect();
+        // Road 15, stony 20, grass/dry/sand/clay/scorched 25, snow 30, marsh 40 minutes.
+        let expect = [None, None, None, None, Some(15), Some(25), Some(25), Some(25), Some(40), None, Some(25), Some(25), Some(20), Some(25), Some(30), None];
+        assert_eq!(foot, expect);
+        let ship: Vec<Option<u16>> = (0..16).map(|x| m.water_cost((x, 0))).collect();
+        assert_eq!(&ship[..3], &[Some(2), Some(1), None], "shallows 2, coastal 1, deep sea blocks ships too");
+        assert!(ship[3..].iter().all(Option::is_none), "no ship on land");
+        for s in [ShallowsFords, CoastalWater, DeepSea] {
+            assert!(is_water(s) && surface_minutes(s).is_none());
+        }
+        assert!(!is_water(LavaFields) && surface_minutes(LavaFields).is_none(), "lava blocks");
+        assert_eq!(surface_minutes(Marsh), Some(40));
+    }
+
+    fn obj(x: i32, y: i32, class: u8, sprite: u8) -> Decoration {
+        Decoration { tile: (x, y), class, sprite }
+    }
+
+    #[test]
+    fn objects_add_fixed_costs() {
+        use object_class::*;
         let objects = vec![
-            obj(1, 1, object_class::MOUNTAINS, 12), // family 1: its own cell
-            obj(6, 4, object_class::MOUNTAINS, 50), // family 5: radius 2, above its cell
-            obj(3, 1, object_class::HILLS, 10),
-            obj(3, 3, object_class::TREES, 5),
-            obj(4, 3, object_class::THICKET, 5),
-            obj(0, 4, object_class::ROCKS, 12),
-            obj(1, 4, 7, 0), // unknown class: no effect
+            obj(0, 0, HILLS, 12),       // hill: base 2 over 1×1, + grass 5
+            obj(1, 0, YELLOW_HILL, 10), // class 4: base 3
+            obj(2, 0, TREES, 3),        // +4
+            obj(3, 0, DEAD_TREES, 110), // +6, dead trees are slower than trees
+            obj(4, 0, 12, 0),           // class 12: +4
+            obj(5, 0, THICKET, 3),      // blocks
+            obj(6, 0, ROCKS, 12),       // blocks
+            obj(7, 0, MOUNTAINS, 15),   // blocks
+            obj(8, 0, 7, 10),           // class 7 blocks too
+            obj(9, 0, 13, 0),           // unknown: nothing
+            obj(10, 0, TREES, 1),       // a tree on a hill: 2 + 5 + 4
+            obj(10, 0, HILLS, 10),
         ];
-        let m = TileMap::from_codes(Grid::HexOddR, 9, 7, &[GrassPlain as u8; 63], objects);
-        assert!(!m.passable((1, 1)) && m.passable((2, 1)) && m.passable((1, 2)));
-        assert!(hex_disk((6, 2), 2).filter(|t| m.in_bounds(*t)).all(|t| !m.passable(t)));
-        assert!(m.passable((6, 5)), "nothing below the mountain's cell");
-        assert!(m.passable((8, 0)) && m.passable((3, 0)));
-        assert_eq!(m.minutes((3, 1)), Some(90), "hills slow");
-        assert_eq!(m.minutes((3, 3)), Some(90), "trees slow");
-        assert_eq!(m.minutes((4, 3)), None, "thickets block");
-        assert_eq!(m.minutes((0, 4)), None, "rocks block");
-        assert_eq!(m.minutes((1, 4)), Some(60));
-        // Roads stay open under objects.
-        let mut codes = [GrassPlain as u8; 3];
-        codes[1] = Road as u8;
-        let objects = vec![obj(0, 0, object_class::THICKET, 1), obj(1, 0, object_class::THICKET, 1)];
-        let m = TileMap::from_codes(Grid::Square8, 3, 1, &codes, objects);
-        assert_eq!((m.minutes((0, 0)), m.minutes((1, 0))), (None, Some(30)));
+        let m = TileMap::from_codes(Grid::Square8, 12, 1, &[Surface::GrassPlain as u8; 12], objects);
+        let c: Vec<Option<u16>> = (0..12).map(|x| m.cost((x, 0))).collect();
+        assert_eq!(c, [Some(7), Some(8), Some(9), Some(11), Some(9), None, None, None, None, Some(5), Some(11), Some(5)]);
+        // Thickets on a road block it (the original keeps no road open).
+        let objects = vec![obj(0, 0, THICKET, 1)];
+        let m = TileMap::from_codes(Grid::Square8, 1, 1, &[Surface::Road as u8], objects);
+        assert!(!m.passable((0, 0)));
+        // A hill in the water stays water: the ship map gets its cost.
+        let m = TileMap::from_codes(Grid::Square8, 1, 1, &[Surface::CoastalWater as u8], vec![obj(0, 0, HILLS, 10)]);
+        assert_eq!((m.cost((0, 0)), m.water_cost((0, 0))), (None, Some(3)));
+    }
+
+    #[test]
+    fn massifs_cover_a_square_with_the_object_at_the_bottom_right() {
+        let m = TileMap::from_codes(Grid::Square8, 8, 8, &[Surface::GrassPlain as u8; 64], vec![obj(5, 6, object_class::MOUNTAINS, 34)]);
+        for y in 0..8 {
+            for x in 0..8 {
+                let covered = (3..=5).contains(&x) && (4..=6).contains(&y);
+                assert_eq!(!m.passable((x, y)), covered, "({x}, {y})");
+            }
+        }
+        // Side = the sprite's tens digit; 0–9 cover no cell; clipped at the map's edge.
+        assert_eq!(object_side(object_class::HILLS, 9), 0);
+        assert_eq!(object_side(object_class::ROCKS, 20), 2);
+        assert_eq!(object_side(object_class::TREES, 55), 1, "plants cover their own cell");
+        let m = TileMap::from_codes(Grid::Square8, 3, 3, &[Surface::GrassPlain as u8; 9], vec![obj(1, 1, object_class::HILLS, 40), obj(2, 2, object_class::ROCKS, 5)]);
+        assert_eq!(m.cost((0, 0)), Some(7));
+        assert_eq!(m.cost((1, 1)), Some(7));
+        assert_eq!(m.cost((2, 1)), Some(5), "right of the object's cell: not covered");
+        assert!(m.passable((2, 2)), "sprite 5: side 0");
     }
 
     #[test]
@@ -681,7 +826,9 @@ TTTTT
         let m = TileMap::parse(MAP);
         let p = m.path((0, 3), (4, 3));
         assert_eq!(p, vec![(1, 3), (2, 3), (3, 3), (4, 3)], "straight along the road");
-        assert_eq!(m.path_minutes((0, 3), &p), 120);
+        // Charged the cell left: grass 25, then three road cells 15.
+        assert_eq!(m.path_minutes((0, 3), &p), 25 + 3 * 15);
+        assert_eq!(m.path_cost((0, 3), &p), 4 * 3 * 2, "planner: the cells entered × weight 2");
         let p = m.path((0, 0), (4, 4));
         assert!(p.iter().all(|&t| m.passable(t)));
         for w in p.windows(2) {
@@ -702,15 +849,17 @@ TTTTT
     }
 
     #[test]
-    fn square_grid_has_eight_neighbours_and_diagonal_steps() {
+    fn square_grid_has_eight_neighbours_and_diagonals_weigh_one_and_a_half() {
         let g = Grid::Square8;
         let n: Vec<Tile> = g.neighbours((5, 5)).collect();
         assert_eq!(n.len(), 8);
         assert!(n.contains(&(4, 6)) && n.contains(&(6, 4)));
         assert_eq!(g.distance((0, 0), (3, 7)), 7);
+        assert_eq!(g.octile((0, 0), (3, 7)), 7 + 1, "max + min/2");
         assert_eq!(g.disk((5, 5), 2).len(), 25);
-        assert!((g.step_length((0, 0), (1, 0)) - 1.0).abs() < 1e-6);
-        assert!((g.step_length((0, 0), (0, 1)) - 22.0 / 32.0).abs() < 1e-6, "cells are 32×22");
+        assert_eq!((g.weight((0, 0), (1, 0)), g.weight((0, 0), (0, 1)), g.weight((0, 0), (1, 1))), (2, 2, 3), "vertical = horizontal");
+        assert_eq!(step_minutes(g, (0, 0), (1, 1), 5, 5), 37.5);
+        assert_eq!(step_minutes(g, (0, 0), (0, 1), 5, 4), 20.0, "ranger speed 4");
         // A diagonal causeway across water, one column per row (like the original's bridges).
         let mut codes = vec![Surface::DeepSea as u8; 25];
         for i in 0..5 {
@@ -719,19 +868,34 @@ TTTTT
         let m = TileMap::from_codes(g, 5, 5, &codes, vec![]);
         let p = m.path((4, 0), (0, 4));
         assert_eq!(p, vec![(3, 1), (2, 2), (1, 3), (0, 4)]);
-        assert_eq!(m.path_minutes((4, 0), &p), (4.0 * 30.0 * g.step_length((0, 0), (1, 1))).round() as u32);
+        assert_eq!(m.path_minutes((4, 0), &p), 4 * 15 * 3 / 2);
         // The same causeway is broken on a hex grid.
         let hex = TileMap::from_codes(Grid::HexOddR, 5, 5, &codes, vec![]);
         assert!(hex.path((4, 0), (0, 4)).is_empty());
+        // On open grass two orthogonal steps (weight 4) beat nothing: a diagonal (3) is
+        // taken where it saves, e.g. to (2, 1) one diagonal and one straight step.
+        let m = TileMap::from_codes(g, 5, 5, &[Surface::GrassPlain as u8; 25], vec![]);
+        assert_eq!(m.path((0, 0), (2, 1)).len(), 2);
+        assert_eq!(m.path_cost((0, 0), &m.path((0, 0), (2, 1))), 5 * 3 + 5 * 2);
     }
 
     #[test]
-    fn block_and_open_cells_and_flood_fill() {
+    fn path_to_any_stops_at_the_nearest_goal_cell() {
+        let m = TileMap::from_codes(Grid::Square8, 10, 1, &[Surface::GrassPlain as u8; 10], vec![]);
+        let p = m.path_to_any((0, 0), &|t| t.0 >= 6, usize::MAX, &|_, n| m.cost(n));
+        assert_eq!(p.last(), Some(&(6, 0)));
+        assert!(m.path_to_any((7, 0), &|t| t.0 >= 6, usize::MAX, &|_, n| m.cost(n)).is_empty(), "already there");
+    }
+
+    #[test]
+    fn block_pave_and_open_cells_and_flood_fill() {
         let mut m = TileMap::parse(MAP);
-        m.open((1, 1), 30);
-        assert_eq!(m.minutes((1, 1)), Some(30));
+        m.open((1, 1), 3);
+        assert_eq!(m.minutes((1, 1)), Some(15));
         m.block((0, 3));
         assert!(!m.passable((0, 3)));
+        m.pave((2, 1));
+        assert_eq!((m.cost((2, 1)), m.water_cost((2, 1))), (Some(ROAD), Some(ROAD)), "a footprint is road on both maps");
         let reach = m.reachable((0, 0));
         assert!(reach[m.mask_index((4, 4)).unwrap()]);
         assert!(!reach[m.mask_index((0, 3)).unwrap()]);
