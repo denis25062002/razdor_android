@@ -10,6 +10,7 @@
 pub mod command;
 pub mod defaults;
 pub mod doc;
+pub mod events;
 pub mod files;
 pub mod geometry;
 pub mod palette;
@@ -60,6 +61,53 @@ mod real_maps {
             let _ = d.apply(Command::DeleteArmy { id: 1 });
             while d.undo() {}
             assert!(d.file_bytes(Some(&names), Some(&palette)).unwrap() == original, "{}: undo is not exact", m.name);
+        }
+    }
+
+    #[test]
+    fn shipped_maps_survive_event_edits() {
+        let Some(dt) = install() else { return };
+        let names = Names::from_content(&Content::from_dt(&dt));
+        let palette = Palette::from_sprites(&dt.map_objects().unwrap());
+        let content = std::sync::Arc::new(Content::from_dt(&dt));
+        for m in &dt.maps {
+            let original = std::fs::read(&m.path).unwrap();
+            let mut d = EditorDoc::open(&m.path, None).unwrap();
+            let n = d.scenario.events.len() as u16;
+            // Adding and deleting an event, or duplicating one and deleting the copy, gives
+            // the same file.
+            d.apply(Command::NewEvent { kind: 1 }).unwrap();
+            d.apply(Command::DeleteEvent { id: n + 1 }).unwrap();
+            assert!(d.file_bytes(Some(&names), Some(&palette)).unwrap() == original, "{}: add + delete", m.name);
+            d.apply(Command::DuplicateEvent { id: 1 }).unwrap();
+            d.apply(Command::DeleteEvent { id: n + 1 }).unwrap();
+            assert!(d.file_bytes(Some(&names), Some(&palette)).unwrap() == original, "{}: duplicate + delete", m.name);
+            // Deleting the most referred-to event leaves no dangling reference.
+            let busiest = (1..=n).max_by_key(|id| events::references_to(&d.scenario, *id).len()).unwrap();
+            let refs = events::references_to(&d.scenario, busiest).len();
+            d.apply(Command::DeleteEvent { id: busiest }).unwrap();
+            let errors: Vec<String> = d.issues(Some(&names), Some(&palette)).iter().filter(|i| i.severity == Severity::Error).map(|i| i.to_string()).collect();
+            assert!(errors.is_empty(), "{}: deleting event {busiest} ({refs} references): {errors:#?}", m.name);
+            // Every field edit of the panel round-trips: the first event with a new title.
+            let mut e = d.scenario.events[0].clone();
+            e.title = events::with_flags(&events::with_name(&e.title, "Проверка"), "+ПроверкаФлаг", "");
+            d.apply(Command::SetEvent { id: 1, event: Box::new(e) }).unwrap();
+            let bytes = d.file_bytes(Some(&names), Some(&palette)).unwrap();
+            let s = crate::dt::dtm::Scenario::from_file_bytes(&bytes).unwrap();
+            assert_eq!(s.events, d.scenario.events, "{}", m.name);
+            // The event engine runs the edited map.
+            let mut g = crate::rules::game::Game::from_scenario(content.clone(), &s, crate::rules::content::HeroClass::Knight, 1);
+            for _ in 0..6 {
+                g.drain_events();
+                for _ in 0..8 {
+                    if g.pending_question().is_none() {
+                        break;
+                    }
+                    g.answer_question(true);
+                }
+                g.wait(12);
+            }
+            assert!(g.script().is_some(), "{}", m.name);
         }
     }
 

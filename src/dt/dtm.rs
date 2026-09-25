@@ -25,6 +25,9 @@ pub const POINT_SIZE: usize = 99;
 pub const EVENT_SIZE: usize = 171;
 const HERO_PRESET_SIZE: usize = 50;
 const MINUTES_PER_DAY: u32 = 24 * 60;
+/// The start time of a "relative only" event (year 2000 of the game clock): it never opens
+/// by itself; another event's "relative event" result moves its start.
+pub const RELATIVE_START: u32 = 1_036_800_000;
 
 // ------------------------------------------------------------------------------------------
 // Byte helpers
@@ -1177,8 +1180,12 @@ pub struct Event {
     pub unknown_27: [u8; 2],
     pub unknown_87: [u8; 2],
     pub unknown_91: [u8; 2],
-    /// 150: U (byte 156 is a 0/1 flag in about 2% of events).
-    pub unknown_150: [u8; 13],
+    /// 150: "generate the battle army to match the player" (the original editor's check box
+    /// next to "start a battle with army"; always 0 in the shipped maps; the game's use of it
+    /// is not traced).
+    pub generate_battle_army: u8,
+    /// 151: U (byte 156 is a 0/1 flag in about 2% of events).
+    pub unknown_151: [u8; 12],
     /// 165: U.
     pub unknown_165: [u8; 6],
     /// Strings: title (with an optional flag script), yes/no question, message.
@@ -1275,7 +1282,8 @@ impl Event {
             unknown_27: r.arr(27),
             unknown_87: r.arr(87),
             unknown_91: r.arr(91),
-            unknown_150: r.arr(150),
+            generate_battle_army: r.u8(150),
+            unknown_151: r.arr(151),
             unknown_165: r.arr(165),
             ..Event::default()
         };
@@ -1359,7 +1367,8 @@ impl Event {
         p.u8(147, s.start_battle_with);
         p.u8(148, s.no_meeting);
         p.u8(149, s.repeat_after_yes);
-        p.bytes(150, &self.unknown_150);
+        p.u8(150, self.generate_battle_army);
+        p.bytes(151, &self.unknown_151);
         p.u16(163, self.custom_picture.as_ref().map_or(0, |v| v.len() as u16));
         p.bytes(165, &self.unknown_165);
     }
@@ -1861,7 +1870,7 @@ mod tests {
         let e = &s.events[0];
         assert_eq!(e.kind(), Some(EventKind::Quest));
         assert_eq!((e.repeat, e.conditions.gold, e.results.gold), (1440, -7499, -50));
-        assert_eq!((e.results.light_lanterns[0], e.conditions.army_at_home, e.unknown_150[6]), (1, 1, 1));
+        assert_eq!((e.results.light_lanterns[0], e.conditions.army_at_home, e.unknown_151[5]), (1, 1, 1));
         assert!(e.fires_once());
         assert_eq!(e.title_text(), "Quest");
         let f = e.flags.as_ref().unwrap();

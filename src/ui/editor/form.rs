@@ -13,6 +13,9 @@ pub const ROW: f32 = 28.0;
 /// Options of a picker: (stored value, label).
 pub type Options = Vec<(i64, String)>;
 
+/// One picker of [`Form::pick_row`]: the value, its options, its share of the row.
+pub type PickCell<'a> = (&'a mut i64, &'a [(i64, String)], f32);
+
 pub struct Form {
     pub x: f32,
     pub y: f32,
@@ -214,6 +217,46 @@ impl Form {
         }
     }
 
+    /// A condition threshold: a >= / <= switch and its value (0 = not checked), stored as
+    /// the original stores it (the sign is the switch).
+    pub fn threshold(&mut self, k: &str, label: &str, v: &mut i16, max: i64) {
+        use razdor::editor::events::Threshold;
+        if self.shown(ROW) {
+            self.label(label);
+            let (fx, _) = self.field_x();
+            let t = Threshold::from_raw(*v);
+            if small_button(fx, self.y, 38.0, 24.0, if t.at_least { ">=" } else { "<=" }, t.value != 0) {
+                *v = Threshold { at_least: !t.at_least, ..t }.raw();
+                self.mark(&format!("{k}s"));
+            }
+            if let Some(n) = number_field(&self.key(k), fx + 42.0, self.y, 110.0, t.value as i64, 0, max) {
+                *v = Threshold { value: n as u16, ..t }.raw();
+                self.mark(k);
+            }
+        }
+        self.next(ROW);
+    }
+
+    /// Several pickers side by side on one row (widths in parts of the row). The values are
+    /// edited in place.
+    pub fn pick_row(&mut self, k: &str, cells: &mut [PickCell]) {
+        if self.shown(ROW) {
+            let total: f32 = cells.iter().map(|c| c.2).sum::<f32>().max(0.01);
+            let gaps = 4.0 * (cells.len() as f32 - 1.0).max(0.0);
+            let mut x = self.x;
+            for (i, (v, options, part)) in cells.iter_mut().enumerate() {
+                let w = (self.w - gaps) * *part / total;
+                let key = format!("{k}{i}");
+                if let Some(n) = dropdown(&self.key(&key), x, self.y, w, **v, options) {
+                    **v = n;
+                    self.mark(&key);
+                }
+                x += w + 4.0;
+            }
+        }
+        self.next(ROW);
+    }
+
     /// A small button on its own row; true when clicked.
     pub fn button(&mut self, label: &str, enabled: bool) -> bool {
         let mut hit = false;
@@ -306,7 +349,8 @@ pub fn event_options(s: &Scenario) -> Options {
         .enumerate()
         .map(|(i, e)| {
             let t = e.title_text().trim();
-            (i as i64 + 1, if t.is_empty() { format!("#{}", i + 1) } else { format!("#{} {t}", i + 1) })
+            let kind = razdor::editor::events::kind_label(e.kind);
+            (i as i64 + 1, if t.is_empty() { format!("#{} ({kind})", i + 1) } else { format!("#{} {t} ({kind})", i + 1) })
         })
         .collect()
 }
@@ -335,6 +379,17 @@ pub fn army_label(s: &Scenario, id: u8) -> String {
 
 pub fn named_options(s: &Scenario) -> Options {
     with_none("(none)", s.named_characters.iter().enumerate().map(|(i, n)| (i as i64 + 1, format!("{} {}", i + 1, n.name))))
+}
+
+pub fn army_options(s: &Scenario) -> Options {
+    with_none("(none)", (1..=s.armies.len().min(255) as u8).map(|id| (id as i64, army_label(s, id))))
+}
+
+pub fn point_options(s: &Scenario) -> Options {
+    with_none(
+        "(none)",
+        s.points.iter().map(|p| (p.id as i64, format!("#{} {} ({}, {})", p.id, if p.model == 8 { "lantern" } else { "event point" }, p.x, p.y))),
+    )
 }
 
 pub fn list_options(labels: &[&str], first: i64) -> Options {

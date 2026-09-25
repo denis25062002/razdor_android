@@ -87,7 +87,7 @@ pub fn window(state: &mut SettingsState, s: &Scenario, names: &Names) -> Setting
             let events = event_options_none(s);
             f.pick("victory", "Victory event", &mut st.header.victory_event, &events);
             f.pick("defeat", "Defeat event", &mut st.header.defeat_event, &events);
-            f.note("Events are edited in step 2 of the editor; any event of the map can be chosen here.", DIM);
+            f.note("The scenario ends when one of these events fires. Events are edited with the Events button.", DIM);
         }
         k @ 1..=3 => {
             let hero = &mut st.header.heroes[k - 1];

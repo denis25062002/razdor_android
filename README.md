@@ -201,8 +201,8 @@ and names units, artefacts and spells from your install; without one it uses pla
 - **Toolbar**: New (50/100/200 or custom size, one surface), Open (the game's maps, your maps
   or a path), Save (Ctrl+S), Save as (Ctrl+Shift+S), Save to game folder, Undo (Ctrl+Z), Redo
   (Ctrl+Y / Ctrl+Shift+Z), Settings (title, description, start date, victory/defeat event,
-  the three hero starts, faction relations, campaign, named characters), Check (the list of
-  problems; errors block saving; click one to go there), Test play, Exit.
+  the three hero starts, faction relations, campaign, named characters), Events (below), Check
+  (the list of problems; errors block saving; click one to go there), Test play, Exit.
 - **Tools** (right column, keys in brackets): Select and move (V), Terrain (T: 16 surfaces,
   brush 1/3/5/9, flood fill, rectangle), Objects (O: hills, mountains, stones, trees by class
   and picture; several per cell), Erase (E), Building (B: type and picture; the cell you click
@@ -210,7 +210,23 @@ and names units, artefacts and spells from your install; without one it uses pla
   lantern or event point).
 - **Panels**: click a building, army or point to edit every field (names and descriptions in
   any script, garrison, barracks, goods, spells, incomes, factions and attitudes, AI settings,
-  local events by id). Delete removes it; later ids and references are renumbered.
+  local events picked by title). Delete removes it; later ids and references are renumbered.
+- **Events**: the event list (filter by type, group colour and title; New, Duplicate, Delete)
+  and every field of the original editor's event window, on its tabs: *Event and player*
+  (type, group, start date or "relative only", hours open, repeat every N days, once or many
+  times, subordinate, hero archetype, events happened with yes / no / not happened, the flag
+  check `X` or `/X`, the yes/no question, beaten and met armies, level, gold, mana, squads and
+  strength with a ≥/≤ switch), *Event and heroes* (owners of buildings, artefacts and named
+  squads; armies beaten by anyone, active, inactive, at home), *Result 1* (message, chained
+  event, quest completed, XP/gold/mana, relative event and its delay, the hero's wait, the flag
+  `+X`/`-X`, units joining and where from, spells learned, artefacts gained), *Result 2*
+  (units leaving and where to, artefacts lost, lanterns, armies shown, activated, deactivated,
+  patrol change, battle, "no meeting", new hero class, a spell on the player, the standard
+  picture or an imported PNG), *Places* (attach to or detach from buildings and points, and
+  what refers to the event) and *Community* (the Community Update opcodes 1–20 with their
+  arguments named). Deleting an event renumbers the later ones and fixes every reference
+  (other events, buildings' and points' lists, the victory and defeat events, the opcodes'
+  relative targets); if the event is still used, the editor lists where and asks first.
 - **View**: wheel zooms, right or middle drag and the arrow keys move, Home shows the whole
   map, the minimap moves the view; G grid, H hill and mountain cover, R patrol radii.
 - **Test play** plays the map as it is in the editor; Esc > Main menu returns to it.
@@ -219,8 +235,9 @@ Where maps go: your maps folder, `RAZDOR_MAPS_DIR` or `~/.local/share/razdor/map
 (`razdor/maps` in the platform data folder elsewhere). A map opened from the game's
 `Maps_Rus` is saved there too, never back over the game's copy. Only **Save to game folder**
 writes into `Maps_Rus`, after a confirmation, and replacing a map that is already there (such
-as a shipped one) asks a second time. Events and the random map generator come in step 2
-(`docs/superpowers/specs/2026-09-25-map-editor-design.md`).
+as a shipped one) asks a second time. Design and what is left:
+`docs/superpowers/specs/2026-09-25-map-editor-design.md` (a random map generator is not
+planned).
 
 ## Custom sprites
 All art is placeholder tokens. To use your own, put PNGs named after the units' and items'

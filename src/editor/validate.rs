@@ -371,13 +371,23 @@ impl Checker<'_> {
     }
 
     fn events(&mut self) {
+        use super::events::{self as ev, Arg};
         let s = self.s;
-        if s.events.len() > u16::MAX as usize {
-            self.error(Place::Map, format!("{} events; at most {} fit", s.events.len(), u16::MAX));
+        if s.events.len() > ev::MAX_EVENTS {
+            self.error(Place::Map, format!("{} events; the original editor holds at most {}", s.events.len(), ev::MAX_EVENTS));
         }
+        let named = s.named_characters.len();
         for (i, e) in s.events.iter().enumerate() {
-            let place = Place::Event(i.min(u16::MAX as usize - 1) as u16 + 1);
+            let id = i.min(u16::MAX as usize - 1) as u16 + 1;
+            let place = Place::Event(id);
             let (c, r) = (&e.conditions, &e.results);
+            let opcode = ev::opcode(e);
+            if !(1..=4).contains(&e.kind) {
+                self.error(place, format!("type {} is not one of 1-4 (global, local, quest, rumour)", e.kind));
+            }
+            if e.archetype > 3 {
+                self.error(place, format!("hero archetype {} is not one of 0-3", e.archetype));
+            }
             for b in c.buildings {
                 self.building_ref(place, "a building condition", b as u32);
             }
@@ -387,16 +397,81 @@ impl Checker<'_> {
             for a in r.activate_armies.into_iter().chain([r.deactivate_army, r.show_army, r.start_battle_with, r.removed_units_to_army, r.units_from_army]) {
                 self.army_ref(place, "a result", a as u32);
             }
+            if opcode.is_none() {
+                self.army_ref(place, "the patrol change", r.patrol_army as u32);
+            }
             for x in c.happened_yes.into_iter().chain(c.happened_no).chain(c.not_happened).chain([r.relative_event, r.completes_quest, r.chained_event]) {
                 self.event_ref(place, "a condition or result", x as u32);
+            }
+            if r.completes_quest != 0 && (r.completes_quest as usize) <= s.events.len() && !ev::is_quest(s, r.completes_quest) {
+                self.error(place, format!("completes event {}, which is not a quest", r.completes_quest));
             }
             for l in r.light_lanterns {
                 if l as usize > s.points.len() {
                     self.error(place, format!("lights point {l}, which does not exist"));
                 }
             }
-            if e.custom_picture.as_ref().is_some_and(|p| p.len() > u16::MAX as usize) {
-                self.error(place, "the event picture is larger than 65535 bytes".into());
+            for (what, list) in [("named squads", &c.units_named[..]), ("units added", &r.units_add_named[..]), ("units removed", &r.units_remove_named[..])] {
+                for n in list.iter().filter(|n| **n as usize > named) {
+                    self.error(place, format!("{what}: named character {n} does not exist"));
+                }
+            }
+            for o in c.buildings_owner.into_iter().chain(c.units_owner).chain(c.artifacts_owner) {
+                if o > 6 {
+                    self.error(place, format!("owner code {o} is not one of 0-6"));
+                }
+            }
+            for u in c.units.into_iter().chain(r.units_add).chain(r.units_remove.into_iter().filter(|u| *u < ev::REMOVE_ADDED_UNIT)).chain([r.new_hero_class]) {
+                self.unit(place, "the event", u);
+            }
+            if !matches!(r.picture, 0 | ev::PICTURE_DEFEAT | ev::PICTURE_VICTORY) {
+                self.unit(place, "the picture", r.picture);
+            }
+            for a in c.artifacts.into_iter().chain(r.artifacts_add).chain(r.artifacts_remove) {
+                self.artefact(place, "the event", a as u32);
+            }
+            for sp in r.spells_learned.into_iter().chain([r.cast_spell]) {
+                self.spell(place, "the event", sp);
+            }
+            for m in ev::flag_problems(&e.title) {
+                self.error(place, format!("flag script: {m}"));
+            }
+            if c.confirm_question != 0 && e.question.trim().is_empty() && e.message.trim().is_empty() {
+                self.warn(place, "asks a question but has neither a question nor a message text".into());
+            }
+            if let Some(op) = opcode.and_then(ev::opcode_info) {
+                let args = ev::opcode_args(e);
+                for (k, arg) in op.args.iter().enumerate() {
+                    let Some((label, kind)) = arg else { continue };
+                    let v = args[k];
+                    let bad = match kind {
+                        Arg::Holder => (v > 0 && v as usize > s.armies.len()) || (v < 0 && v.unsigned_abs() as usize > s.buildings.len()),
+                        Arg::Army => v < 0 || v as usize > s.armies.len(),
+                        Arg::EventShift => !(1..=s.events.len() as i64).contains(&(id as i64 + v as i64)),
+                        Arg::EventField => !ev::EVENT_FIELDS.iter().any(|f| f.0 as i16 == v),
+                        Arg::Named => v < 1 || v as usize > named,
+                        Arg::Unit => v < 1 || self.names.is_some_and(|n| !n.has_unit(v as u32)),
+                        Arg::Number => false,
+                    };
+                    if bad {
+                        self.warn(place, format!("opcode {} ({}): {label} = {v} names nothing on this map", op.code, op.name));
+                    }
+                }
+                if let Some(x) = ev::second_edit(e) {
+                    if !(1..=s.events.len() as i64).contains(&(id as i64 + x.shift as i64)) {
+                        self.warn(place, format!("opcode {}: the second setting's target event ({:+}) does not exist", op.code, x.shift));
+                    }
+                    if !ev::EVENT_FIELDS.iter().any(|f| f.0 as i16 == x.field) {
+                        self.warn(place, format!("opcode {}: the second setting's field {} is not a field", op.code, x.field));
+                    }
+                }
+            }
+            if let Some(p) = &e.custom_picture {
+                if p.len() > u16::MAX as usize {
+                    self.error(place, "the event picture is larger than 65535 bytes".into());
+                } else if ev::picture_size(p).is_none() {
+                    self.warn(place, "the event picture's size does not match its data".into());
+                }
             }
             for (what, v) in [("title", &e.title), ("question", &e.question), ("message", &e.message)] {
                 self.string(place, what, v);
@@ -435,10 +510,27 @@ pub fn self_check(s: &Scenario) -> Result<Vec<u8>, String> {
     if sizes != [s.buildings.len() * BUILDING_SIZE, s.events.len() * EVENT_SIZE] || back.armies.len() != s.armies.len() || back.points.len() != s.points.len() {
         return Err("the written map has a different number of records".into());
     }
+    // Every record's strings are where the reader expects them: 4 of the scenario, 3 per
+    // building, army and event, one per named character.
+    let expected = 4 + 3 * (s.buildings.len() + s.armies.len() + s.events.len()) + s.named_characters.len();
+    if count_strings(&bytes) != Some(expected) {
+        return Err("the written map has a different number of texts than its records need".into());
+    }
     if back.to_payload() != bytes {
         return Err("the written map does not serialise back to the same bytes".into());
     }
     Ok(bytes)
+}
+
+/// The number of NUL-terminated strings between the text marker and the pictures.
+fn count_strings(payload: &[u8]) -> Option<usize> {
+    let u32_at = |o: usize| payload.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().expect("4 bytes")) as usize);
+    let text = u32_at(0x18)?;
+    let pictures = u32_at(0x11C)?;
+    let events = Scenario::parse_payload(payload).ok()?.events;
+    let event_pictures: usize = events.iter().filter_map(|e| e.custom_picture.as_ref()).map(Vec::len).sum();
+    let end = payload.len().checked_sub(pictures + event_pictures)?;
+    Some(payload.get(text..end)?.iter().filter(|b| **b == 0).count())
 }
 
 pub fn has_errors(issues: &[Issue]) -> bool {
@@ -592,6 +684,78 @@ mod tests {
         s.events = vec![e];
         let e = errors(&s).join("\n");
         assert!(e.contains("refers to army 2") && e.contains("refers to event 5") && e.contains("lights point 1"), "{e}");
+    }
+
+    #[test]
+    fn event_rules() {
+        use crate::editor::events::{set_opcode, set_opcode_args};
+        let mut s = map(10, 10);
+        let quest = Event { kind: 3, ..Event::default() };
+        let mut e = Event { kind: 1, ..Event::default() };
+        e.results.completes_quest = 3;
+        e.results.units_add_named[0] = 1;
+        e.conditions.buildings_owner[0] = 7;
+        e.title = "Bad%Foo".into();
+        let other = Event { kind: 9, archetype: 4, ..Event::default() };
+        s.events = vec![e, quest, other];
+        let e = errors(&s).join("\n");
+        for needle in [
+            "Event 1 (error): completes event 3, which is not a quest",
+            "named character 1 does not exist",
+            "owner code 7",
+            "flag script: the flag action \"Foo\" must start with +",
+            "Event 3 (error): type 9 is not one of 1-4",
+            "hero archetype 4",
+        ] {
+            assert!(e.contains(needle), "{needle} missing in\n{e}");
+        }
+        s.events[0].results.completes_quest = 2;
+        s.events[0].title = "Good%+Foo=/Bar".into();
+        s.events[0].results.units_add_named[0] = 0;
+        s.events[0].conditions.buildings_owner[0] = 6;
+        s.events[2] = Event { kind: 4, ..Event::default() };
+        assert!(errors(&s).is_empty(), "{:?}", errors(&s));
+        // Content ids of events are checked against the install's names.
+        let names = Names::from_content(&crate::rules::content::Content::builtin());
+        s.events[0].results.units_remove = [0xFE, 0xFF, 250, 0];
+        s.events[0].results.spells_learned[0] = 99;
+        s.events[0].results.picture = 201;
+        let e: Vec<String> = validate(&s, Some(&names), None).iter().map(|i| i.to_string()).collect();
+        assert!(e.iter().any(|m| m.contains("unit 250")), "{e:?}");
+        assert!(e.iter().any(|m| m.contains("spell 99")));
+        assert_eq!(e.iter().filter(|m| m.contains("unit ")).count(), 1, "0xFE, 0xFF and the victory picture are not units: {e:?}");
+        // Opcode arguments that name nothing are warnings; the patrol byte is not an army.
+        s.events[0].results.units_remove = [0; 4];
+        s.events[0].results.spells_learned[0] = 0;
+        set_opcode(&mut s.events[1], Some(13));
+        set_opcode_args(&mut s.events[1], [4, -1, 100]);
+        s.events[1].results.patrol_army = 99;
+        let all = validate(&s, None, None);
+        assert!(!has_errors(&all), "{all:?}");
+        assert!(all.iter().any(|i| i.severity == Severity::Warning && i.message.contains("opcode 13") && i.message.contains("= 4")));
+        set_opcode(&mut s.events[1], Some(1));
+        set_opcode_args(&mut s.events[1], [-5, 84, 1]);
+        let w: Vec<String> = validate(&s, None, None).iter().map(|i| i.message.clone()).collect();
+        assert!(w.iter().any(|m| m.contains("Target event") && m.contains("-5")) && w.iter().any(|m| m.contains("Field") && m.contains("84")), "{w:?}");
+        set_opcode(&mut s.events[1], None);
+        s.events[1].results.no_meeting = 0;
+        assert!(errors(&s).iter().any(|m| m.contains("patrol change refers to army 99")));
+    }
+
+    #[test]
+    fn too_many_events() {
+        let mut s = map(4, 4);
+        s.events = vec![Event { kind: 1, ..Event::default() }; 5001];
+        assert!(errors(&s).iter().any(|m| m.contains("5001 events")));
+    }
+
+    #[test]
+    fn string_counts_match_the_records() {
+        let mut s = map(6, 6);
+        s.events = vec![Event { kind: 1, title: "A".into(), custom_picture: Some(vec![1, 0, 1, 0, 0, 0]), ..Event::default() }];
+        s.named_characters = vec![NamedCharacter { unit: 1, name: "N".into() }];
+        let bytes = self_check(&s).unwrap();
+        assert_eq!(count_strings(&bytes), Some(4 + 3 + 1));
     }
 
     #[test]

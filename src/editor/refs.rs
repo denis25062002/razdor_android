@@ -6,7 +6,8 @@
 //! (0 = none; a building's owner army becomes 0xFF, the neutral owner). The fields remapped
 //! here are every reference the format doc lists. Arguments of the Community opcodes
 //! (events whose "no meeting" switch carries an opcode) are not ids of this kind and are
-//! left alone, except that the patrol-army byte of such events is not treated as an army.
+//! left alone, except that the patrol-army byte of such events is not treated as an army,
+//! and that the relative shifts of the "edit event" opcodes 1–5 follow a removed event.
 
 use crate::dt::dtm::Scenario;
 use crate::rules::events::{extension, Extension};
@@ -128,6 +129,81 @@ pub fn remove_named_character(s: &mut Scenario, index: u8) -> bool {
     true
 }
 
+/// Removes event `id` (1-based) and remaps every event reference: other events'
+/// conditions (happened with yes / no, not happened) and results (relative, quest
+/// completed, chained); buildings' and points' local lists (the entry is taken out and the
+/// list closes up); the victory and defeat events; and the relative shifts of the
+/// Community "edit event" opcodes 1–5 (a shift pointing at the removed event is kept, as
+/// nothing can replace it).
+pub fn remove_event(s: &mut Scenario, id: u16) -> bool {
+    let Some(i) = (id as usize).checked_sub(1).filter(|i| *i < s.events.len()) else { return false };
+    // The relative shifts first, while the ids are the old ones.
+    let n = s.events.len() as i64;
+    for (j, e) in s.events.iter_mut().enumerate() {
+        let from = j as i64 + 1;
+        if from == id as i64 {
+            continue;
+        }
+        let Some(Extension::Opcode(1..=5)) = extension(e) else { continue };
+        let second = (1..=5).contains(&e.conditions.squad_count);
+        let new_from = from - (from > id as i64) as i64;
+        let fix = |shift: &mut i16| {
+            let target = from + *shift as i64;
+            if *shift == 0 || target == id as i64 || !(1..=n).contains(&target) {
+                // Itself, the removed event or no event: the new position keeps the meaning
+                // of "itself"; the others stay as they are.
+                return;
+            }
+            let new_target = target - (target > id as i64) as i64;
+            *shift = (new_target - new_from).clamp(i16::MIN as i64, i16::MAX as i64) as i16;
+        };
+        fix(&mut e.results.experience);
+        if second {
+            fix(&mut e.conditions.gold);
+        }
+    }
+    s.events.remove(i);
+    let r = id as u32;
+    for e in &mut s.events {
+        let c = &mut e.conditions;
+        for x in c.happened_yes.iter_mut().chain(c.happened_no.iter_mut()).chain(c.not_happened.iter_mut()) {
+            shift_u16(x, r);
+        }
+        let x = &mut e.results;
+        for v in [&mut x.relative_event, &mut x.completes_quest, &mut x.chained_event] {
+            shift_u16(v, r);
+        }
+    }
+    for b in &mut s.buildings {
+        remap_list(&mut b.event_slots, &mut b.event_count, id);
+    }
+    for p in &mut s.points {
+        remap_list(&mut p.event_slots, &mut p.event_count, id);
+    }
+    shift_u16(&mut s.header.victory_event, r);
+    shift_u16(&mut s.header.defeat_event, r);
+    true
+}
+
+/// A local event list after removing event `id`: its entries are taken out, later ids
+/// shift down; the used part is the first `count` slots.
+fn remap_list(slots: &mut [u16], count: &mut u8, id: u16) {
+    let n = (*count as usize).min(slots.len());
+    let mut k = 0;
+    while k < (*count as usize).min(slots.len()) {
+        if slots[k] == id {
+            super::records::remove_event(slots, count, k);
+        } else {
+            k += 1;
+        }
+    }
+    for v in slots[..n].iter_mut() {
+        if *v > id {
+            *v -= 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +287,57 @@ mod tests {
         assert!(remove_point(&mut s, 2));
         assert_eq!(s.points.iter().map(|p| p.id).collect::<Vec<_>>(), [1, 2]);
         assert_eq!(s.events[0].results.light_lanterns, [1, 0, 2, 0]);
+    }
+
+    #[test]
+    fn removing_an_event_remaps_every_reference() {
+        let mut s = scenario();
+        s.events = vec![Event::default(); 5];
+        let e = &mut s.events[0];
+        e.conditions.happened_yes = [2, 4];
+        e.conditions.happened_no = [5, 3];
+        e.conditions.not_happened = [3, 1];
+        e.results.relative_event = 4;
+        e.results.completes_quest = 3;
+        e.results.chained_event = 5;
+        s.buildings[0].event_count = 3;
+        s.buildings[0].event_slots[..3].copy_from_slice(&[3, 4, 1]);
+        s.points[1].event_count = 2;
+        s.points[1].event_slots[..2].copy_from_slice(&[5, 3]);
+        s.header.victory_event = 5;
+        s.header.defeat_event = 3;
+        assert!(remove_event(&mut s, 3));
+        assert_eq!(s.events.len(), 4);
+        let e = &s.events[0];
+        assert_eq!((e.conditions.happened_yes, e.conditions.happened_no, e.conditions.not_happened), ([2, 3], [4, 0], [0, 1]));
+        assert_eq!((e.results.relative_event, e.results.completes_quest, e.results.chained_event), (3, 0, 4));
+        assert_eq!((&s.buildings[0].event_slots[..3], s.buildings[0].event_count), (&[3, 1, 0][..], 2));
+        assert_eq!((&s.points[1].event_slots[..2], s.points[1].event_count), (&[4, 0][..], 1));
+        assert_eq!((s.header.victory_event, s.header.defeat_event), (4, 0));
+        assert!(!remove_event(&mut s, 0));
+        assert!(!remove_event(&mut s, 5));
+    }
+
+    #[test]
+    fn removing_an_event_keeps_opcode_targets() {
+        use crate::editor::events::{set_opcode, set_opcode_args};
+        let mut s = scenario();
+        s.events = vec![Event::default(); 6];
+        // Event 2 edits event 5 (+3); event 6 edits event 1 (-5) and, in its second
+        // setting, event 4 (-2); event 5 edits itself (0); event 1 edits event 3 (+2), the
+        // one removed.
+        for (i, shift) in [(1, 3), (5, -5), (4, 0), (0, 2)] {
+            set_opcode(&mut s.events[i], Some(1));
+            set_opcode_args(&mut s.events[i], [shift, 85, 1]);
+        }
+        s.events[5].conditions.squad_count = 2;
+        s.events[5].conditions.gold = -2;
+        assert!(remove_event(&mut s, 3));
+        assert_eq!(s.events[1].results.experience, 2, "2 -> 4 (was 5)");
+        assert_eq!(s.events[4].results.experience, -4, "5 -> 1");
+        assert_eq!(s.events[4].conditions.gold, -2, "both after the removed one: the distance stays");
+        assert_eq!(s.events[3].results.experience, 0);
+        assert_eq!(s.events[0].results.experience, 2, "a shift to the removed event stays");
     }
 
     #[test]

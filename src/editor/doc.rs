@@ -16,6 +16,7 @@ use crate::dt::DtError;
 use super::command::{Command, ObjectFilter, Sections, Settings};
 use super::defaults::{new_army, new_building, new_point, new_scenario, NewMap};
 use super::geometry::{brush_indices, flood_region, is_massif, rect_indices, CellRect, Footprint};
+use super::records;
 use super::refs;
 use super::validate::{has_errors, self_check, validate, Issue, MAX_RECORDS};
 use super::{Names, Palette};
@@ -41,6 +42,9 @@ pub enum EditError {
     NoSuchArmy(u8),
     NoSuchPoint(u8),
     NoSuchNamedCharacter(u8),
+    NoSuchEvent(u16),
+    /// Armies have no local events.
+    NoEventList,
     /// The record list is full (ids are single bytes).
     Full(&'static str),
     /// Settings may not change the map size.
@@ -58,7 +62,9 @@ impl std::fmt::Display for EditError {
             EditError::NoSuchArmy(id) => write!(f, "there is no army {id}"),
             EditError::NoSuchPoint(id) => write!(f, "there is no point {id}"),
             EditError::NoSuchNamedCharacter(id) => write!(f, "there is no named character {id}"),
-            EditError::Full(what) => write!(f, "no room for more {what} (at most {MAX_RECORDS})"),
+            EditError::NoSuchEvent(id) => write!(f, "there is no event {id}"),
+            EditError::NoEventList => write!(f, "only buildings and points have local events"),
+            EditError::Full(what) => write!(f, "no room for more {what}"),
             EditError::Resize => write!(f, "the map size cannot change here"),
             EditError::IdChanged => write!(f, "a record's id is its position and cannot change"),
         }
@@ -145,6 +151,9 @@ pub struct EditorDoc {
     /// Bumped by every change, undo and redo (for views that cache what they draw).
     pub revision: u64,
 }
+
+/// Events a point can hold in the original editor.
+pub const POINT_EVENTS: usize = 5;
 
 /// Undo steps kept.
 pub const UNDO_LIMIT: usize = 200;
@@ -460,6 +469,28 @@ impl EditorDoc {
         (id as usize).checked_sub(1).filter(|i| *i < self.scenario.points.len()).ok_or(EditError::NoSuchPoint(id))
     }
 
+    fn event_index(&self, id: u16) -> Result<usize, EditError> {
+        (id as usize).checked_sub(1).filter(|i| *i < self.scenario.events.len()).ok_or(EditError::NoSuchEvent(id))
+    }
+
+    /// The local list of a building or point: (slots offered, count).
+    fn event_list(&mut self, place: Target) -> Result<(&mut [u16], &mut u8), EditError> {
+        match place {
+            Target::Building(id) => {
+                let i = self.building_index(id)?;
+                let b = &mut self.scenario.buildings[i];
+                Ok((&mut b.event_slots[..], &mut b.event_count))
+            }
+            Target::Point(id) => {
+                let i = self.point_index(id)?;
+                let p = &mut self.scenario.points[i];
+                // The original editor attaches at most 5 events to a point.
+                Ok((&mut p.event_slots[..POINT_EVENTS], &mut p.event_count))
+            }
+            Target::Army(_) => Err(EditError::NoEventList),
+        }
+    }
+
     fn execute(&mut self, cmd: Command) -> Result<Applied, EditError> {
         let (w, h) = (self.scenario.width(), self.scenario.height());
         let mut out = Applied::default();
@@ -503,7 +534,7 @@ impl EditorDoc {
             }
             Command::PlaceBuilding { x, y, kind, picture_type, variant, size } => {
                 if self.scenario.buildings.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("buildings"));
+                    return Err(EditError::Full("buildings (at most 255)"));
                 }
                 self.check_footprint(x, y, size)?;
                 let b = new_building(&self.scenario.header, x, y, kind, picture_type, variant, size);
@@ -527,7 +558,7 @@ impl EditorDoc {
             }
             Command::PlaceArmy { x, y } => {
                 if self.scenario.armies.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("armies"));
+                    return Err(EditError::Full("armies (at most 255)"));
                 }
                 self.check_cell(x as i64, y as i64)?;
                 let id = self.scenario.armies.len() as u8 + 1;
@@ -554,7 +585,7 @@ impl EditorDoc {
             }
             Command::PlacePoint { x, y, lantern } => {
                 if self.scenario.points.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("points"));
+                    return Err(EditError::Full("points (at most 255)"));
                 }
                 self.check_cell(x as i64, y as i64)?;
                 let id = self.scenario.points.len() as u8 + 1;
@@ -600,8 +631,48 @@ impl EditorDoc {
                     return Err(EditError::NoSuchNamedCharacter(index));
                 }
             }
+            Command::NewEvent { kind } => {
+                let e = super::events::new_event(&self.scenario, kind);
+                out.new_id = Some(self.push_event(e)? as u32);
+            }
+            Command::DuplicateEvent { id } => {
+                let e = self.scenario.events[self.event_index(id)?].clone();
+                out.new_id = Some(self.push_event(e)? as u32);
+            }
+            Command::DeleteEvent { id } => {
+                self.event_index(id)?;
+                refs::remove_event(&mut self.scenario, id);
+            }
+            Command::SetEvent { id, mut event } => {
+                let i = self.event_index(id)?;
+                // The parsed flag script always follows the title.
+                event.flags = crate::dt::dtm::FlagScript::from_title(&event.title);
+                self.scenario.events[i] = *event;
+            }
+            Command::AttachEvent { place, event } => {
+                self.event_index(event)?;
+                let (slots, count) = self.event_list(place)?;
+                let used = records::used_events(slots, *count);
+                if !used.contains(&event) && !records::add_event(slots, count, event) {
+                    return Err(EditError::Full("events in this list"));
+                }
+            }
+            Command::DetachEvent { place, event } => {
+                let (slots, count) = self.event_list(place)?;
+                while let Some(k) = records::used_events(slots, *count).iter().position(|x| *x == event) {
+                    records::remove_event(slots, count, k);
+                }
+            }
         }
         Ok(out)
+    }
+
+    fn push_event(&mut self, e: Event) -> Result<u16, EditError> {
+        if self.scenario.events.len() >= super::events::MAX_EVENTS {
+            return Err(EditError::Full("events (at most 5000)"));
+        }
+        self.scenario.events.push(e);
+        Ok(self.scenario.events.len() as u16)
     }
 
     /// The scenario settings, to edit and apply with [`Command::SetSettings`].
@@ -648,7 +719,7 @@ fn insert_object(objects: &mut Vec<MapObject>, o: MapObject) {
 mod tests {
     use super::*;
     use crate::editor::files::tests::temp_dir;
-    use crate::dt::dtm::{ARMY_SIZE, BUILDING_SIZE, POINT_SIZE};
+    use crate::dt::dtm::{ARMY_SIZE, BUILDING_SIZE, EVENT_SIZE, POINT_SIZE};
     use crate::editor::palette::Names;
 
     fn doc() -> EditorDoc {
@@ -1057,6 +1128,245 @@ mod tests {
         assert_eq!(&pay[0x110..0x117], &[1, 0, 1, 0, 1, 0, 1]);
         let back = Scenario::parse_payload(&pay).unwrap();
         assert_eq!((back.campaign_name.as_str(), back.next_map.as_str(), back.named_characters[0].name.as_str()), ("Кампания", "next.DTm", "Имя"));
+    }
+
+    fn events_offset(p: &[u8]) -> usize {
+        let (_, _, po) = section_offsets(p);
+        po + u32::from_le_bytes(p[0x2C..0x30].try_into().unwrap()) as usize
+    }
+
+    #[test]
+    fn events_new_duplicate_delete_undo() {
+        let mut d = doc();
+        assert_eq!(d.apply(Command::NewEvent { kind: 1 }).unwrap().new_id, Some(1));
+        assert_eq!(d.apply(Command::NewEvent { kind: 3 }).unwrap().new_id, Some(2));
+        let mut e = d.scenario.events[1].clone();
+        e.title = "Quest%+Q".into();
+        e.custom_picture = Some(vec![1, 0, 1, 0, 9, 9]);
+        d.apply(Command::SetEvent { id: 2, event: Box::new(e) }).unwrap();
+        assert_eq!(d.scenario.events[1].flags.as_ref().and_then(|f| f.set.as_deref()), Some("Q"), "flags follow the title");
+        assert_eq!(d.apply(Command::DuplicateEvent { id: 2 }).unwrap().new_id, Some(3));
+        assert_eq!(d.scenario.events[2], d.scenario.events[1]);
+        assert_eq!(d.apply(Command::DuplicateEvent { id: 7 }), Err(EditError::NoSuchEvent(7)));
+        // Event 1 completes quest 3; building 1 and point 1 list event 3; it is the victory.
+        let mut e1 = d.scenario.events[0].clone();
+        e1.results.completes_quest = 3;
+        e1.conditions.not_happened = [2, 3];
+        d.apply(Command::SetEvent { id: 1, event: Box::new(e1) }).unwrap();
+        d.apply(Command::PlaceBuilding { x: 5, y: 5, kind: 3, picture_type: 3, variant: 0, size: (2, 2) }).unwrap();
+        d.apply(Command::PlacePoint { x: 9, y: 9, lantern: false }).unwrap();
+        d.apply(Command::AttachEvent { place: Target::Building(1), event: 3 }).unwrap();
+        d.apply(Command::AttachEvent { place: Target::Point(1), event: 2 }).unwrap();
+        d.apply(Command::AttachEvent { place: Target::Point(1), event: 3 }).unwrap();
+        let mut st = d.settings();
+        st.header.victory_event = 3;
+        st.header.defeat_event = 1;
+        d.apply(Command::SetSettings(Box::new(st))).unwrap();
+        let before = d.scenario.clone();
+        d.apply(Command::DeleteEvent { id: 2 }).unwrap();
+        let s = &d.scenario;
+        assert_eq!(s.events.len(), 2);
+        assert_eq!((s.events[0].results.completes_quest, s.events[0].conditions.not_happened), (2, [0, 2]));
+        assert_eq!((s.buildings[0].event_count, s.buildings[0].event_slots[0]), (1, 2));
+        assert_eq!((s.points[0].event_count, &s.points[0].event_slots[..2]), (1, &[2, 0][..]));
+        assert_eq!((s.header.victory_event, s.header.defeat_event), (2, 1));
+        assert_eq!(d.undo_label(), Some("Delete event"));
+        d.undo();
+        assert_eq!(d.scenario, before, "undo restores events, lists and the header");
+        d.redo();
+        assert_eq!(d.scenario.events.len(), 2);
+        assert_eq!(d.apply(Command::DeleteEvent { id: 9 }), Err(EditError::NoSuchEvent(9)));
+    }
+
+    #[test]
+    fn attaching_and_detaching_local_events() {
+        let mut d = doc();
+        for _ in 0..7 {
+            d.apply(Command::NewEvent { kind: 2 }).unwrap();
+        }
+        d.apply(Command::PlacePoint { x: 1, y: 1, lantern: false }).unwrap();
+        d.apply(Command::PlaceBuilding { x: 5, y: 5, kind: 3, picture_type: 3, variant: 0, size: (2, 2) }).unwrap();
+        d.apply(Command::PlaceArmy { x: 8, y: 8 }).unwrap();
+        for id in 1..=5 {
+            d.apply(Command::AttachEvent { place: Target::Point(1), event: id }).unwrap();
+        }
+        // A point holds five, as in the original editor; the same event is listed once.
+        assert_eq!(d.apply(Command::AttachEvent { place: Target::Point(1), event: 6 }), Err(EditError::Full("events in this list")));
+        assert!(!d.apply(Command::AttachEvent { place: Target::Point(1), event: 3 }).unwrap().changed);
+        assert_eq!(d.apply(Command::AttachEvent { place: Target::Point(1), event: 8 }), Err(EditError::NoSuchEvent(8)));
+        assert_eq!(d.apply(Command::AttachEvent { place: Target::Army(1), event: 1 }), Err(EditError::NoEventList));
+        assert_eq!(d.apply(Command::AttachEvent { place: Target::Building(4), event: 1 }), Err(EditError::NoSuchBuilding(4)));
+        d.apply(Command::DetachEvent { place: Target::Point(1), event: 2 }).unwrap();
+        let p = &d.scenario.points[0];
+        assert_eq!((p.event_count, &p.event_slots[..5]), (4, &[1, 3, 4, 5, 0][..]));
+        for id in [7, 6, 7] {
+            d.apply(Command::AttachEvent { place: Target::Building(1), event: id }).unwrap();
+        }
+        let b = &d.scenario.buildings[0];
+        assert_eq!((b.event_count, &b.event_slots[..2]), (2, &[7, 6][..]));
+        assert_eq!(crate::editor::events::places_of(&d.scenario, 7), (vec![1], vec![]));
+        // Undo takes the attachment back.
+        d.undo();
+        assert_eq!(d.scenario.buildings[0].event_count, 1);
+        assert!(!d.apply(Command::DetachEvent { place: Target::Building(1), event: 5 }).unwrap().changed);
+    }
+
+    #[test]
+    fn typing_an_event_title_merges() {
+        let mut d = doc();
+        d.apply(Command::NewEvent { kind: 1 }).unwrap();
+        for t in ["В", "Во", "Вол"] {
+            let mut e = d.scenario.events[0].clone();
+            e.title = crate::editor::events::with_name(&e.title, t);
+            d.apply_merging(Command::SetEvent { id: 1, event: Box::new(e) }, Some("e1:title")).unwrap();
+        }
+        assert_eq!(d.scenario.events[0].title, "Вол");
+        d.undo();
+        assert_eq!(d.undo_label(), Some("New event"));
+    }
+
+    #[test]
+    fn event_fields_land_at_documented_offsets() {
+        use crate::editor::events::*;
+        let mut d = doc();
+        d.apply(Command::NewEvent { kind: 1 }).unwrap();
+        d.apply(Command::NewEvent { kind: 3 }).unwrap();
+        let mut e = d.scenario.events[1].clone();
+        e.group_colour = 4;
+        e.kind = 2;
+        e.start_time = 0x0102_0304;
+        set_repeat_days(&mut e, 2);
+        set_duration_hours(&mut e, 5);
+        e.archetype = 3;
+        let c = &mut e.conditions;
+        c.squad_count = Threshold { at_least: false, value: 3 }.raw();
+        c.army_strength = Threshold { at_least: true, value: 900 }.raw();
+        c.army_inactive = 7;
+        c.stats_check = 1;
+        c.level = Threshold { at_least: true, value: 4 }.raw();
+        c.gold = Threshold { at_least: false, value: 300 }.raw();
+        c.holiness_mana = 25;
+        c.buildings_check = 1;
+        c.buildings = [1, 2, 3];
+        c.buildings_owner = [1, 6, 3];
+        c.units_check = 1;
+        c.units = [10, 11, 12];
+        c.units_named = [1, 0, 2];
+        c.units_owner = [2, 4, 5];
+        c.artifacts_check = 1;
+        c.artifacts = [20, 21, 22];
+        c.artifacts_owner = [1, 1, 6];
+        c.defeated_check = 1;
+        c.defeated_armies = [5, 6];
+        c.happened_yes_check = 1;
+        c.happened_yes = [0x0201, 1];
+        c.not_happened_check = 1;
+        c.not_happened = [2, 0x0403];
+        c.beaten_check = 1;
+        c.beaten_armies = [8, 9];
+        c.happened_no_check = 1;
+        c.happened_no = [0x0605, 7];
+        c.meet_army = 11;
+        c.army_active = 12;
+        c.confirm_question = 1;
+        c.army_at_home = 13;
+        let r = &mut e.results;
+        r.patrol_army = 14;
+        r.patrol_delta = -6;
+        r.relative_event = 0x0908;
+        r.relative_delay_hours = 48;
+        r.cast_spell = 15;
+        r.picture = PICTURE_VICTORY;
+        r.experience = -100;
+        r.gold = 0x1234;
+        r.mana = 77;
+        r.spells_learned = [1, 2, 3, 4];
+        r.units_add = [30, 31, 32, 33];
+        r.units_add_named = [1, 2, 0, 1];
+        r.units_remove = [34, REMOVE_ADDED_UNIT, REMOVE_ANY_UNIT, 0];
+        r.units_remove_named = [0, 0, 0, 2];
+        r.artifacts_add = [40, 41, 42, 43];
+        r.artifacts_remove = [44, 45, 46, 47];
+        r.activate_armies = [16, 17];
+        r.deactivate_army = 18;
+        r.completes_quest = 0x0B0A;
+        r.delay_hours = 6;
+        r.light_lanterns = [1, 2, 3, 0x0102];
+        r.removed_units_to_army = 19;
+        r.new_hero_class = 50;
+        r.chained_event = 0x0D0C;
+        r.units_from_army = 20;
+        r.move_to_hero = 1;
+        r.show_army = 21;
+        r.hero_one_hp = 1;
+        r.start_battle_with = 22;
+        r.no_meeting = 1;
+        r.repeat_after_yes = 1;
+        e.subordinate = 1;
+        set_repeatable(&mut e, true);
+        e.generate_battle_army = 1;
+        e.title = with_flags("Сделка", "+Сделка", "/Обман");
+        e.question = "Да?".into();
+        e.message = "Готово.".into();
+        e.custom_picture = Some(picture_from_rgba(1, 1, &[0, 255, 0, 255]).unwrap());
+        d.apply(Command::SetEvent { id: 2, event: Box::new(e.clone()) }).unwrap();
+        let pay = d.scenario.to_payload();
+        let o = events_offset(&pay) + EVENT_SIZE;
+        let b = &pay[o..o + EVENT_SIZE];
+        assert_eq!(&b[0..2], &[4, 2]);
+        assert_eq!(&b[2..6], &[4, 3, 2, 1]);
+        assert_eq!(&b[6..10], &(2880u16).to_le_bytes().into_iter().chain(300u16.to_le_bytes()).collect::<Vec<_>>()[..]);
+        assert_eq!(b[10], 3);
+        assert_eq!(&b[11..13], &(-3i16).to_le_bytes());
+        assert_eq!(&b[13..15], &900i16.to_le_bytes());
+        assert_eq!(&b[15..19], &[7, 14, (-6i8) as u8, 1]);
+        assert_eq!(&b[19..21], &4i16.to_le_bytes());
+        assert_eq!(&b[21..23], &(-300i16).to_le_bytes());
+        assert_eq!(&b[25..27], &25i16.to_le_bytes());
+        assert_eq!(&b[29..36], &[1, 1, 2, 3, 1, 6, 3]);
+        assert_eq!(&b[36..46], &[1, 10, 11, 12, 1, 0, 2, 2, 4, 5]);
+        assert_eq!(&b[46..53], &[1, 20, 21, 22, 1, 1, 6]);
+        assert_eq!(&b[53..56], &[1, 5, 6]);
+        assert_eq!(&b[56..61], &[1, 1, 2, 1, 0]);
+        assert_eq!(&b[61..66], &[1, 2, 0, 3, 4]);
+        assert_eq!(&b[66..69], &[1, 8, 9]);
+        assert_eq!(&b[69..74], &[1, 5, 6, 7, 0]);
+        assert_eq!(&b[74..77], &[11, 12, 1]);
+        assert_eq!(&b[77..83], &[8, 9, 48, 0, 15, 201]);
+        assert_eq!(&b[83..87], &[0x9C, 0xFF, 0x34, 0x12]);
+        assert_eq!(&b[89..91], &77i16.to_le_bytes());
+        assert_eq!(&b[93..97], &[1, 2, 3, 4]);
+        assert_eq!(&b[97..105], &[30, 31, 32, 33, 1, 2, 0, 1]);
+        assert_eq!(&b[105..113], &[34, 0xFE, 0xFF, 0, 0, 0, 0, 2]);
+        assert_eq!(&b[113..121], &[40, 41, 42, 43, 44, 45, 46, 47]);
+        assert_eq!(&b[121..128], &[16, 17, 18, 0x0A, 0x0B, 6, 0]);
+        assert_eq!(&b[128..136], &[1, 0, 2, 0, 3, 0, 2, 1]);
+        assert_eq!(&b[136..140], &[19, 50, 0x0C, 0x0D]);
+        assert_eq!(&b[140..151], &[1, 0, 20, 1, 21, 1, 13, 22, 1, 1, 1]);
+        assert_eq!(&b[163..165], &(4u16 + 128 * 128 * 2).to_le_bytes());
+        // The texts and the picture: title with its flag script, question, message.
+        let back = Scenario::parse_payload(&pay).unwrap();
+        assert_eq!(back.events[1], d.scenario.events[1]);
+        assert_eq!(back.events[1].title, "Сделка%+Сделка=/Обман");
+        let f = back.events[1].flags.clone().unwrap();
+        assert_eq!((f.set.as_deref(), f.require_unset.as_deref()), (Some("Сделка"), Some("Обман")));
+        // Opcode arguments share the XP, gold and mana bytes.
+        let mut op = d.scenario.events[0].clone();
+        set_opcode(&mut op, Some(19));
+        set_opcode_args(&mut op, [3, 19, 11]);
+        d.apply(Command::SetEvent { id: 1, event: Box::new(op) }).unwrap();
+        let pay = d.scenario.to_payload();
+        let b = &pay[events_offset(&pay)..events_offset(&pay) + EVENT_SIZE];
+        assert_eq!((b[17], b[148]), (19, 1));
+        assert_eq!(&b[83..87], &[3, 0, 19, 0]);
+        assert_eq!(&b[89..91], &[11, 0]);
+        // A relative event stores the "never" start.
+        let mut rel = d.scenario.events[0].clone();
+        set_relative(&mut rel, true, 0);
+        d.apply(Command::SetEvent { id: 1, event: Box::new(rel) }).unwrap();
+        let pay = d.scenario.to_payload();
+        let o = events_offset(&pay);
+        assert_eq!(&pay[o + 2..o + 6], &1_036_800_000u32.to_le_bytes());
     }
 
     #[test]

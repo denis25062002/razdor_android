@@ -6,6 +6,7 @@
 //! record's panel over the left of the map, a status line at the bottom.
 
 mod canvas;
+mod events;
 mod form;
 mod palette_panel;
 mod props;
@@ -31,6 +32,7 @@ use crate::ui::widgets::*;
 use canvas::{Cam, Overlays, Overview};
 use palette_panel::{PaletteState, TOOL_KEYS};
 use props::{Ctx, PanelState};
+use events::{EventsAction, EventsState};
 use settings::{SettingsAction, SettingsState};
 
 const TOP: f32 = 44.0;
@@ -55,6 +57,8 @@ enum Then {
     Open(PathBuf),
     Exit,
     Save { name: String, dest: Destination, consent: Consent },
+    /// Delete an event that is still referred to (then back to the event window).
+    DeleteEvent(u16),
 }
 
 enum Modal {
@@ -64,6 +68,7 @@ enum Modal {
     Confirm { message: String, then: Then },
     Issues { scroll: usize },
     Settings,
+    Events,
     TestPlay,
 }
 
@@ -76,6 +81,7 @@ pub struct EditorScreen {
     overlays: Overlays,
     panel: PanelState,
     settings: SettingsState,
+    events: EventsState,
     modal: Option<Modal>,
     status: Option<String>,
     issues: Vec<Issue>,
@@ -120,6 +126,7 @@ impl EditorScreen {
             overlays: Overlays { grid: false, cover: false, patrols: false },
             panel: PanelState::default(),
             settings: SettingsState::default(),
+            events: EventsState::default(),
             modal: None,
             status: Some("New 50 x 50 map. Maps are saved to your own folder; see Save as.".into()),
             issues: Vec::new(),
@@ -154,6 +161,7 @@ impl EditorScreen {
         self.tools.set_tool(tool);
         self.cam = None;
         self.issues.clear();
+        self.events = EventsState::default();
     }
 
     fn open_file(&mut self, path: PathBuf) {
@@ -177,6 +185,11 @@ impl EditorScreen {
             Then::Open(p) => self.open_file(p),
             Then::Exit => return EditorAction::Exit,
             Then::Save { name, dest, consent } => self.save(&name, dest, consent),
+            Then::DeleteEvent(id) => {
+                self.apply(Command::DeleteEvent { id }, "");
+                self.status = Some(format!("Deleted event {id}; later events moved up one and every reference followed."));
+                self.modal = Some(Modal::Events);
+            }
         }
         EditorAction::None
     }
@@ -269,8 +282,13 @@ impl EditorScreen {
             Place::Point(id) => (Some(Target::Point(id)), s.points.get(id as usize - 1).map(|p| (p.x, p.y))),
             Place::Object(i) => (None, s.objects.get(i).map(|o| (o.x, o.y))),
             Place::Hero(k) => (None, s.header.heroes.get(k).map(|h| (h.x, h.y))),
-            Place::Settings | Place::Event(_) => {
+            Place::Settings => {
                 self.modal = Some(Modal::Settings);
+                return;
+            }
+            Place::Event(id) => {
+                self.events.select(id);
+                self.modal = Some(Modal::Events);
                 return;
             }
             Place::Map => (None, None),
@@ -282,6 +300,41 @@ impl EditorScreen {
             cam.centre = vec2(x as f32 + 0.5, y as f32 + 0.5);
         }
         self.modal = None;
+    }
+
+    /// One frame of the event window (it is the open modal).
+    fn events_window(&mut self) {
+        let names = self.names().clone();
+        self.modal = Some(Modal::Events);
+        match events::window(&mut self.events, &self.doc.scenario, &names) {
+            EventsAction::None => {}
+            EventsAction::Apply(cmd, key) => {
+                let key = (!key.is_empty()).then_some(key);
+                match self.doc.apply_merging(cmd, key.as_deref()) {
+                    Ok(a) => {
+                        if let Some(id) = a.new_id {
+                            self.events.select(id as u16);
+                            self.status = Some(format!("Event {id} made."));
+                        }
+                    }
+                    Err(e) => self.status = Some(format!("Refused: {e}.")),
+                }
+                self.tools.check_selection(&self.doc);
+            }
+            EventsAction::Delete(id) => {
+                let refs = razdor::editor::events::references_to(&self.doc.scenario, id);
+                if refs.is_empty() {
+                    self.run(Then::DeleteEvent(id));
+                } else {
+                    let list: Vec<String> = refs.iter().take(6).map(|r| r.to_string()).collect();
+                    let more = if refs.len() > 6 { format!(" and {} more", refs.len() - 6) } else { String::new() };
+                    let message = format!("Event {id} is still used by {}{more}. Delete it and clear those references?", list.join(", "));
+                    self.modal = Some(Modal::Confirm { message, then: Then::DeleteEvent(id) });
+                }
+            }
+            EventsAction::Status(m) => self.status = Some(m),
+            EventsAction::Close => self.modal = None,
+        }
     }
 
     fn start_test_play(&mut self, class: HeroClass) -> EditorAction {
@@ -550,6 +603,9 @@ impl EditorScreen {
         if b("Settings", 80.0, true) {
             self.modal = Some(Modal::Settings);
         }
+        if b("Events", 64.0, true) {
+            self.modal = Some(Modal::Events);
+        }
         if b("Check", 60.0, true) {
             self.check();
         }
@@ -608,6 +664,10 @@ impl EditorScreen {
                 SettingsAction::Close => {}
                 SettingsAction::None => self.modal = Some(Modal::Settings),
             }
+            return action;
+        }
+        if matches!(modal, Modal::Events) {
+            self.events_window();
             return action;
         }
         draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.55));
@@ -804,7 +864,7 @@ impl EditorScreen {
                     keep = false;
                 }
             }
-            Modal::Settings => unreachable!("handled above"),
+            Modal::Settings | Modal::Events => unreachable!("handled above"),
         }
         if keep {
             self.modal = Some(next);

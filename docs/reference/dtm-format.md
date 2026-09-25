@@ -306,9 +306,11 @@ archetype suffixes like `#рыцарь`, appear inside the strings.
 
 ## 9. Events (171 bytes each)
 
-Events have 1-based ids in file order, and every cross-reference between events uses these ids. The group of offsets
-0–10 is C; the rest of the layout follows the modder notes and is consistent with the data. Unless stated otherwise,
-a "check" byte is a checkbox that enables the condition next to it.
+Events have 1-based ids in file order, and every cross-reference between events uses these ids. Every offset below
+is C: besides the data and the modder notes, the Community editor's routine that stores its event window into the
+record was read (`DTMapEdit.exe`; each control's published field, the value it reads and the byte it writes), so
+the control behind each byte is known. Unless stated otherwise, a "check" byte is a checkbox that enables the
+condition next to it. The editor holds at most 5000 events.
 
 **Header**
 
@@ -316,16 +318,16 @@ a "check" byte is a checkbox that enables the condition next to it.
 |---|---|
 | 0 | u8 group colour in the editor (0–5) |
 | 1 | u8 type: 1 global, 2 local, 3 quest, 4 rumour. This is C: quests are the targets of "completes quest", and rumours occur only in buildings. |
-| 2 | u32 start time (minutes) |
-| 6 | u16 repeat period (minutes; 1440 = daily) |
-| 8 | u16 active duration (minutes) |
+| 2 | u32 start time (minutes). 1 036 800 000 (year 2000) is the editor's "relative time only" box: the event has no start of its own until a "relative event" result sets one. |
+| 6 | u16 repeat period (minutes). The editor edits it in days (1–31) and stores days × 1440. |
+| 8 | u16 active duration. The editor edits it in hours and stores hours × 60 (every shipped value is a multiple of 60), but the game's window check (0x4a7c3f) takes the stored number as hours, so a window the editor shows as 24 hours lasts 1440 hours in the game. |
 | 10 | u8 hero archetype: 0 all, 1 knight, 2 archmage, 3 ranger |
 
 **Conditions**
 
 | off | field |
 |---|---|
-| 11 | i16 squad count. The sign encodes ≥ or ≤. |
+| 11 | i16 squad count (at most 12). The sign encodes ≥ or ≤: the editor's switch stores the value, or its negation when set to ≤. The same holds for 13, 19, 21 and 25. |
 | 13 | i16 army strength |
 | 15 | u8 army must be inactive |
 | 16 | u8 army whose patrol changes (a result) |
@@ -336,7 +338,7 @@ a "check" byte is a checkbox that enables the condition next to it.
 | 25 | i16 holiness / mana |
 | 29 | check: building ownership |
 | 30 | u8[3] building ids |
-| 33 | u8[3] owners: 1 player, 2–5 green, blue, yellow, red, 6 "not the player" (L) |
+| 33 | u8[3] owners: 0 none (the list's empty first entry), 1 player, 2–5 green, blue, yellow, red, 6 "not the player"; the same codes at 43 and 50 |
 | 36 | check: named squad in some army |
 | 37 | u8[3] unit ids |
 | 40 | u8[3] named characters |
@@ -386,7 +388,7 @@ a "check" byte is a checkbox that enables the condition next to it.
 | 137 | u8 new hero class (unit id) |
 | 138 | u16 chained (subordinate) event, executed immediately |
 | 140 | u8 "subordinate event" flag |
-| 141 | u8 **0 = may fire many times, 1 = once** |
+| 141 | u8 **0 = may fire many times, 1 = once** (the inverse of the editor's "many times" box) |
 | 142 | u8 army that added units are taken from |
 | 143 | u8 move that army to the hero |
 | 144 | u8 show army |
@@ -394,14 +396,15 @@ a "check" byte is a checkbox that enables the condition next to it.
 | 147 | u8 start a battle with this army |
 | 148 | u8 "no meeting with army" (also a community opcode switch) |
 | 149 | u8 repeat after a yes answer |
+| 150 | u8 generate the battle army to match the player (the check box next to "start a battle with army"; always 0 in the shipped maps; the game's use is not traced) |
 
 **Unknown and pictures**
 
 | off | field |
 |---|---|
 | 23–24, 27–28, 87–88, 91–92 | U (small or rare values) |
-| 150–162 | U. Byte 156 is a 0/1 flag in about 2% of events. |
-| 163 | u16 size of this event's custom picture. It is stored after the scenario picture: u16 width, u16 height, then width·height 16-bit pixels. The only example is 128×128, 32,772 bytes. The pixel format is probably RGB565 (L). |
+| 151–162 | U. Byte 156 is a 0/1 flag in about 2% of events; the editor's window does not write it. |
+| 163 | size of this event's custom picture (the editor writes a u32 at 163–166; shipped sizes fit in the low u16). It is stored after the scenario picture: u16 width, u16 height, then width·height 16-bit pixels. The only example is 128×128, 32,772 bytes. The pixel format is probably RGB565 (L). |
 | 165–170 | U |
 
 **Strings.** Each event has three strings:
@@ -409,7 +412,10 @@ a "check" byte is a checkbox that enables the condition next to it.
 2. Question text: the text of the yes/no prompt. Empty unless offset 76 is set.
 3. Message text shown when the event fires. Empty means the event fires silently.
 
-**Flag script (C).** An event title may be followed by `%` and a script of the form `[+X | -X][=X | =/X]`:
+**Flag script (C).** The editor edits the title in three fields (the name, "flag" and "check flag") and writes
+`name`, then `%` and the flag field if that starts with `+` or `-` (a flag field without a sign is dropped), then, if
+the check field is not empty, `%` (when no flag was written) and `=` and the check field. So an event title may be
+followed by `%` and a script of the form `[+X | -X][=X | =/X]`:
 - `+X` sets flag X and `-X` clears it; these are results.
 - `=X` requires X to be set and `=/X` requires X to be unset; these are conditions.
 
@@ -469,6 +475,6 @@ codec itself is out of scope here (U).
 - Exact passability and speed factor for each terrain code and object class.
 - The grid topology (see section 4; 8-neighbour squares is the working assumption).
 - Army bytes 8, 59 and 80. Hero preset bytes 0–7 and 17–18. Header 0x120.
-- Event bytes 150–162.
+- Event bytes 151–162.
 - Point priorities and duration (always 0 in shipped maps).
 - The LIT image codec.

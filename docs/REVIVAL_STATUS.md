@@ -41,10 +41,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Spells** | Spell book on the world map; cast on your army or a nearby hostile army for game time, the mana taken when the spell completes; effects last into battles, a recast adds time, 4 per unit; `OneEnemy` and life drain hit only the leader; instant damage can kill; archmage or Caster discount (not both); event and village spells last 10× (5×) as long. |
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **AI armies** | The scenario's armies choose goals as the original does: every candidate seeded with its `_Global.ini` priority into one flood, lowest priority + path cost wins; armies and the player within `AIDistance0..2` cells by behaviour style (feudal / rogue / peasant, byte 59), inside the patrol box; an attack only when a simulated battle is won. Goals: attack, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. They walk on minutes banked from your steps (speed `max(1, 5 − correction)`). Feudal economy: income (byte 80 × 10), wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles, captures, reports within sight. Beaten lords retreat and return; armies respawn at their home building's centre. 30 simulated days take 0.01–0.8 s per map (release). |
-| **Map editor (step 1)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms except events; undo/redo; checks before saving; test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
+| **Map editor (steps 1–2)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms; **the event editor**: the event list (type / group / title filters, new, duplicate, delete with every reference renumbered and a warning when the event is still used) and every field of the original's event window on its four tabs (each control mapped to its byte by reading the original editor's save routine), attaching events to buildings and points, the Community opcodes 1–20 with named arguments, imported event pictures; undo/redo; checks before saving (every id an event names, quests, flag scripts, string counts); test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. No random map generator (not planned). Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
 | **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
 
-Tests: **487 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **506 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -103,7 +103,8 @@ after `main` returned); the game now ends the process directly once everything i
   `set_in_building` for garrisons without extra defence (one line in `game.rs`). AI units
   carry no own items or spells, so opcodes 6 and 11 act on whole armies.
 - Soft terrain transitions.
-- **Map editor step 2**: the event editor and the random map generator (described in the editor spec, not built). **The editor window was not seen**: layout, panels, drop-downs and the canvas were built with tests, clippy and a release build only; check them on a real screen first.
+- **Map editor**: the random map generator is not planned. Not built: "test play from here" for an event, exporting event pictures. **The editor window was not seen**: layout, panels, drop-downs, the canvas and the new event window (list, six tabs, pickers) were built with tests, clippy and a release build only; check them on a real screen first.
+- **Event duration units** (for review): the original editor stores an event's "open for N hours" as N × 60, but the game's window check reads the stored number as hours, so an event the editor shows as open 24 hours stays open 1440 hours in the game. Razdor's engine follows the game; the event window shows both numbers.
 - Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
   credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
   logs, a decode round trip and quad-snd loading every file at volume 0.
@@ -150,8 +151,10 @@ rm -rf target/basecmp
 coredumpctl list razdor
 # temp folders left by the editor's tests (never the repo or the game folder)
 rm -rf /tmp/razdor-editor-*
-# the DFM parser venv used to read the original editor's forms
+# the DFM parser venv used to read the original editor's forms, and the editor's
+# disassembly and event decoders used for step 2
 rm -rf /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9ee4204d-b333-4316-953b-dbb147f5fd94/scratchpad/editor
+rm -rf /tmp/claude-1000/-home-indicozy-Documents-projects-razdor/9ee4204d-b333-4316-953b-dbb147f5fd94/scratchpad/ev2
 ```
 
 Keep the scratch folder if you want the research notes (`RULES.md`, `DTM_FORMAT.md`, the Python

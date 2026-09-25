@@ -190,7 +190,7 @@ pub fn building_panel(state: &mut PanelState, s: &Scenario, id: u16, ctx: &Ctx, 
         }
         _ => {
             f.heading("Local events");
-            f.note("Events that can happen here (the event editor comes in step 2).", DIM);
+            f.note("Local events, quests and rumours checked here, in this order (edit them with the Events button).", DIM);
             let used = records::used_events(&b.event_slots, b.event_count).to_vec();
             match f.event_list("events", &used, &event_options(s)) {
                 EventListEdit::Add(e) => {
