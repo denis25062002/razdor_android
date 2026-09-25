@@ -631,6 +631,21 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
     Some(location_tooltip(game, &game.world.locations[l]))
 }
 
+/// The window of the building the party stands in, when `t` is one of its cells: what the
+/// side panel's "Enter" opens. Nothing for a garrison still to beat (attacking stays a button)
+/// or a burnt camp.
+fn reopen_here(game: &Game, t: Tile) -> Option<Screen> {
+    let l = game.location?;
+    if game.world.location_covering(t).or_else(|| game.world.location_at(t)) != Some(l) {
+        return None;
+    }
+    let loc = &game.world.locations[l];
+    if loc.defended() || (loc.kind == LocationKind::Camp && loc.cleared) {
+        return None;
+    }
+    first_tab(loc).map(|first| Screen::Building(BuildingView::new(first)))
+}
+
 /// The location the party stands on: enter it, or attack its garrison.
 fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     let Some(l) = game.location else {
@@ -831,8 +846,13 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(mouse_position()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
+    let mut reopened = None;
     if clicked() && !on_minimap {
-        if let Some(t) = hovered {
+        if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
+            // A click on the building the party stands in opens it again.
+            *message = None;
+            reopened = Some(screen);
+        } else if let Some(t) = hovered {
             // Water is sailed to with a ship; otherwise a click next to open ground means it.
             let target = if game.can_sail_to(t) {
                 t
@@ -855,7 +875,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     if !input_blocked() && events.is_empty() {
         events = game.tick(get_frame_time().min(0.1));
     }
-    let mut next = handle_events(game, events, message, dialogs);
+    let mut next = handle_events(game, events, message, dialogs).or(reopened);
 
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     draw_world(game, assets, &cam);
