@@ -120,7 +120,8 @@ pub enum BattleResult {
         level_ups: Vec<(usize, i32)>,
         captured: Option<usize>,
     },
-    Withdrew { lost: usize, level_ups: Vec<(usize, i32)> },
+    /// Nobody won: no XP (the original pays it only for a victory).
+    Withdrew { lost: usize },
     Defeat,
 }
 
@@ -162,6 +163,8 @@ pub enum Event {
     /// AI armies fought within the hero's sight, or one took or besieged his building
     /// (`rules::ai`).
     Battle(AiNews),
+    /// A squad member reached a new level outside battle (scenario XP): (squad index, level).
+    LevelUp(usize, i32),
 }
 
 /// Who the next battle is against.
@@ -347,7 +350,6 @@ impl Game {
         let world = World::from_scenario(scenario, &content);
         let start = world.hero_start(scenario, &content, hero);
         let mut leader = Unit::new(&content, hero.unit(), start.hero_slot);
-        leader.gain_xp(&content, start.experience);
         leader.heal_full(&content);
         let mut squad = vec![leader];
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
@@ -355,6 +357,7 @@ impl Game {
         g.fog = fog::for_scenario(&g.world.map, Some(scenario), true);
         g.look_around();
         g.gold = start.gold;
+        g.mana = start.mana;
         g.pack = start.items;
         g.spells = start.spells;
         g.archetype = archetype_of(hero);
@@ -967,9 +970,12 @@ impl Game {
     }
 
     /// Promote squad member `unit` to class `to` of its upgrade tree. Items the new class
-    /// cannot wear go to the pack.
+    /// cannot wear go to the pack. The hero cannot be promoted.
     pub fn promote(&mut self, unit: usize, to: UnitId) -> Result<(), PromoteError> {
         let c = self.content.clone();
+        if unit == 0 {
+            return Err(PromoteError::NotAvailable);
+        }
         let u = self.squad.get_mut(unit).ok_or(PromoteError::NotAvailable)?;
         let removed = u.promote(&c, to)?;
         self.pack.extend(removed);
@@ -1101,6 +1107,14 @@ impl Game {
     /// army that catches the player attacks.
     pub fn start_battle(&mut self) -> Battle {
         // An army fights with its items worn (`ai::army_units`).
+        // The beaten army's experience correction scales the player's XP; a garrison's is 100.
+        let correction = match self.foe {
+            Some(Foe::Army(i)) => match self.world.armies[i].ai.exp_correction {
+                0 => 100,
+                c => c,
+            },
+            _ => 100,
+        };
         let (enemies, attacker, defence) = match self.foe {
             Some(Foe::Garrison(l)) => {
                 let loc = &self.world.locations[l];
@@ -1113,6 +1127,7 @@ impl Game {
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && !u.unpaid)).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
+        b.set_xp_correction(correction);
         // Lasting world spells change the stats of both sides.
         b.apply_spells(Team::Player, &self.army_spells());
         if let Some(Foe::Army(i)) = self.foe {
@@ -1167,7 +1182,7 @@ impl Game {
         }
         let mut level_ups = Vec::new();
         let c = self.content.clone();
-        for a in battle.xp_awards(Team::Player) {
+        for a in battle.player_xp() {
             let Some(i) = battle.fighters[a.fighter].squad_index else { continue };
             let gained = self.squad[i].gain_xp(&c, a.xp);
             if gained > 0 {
@@ -1241,7 +1256,7 @@ impl Game {
                 if let Some(Foe::Army(i)) = foe {
                     self.world.armies[i].ignore_until = self.clock.total_minutes() + 120.0;
                 }
-                BattleResult::Withdrew { lost, level_ups }
+                BattleResult::Withdrew { lost }
             }
         }
     }
@@ -1400,6 +1415,7 @@ fn archetype_of(hero: HeroClass) -> u8 {
 pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     let mut u = Unit::new(content, t.unit, t.slot);
     u.level = t.level.max(1);
+    u.xp = t.xp;
     u.heal_full(content);
     u.hp = (u.hp - t.hurt).max(1);
     u
@@ -1674,8 +1690,48 @@ mod tests {
         while b.outcome() == Outcome::Ongoing {
             b.skip();
         }
-        assert!(matches!(g.resolve_battle(&b), BattleResult::Withdrew { lost: 0, .. }));
+        let (level, xp) = (g.hero().level, g.hero().xp);
+        assert!(matches!(g.resolve_battle(&b), BattleResult::Withdrew { lost: 0 }));
         assert!(g.world.armies[0].ignore_until > g.clock.total_minutes());
+        assert_eq!((g.hero().level, g.hero().xp), (level, xp), "no XP without a victory");
+    }
+
+    #[test]
+    fn the_beaten_armys_correction_scales_the_players_xp() {
+        let gain = |correction: i32| {
+            let mut g = quiet_game(HeroClass::Knight);
+            let camp = g.world.index_of("Bandit camp");
+            g.world.spawn_gang(camp, (30, 20));
+            g.world.armies[0].ai.exp_correction = correction;
+            g.foe = Some(Foe::Army(0));
+            let mut b = g.start_battle();
+            b.begin();
+            wipe_all_but_hero(&mut b);
+            let share = b.xp_awards(Team::Player)[0].xp;
+            let xp = b.player_xp()[0].xp;
+            g.resolve_battle(&b);
+            assert!(g.hero().xp > 0 || g.hero().level > 1);
+            (share, xp)
+        };
+        let (share, normal) = gain(100);
+        let (_, double) = gain(200);
+        // The demo's options: modifier 100, difficulty 100.
+        assert_eq!(normal, share);
+        assert_eq!(double, 2 * share);
+    }
+
+    #[test]
+    fn the_hero_is_not_promoted_and_promotion_is_free() {
+        let mut g = quiet_game(HeroClass::Knight);
+        let (spear, sword) = (unit(&g, "spearman"), unit(&g, "swordsman"));
+        g.hire(spear).unwrap();
+        g.squad[1].level = 3;
+        g.squad[1].xp = 40;
+        g.squad[0].level = 5;
+        assert_eq!(g.promote(0, sword), Err(PromoteError::NotAvailable), "the hero rises by levels only");
+        let gold = g.gold;
+        g.promote(1, sword).unwrap();
+        assert_eq!((g.squad[1].def, g.squad[1].level, g.squad[1].xp, g.gold), (sword, 1, 0, gold));
     }
 
     #[test]
@@ -1946,6 +2002,10 @@ mod tests {
     fn scenario_game_starts_from_the_preset() {
         let g = start(&strip());
         assert_eq!((g.tile(), g.gold, g.mana, g.squad.len()), ((2, 2), 200, 0, 3));
+        assert_eq!((g.hero().level, g.hero().xp), (1, 0), "no starting XP in the preset");
+        let mut s = strip();
+        s.header.heroes[0].mana = 150;
+        assert_eq!(start(&s).mana, 150, "the preset's second value is mana");
         assert_eq!(g.hero().def, HeroClass::Knight.unit());
         assert_eq!(g.pack, vec![ItemId(7)]);
         assert_eq!(g.clock.label(), "1204, month 5, day 19, 9 h");

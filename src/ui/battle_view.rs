@@ -32,7 +32,6 @@ const MOVE_TIME: f32 = 0.25;
 /// Stat higher than at the battle's start (blessing).
 const RAISED: Color = Color::new(0.45, 0.72, 1.0, 1.0);
 const FRIENDLY: Color = Color::new(0.35, 0.65, 1.0, 1.0);
-const XP_COLOR: Color = Color::new(0.35, 0.95, 0.95, 1.0);
 
 /// Card and grid geometry for the current window and formation.
 #[derive(Clone, Copy)]
@@ -234,7 +233,8 @@ impl BattleView {
         let outcome = self.battle.outcome();
         let over = !self.battle.is_deploying() && outcome != Outcome::Ongoing && self.fx.is_none();
         if over && self.xp.is_none() {
-            self.xp = Some(self.battle.xp_awards(Team::Player));
+            // What the player's units gain: only a victory pays (experience.md §3).
+            self.xp = Some(self.battle.player_xp());
         }
 
         self.draw(&l, assets);
@@ -371,12 +371,35 @@ impl BattleView {
                 let p = l.cell_pos(f.team, f.slot);
                 draw_rectangle(p.x + 6.0, p.y + l.card_h * 0.36, l.card_w - 12.0, 24.0, Color::new(0.0, 0.2, 0.25, 0.85));
                 text_centered(&format!("XP +{}", a.xp), p.x + l.card_w / 2.0, p.y + l.card_h * 0.36 + 18.0, 20.0, XP_COLOR);
+                if self.levels_gained(a) > 0 {
+                    let y = p.y + l.card_h * 0.36 + 26.0;
+                    draw_rectangle(p.x + 6.0, y, l.card_w - 12.0, 22.0, Color::new(0.35, 0.28, 0.02, 0.9));
+                    text_centered("Level up!", p.x + l.card_w / 2.0, y + 17.0, 19.0, ACCENT);
+                }
             }
         }
         self.draw_panel(l, player_turn, &targets, &moves);
         if player_turn {
             self.draw_preview(l, active.expect("player turn"));
         }
+    }
+
+    /// XP needed for fighter `f`'s next level, as the battle began.
+    fn need(&self, f: &razdor::rules::battle::Fighter) -> i32 {
+        self.battle.content().xp_to_next(f.unit, f.level)
+    }
+
+    /// Levels the award `a` will add to its fighter.
+    fn levels_gained(&self, a: &XpAward) -> i32 {
+        let f = &self.battle.fighters[a.fighter];
+        let c = self.battle.content();
+        let (mut level, mut xp, mut n) = (f.level, f.xp + a.xp, 0);
+        while n < 100 && xp >= c.xp_to_next(f.unit, level) {
+            xp -= c.xp_to_next(f.unit, level);
+            level += 1;
+            n += 1;
+        }
+        n
     }
 
     fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, border: Option<Color>) {
@@ -390,6 +413,8 @@ impl BattleView {
         draw_rectangle(p.x, p.y, w, 4.0, team_color(f.team));
         assets.draw_unit(f.unit, f.team, p.x + w / 2.0, p.y + h * 0.26, h * 0.4);
         hp_bar(p.x + 6.0, p.y + h * 0.48, w - 12.0, f.hp, s.max_hp());
+        let need = self.need(f);
+        xp_bar(p.x + 6.0, p.y + h * 0.48 + 6.0, w - 12.0, 3.0, f.xp, need);
         // Long names shrink to fit the card.
         let mut name_fs = fs + 1.0;
         while name_fs > 8.0 && measure(&f.name, name_fs).width > w - 6.0 {
@@ -415,7 +440,13 @@ impl BattleView {
         );
         let hits = if f.hp < s.max_hp() { format!("Hits: {}/{}", f.hp.max(0), s.max_hp()) } else { format!("Hits: {}", s.max_hp()) };
         text(&hits, x, p.y + h * 0.96, fs, INK);
-        text(&format!("L{}", f.level), p.x + dx + 2.0, p.y + fs + 4.0, fs, ACCENT);
+        // "Lv N · XP a/b", shrunk to fit beside the hero mark.
+        let label = level_label(f.level, f.xp, need);
+        let mut lfs = fs;
+        while lfs > 8.0 && measure(&label, lfs).width > w - dx - 20.0 {
+            lfs -= 1.0;
+        }
+        text(&label, p.x + dx + 2.0, p.y + lfs + 4.0, lfs, XP_COLOR);
         if f.is_hero {
             text("*", p.x + w - 16.0, p.y + 24.0, 26.0, ACCENT);
         }
@@ -486,8 +517,12 @@ impl BattleView {
     fn unit_details(&self, id: usize, x: f32, y: f32) -> f32 {
         let f = &self.battle.fighters[id];
         let (s, base) = (&f.stats, &f.base);
-        text(&format!("{}  (level {})", f.name, f.level), x, y, 24.0, INK);
-        let mut y = y + 24.0;
+        text(&f.name, x, y, 24.0, INK);
+        let need = self.need(f);
+        let mut y = y + 22.0;
+        text(&level_label(f.level, f.xp, need), x, y, 18.0, XP_COLOR);
+        xp_bar(x + 190.0, y - 9.0, 150.0, 6.0, f.xp, need);
+        y += 21.0;
         let row = |label: &str, st: Stat, y: &mut f32| {
             let (cur, b) = (s[st], base[st]);
             if cur != 0 || b != 0 {
@@ -643,19 +678,12 @@ impl BattleView {
         }
         let losses = |lost: usize| if lost > 0 { format!(", {lost} fell") } else { String::new() };
         let result = game.resolve_battle(&self.battle);
-        match &result {
-            BattleResult::Victory { level_ups, .. } => {
-                cue(Cue::Triumph);
-                if !level_ups.is_empty() {
-                    cue(Cue::Upgrade);
-                }
+        if let BattleResult::Victory { level_ups, .. } = &result {
+            cue(Cue::Triumph);
+            if !level_ups.is_empty() {
+                cue(Cue::Upgrade);
             }
-            BattleResult::Withdrew { level_ups, .. } if !level_ups.is_empty() => cue(Cue::Upgrade),
-            _ => {}
         }
-        let levels = |ups: &[(usize, i32)]| -> String {
-            ups.iter().map(|&(i, lvl)| format!(", {} reaches level {lvl}", game.squad[i].name(&game.content))).collect()
-        };
         match result {
             BattleResult::Defeat => Some(Screen::GameOver),
             BattleResult::Victory { .. } if game.won() => Some(Screen::Victory),
@@ -664,8 +692,8 @@ impl BattleView {
                 *message = None;
                 Some(Screen::WorldMap)
             }
-            BattleResult::Withdrew { lost, level_ups } => {
-                *message = Some(format!("Nobody breaks. You withdraw{}{}.", losses(lost), levels(&level_ups)));
+            BattleResult::Withdrew { lost } => {
+                *message = Some(format!("Nobody breaks. You withdraw{}; no experience without a victory.", losses(lost)));
                 Some(Screen::WorldMap)
             }
         }

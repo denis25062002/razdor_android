@@ -62,6 +62,7 @@ fn transliterate(s: &str) -> String {
                 }
                 Some(i) => LAT[i].to_string(),
                 None if c.is_ascii() => c.to_string(),
+                None if c == '·' => "-".to_string(),
                 None => "?".to_string(),
             }
         })
@@ -194,6 +195,21 @@ pub fn hp_bar(x: f32, y: f32, w: f32, hp: i32, max: i32) {
     draw_rectangle(x, y, w, 5.0, Color::new(0.25, 0.05, 0.05, 1.0));
     let c = if frac > 0.5 { GREEN } else if frac > 0.25 { YELLOW } else { RED };
     draw_rectangle(x, y, w * frac, 5.0, c);
+}
+
+/// Colour of experience: bars, badges, level labels.
+pub const XP_COLOR: Color = Color::new(0.35, 0.95, 0.95, 1.0);
+
+/// "Lv 3 · XP 45/118".
+pub fn level_label(level: i32, xp: i32, need: i32) -> String {
+    format!("Lv {level} · XP {xp}/{need}")
+}
+
+/// A thin progress bar towards the next level.
+pub fn xp_bar(x: f32, y: f32, w: f32, h: f32, xp: i32, need: i32) {
+    let frac = (xp.max(0) as f32 / need.max(1) as f32).clamp(0.0, 1.0);
+    draw_rectangle(x, y, w, h, Color::new(0.05, 0.15, 0.18, 1.0));
+    draw_rectangle(x, y, w * frac, h, XP_COLOR);
 }
 
 #[cfg(test)]

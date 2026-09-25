@@ -178,10 +178,11 @@ pub struct HeroPreset {
     pub unknown_0: u32,
     /// 4: always 0 (U).
     pub unknown_4: u32,
-    /// 8: starting combat experience (L).
-    pub experience: u32,
-    /// 12: starting gold (L).
+    /// 8: starting gold, the same for every class in the shipped maps (C: the exe reads
+    /// it as a signed 16-bit value).
     pub gold: u32,
+    /// 12: starting mana, differing by class (C: signed 16-bit).
+    pub mana: u32,
     /// 16: starting building (1-based, 0 = none).
     pub start_building: u8,
     /// 17: always 0 (U).
@@ -202,8 +203,8 @@ impl HeroPreset {
         HeroPreset {
             unknown_0: r.u32(0),
             unknown_4: r.u32(4),
-            experience: r.u32(8),
-            gold: r.u32(12),
+            gold: r.u32(8),
+            mana: r.u32(12),
             start_building: r.u8(16),
             unknown_17: r.arr(17),
             troops: r.troops(19),
@@ -217,8 +218,8 @@ impl HeroPreset {
     fn write(&self, p: &mut Put) {
         p.u32(0, self.unknown_0);
         p.u32(4, self.unknown_4);
-        p.u32(8, self.experience);
-        p.u32(12, self.gold);
+        p.u32(8, self.gold);
+        p.u32(12, self.mana);
         p.u8(16, self.start_building);
         p.bytes(17, &self.unknown_17);
         p.troops(19, &self.troops);
@@ -1789,7 +1790,8 @@ mod tests {
             w32(&mut h, 0x1C + 4 * k, s.len() as u32);
         }
         w32(&mut h, 0x38, 624_354_300);
-        w32(&mut h, 0x3C + 50 + 12, 500); // archmage gold
+        w32(&mut h, 0x3C + 50 + 8, 500); // archmage gold
+        w32(&mut h, 0x3C + 50 + 12, 300); // archmage mana
         w16(&mut h, 0x3C + 50 + 37, 2); // archmage x
         h[0x3C + 50 + 19..0x3C + 50 + 22].copy_from_slice(&[4, 0, 3]);
         w16(&mut h, 0xD2, 1);
@@ -1821,7 +1823,7 @@ mod tests {
         let h = &s.header;
         assert_eq!((s.width(), s.height()), (4, 2));
         assert_eq!(h.start_date(), GameDate { year: 1204, month: 5, day: 20, hour: 9, minute: 0 });
-        assert_eq!(h.hero(Archetype::Archmage).gold, 500);
+        assert_eq!((h.hero(Archetype::Archmage).gold, h.hero(Archetype::Archmage).mana), (500, 300));
         assert_eq!(h.hero(Archetype::Archmage).x, 2);
         assert_eq!(h.hero(Archetype::Archmage).troops[0], Troop { unit: 4, level: 0, count: 3 });
         assert_eq!(h.relations[0], [0, 0, 0, -2]);

@@ -9,7 +9,8 @@
 
 use std::sync::Arc;
 
-use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, SpellDef, Stat, UnitId, MAX_XP_GAIN};
+use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, SpellDef, Stat, UnitId};
+use super::experience::{self, Role, SideUnit};
 use super::formation::{Formation, Row, Slot};
 use super::units::{Stats, Unit};
 
@@ -165,6 +166,8 @@ pub struct Fighter {
     /// Index into the player's squad, for writing results back.
     pub squad_index: Option<usize>,
     pub level: i32,
+    /// XP towards the next level as the battle began (for display).
+    pub xp: i32,
     /// Stats at the start of the battle (level, items, potions).
     pub base: Stats,
     /// Current stats: base with magic drain, blessing and curse.
@@ -184,10 +187,16 @@ pub struct Fighter {
     pub crippled: bool,
     /// Community `FateGift` used up.
     pub fate_used: bool,
-    /// Damage dealt plus HP healed, for the XP split.
-    pub dealt: i32,
-    /// Strength estimate at the start, for XP.
+    /// Tactical cost at the start (experience.md §1), for the sides' strength.
     pub tactical: i32,
+    /// Role in the side's strength sum, set at the start.
+    pub role: Role,
+    /// For the XP share: attacks and spells made, all actions taken (moves and waits too),
+    /// actions left this turn, and hit points lost.
+    pub useful: i32,
+    pub taken: i32,
+    pub left: i32,
+    pub lost: i32,
     /// Cell after deployment; written back to the squad.
     deployed: Slot,
 }
@@ -204,6 +213,7 @@ impl Fighter {
             is_hero: squad_index == Some(0),
             squad_index,
             level: unit.level,
+            xp: unit.xp,
             power: base[Stat::MagicPower],
             stats: base.clone(),
             base,
@@ -215,8 +225,12 @@ impl Fighter {
             stunned: false,
             crippled: false,
             fate_used: false,
-            dealt: 0,
-            tactical: content.tactical_cost(unit.def, unit.level),
+            tactical: 1,
+            role: Role::Melee,
+            useful: 0,
+            taken: 0,
+            left: 0,
+            lost: 0,
             deployed: unit.slot,
         }
     }
@@ -289,6 +303,14 @@ pub struct XpAward {
     pub xp: i32,
 }
 
+/// A side as the battle began, for the XP pool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SideStart {
+    pub strength: i64,
+    pub hp: i64,
+    pub count: usize,
+}
+
 /// Where a player's unit ended up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FighterResult {
@@ -316,6 +338,15 @@ pub struct Battle {
     actions_left: i32,
     deploying: bool,
     stalemate: bool,
+    /// Both sides at the start ([`Battle::begin`]).
+    start: [SideStart; 2],
+    /// The beaten army's experience correction for the player's XP (100 for a garrison).
+    xp_correction: i32,
+}
+
+/// A fighter in its side's strength sum.
+fn side_unit(f: &Fighter) -> SideUnit {
+    SideUnit { tactical: f.tactical, hp: f.hp, max_hp: f.max_hp(), row: f.slot.row, role: f.role }
 }
 
 /// Bonuses whose attacks ignore the target's defence.
@@ -359,7 +390,20 @@ impl Battle {
             actions_left: 0,
             deploying: true,
             stalemate: false,
+            start: [SideStart::default(); 2],
+            xp_correction: 100,
         }
+    }
+
+    /// The experience correction (percent) of the army the player fights: it scales the
+    /// player's XP (experience.md §3). A garrison's is 100.
+    pub fn set_xp_correction(&mut self, percent: i32) {
+        self.xp_correction = percent;
+    }
+
+    /// Both sides as the battle began.
+    pub fn start_of(&self, team: Team) -> SideStart {
+        self.start[team.index()]
     }
 
     pub fn content(&self) -> &Content {
@@ -435,6 +479,20 @@ impl Battle {
             self.in_building[team.index()] && self.fighters.iter().any(|f| f.team == team && f.alive() && f.base.has(&Bonus::Bastion))
         };
         let bastions = [bastion(Team::Player), bastion(Team::Enemy)];
+        // Strength at the start, from the stats the units bring (items, spells) and the
+        // building they stand in.
+        for f in &mut self.fighters {
+            f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.building_defence[f.team.index()]);
+            f.role = experience::role(&f.base);
+        }
+        for team in [Team::Player, Team::Enemy] {
+            let side: Vec<&Fighter> = self.fighters.iter().filter(|f| f.team == team && f.alive()).collect();
+            self.start[team.index()] = SideStart {
+                strength: experience::side_strength(&side.iter().map(|f| side_unit(f)).collect::<Vec<_>>()),
+                hp: side.iter().map(|f| f.hp as i64).sum(),
+                count: side.len(),
+            };
+        }
         for f in &mut self.fighters {
             f.deployed = f.slot;
             let inside = self.in_building[f.team.index()];
@@ -523,6 +581,9 @@ impl Battle {
             self.turn_effects();
         }
         let mut order: Vec<usize> = (0..self.fighters.len()).filter(|&i| self.fighters[i].alive()).collect();
+        for &i in &order {
+            self.fighters[i].left = self.turn_actions(i).max(0);
+        }
         order.sort_by_key(|&i| self.order_key(i));
         self.order = order;
         self.turn = 0;
@@ -577,11 +638,13 @@ impl Battle {
             if f.poisoned {
                 let loss = (max * f.poison.max(1) / 100).max(1).min(f.hp);
                 f.hp -= loss;
+                f.lost += loss;
                 self.log.push(format!("{} suffers {loss} from poison", f.name));
             }
             if f.bleeding > 0 && f.alive() {
                 let loss = f.bleeding.min(f.hp);
                 f.hp -= loss;
+                f.lost += loss;
                 f.bleeding = 0;
                 self.log.push(format!("{} bleeds for {loss}", f.name));
             }
@@ -632,6 +695,9 @@ impl Battle {
 
     fn spend_action(&mut self, id: usize) {
         self.actions_left -= 1;
+        let f = &mut self.fighters[id];
+        f.taken += 1;
+        f.left = self.actions_left.max(0);
         if self.actions_left <= 0 || !self.fighters[id].alive() {
             self.end_turn();
         }
@@ -641,6 +707,10 @@ impl Battle {
     pub fn skip(&mut self) {
         if let Some(id) = self.active() {
             self.log.push(format!("{} waits", self.fighters[id].name));
+            // Waiting spends what is left, one pass per action as in the original.
+            let f = &mut self.fighters[id];
+            f.taken += self.actions_left.max(0);
+            f.left = 0;
             self.end_turn();
         }
     }
@@ -1047,7 +1117,6 @@ impl Battle {
                     let t = &self.fighters[target];
                     let healed = self.heal_power(id, target).min(t.max_hp() - t.hp);
                     self.fighters[target].hp += healed;
-                    self.fighters[id].dealt += healed;
                     hit.amount = healed;
                     self.log.push(format!("{name} heals {tname} +{healed}"));
                 }
@@ -1085,8 +1154,7 @@ impl Battle {
                     // Counterblow: a warrior struck in melee hits back once.
                     if melee && t.alive() && t.stats.has(&Bonus::Counterblow) && t.stats.is_warrior() && self.fighters[id].alive() {
                         let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp);
-                        self.fighters[id].hp -= dmg;
-                        self.fighters[target].dealt += dmg;
+                        self.wound(id, dmg);
                         hit.counter = Some(dmg);
                         self.log.push(format!("{tname} hits back for {dmg}"));
                         hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
@@ -1100,15 +1168,24 @@ impl Battle {
             }
             // Community Suicide: dies after its own attack.
             if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].stats.has(&Bonus::Suicide) {
-                self.fighters[id].hp = 0;
+                let hp = self.fighters[id].hp;
+                self.wound(id, hp);
                 hit.actor_died = true;
                 self.log.push(format!("{name} gives its life"));
             }
         }
+        self.fighters[id].useful += 1;
         self.collapse(Team::Player);
         self.collapse(Team::Enemy);
         self.spend_action(id);
         Ok(hit)
+    }
+
+    /// `i` loses `amount` hit points (already capped at its HP).
+    fn wound(&mut self, i: usize, amount: i32) {
+        let f = &mut self.fighters[i];
+        f.hp -= amount;
+        f.lost += amount;
     }
 
     /// A fighter at 0 HP: true if it dies, false if the Community `FateGift` saves it (once
@@ -1165,8 +1242,7 @@ impl Battle {
             return;
         };
         let dmg = self.physical_damage(target, id, kind).min(self.fighters[id].hp);
-        self.fighters[id].hp -= dmg;
-        self.fighters[target].dealt += dmg;
+        self.wound(id, dmg);
         hit.counter = Some(dmg);
         self.log.push(format!("{} strikes first for {dmg}", self.fighters[target].name));
         hit.actor_died |= !self.fighters[id].alive() && self.lethal(id);
@@ -1210,6 +1286,7 @@ impl Battle {
             // BloodThrist: a kill gives the action back.
             if a.has(&Bonus::BloodThrist) && self.fighters[id].alive() && self.order.get(self.turn) == Some(&id) {
                 self.actions_left += 1;
+                self.fighters[id].left += 1;
             }
             return;
         }
@@ -1261,8 +1338,7 @@ impl Battle {
         if a.has(&Bonus::KillingStrike) && t.hp * 100 < t.max_hp() * KILLING_STRIKE_PERCENT {
             let (name, tname, left) = (self.fighters[id].name.clone(), t.name.clone(), t.hp);
             hit.amount += left;
-            self.fighters[id].dealt += left;
-            self.fighters[target].hp = 0;
+            self.wound(target, left);
             self.log.push(format!("{name} finishes {tname}"));
             if self.lethal(target) {
                 hit.killed = true;
@@ -1274,7 +1350,8 @@ impl Battle {
     /// The killer of a `DeathCurse` or `Ghost` unit dies.
     fn death_curse(&mut self, id: usize, target: usize, hit: &mut Hit) {
         if self.fighters[target].stats.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) && self.fighters[id].alive() {
-            self.fighters[id].hp = 0;
+            let hp = self.fighters[id].hp;
+            self.wound(id, hp);
             hit.actor_died = true;
             let msg = format!("{} dies by {}'s curse", self.fighters[id].name, self.fighters[target].name);
             self.log.push(msg);
@@ -1284,10 +1361,9 @@ impl Battle {
     /// Applies `raw` damage (capped at HP), vampirism and the killer-dies bonuses.
     fn deal(&mut self, id: usize, target: usize, raw: i32, hit: &mut Hit) {
         let dmg = raw.min(self.fighters[target].hp);
-        self.fighters[target].hp -= dmg;
+        self.wound(target, dmg);
         let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
         let a = &mut self.fighters[id];
-        a.dealt += dmg;
         let vamp = a.stats[Stat::Vampirizm];
         if vamp > 0 && !a.crippled {
             a.hp = (a.hp + dmg * vamp / 100).min(a.max_hp());
@@ -1410,36 +1486,54 @@ impl Battle {
     // After the battle
     // ------------------------------------------------------------------------------------
 
-    /// XP for the surviving units of `team` once the battle is over (mechanics.md 1.4,
-    /// simplified): with `ratio` = enemy strength / own strength,
-    /// `k = 1 ± |ratio−1|·ExpCorrection/100` clamped to [0.25, 4],
-    /// `pool = MainExpCorrection% · k · destroyed enemy strength + enemy strength / 20`.
-    /// The pool is split by weight `(4 − row)·10 + damage dealt and HP healed`, at least 1
-    /// each, then scaled by `HeroExpirienceModificator` (player) or `AIExpiriencePercent`.
-    /// The exe's extra damage-exchange term is left out.
+    /// `team`'s strength now: its living units with their current HP and rows.
+    pub fn strength_now(&self, team: Team) -> i64 {
+        let side: Vec<SideUnit> = self.fighters.iter().filter(|f| f.team == team && f.alive()).map(side_unit).collect();
+        experience::side_strength(&side)
+    }
+
+    /// Each survivor's share of `team`'s XP pool once the battle is over, before any
+    /// modifier (experience.md §3): pool = the enemy's starting strength div 20 × the share
+    /// of `team`'s starting HP not lost; share = [`experience::share`] by row and activity.
+    /// The dead get nothing but count in the divisor.
     pub fn xp_awards(&self, team: Team) -> Vec<XpAward> {
         if self.deploying || self.outcome() == Outcome::Ongoing {
             return Vec::new();
         }
-        let strength = |tm: Team| self.fighters.iter().filter(|f| f.team == tm).map(|f| f.tactical).sum::<i32>().max(1) as f64;
-        let (own, enemy) = (strength(team), strength(team.other()));
-        let destroyed: i32 = self.fighters.iter().filter(|f| f.team != team && !f.alive()).map(|f| f.tactical).sum();
-        let o = self.opt();
-        let ratio = enemy / own;
-        let skew = (ratio - 1.0).abs() * o.exp_correction as f64 / 100.0;
-        let k = if ratio >= 1.0 { 1.0 + skew } else { 1.0 - skew }.clamp(0.25, 4.0);
-        let pool = o.main_exp_correction as f64 / 100.0 * k * destroyed as f64 + enemy / 20.0;
-        let survivors: Vec<usize> = (0..self.fighters.len()).filter(|&i| self.fighters[i].team == team && self.fighters[i].alive()).collect();
-        let weight = |i: usize| ((4 - self.fighters[i].slot.row.number()) * 10 + self.fighters[i].dealt) as f64;
-        let total: f64 = survivors.iter().map(|&i| weight(i)).sum::<f64>().max(1.0);
-        let modifier = if team == Team::Player { o.hero_experience_modificator } else { o.ai_experience_percent };
-        survivors
-            .into_iter()
+        let own = self.start[team.index()];
+        let lost: i64 = self.fighters.iter().filter(|f| f.team == team).map(|f| f.lost as i64).sum();
+        let pool = experience::battle_pool(self.start[team.other().index()].strength, own.hp, lost);
+        (0..self.fighters.len())
+            .filter(|&i| self.fighters[i].team == team && self.fighters[i].alive())
             .map(|i| {
-                let share = (pool * weight(i) / total).round().max(1.0) as i32;
-                XpAward { fighter: i, xp: (share * modifier / 100).clamp(1, MAX_XP_GAIN) }
+                let f = &self.fighters[i];
+                XpAward { fighter: i, xp: experience::share(pool, own.count, f.slot.row, f.useful, f.taken, f.left) }
             })
             .collect()
+    }
+
+    /// What the player's survivors gain: only after a victory, each share ×
+    /// `HeroExpirienceModificator` × the difficulty factor × the beaten army's correction,
+    /// capped by the Community limit ([`experience::player_gain`]).
+    pub fn player_xp(&self) -> Vec<XpAward> {
+        if self.outcome() != Outcome::Victory {
+            return Vec::new();
+        }
+        let o = self.opt();
+        self.xp_awards(Team::Player)
+            .into_iter()
+            .map(|a| XpAward { xp: experience::player_gain(a.xp, o.hero_experience_modificator, o.difficulty_factor, self.xp_correction), ..a })
+            .collect()
+    }
+
+    /// What an AI side gains in a battle between AI armies: each share ×
+    /// `AIExpiriencePercent` / 100, for a side that still has strength at the end.
+    pub fn ai_xp(&self, team: Team) -> Vec<XpAward> {
+        if self.strength_now(team) <= 0 {
+            return Vec::new();
+        }
+        let pct = self.opt().ai_experience_percent;
+        self.xp_awards(team).into_iter().map(|a| XpAward { xp: experience::ai_gain(a.xp, pct), ..a }).collect()
     }
 
     /// Final state of the player's fighters. The hero cannot die while a unit of his army
@@ -2306,20 +2400,70 @@ mod tests {
         assert_eq!((res[0].slot, res[1].slot), (b(2), f(5)));
     }
 
-    #[test]
-    fn xp_goes_to_survivors_weighted_by_row_and_contribution() {
-        let mut bt = battle(&[(10, f(2)), (11, b(2)), (11, b(3))], &[(18, f(2)), (18, f(3))]);
-        assert!(bt.xp_awards(Team::Player).is_empty(), "not over yet");
-        bt.fighters[2].hp = 0;
-        for i in [3, 4] {
+    /// The player: warrior 10 in front, shooter 11 behind; the enemy: four punching bags in
+    /// front. A bag: D = round((e⁰/1.17 + e⁰/1.07)·200) = 358, H = 558, A = 11,
+    /// T = round(3.2·558·12/200) = 107; the enemy side 428.
+    fn xp_battle() -> Battle {
+        battle(&[(10, f(2)), (11, b(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))])
+    }
+
+    fn win(bt: &mut Battle) {
+        for i in 2..bt.fighters.len() {
             bt.fighters[i].hp = 0;
         }
+    }
+
+    #[test]
+    fn xp_pool_and_shares_follow_the_original() {
+        let mut bt = xp_battle();
+        assert!(bt.xp_awards(Team::Player).is_empty(), "not over yet");
+        assert_eq!(bt.start_of(Team::Enemy).strength, 428);
+        assert_eq!(bt.start_of(Team::Player).count, 2);
+        win(&mut bt);
+        // Pool 428 div 20 = 21; t = 21/4/2 = 2.625; idle front 3t = 7.9, back 2t = 5.25.
         let xp = bt.xp_awards(Team::Player);
-        assert_eq!(xp.iter().map(|a| a.fighter).collect::<Vec<_>>(), vec![0, 1]);
-        assert!(xp[0].xp > xp[1].xp, "front row weighs more: {xp:?}");
-        // Strength 150 vs 100: ratio 2/3, k = 1 − 1/3·0.5 = 5/6; pool = 0.3·5/6·100 + 5 = 30.
-        // Weights 30 and 20; the vanilla player modifier halves it: 9 and 6.
-        assert_eq!(xp.iter().map(|a| a.xp).collect::<Vec<_>>(), vec![9, 6]);
+        assert_eq!(xp.iter().map(|a| (a.fighter, a.xp)).collect::<Vec<_>>(), vec![(0, 8), (1, 5)]);
+        // The player gets ×HeroExpirienceModificator (50) × F (120) × the correction.
+        assert_eq!(bt.player_xp().iter().map(|a| a.xp).collect::<Vec<_>>(), vec![5, 3]);
+        bt.set_xp_correction(250);
+        assert_eq!(bt.player_xp().iter().map(|a| a.xp).collect::<Vec<_>>(), vec![12, 8]);
+    }
+
+    #[test]
+    fn xp_counts_activity_and_hit_points_lost() {
+        let mut bt = xp_battle();
+        turn_of(&mut bt, 0);
+        let hp = bt.fighters[3].hp;
+        bt.act(3).unwrap();
+        let (a, t) = (&bt.fighters[0], &bt.fighters[3]);
+        assert_eq!((a.useful, a.taken, a.left), (1, 1, 0));
+        assert_eq!(t.lost, hp - t.hp, "the target's loss is counted");
+        turn_of(&mut bt, 1);
+        bt.skip();
+        assert_eq!((bt.fighters[1].useful, bt.fighters[1].taken, bt.fighters[1].left), (0, 1, 0), "a wait spends the actions");
+        win(&mut bt);
+        // The busy warrior gets 4t = 10.5 → 10; the shooter that waited 2t = 5.25 → 5.
+        assert_eq!(bt.xp_awards(Team::Player).iter().map(|a| a.xp).collect::<Vec<_>>(), vec![10, 5]);
+        // Hit points lost shrink the pool: half the starting HP lost halves it (21 → 10).
+        bt.fighters[0].lost = (bt.start_of(Team::Player).hp / 2) as i32;
+        assert_eq!(bt.xp_awards(Team::Player).iter().map(|a| a.xp).collect::<Vec<_>>(), vec![5, 2]);
+    }
+
+    #[test]
+    fn the_dead_get_nothing_but_count_and_only_victory_pays_the_player() {
+        let mut bt = battle(&[(10, f(2)), (11, b(2)), (11, b(3))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))]);
+        bt.fighters[2].hp = 0;
+        win(&mut bt);
+        // Now N₀ = 3: t = 1.75, front 5.25 → 5, back 3.5 → 4.
+        let xp = bt.xp_awards(Team::Player);
+        assert_eq!(xp.iter().map(|a| (a.fighter, a.xp)).collect::<Vec<_>>(), vec![(0, 5), (1, 4)]);
+        let mut lost = xp_battle();
+        lost.fighters[0].hp = 0;
+        lost.fighters[1].hp = 0;
+        assert_eq!(lost.outcome(), Outcome::Defeat);
+        assert!(lost.player_xp().is_empty(), "no XP without a victory");
+        assert!(lost.ai_xp(Team::Player).is_empty(), "a wiped-out side has no strength left");
+        assert_eq!(lost.ai_xp(Team::Enemy).len(), 4, "the AI survivors gain");
     }
 
     // --- AI ---------------------------------------------------------------------------------
@@ -2404,7 +2548,15 @@ mod tests {
             }
             outcomes[bt.outcome() as usize] += 1;
             assert!(bt.round <= 25);
-            let _ = bt.xp_awards(Team::Player);
+            // XP within bounds: every survivor's share between 1 and the pool, the player's
+            // gain only after a victory and at most the Community cap.
+            let pool = experience::battle_pool(bt.start_of(Team::Enemy).strength, bt.start_of(Team::Player).hp, 0).max(1);
+            for a in bt.xp_awards(Team::Player) {
+                assert!(a.xp >= 1 && a.xp as i64 <= pool, "battle {n}: share {} of pool {pool}", a.xp);
+            }
+            let gains = bt.player_xp();
+            assert_eq!(gains.is_empty(), bt.outcome() != Outcome::Victory);
+            assert!(gains.iter().all(|a| (0..=experience::MAX_BATTLE_XP).contains(&a.xp)));
         }
         assert_eq!(outcomes[0], 0);
         assert!(outcomes.iter().sum::<i32>() >= 12);

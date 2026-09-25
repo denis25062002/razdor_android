@@ -250,6 +250,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
                 text_centered("$", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
             }
             hp_bar(cx + 2.0, cy + CELL + 3.0, cell - 4.0, u.hp, u.max_hp(&game.content));
+            xp_bar(cx + 2.0, cy + CELL + 9.0, cell - 4.0, 2.0, u.xp, u.xp_to_next(&game.content));
             if mouse_in(cx, cy, cell, CELL) {
                 hovered = Some(i);
             }
@@ -259,7 +260,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     let info = match hovered.map(|i| (i, &game.squad[i])) {
         Some((_, u)) if !u.alive() => format!("{} (dead)", u.name(c)),
         Some((_, u)) if u.unpaid => format!("{} unpaid!", u.name(c)),
-        Some((i, u)) => format!("{} L{} {}/{}  {}g/day", u.name(c), u.level, u.hp, u.max_hp(c), game.wage(i)),
+        Some((i, u)) => format!("{} {}  {}/{} HP  {}g/day", u.name(c), level_label(u.level, u.xp, u.xp_to_next(c)), u.hp, u.max_hp(c), game.wage(i)),
         None if formation.reserve => "front / back / reserve".to_string(),
         None => "front row / back row".to_string(),
     };

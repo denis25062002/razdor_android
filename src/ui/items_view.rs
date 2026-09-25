@@ -2,7 +2,8 @@
 use macroquad::prelude::*;
 
 use razdor::rules::battle::Team;
-use razdor::rules::content::{ArtefactType, Content, ItemId, Stat};
+use razdor::rules::content::{ArtefactType, Content, ItemId, Stat, UnitId};
+use razdor::rules::experience::is_percent_stat;
 use razdor::rules::game::{Game, PACK_SIZE};
 use razdor::rules::items::{describe, EquipError, SLOTS};
 use razdor::rules::units::Unit;
@@ -22,11 +23,44 @@ fn item_line(content: &Content, item: ItemId) -> String {
     format!("{}: {} ({}g)", d.name, describe(content, item), d.cost)
 }
 
+/// What a class gains per level: "+5 hits, +2 melee, +5% life prot.". Percent stats close
+/// that share of the gap to 100.
+pub(super) fn level_gains(content: &Content, kind: UnitId) -> String {
+    let def = content.unit(kind);
+    let label = |st: Stat| match st {
+        Stat::Hits => "hits",
+        Stat::AttackBlow => "melee",
+        Stat::DefenceBlow => "melee def.",
+        Stat::AttackShot => "ranged",
+        Stat::DefenceShot => "ranged def.",
+        Stat::MagicPower => "magic",
+        Stat::Initiative => "initiative",
+        Stat::Manevres => "actions",
+        Stat::ProtectLife => "life prot.",
+        Stat::ProtectDeath => "death prot.",
+        Stat::ProtectElemental => "elem. prot.",
+        Stat::Regen => "regen",
+        Stat::Vampirizm => "vampirism",
+    };
+    let parts: Vec<String> = Stat::ALL
+        .into_iter()
+        .filter_map(|st| def.level_up.get(&st).filter(|&&d| d != 0 && (st != Stat::MagicPower || def.magic.is_some())).map(|&d| (st, d)))
+        .map(|(st, d)| if is_percent_stat(st) { format!("+{d}% {}", label(st)) } else { format!("{d:+} {}", label(st)) })
+        .collect();
+    if parts.is_empty() {
+        "nothing".into()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// The unit's full stat list, as in the original's unit panel.
 pub(super) fn unit_stat_lines(content: &Content, u: &Unit, wage: i32) -> Vec<String> {
     let s = u.stats(content);
+    let need = u.xp_to_next(content);
     let mut lines = vec![
-        format!("Level {}   XP {}/{}", u.level, u.xp, u.xp_to_next(content)),
+        format!("{}   next level in {} XP", level_label(u.level, u.xp, need), (need - u.xp).max(0)),
+        format!("Per level: {}", level_gains(content, u.def)),
         format!("Hits {}/{}   {}", u.hp, s.max_hp(), attack_line(&s)),
         format!("Defence {} melee / {} ranged", s[Stat::DefenceBlow], s[Stat::DefenceShot]),
         format!("Initiative {}   Actions {}", s[Stat::Initiative], s[Stat::Manevres]),
@@ -82,6 +116,54 @@ fn equip_error(e: EquipError) -> String {
     }
 }
 
+/// The promotion tree of squad member `sel`: its class, a line to each option with the
+/// level it asks for; options open now are lit and promote on a click (free of charge).
+#[allow(clippy::too_many_arguments)]
+fn upgrade_tree(game: &mut Game, c: &Content, sel: usize, u: &Unit, tree: &[(UnitId, i32, bool)], x: f32, y: f32, message: &mut Option<String>) {
+    text("Upgrade tree", x + 16.0, y + 12.0, 19.0, INK);
+    let top = y + 22.0;
+    if sel == 0 {
+        text("The hero rises by levels only.", x + 16.0, top + 18.0, 16.0, DIM);
+        return;
+    }
+    if tree.is_empty() {
+        text("Final class: improves by levels only.", x + 16.0, top + 18.0, 16.0, DIM);
+        return;
+    }
+    // The current class on the left, its options on the right.
+    let (cw, ow, rh) = (130.0, 206.0, 30.0);
+    let mid = top + tree.len() as f32 * rh / 2.0;
+    draw_rectangle(x + 16.0, mid - 13.0, cw, 26.0, Color::new(0.3, 0.25, 0.16, 1.0));
+    fit_text(u.name(c), x + 20.0, mid + 5.0, cw - 8.0, 16.0, INK);
+    for (k, &(to, level, ok)) in tree.iter().enumerate() {
+        let (ox, oy) = (x + 16.0 + cw + 22.0, top + k as f32 * rh + 2.0);
+        draw_line(x + 16.0 + cw, mid, ox, oy + 13.0, 2.0, if ok { ACCENT } else { DIM });
+        let over = ok && mouse_in(ox, oy, ow, 26.0);
+        let fill = if over { Color::new(0.42, 0.34, 0.14, 1.0) } else if ok { Color::new(0.3, 0.25, 0.12, 1.0) } else { Color::new(0.16, 0.15, 0.14, 1.0) };
+        draw_rectangle(ox, oy, ow, 26.0, fill);
+        draw_rectangle_lines(ox, oy, ow, 26.0, if ok { 2.0 } else { 1.0 }, if ok { ACCENT } else { DIM });
+        let label = format!("{} · Lv {level}", c.unit(to).name);
+        fit_text(&label, ox + 6.0, oy + 18.0, ow - 12.0, 16.0, if ok { INK } else { DIM });
+        if over && clicked() {
+            *message = Some(match game.promote(sel, to) {
+                Ok(()) => cued(Cue::Upgrade, format!("{} is now a {} (level 1, XP 0).", u.name(c), c.unit(to).name)),
+                Err(_) => "Not possible.".into(),
+            });
+        }
+    }
+    let hint = if tree.iter().any(|&(_, _, ok)| ok) { "Click a lit option to promote (free; back to level 1)." } else { "Needs a level gained to promote." };
+    text(hint, x + 16.0, top + tree.len() as f32 * rh + 14.0, 15.0, DIM);
+}
+
+/// `s` at `size`, shrunk until it fits `w`.
+fn fit_text(s: &str, x: f32, y: f32, w: f32, size: f32, color: Color) {
+    let mut fs = size;
+    while fs > 9.0 && measure(s, fs).width > w {
+        fs -= 1.0;
+    }
+    text(s, x, y, fs, color);
+}
+
 /// Backpack grid: 5 columns as in the original, scrolling.
 const PACK_COLS: usize = 5;
 const PACK_ROWS: usize = 6;
@@ -118,21 +200,25 @@ pub fn squad(
         let name = if i == 0 { format!("{} (hero)", u.name(&c)) } else { u.name(&c).to_string() };
         text(&name, x + 48.0, y + 18.0, 19.0, if u.alive() { INK } else { RED });
         let state = if u.alive() {
-            format!("L{}  {}/{} HP  {}/{SLOTS} items", u.level, u.hp, u.max_hp(&c), u.items.iter().flatten().count())
+            format!("Lv {}  {}/{} HP  {}/{SLOTS} items", u.level, u.hp, u.max_hp(&c), u.items.iter().flatten().count())
         } else {
             "dead".to_string()
         };
         text(&state, x + 48.0, y + 35.0, 15.0, DIM);
+        xp_bar(x + 48.0, y + h - 5.0, w - 56.0, 3.0, u.xp, u.xp_to_next(&c));
         if over && clicked() {
             *selected = i;
         }
     }
 
-    // Selected unit: portrait with two slots on each side, then the stats.
+    // Selected unit: portrait with two slots on each side, then the stats and the tree.
     let x = 350.0;
     let sel = *selected;
     let u = game.squad[sel].clone();
-    draw_rectangle(x, 130.0, 380.0, 470.0, PANEL);
+    let lines = unit_stat_lines(&c, &u, game.wage(sel));
+    let tree = if sel == 0 { Vec::new() } else { u.upgrade_tree(&c) };
+    let panel_h = 200.0 + lines.len() as f32 * 21.0 + 20.0 + 48.0 + tree.len().max(1) as f32 * 30.0;
+    draw_rectangle(x, 130.0, 380.0, panel_h, PANEL);
     let mut unequip = None;
     let slot_pos = [(x + 12.0, 142.0), (x + 12.0, 142.0 + ICON + GAP), (x + 380.0 - ICON - 12.0, 142.0), (x + 380.0 - ICON - 12.0, 142.0 + ICON + GAP)];
     for (slot, &(sx, sy)) in slot_pos.iter().enumerate() {
@@ -142,28 +228,23 @@ pub fn squad(
     }
     assets.draw_unit(u.def, Team::Player, x + 190.0, 208.0, 128.0);
     text_centered(u.name(&c), x + 190.0, 300.0, 26.0, INK);
-    for (j, line) in unit_stat_lines(&c, &u, game.wage(sel)).iter().enumerate() {
-        text(line, x + 16.0, 330.0 + j as f32 * 21.0, 17.0, DIM);
+    let need = u.xp_to_next(&c);
+    xp_bar(x + 16.0, 308.0, 348.0, 6.0, u.xp, need);
+    let mut ly = 330.0;
+    for (j, line) in lines.iter().enumerate() {
+        text(line, x + 16.0, ly, 17.0, if j == 0 { XP_COLOR } else { DIM });
+        ly += 21.0;
     }
     if let Some(slot) = unequip {
         *message = game.unequip(sel, slot).err().map(equip_error);
     }
     if !u.potions.is_empty() {
         let names: Vec<&str> = u.potions.iter().map(|&p| c.item(p).name.as_str()).collect();
-        text(&format!("Until the next battle ends: {}", names.join(", ")), x + 16.0, 520.0, 16.0, ACCENT);
+        text(&format!("Until the next battle ends: {}", names.join(", ")), x + 16.0, ly, 16.0, ACCENT);
     }
-    // Promotions (upgrade tree).
-    let mut by = 610.0;
-    for to in u.promotions(&c) {
-        let label = format!("Promote to {}", c.unit(to).name);
-        if button(x, by, 380.0, 36.0, &label, true) {
-            *message = Some(match game.promote(sel, to) {
-                Ok(()) => cued(Cue::Upgrade, format!("{} is now a {}.", u.name(&c), c.unit(to).name)),
-                Err(_) => "Not possible.".into(),
-            });
-        }
-        by += 42.0;
-    }
+    ly += 20.0;
+    upgrade_tree(game, &c, sel, &u, &tree, x, ly, message);
+    let by = 130.0 + panel_h + 8.0;
     if sel > 0 {
         let label = if u.alive() { "Dismiss" } else { "Bury" };
         if button(x, by, 180.0, 36.0, label, true) {

@@ -546,8 +546,12 @@ pub struct Upgrade {
     pub target_name: String,
     /// The target's `GlobalIndex`, resolved by name once all units are loaded.
     pub target: Option<u32>,
-    /// Level the unit must reach (always 1 in vanilla).
+    /// Level the unit must reach (always 1 in vanilla). The original's AI checks it
+    /// against its 0-based level; the player's promotion ignores it.
     pub level: i32,
+    /// Which of `NextUnit1`..`NextUnit3` (1–3) names it. A lone option sits in slot 2, as
+    /// the original's loader moves it.
+    pub slot: u8,
 }
 
 /// A unit type from `Rus_Units.ini`. See mechanics.md 1.1 for every field.
@@ -608,11 +612,16 @@ impl UnitDef {
     fn from_section(sec: &Section) -> Result<UnitDef, DtError> {
         let f = Fields::new(sec);
         let mut upgrades = Vec::new();
-        for n in 1..=3 {
+        for n in 1..=3u8 {
             let name_key = format!("NextUnit{n}");
             let level = f.int(&format!("NextUnit{n}Level"))?;
             if let Some(target) = f.str(&name_key) {
-                upgrades.push(Upgrade { target_name: target.to_string(), target: None, level });
+                upgrades.push(Upgrade { target_name: target.to_string(), target: None, level, slot: n });
+            }
+        }
+        if let [only] = upgrades.as_mut_slice() {
+            if only.slot == 1 {
+                only.slot = 2;
             }
         }
         let id = f.required_int("GlobalIndex")?;
@@ -977,6 +986,10 @@ pub struct GlobalOptions {
     pub exp_correction: i32,
     pub ai_experience_percent: i32,
     pub hero_experience_modificator: i32,
+    /// The original's difficulty factor F: 120, or 100 with "impossible difficulty"
+    /// (`OptValue10` in `Rus_DiscordTimes.ini`, not `_Global.ini`). It scales the player's
+    /// battle XP.
+    pub difficulty_factor: i32,
     /// Item sell price in percent.
     pub item_sale_cost: i32,
     /// `[Costs] ShipCost`: ship rent.
@@ -1025,6 +1038,7 @@ impl Default for GlobalOptions {
             exp_correction: 50,
             ai_experience_percent: 100,
             hero_experience_modificator: 50,
+            difficulty_factor: 120,
             item_sale_cost: 25,
             ship_cost: 250,
             ai_targets: AiTargets::default(),

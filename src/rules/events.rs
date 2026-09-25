@@ -1122,7 +1122,8 @@ impl EventEngine {
         }
         // Opcodes 1–5 and 19 use these fields as arguments.
         if !matches!(extension(e), Some(Extension::Opcode(_))) {
-            if !compare(w.squad_count(), c.squad_count) || !compare(w.army_strength(), c.army_strength) {
+            // The army's strength is dear to compute: only when the event asks for it.
+            if !compare(w.squad_count(), c.squad_count) || (c.army_strength != 0 && !compare(w.army_strength(), c.army_strength)) {
                 return false;
             }
             if c.stats_check != 0

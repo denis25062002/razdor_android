@@ -34,6 +34,7 @@ use super::fog;
 use super::game::{troop_unit, Event, Foe, Game, CHASE_RADIUS};
 use super::items;
 use super::map::Tile;
+use super::rng::Rng;
 use super::units::{Stats, Unit};
 use super::world::{Army, Location, LocationKind, Owner, Troop, World};
 
@@ -128,8 +129,16 @@ pub struct AiProfile {
     /// Byte 82, default 50: the garrison it keeps in its buildings, in percent of its own
     /// strength *(guess)*.
     pub garrison_strength: i32,
-    /// Byte 71: experience correction in percent.
+    /// Byte 71: experience correction in percent. It scales the XP the player gains by
+    /// beating this army (experience.md §3); 0 is read as 100 *(guess: no shipped army has 0)*.
     pub exp_correction: i32,
+    /// Byte 14, "add experience like the player": units it hires start with XP taken from
+    /// the player's army (experience.md §5).
+    #[serde(default)]
+    pub exp_like_player: bool,
+    /// Byte 19: bonus XP for the units it hires.
+    #[serde(default)]
+    pub hire_bonus_exp: i32,
     /// Its units carry no money: no gold to take.
     pub no_money: bool,
     /// Flags (bytes 76–81).
@@ -156,6 +165,8 @@ impl AiProfile {
             extra_income: a.gold_income as i32,
             garrison_strength: if a.garrison_strength == 0 { 50 } else { a.garrison_strength as i32 },
             exp_correction: if a.exp_correction == 0 { 100 } else { a.exp_correction as i32 },
+            exp_like_player: a.exp_like_player != 0,
+            hire_bonus_exp: a.hire_bonus_exp as i32,
             no_money: a.no_money != 0,
             ignored: a.ignored_by_ai != 0,
             player_only: a.hunts_player_only != 0,
@@ -1067,13 +1078,42 @@ impl Game {
             let Some((unit, cost)) = best_recruit(&c, a, loc, &a.troops) else { break };
             let Some(slot) = free_slot(&c, &a.troops, unit) else { break };
             take_stock(&mut self.world.locations[l], unit);
+            let mut t = Troop::new(unit, 1, slot);
+            let xp = self.hire_xp(i, unit);
+            if xp > 0 {
+                ai_hire_gain(&c, &mut self.rng, &mut t, xp);
+            }
             let a = &mut self.world.armies[i];
             a.gold -= cost;
-            a.troops.push(Troop::new(unit, 1, slot));
+            a.troops.push(t);
             hired += 1;
         }
         self.ai_stats.hired += hired;
         hired
+    }
+
+    /// XP a unit of type `unit` that army `i` hires starts with (experience.md §5): with
+    /// "add experience like the player", `P − strength/2`, where P is the player's army's
+    /// strength and XP per unit (`Σ(tactical + XP) / (units + 2)`) and `strength` the
+    /// recruit's own; plus the army's hire bonus; then a random amount from half of it to
+    /// one and a half times it.
+    fn hire_xp(&mut self, i: usize, unit: UnitId) -> i32 {
+        let c = self.content.clone();
+        let p = &self.world.armies[i].ai;
+        let mut x = 0i64;
+        if p.exp_like_player {
+            let sum: i64 = self.squad.iter().map(|u| c.tactical_cost(u.def, u.level) as i64 + u.xp as i64).sum();
+            let per = sum / (self.squad.len() as i64 + 2);
+            if per > 0 {
+                x = per - c.tactical_cost(unit, 1) as i64 / 2;
+            }
+        }
+        x += p.hire_bonus_exp as i64;
+        if x <= 0 {
+            return 0;
+        }
+        let x = x.min(i32::MAX as i64 / 2) as i32;
+        self.rng.range(0, x - 1) + x / 2
     }
 
     /// Army `i` walks into building `l`, which has no defenders: it is its.
@@ -1212,18 +1252,16 @@ impl Game {
         self.ai_stats.battles += 1;
         self.battles += 1;
 
-        // XP: the engine scales the "player" side by the hero's modifier; AI armies get
-        // `AIExpiriencePercent` on both sides.
-        let o = &c.options;
-        let fix = |xp: i32| if o.hero_experience_modificator > 0 { xp * o.ai_experience_percent / o.hero_experience_modificator } else { xp };
+        // XP: each side that still has strength gains its shares × AIExpiriencePercent;
+        // no army correction and no difficulty factor apply between AI armies.
         let mut xp_a = vec![0; na];
-        for aw in b.xp_awards(Team::Player) {
+        for aw in b.ai_xp(Team::Player) {
             if aw.fighter < na {
-                xp_a[aw.fighter] += fix(aw.xp);
+                xp_a[aw.fighter] += aw.xp;
             }
         }
         let mut xp_b = vec![0; b_units.len()];
-        for aw in b.xp_awards(Team::Enemy) {
+        for aw in b.ai_xp(Team::Enemy) {
             if let Some(k) = aw.fighter.checked_sub(na) {
                 if k < xp_b.len() {
                     xp_b[k] += aw.xp;
@@ -1234,19 +1272,17 @@ impl Game {
         let hp_b: Vec<(i32, i32)> = b.fighters[na..].iter().map(|f| (f.hp.max(0), f.max_hp())).collect();
         {
             let a = &mut self.world.armies[att];
-            let corr = a.ai.exp_correction;
-            write_back(&c, &mut a.troops, &hp_a, &xp_a, corr);
+            write_back(&c, &mut self.rng, &mut a.troops, &hp_a, &xp_a);
         }
         match def {
             Defender::Army(j) => {
                 let a = &mut self.world.armies[j];
-                let corr = a.ai.exp_correction;
-                write_back(&c, &mut a.troops, &hp_b, &xp_b, corr);
+                write_back(&c, &mut self.rng, &mut a.troops, &hp_b, &xp_b);
             }
             Defender::Garrison(l) => {
                 let loc = &mut self.world.locations[l];
                 let ng = loc.garrison.len();
-                write_back(&c, &mut loc.garrison, &hp_b[..ng.min(hp_b.len())], &xp_b[..ng.min(xp_b.len())], 100);
+                write_back(&c, &mut self.rng, &mut loc.garrison, &hp_b[..ng.min(hp_b.len())], &xp_b[..ng.min(xp_b.len())]);
                 let mut k = ng;
                 for s in loc.stationed.iter_mut().filter(|s| s.unit.alive()) {
                     if let Some(&(hp, _)) = hp_b.get(k) {
@@ -1488,8 +1524,9 @@ fn take_stock(l: &mut Location, unit: UnitId) {
 
 /// Writes a battle back into `troops`: `hp` (current, maximum in battle) per troop, the dead
 /// leave; the leader (troop 0) survives with 1 HP while any of his troops does
-/// (mechanics.md 2.5); `xp` scaled by `correction` percent, with level-ups.
-fn write_back(c: &Content, troops: &mut Vec<Troop>, hp: &[(i32, i32)], xp: &[i32], correction: i32) {
+/// (mechanics.md 2.5); `xp` is gained with level-ups and a chance to take the upgrade tree
+/// ([`ai_unit_gain`]).
+fn write_back(c: &Content, rng: &mut Rng, troops: &mut Vec<Troop>, hp: &[(i32, i32)], xp: &[i32]) {
     let survivors = hp.iter().any(|&(h, _)| h > 0);
     let mut keep = Vec::with_capacity(troops.len());
     for (k, t) in troops.iter_mut().enumerate() {
@@ -1507,14 +1544,8 @@ fn write_back(c: &Content, troops: &mut Vec<Troop>, hp: &[(i32, i32)], xp: &[i32
         }
         let max = troop_max_hp(c, t);
         t.hurt = (max_battle - h).clamp(0, max - 1);
-        t.xp += xp.get(k).copied().unwrap_or(0) * correction.max(0) / 100;
-        for _ in 0..50 {
-            let need = c.xp_to_next(t.unit, t.level);
-            if t.xp < need {
-                break;
-            }
-            t.xp -= need;
-            t.level += 1;
+        if let Some(&x) = xp.get(k).filter(|&&x| x > 0) {
+            ai_unit_gain(c, rng, t, x);
         }
         keep.push(true);
     }
@@ -1523,6 +1554,95 @@ fn write_back(c: &Content, troops: &mut Vec<Troop>, hp: &[(i32, i32)], xp: &[i32
         k += 1;
         keep[k - 1]
     });
+}
+
+/// A troop banks `xp` and rises the levels it pays for, keeping the rest; AI units keep XP
+/// like the player's. Returns the levels gained.
+pub fn troop_gain_xp(c: &Content, t: &mut Troop, xp: i32) -> i32 {
+    t.xp = t.xp.saturating_add(xp.max(0));
+    let mut gained = 0;
+    while gained < MAX_LEVELS_AT_ONCE {
+        let need = c.xp_to_next(t.unit, t.level);
+        if t.xp < need {
+            break;
+        }
+        t.xp -= need;
+        t.level += 1;
+        gained += 1;
+    }
+    gained
+}
+
+/// How many levels one gain may add (a bound for absurd amounts).
+const MAX_LEVELS_AT_ONCE: i32 = 200;
+
+/// An AI unit's gain after a battle (the original's 0x4a4a7c): the XP, then one try at the
+/// upgrade tree ([`ai_promote`]).
+pub fn ai_unit_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32) {
+    troop_gain_xp(c, t, xp);
+    ai_promote(c, rng, t);
+}
+
+/// XP a newly hired AI unit starts with, level by level, with a try at the upgrade tree at
+/// every level (the original's 0x4a4c04).
+fn ai_hire_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32) {
+    let mut left = xp.max(0).saturating_add(t.xp);
+    t.xp = 0;
+    for _ in 0..MAX_LEVELS_AT_ONCE {
+        let need = c.xp_to_next(t.unit, t.level);
+        if left < need {
+            break;
+        }
+        left -= need;
+        t.level += 1;
+        ai_promote(c, rng, t);
+    }
+    t.xp = left;
+}
+
+/// The AI's pick in the upgrade tree (experience.md §4): Militia (unit 4) tries option 1 one
+/// time in three and option 3 otherwise, Infantry (unit 8) option 3 one time in three and
+/// option 1 otherwise, every other class a random filled option. The pick is taken when
+/// its `NextUnitNLevel` is at most the unit's 0-based level: the unit starts the new class
+/// at level 1 with no XP. An empty pick promotes nobody *(guess: the original would read an
+/// empty slot)*.
+fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
+    let def = c.unit(t.unit);
+    let slots: [Option<&super::content::Upgrade>; 3] = [1u8, 2, 3].map(|n| def.upgrades.iter().find(|u| u.slot == n));
+    if slots.iter().all(Option::is_none) {
+        return false;
+    }
+    let pick = match t.unit.0 {
+        4 => {
+            if rng.range(0, 2) == 0 {
+                1
+            } else {
+                3
+            }
+        }
+        8 => {
+            if rng.range(0, 2) == 0 {
+                3
+            } else {
+                1
+            }
+        }
+        _ => loop {
+            let n = rng.range(1, 3) as usize;
+            if slots[n - 1].is_some() {
+                break n;
+            }
+        },
+    };
+    let Some(up) = slots[pick - 1] else { return false };
+    let Some(target) = up.target.map(UnitId).filter(|&id| c.try_unit(id).is_some()) else { return false };
+    if up.level > t.level - 1 {
+        return false;
+    }
+    t.unit = target;
+    t.level = 1;
+    t.xp = 0;
+    true
 }
 
 fn army_name(a: &Army) -> String {

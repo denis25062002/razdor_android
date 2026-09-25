@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::dt::data::AiTargets;
+use crate::rules::rng::Rng;
 use crate::dt::dtm::{Army as DtArmy, BuildingType, Scenario, Troop as DtTroop};
 use crate::rules::content::testkit as ck;
 use crate::rules::content::{ArtefactType, HeroClass, ItemId, UnitDef};
@@ -492,15 +493,98 @@ fn write_back_keeps_the_leader_while_his_army_lives() {
     let c = content();
     let slot = |k| crate::rules::formation::Slot::new(crate::rules::formation::Row::Front, k);
     let mut troops = vec![Troop::new(UnitId(6), 1, slot(0)), Troop::new(UnitId(4), 1, slot(1)), Troop::new(UnitId(4), 1, slot(2))];
-    write_back(&c, &mut troops, &[(0, 120), (20, 50), (0, 50)], &[0, 1000, 0], 100);
+    write_back(&c, &mut Rng::new(1), &mut troops, &[(0, 120), (20, 50), (0, 50)], &[0, 1000, 0]);
     assert_eq!(troops.len(), 2, "the dead warrior leaves");
     assert_eq!(troops[0].hurt, 119, "the leader is back with 1 HP");
     assert!(troops[1].level > 1, "1000 XP levels up");
     // Everybody dead: the army keeps its troops for the caller (the leader retreats).
     let mut troops = vec![Troop::new(UnitId(6), 1, slot(0))];
-    write_back(&c, &mut troops, &[(0, 120)], &[0], 100);
+    write_back(&c, &mut Rng::new(1), &mut troops, &[(0, 120)], &[0]);
     assert_eq!(troops.len(), 1);
 }
+
+/// Content whose unit 9 can become 10 (slot 1) or 11 (slot 3), militia 4 guard 5 (slot 1)
+/// only, unit 8 squire 6 (slot 1) only.
+fn tree_content() -> Content {
+    use crate::rules::content::Upgrade;
+    let up = |target: u32, slot: u8, level: i32| Upgrade { target_name: String::new(), target: Some(target), level, slot };
+    let mut units = vec![
+        ck::warrior(1, 20, 5),
+        ck::warrior(4, 10, 2),
+        ck::warrior(5, 12, 3),
+        ck::warrior(6, 14, 3),
+        ck::warrior(8, 12, 2),
+        ck::warrior(9, 10, 2),
+        ck::warrior(10, 15, 3),
+        ck::warrior(11, 15, 3),
+    ];
+    units[1].upgrades = vec![up(5, 1, 1)];
+    units[4].upgrades = vec![up(6, 1, 1)];
+    units[5].upgrades = vec![up(10, 1, 1), up(11, 3, 1)];
+    ck::content(units, vec![])
+}
+
+#[test]
+fn ai_units_keep_xp_and_take_the_upgrade_tree() {
+    let c = tree_content();
+    let slot = crate::rules::formation::Slot::new(crate::rules::formation::Row::Front, 0);
+    // Banking: 60 needed, 70 leaves 10; no promotion before the level.
+    let mut t = Troop::new(UnitId(9), 1, slot);
+    assert_eq!(troop_gain_xp(&c, &mut t, 50), 0);
+    assert_eq!((t.level, t.xp), (1, 50));
+    // A level reached: a random filled option, level 1 and no XP in the new class.
+    let mut picks = std::collections::BTreeMap::new();
+    let mut rng = Rng::new(3);
+    for _ in 0..60 {
+        let mut t = Troop::new(UnitId(9), 1, slot);
+        ai_unit_gain(&c, &mut rng, &mut t, 70);
+        assert_eq!((t.level, t.xp), (1, 0));
+        *picks.entry(t.unit.0).or_insert(0) += 1;
+    }
+    assert_eq!(picks.keys().copied().collect::<Vec<_>>(), vec![10, 11], "both branches");
+    // Militia: option 1 one time in three, option 3 (empty) otherwise; unit 8 the reverse.
+    let (mut militia, mut squire) = (0, 0);
+    for _ in 0..300 {
+        let mut m = Troop::new(UnitId(4), 1, slot);
+        ai_unit_gain(&c, &mut rng, &mut m, 60);
+        militia += i32::from(m.unit == UnitId(5));
+        let mut q = Troop::new(UnitId(8), 1, slot);
+        ai_unit_gain(&c, &mut rng, &mut q, 60);
+        squire += i32::from(q.unit == UnitId(6));
+    }
+    assert!((70..130).contains(&militia), "{militia}/300");
+    assert!((170..230).contains(&squire), "{squire}/300");
+}
+
+#[test]
+fn ai_hires_start_with_bonus_xp_and_the_players_experience() {
+    let mut s = map();
+    let mut c1 = building(BuildingType::Castle, 30, 12, (1, 1));
+    c1.faction = 4;
+    c1.owner_army = 1;
+    c1.has_barracks = 1;
+    c1.barracks[0] = crate::dt::dtm::RecruitSlot { unit: 4, start_count: 5, max_count: 5 };
+    s.buildings = vec![c1];
+    let mut a = army(1, (30, 12), 4, [-2, -2, 1, 3], 0, &[troop(6, 0, 1)]);
+    a.hire_bonus_exp = 100;
+    s.armies = vec![a];
+    let mut g = start(&s);
+    g.world.armies[0].gold = 10_000;
+    let l = 0;
+    assert!(g.ai_hire_at(0, l) > 0);
+    let hired: Vec<&Troop> = g.world.armies[0].troops.iter().skip(1).collect();
+    // 100 bonus: a random 50..=149, over the 60 of a first level: level 2 (or 1 with 50–59).
+    assert!(hired.iter().all(|t| (t.level == 2 && t.xp < 84) || (t.level == 1 && t.xp >= 50)), "{hired:?}");
+    // Like the player: the player's army's strength and XP per unit join the bonus.
+    g.world.armies[0].troops.truncate(1);
+    g.world.armies[0].ai.hire_bonus_exp = 0;
+    g.world.armies[0].ai.exp_like_player = true;
+    g.world.locations[l].recruits[0].stock = Some(5);
+    g.squad[0].xp = 5000;
+    assert!(g.ai_hire_at(0, l) > 0);
+    assert!(g.world.armies[0].troops.iter().skip(1).all(|t| t.level > 2), "{:?}", g.world.armies[0].troops);
+}
+
 
 #[test]
 fn routes_are_planned_once_per_goal() {

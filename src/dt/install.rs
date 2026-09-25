@@ -14,6 +14,8 @@ pub const UNITS_FILE: &str = "Rus_Units.ini";
 pub const ARTEFACTS_FILE: &str = "Rus_Artefacts.ini";
 pub const SPELLS_FILE: &str = "Rus_Spells.ini";
 pub const GLOBAL_FILE: &str = "_Global.ini";
+/// The interface texts and the player's settings (`[Options]`).
+pub const SETTINGS_FILE: &str = "Rus_DiscordTimes.ini";
 pub const MAPS_DIR: &str = "Maps_Rus";
 pub const MAP_EXTENSION: &str = "DTm";
 
@@ -74,6 +76,13 @@ fn read_ini(dir: &Path, name: &str) -> Result<Ini, DtError> {
     Ok(Ini::from_cp1251(&bytes))
 }
 
+/// The player's "impossible difficulty" setting: `[Options] OptValue10=1` in
+/// [`SETTINGS_FILE`]. A missing file or key means off.
+fn impossible_difficulty(dir: &Path) -> bool {
+    let Ok(ini) = read_ini(dir, SETTINGS_FILE) else { return false };
+    ini.section("Options").and_then(|s| s.get("OptValue10")).is_some_and(|v| v.trim() == "1")
+}
+
 /// All `*.DTm` files of the maps folder, sorted by name.
 pub fn list_maps(dir: &Path) -> Result<Vec<MapEntry>, DtError> {
     let maps_dir = find(dir, MAPS_DIR)?;
@@ -94,12 +103,16 @@ impl DtInstall {
     /// Load the unit, artefact and spell definitions and the global options from `dir`,
     /// and list its maps.
     pub fn load(dir: &Path) -> Result<DtInstall, DtError> {
+        let mut options = GlobalOptions::from_ini(&read_ini(dir, GLOBAL_FILE)?)?;
+        if impossible_difficulty(dir) {
+            options.difficulty_factor = 100;
+        }
         Ok(DtInstall {
             dir: dir.to_path_buf(),
             units: data::parse_units(&read_ini(dir, UNITS_FILE)?)?,
             artefacts: data::parse_artefacts(&read_ini(dir, ARTEFACTS_FILE)?)?,
             spells: data::parse_spells(&read_ini(dir, SPELLS_FILE)?)?,
-            options: GlobalOptions::from_ini(&read_ini(dir, GLOBAL_FILE)?)?,
+            options,
             maps: list_maps(dir)?,
         })
     }
@@ -187,7 +200,10 @@ mod tests {
         // Global options match the documented vanilla values; only the misspelled key is extra.
         let o = &dt.options;
         let d = GlobalOptions::default();
-        assert_eq!(GlobalOptions { ai_targets: d.ai_targets.clone(), army_generation: vec![], extra: d.extra.clone(), ..o.clone() }, d);
+        // The player's settings turn on "impossible difficulty" (OptValue10=1): F = 100.
+        assert_eq!(o.difficulty_factor, 100);
+        let same = GlobalOptions { ai_targets: d.ai_targets.clone(), army_generation: vec![], extra: d.extra.clone(), difficulty_factor: d.difficulty_factor, ..o.clone() };
+        assert_eq!(same, d);
         assert_eq!(o.extra.keys().collect::<Vec<_>>(), ["MixHealingTarget"]);
         assert_eq!(o.ai_targets.min_attack_army, Some([1, 1, 100, 50, 50]));
         assert_eq!(o.ai_targets.min_healing, None);

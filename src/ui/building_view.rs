@@ -19,7 +19,7 @@ use razdor::rules::units::Unit;
 use super::assets::Assets;
 use super::audio::{cue, Cue};
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
-use super::items_view::unit_stat_lines;
+use super::items_view::{level_gains, unit_stat_lines};
 use super::screens::stat_lines;
 use super::story;
 use super::widgets::*;
@@ -185,6 +185,9 @@ fn unit_card(game: &Game, assets: &Assets, u: &Unit, x: f32, y: f32, w: f32, h: 
     let name: String = u.name(c).chars().take(14).collect();
     text_centered(&name, x + w / 2.0, y + h - 14.0, 14.0, INK);
     hp_bar(x + 4.0, y + h - 8.0, w - 8.0, u.hp, u.max_hp(c));
+    // The level in the corner, the progress under the HP bar.
+    text(&format!("Lv {}", u.level), x + w - 34.0, y + 16.0, 15.0, XP_COLOR);
+    xp_bar(x + 4.0, y + h - 3.0, w - 8.0, 2.0, u.xp, u.xp_to_next(c));
 }
 
 /// Cell of a formation grid of cards.
@@ -312,7 +315,9 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         if mouse_in(cx, cy, rw, rh) {
             let def = c.unit(r.unit);
             hover_lines.push((def.name.clone(), ACCENT));
+            hover_lines.push((level_label(1, 0, c.xp_to_next(r.unit, 1)), XP_COLOR));
             hover_lines.extend(stat_lines(&c, r.unit).into_iter().map(|s| (s, INK)));
+            hover_lines.push((format!("Per level: {}", level_gains(&c, r.unit)), INK));
             hover_lines.push((format!("Daily wage {}", c.wage_for(r.unit, razdor::rules::content::WageKind::of(def))), Color::new(0.95, 0.6, 0.25, 1.0)));
         }
         let price = game.hire_price(r.unit);
@@ -411,7 +416,8 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         unit_card(game, assets, &s.unit, ux, uy, cw, ch);
         if mouse_in(ux, uy, cw, ch) {
             let paid = if now.saturating_sub(s.since) < MINUTES_PER_DAY { "paid until the next noon" } else { "no wage while on guard" };
-            hover = vec![(s.unit.name(&c).to_string(), ACCENT), (format!("{}/{} HP, {paid}", s.unit.hp, s.unit.max_hp(&c)), INK)];
+            let lv = level_label(s.unit.level, s.unit.xp, s.unit.xp_to_next(&c));
+            hover = vec![(s.unit.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (format!("{}/{} HP, {paid}", s.unit.hp, s.unit.max_hp(&c)), INK)];
             if clicked() {
                 take = Some(j);
             }
@@ -426,7 +432,8 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let (ux, uy) = grid_cell(game, u.slot, x, ay, cw, ch, gap);
         unit_card(game, assets, u, ux, uy, cw, ch);
         if mouse_in(ux, uy, cw, ch) {
-            hover = vec![(u.name(&c).to_string(), ACCENT), (format!("{}/{} HP, wage {}", u.hp, u.max_hp(&c), game.wage(i)), INK)];
+            let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
+            hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (format!("{}/{} HP, wage {}", u.hp, u.max_hp(&c), game.wage(i)), INK)];
             if clicked() {
                 leave = Some(i);
             }

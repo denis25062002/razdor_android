@@ -18,6 +18,7 @@ use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
 use razdor::rules::world::{Army, Location, LocationKind, Troop};
 
 use super::assets::Assets;
+use super::audio::{cue, Cue};
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
@@ -502,6 +503,11 @@ fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x:
             draw_rectangle_lines(cx, cy, cell, cell, 1.0, if row == Row::Front { DIM } else { Color::new(0.4, 0.4, 0.4, 1.0) });
             if let Some(t) = troops.iter().find(|t| t.slot.row == row && t.slot.col == col) {
                 assets.draw_unit(t.unit, team, cx + cell / 2.0, cy + cell / 2.0, cell);
+                // The troop's level in the corner.
+                let lv = t.level.to_string();
+                let tw = measure(&lv, 14.0).width;
+                draw_rectangle(cx + cell - tw - 4.0, cy + cell - 14.0, tw + 4.0, 14.0, Color::new(0.0, 0.0, 0.0, 0.6));
+                text(&lv, cx + cell - tw - 2.0, cy + cell - 2.0, 14.0, XP_COLOR);
             }
         }
     }
@@ -538,7 +544,12 @@ fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
     for line in wrap(&a.description, 330.0, 16.0).into_iter().take(4) {
         footer.push((line, INK));
     }
-    Tooltip { title, lines: Vec::new(), troops: a.troops.clone(), team: if a.hostile() { Team::Enemy } else { Team::Player }, footer }
+    let mut lines = Vec::new();
+    if let (Some(lo), Some(hi)) = (a.troops.iter().map(|t| t.level).min(), a.troops.iter().map(|t| t.level).max()) {
+        let span = if lo == hi { format!("level {lo}") } else { format!("levels {lo}-{hi}") };
+        lines.push((format!("{} units, {span}", a.troops.len()), XP_COLOR));
+    }
+    Tooltip { title, lines, troops: a.troops.clone(), team: if a.hostile() { Team::Enemy } else { Team::Player }, footer }
 }
 
 fn location_tooltip(game: &Game, l: &Location) -> Tooltip {
@@ -654,6 +665,7 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
         Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
+        Event::LevelUp(i, level) => game.squad.get(*i).map(|u| format!("{} reaches level {level}!", u.name(&game.content))),
         Event::Battle(news) => Some(news.text.clone()),
         Event::Arrived(l) => {
             let loc = &game.world.locations[*l];
@@ -693,6 +705,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
             Event::Met(_) | Event::Battle(_) => {}
+            Event::LevelUp(..) => cue(Cue::Upgrade),
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }
     }

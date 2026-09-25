@@ -6,7 +6,8 @@
 
 use std::ops::{Index, IndexMut};
 
-use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, WageKind, MAX_XP_GAIN};
+use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, WageKind};
+use super::experience;
 use super::formation::{Row, Slot};
 use super::items::{self, SLOTS};
 
@@ -44,7 +45,9 @@ impl IndexMut<Stat> for Stats {
 }
 
 impl Stats {
-    /// Base stats of a type at `level` (1 = as hired): the definition plus `d-*` per level.
+    /// Base stats of a type at `level` (1 = as hired): the definition plus `d-*` for each
+    /// level above the first. Magic power needs a school (without one it is 0); protections,
+    /// regeneration and vampirism grow by [`experience::percent_stat`] (experience.md §2).
     pub fn of_level(content: &Content, id: UnitId, level: i32) -> Stats {
         let def = content.unit(id);
         let mut s = Stats {
@@ -57,7 +60,24 @@ impl Stats {
             min_magic_power: def.min_magic_power,
             mana_drain: def.mana_drain,
         };
-        s.add(&def.level_up, level - 1);
+        let levels = (level - 1).max(0);
+        if def.magic.is_none() {
+            // Without a school a unit has no magic power at all.
+            s[Stat::MagicPower] = 0;
+        }
+        for (&st, &d) in &def.level_up {
+            if st == Stat::MagicPower && def.magic.is_none() {
+                continue;
+            }
+            if experience::is_percent_stat(st) {
+                s[st] = experience::percent_stat(s[st], d, levels);
+            } else {
+                s[st] += d * levels;
+            }
+        }
+        for st in Stat::ALL.into_iter().filter(|&st| experience::is_percent_stat(st) && !def.level_up.contains_key(&st)) {
+            s[st] = experience::percent_stat(s[st], 0, 0);
+        }
         s
     }
 
@@ -232,10 +252,18 @@ impl Unit {
         content.xp_to_next(self.def, self.level)
     }
 
-    /// Adds XP (at most [`MAX_XP_GAIN`] at once) and levels up while enough is banked; each
-    /// level adds the type's `d-*` gains, the HP gain also to current HP. Returns levels gained.
+    /// Tactical cost with worn items, standing in a building of `building_defence`.
+    pub fn tactical(&self, content: &Content, building_defence: i32) -> i32 {
+        experience::tactical(content, self.def, &self.stats(content), building_defence)
+    }
+
+    /// Adds XP and levels up while enough is banked, keeping what is left over; a negative
+    /// amount adds nothing. Each level adds the type's `d-*` gains. An unhurt unit stays at
+    /// full health; a wounded one keeps its hit points (experience.md §2). Returns levels
+    /// gained. The per-battle Community cap is applied by the caller.
     pub fn gain_xp(&mut self, content: &Content, amount: i32) -> i32 {
-        self.xp += amount.clamp(0, MAX_XP_GAIN);
+        let unhurt = self.alive() && self.hp >= self.max_hp(content);
+        self.xp = self.xp.saturating_add(amount.max(0));
         let mut gained = 0;
         loop {
             let need = self.xp_to_next(content);
@@ -243,34 +271,49 @@ impl Unit {
                 break;
             }
             self.xp -= need;
-            let before = self.max_hp(content);
             self.level += 1;
             gained += 1;
-            self.hp = (self.hp + self.max_hp(content) - before).max(1);
+        }
+        if gained > 0 && unhurt {
+            self.hp = self.max_hp(content);
         }
         gained
     }
 
-    /// Classes this unit may be promoted to now (`NextUnitN` with `NextUnitNLevel` reached).
-    pub fn promotions(&self, content: &Content) -> Vec<UnitId> {
+    /// The upgrade tree: every `NextUnitN` option of this class, with its required level
+    /// and whether it can be taken now.
+    pub fn upgrade_tree(&self, content: &Content) -> Vec<(UnitId, i32, bool)> {
+        let ready = self.can_promote();
         content
             .unit(self.def)
             .upgrades
             .iter()
-            .filter(|u| self.level >= u.level.max(1))
-            .filter_map(|u| u.target.map(UnitId))
-            .filter(|id| content.try_unit(*id).is_some())
+            .filter_map(|u| u.target.map(|t| (UnitId(t), u.level.max(1) + 1)))
+            .filter(|(id, _)| content.try_unit(*id).is_some())
+            .map(|(id, level)| (id, level, ready))
             .collect()
     }
 
-    /// Switch to class `to` from the upgrade tree. The unit starts the new class at level 1
-    /// with no XP and the same fraction of its HP (our guess; the original's handling is not
-    /// decoded). Items the new class may not wear are taken off and returned.
+    /// The original lets the player promote any unit that has gained a level (level 2 here,
+    /// its level 1), whatever `NextUnitNLevel` says; the hero never.
+    fn can_promote(&self) -> bool {
+        self.level >= 2
+    }
+
+    /// Classes this unit may be promoted to now.
+    pub fn promotions(&self, content: &Content) -> Vec<UnitId> {
+        self.upgrade_tree(content).into_iter().filter(|&(_, _, ok)| ok).map(|(id, _, _)| id).collect()
+    }
+
+    /// Switch to class `to` from the upgrade tree, free of charge. The unit starts the new
+    /// class at level 1 with no XP (experience.md §4); an unhurt unit is at the new class's
+    /// full health, a wounded one keeps its hit points. Items the new class may not wear
+    /// are taken off and returned *(guess)*.
     pub fn promote(&mut self, content: &Content, to: UnitId) -> Result<Vec<ItemId>, PromoteError> {
         if !self.promotions(content).contains(&to) {
             return Err(PromoteError::NotAvailable);
         }
-        let (hp, max) = (self.hp, self.max_hp(content));
+        let unhurt = self.alive() && self.hp >= self.max_hp(content);
         self.def = to;
         self.level = 1;
         self.xp = 0;
@@ -283,7 +326,8 @@ impl Unit {
                 Err(_) => removed.push(item),
             }
         }
-        self.hp = (hp * self.max_hp(content) / max.max(1)).max(1);
+        let max = self.max_hp(content);
+        self.hp = if unhurt { max } else { self.hp.min(max) };
         Ok(removed)
     }
 }
@@ -297,7 +341,7 @@ mod tests {
     fn militia() -> UnitDef {
         let mut u = warrior(1, 20, 5);
         u.level_up = StatMods::from([(Stat::Hits, 5), (Stat::AttackBlow, 2), (Stat::Initiative, 1)]);
-        u.upgrades = vec![Upgrade { target_name: "guard".into(), target: Some(2), level: 2 }];
+        u.upgrades = vec![Upgrade { target_name: "guard".into(), target: Some(2), level: 2, slot: 2 }];
         u
     }
 
@@ -324,29 +368,51 @@ mod tests {
         assert_eq!((u.level, u.xp), (3, 10));
         let s = u.stats(&c);
         assert_eq!((s.max_hp(), s[Stat::AttackBlow], s[Stat::Initiative]), (60, 24, 12));
-        assert_eq!(u.hp, 40, "HP gains also heal");
+        assert_eq!(u.hp, 30, "a wounded unit keeps its hit points");
+        let mut fresh = Unit::new(&c, UnitId(1), slot());
+        fresh.gain_xp(&c, 60);
+        assert_eq!(fresh.hp, 55, "an unhurt one is at the new maximum");
     }
 
     #[test]
-    fn xp_gain_is_capped() {
-        let mut m = militia();
-        m.start_experience = 100_000;
-        let c = content(vec![m], vec![]);
+    fn percent_stats_grow_towards_100_and_magic_needs_a_school() {
+        let mut u = militia();
+        u.protect_life = 20;
+        u.magic_power = 5;
+        u.level_up = StatMods::from([(Stat::ProtectLife, 5), (Stat::MagicPower, 3), (Stat::Regen, 10)]);
+        let c = content(vec![u], vec![]);
+        let s = Stats::of_level(&c, UnitId(1), 3);
+        assert_eq!((s[Stat::ProtectLife], s[Stat::Regen], s[Stat::MagicPower]), (28, 19, 0), "no school, no magic");
+    }
+
+    #[test]
+    fn xp_overflow_is_kept_and_negative_xp_ignored() {
+        let c = content(vec![militia()], vec![]);
         let mut u = Unit::new(&c, UnitId(1), slot());
-        u.gain_xp(&c, 1_000_000);
-        assert_eq!(u.xp, MAX_XP_GAIN);
+        assert_eq!(u.gain_xp(&c, -50), 0);
+        assert_eq!(u.xp, 0);
+        // 60 + 84 + 118 = 262; 300 leaves 38 towards level 4.
+        assert_eq!(u.gain_xp(&c, 300), 3);
+        assert_eq!((u.level, u.xp), (4, 38));
+        // No cap outside battles.
+        let mut big = Unit::new(&c, UnitId(1), slot());
+        big.gain_xp(&c, 100_000);
+        assert!(big.level > 10);
     }
 
     #[test]
     fn promotion_through_the_upgrade_tree() {
         let c = content(vec![militia(), warrior(2, 30, 8)], vec![]);
         let mut u = Unit::new(&c, UnitId(1), slot());
-        assert!(u.promotions(&c).is_empty(), "needs level 2");
+        assert_eq!(u.upgrade_tree(&c), vec![(UnitId(2), 3, false)]);
+        assert!(u.promotions(&c).is_empty(), "needs a level");
         assert_eq!(u.promote(&c, UnitId(2)), Err(PromoteError::NotAvailable));
         u.gain_xp(&c, 60);
-        assert_eq!(u.promotions(&c), vec![UnitId(2)]);
+        assert_eq!(u.level, 2);
+        assert_eq!(u.promotions(&c), vec![UnitId(2)], "NextUnitNLevel is not checked for the player");
+        u.gain_xp(&c, 20);
         u.hp = 30; // of 55
         assert_eq!(u.promote(&c, UnitId(2)), Ok(vec![]));
-        assert_eq!((u.def, u.level, u.xp, u.hp), (UnitId(2), 1, 0, 27));
+        assert_eq!((u.def, u.level, u.xp, u.hp), (UnitId(2), 1, 0, 30), "level 1, XP reset, HP kept");
     }
 }

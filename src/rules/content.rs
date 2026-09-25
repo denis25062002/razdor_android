@@ -21,8 +21,8 @@ const BUILTIN_UNITS: &str = include_str!("../../data/units.ini");
 const BUILTIN_ITEMS: &str = include_str!("../../data/items.ini");
 const BUILTIN_SPELLS: &str = include_str!("../../data/spells.ini");
 
-/// Community cap on XP gained at once (mechanics.md 1.4).
-pub const MAX_XP_GAIN: i32 = 5256;
+/// Community cap on the XP a unit gains from one battle (experience.md §3).
+pub const MAX_XP_GAIN: i32 = super::experience::MAX_BATTLE_XP;
 
 /// A unit type: its `GlobalIndex`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -112,6 +112,18 @@ pub struct Content {
     pub formation: Formation,
     unit_index: HashMap<u32, usize>,
     item_index: HashMap<u32, usize>,
+    tactical: TacticalCache,
+}
+
+/// Tactical cost by (unit, level): the AI asks for it all the time. A clone starts empty,
+/// so a changed copy never sees stale values.
+#[derive(Debug, Default)]
+struct TacticalCache(std::sync::Mutex<HashMap<(u32, i32), i32>>);
+
+impl Clone for TacticalCache {
+    fn clone(&self) -> Self {
+        TacticalCache::default()
+    }
 }
 
 /// No units, items or spells: the placeholder a loaded save holds until its content is set.
@@ -131,7 +143,7 @@ impl Content {
     ) -> Content {
         let unit_index = units.iter().enumerate().map(|(i, u)| (u.id, i)).collect();
         let item_index = items.iter().enumerate().map(|(i, a)| (a.id, i)).collect();
-        Content { units, items, spells, options, formation, unit_index, item_index }
+        Content { units, items, spells, options, formation, unit_index, item_index, tactical: TacticalCache::default() }
     }
 
     /// Content read from a Discord Times install. The formation is the Community wide row
@@ -141,13 +153,13 @@ impl Content {
     }
 
     /// The built-in demo: `data/units.ini`, `data/items.ini` and `data/spells.ini` (our own
-    /// content). The
-    /// options are the vanilla defaults except for faster XP, so the short demo shows levels.
+    /// content). The options are the vanilla defaults except for faster XP (the player's
+    /// modifier and the difficulty factor at 100%), so the short demo shows levels.
     pub fn builtin() -> Content {
         let units = parse_units(&Ini::parse(BUILTIN_UNITS)).unwrap_or_else(|e| panic!("data/units.ini: {e}"));
         let items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).unwrap_or_else(|e| panic!("data/items.ini: {e}"));
         let spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
-        let options = GlobalOptions { hero_experience_modificator: 100, main_exp_correction: 60, ..GlobalOptions::default() };
+        let options = GlobalOptions { hero_experience_modificator: 100, difficulty_factor: 100, ..GlobalOptions::default() };
         Content::new(units, items, spells, options, Formation::WIDE)
     }
 
@@ -227,20 +239,25 @@ impl Content {
     }
 
     /// XP needed to go from `level` (1 = as hired) to the next:
-    /// `StartExpirience × (LevelMultipler/100)^(level−1)`, rounded (mechanics.md 1.4).
+    /// `round(StartExpirience × (LevelMultipler/100)^(level−1))` (experience.md §2).
     pub fn xp_to_next(&self, id: UnitId, level: i32) -> i32 {
         let u = self.unit(id);
-        let k = u.level_multiplier.max(100) as f64 / 100.0;
-        (u.start_experience.max(1) as f64 * k.powi((level - 1).max(0))).round() as i32
+        super::experience::xp_to_next(u.start_experience.max(1), u.level_multiplier.max(100), level)
     }
 
-    /// Strength estimate used for XP: `Cost × CostMultipler/100`, +10% per level above the
-    /// first. The level term is our guess (the exe's exact formula is not decoded).
+    /// Tactical cost of a type at `level` with no items and no building: the strength of
+    /// its level stats × `CostMultipler`/100 (experience.md §1).
     pub fn tactical_cost(&self, id: UnitId, level: i32) -> i32 {
-        let u = self.unit(id);
-        let mult = if u.cost_multiplier > 0 { u.cost_multiplier } else { 100 };
-        let base = u.cost.max(1) * mult / 100;
-        base * (9 + level.max(1)) / 10
+        let key = (id.0, level.max(1));
+        if let Some(&v) = self.tactical.0.lock().ok().and_then(|m| m.get(&key).copied()).as_ref() {
+            return v;
+        }
+        let s = super::units::Stats::of_level(self, id, key.1);
+        let v = super::experience::tactical(self, id, &s, 0);
+        if let Ok(mut m) = self.tactical.0.lock() {
+            m.insert(key, v);
+        }
+        v
     }
 
     /// Daily wage of a unit type hired as `kind` (mechanics.md 1.5). The hero is free; the
@@ -467,5 +484,23 @@ mod tests {
         // Every unit's XP table and wage are computable.
         assert!(c.unit_ids().all(|id| c.xp_to_next(id, 1) > 0 && c.wage(id) >= 0));
         assert!(!c.items_from(Source::Market).is_empty());
+    }
+
+    #[test]
+    fn real_xp_tables_and_strength() {
+        let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
+        let c = Content::from_dt(&DtInstall::load(std::path::Path::new(&dir)).expect("install loads"));
+        for id in c.unit_ids() {
+            // Positive, increasing XP steps.
+            let need: Vec<i32> = (1..=12).map(|l| c.xp_to_next(id, l)).collect();
+            assert!(need[0] > 0 && need.windows(2).all(|w| w[1] > w[0]), "unit {}: {need:?}", id.0);
+            // Strength is positive at every level. It need not grow: a cannon (ranged attack
+            // from ShotWeaponRange on) counts a third, and a warrior-priest whose magic
+            // overtakes its melee is valued by its (weaker) spells.
+            assert!((1..=8).all(|l| c.tactical_cost(id, l) >= 1), "unit {}", id.0);
+        }
+        // The footage: unit 28 fresh at 0/580, unit 14 at level 2 needs 560, hero 2 at
+        // level 5 needs 590.
+        assert_eq!((c.xp_to_next(UnitId(28), 1), c.xp_to_next(UnitId(14), 2), c.xp_to_next(UnitId(2), 5)), (580, 560, 590));
     }
 }

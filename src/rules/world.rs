@@ -502,7 +502,7 @@ pub struct HeroStart {
     pub class: HeroClass,
     pub tile: Tile,
     pub gold: i32,
-    pub experience: i32,
+    pub mana: i32,
     /// Troops besides the hero; the hero stands in `hero_slot`.
     pub hero_slot: Slot,
     pub troops: Vec<Troop>,
@@ -968,8 +968,8 @@ impl World {
         HeroStart {
             class,
             tile,
-            gold: p.gold as i32,
-            experience: p.experience as i32,
+            gold: p.gold as u16 as i16 as i32,
+            mana: p.mana as u16 as i16 as i32,
             hero_slot,
             troops,
             items: artifact_ids(content, p.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)),
@@ -1522,14 +1522,14 @@ mod tests {
         s.buildings = vec![fort];
         s.header.heroes[0] = hero(3, 3, 150, &[troop(4, 0, 2), troop(5, 0, 1)]);
         s.header.heroes[0].artifacts = [7, 0, 0];
-        s.header.heroes[0].experience = 100;
+        s.header.heroes[0].mana = 100;
         // The archmage starts inside the fort's walls: moved to its entry.
         s.header.heroes[1] = hero(6, 5, 500, &[troop(4, 0, 1)]);
         s.header.heroes[1].start_building = 1;
         let c = content();
         let w = World::from_scenario(&s, &c);
         let k = w.hero_start(&s, &c, HeroClass::Knight);
-        assert_eq!((k.tile, k.gold, k.experience, k.items.clone(), k.location), ((3, 3), 150, 100, vec![ItemId(7)], None));
+        assert_eq!((k.tile, k.gold, k.mana, k.items.clone(), k.location), ((3, 3), 150, 100, vec![ItemId(7)], None));
         assert_eq!(k.troops.len(), 3);
         assert!(k.troops.iter().all(|t| t.slot != k.hero_slot));
         let m = w.hero_start(&s, &c, HeroClass::Archmage);

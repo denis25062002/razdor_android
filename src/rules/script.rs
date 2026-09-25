@@ -264,8 +264,9 @@ impl EventWorld for Game {
         self.archetype
     }
 
+    /// The original compares its 0-based level: a level condition of 2 means our level 3.
     fn hero_level(&self) -> i64 {
-        self.hero().level as i64
+        self.hero().level as i64 - 1
     }
 
     fn gold(&self) -> i64 {
@@ -281,9 +282,10 @@ impl EventWorld for Game {
         self.squad.iter().filter(|u| u.alive()).count() as i64
     }
 
-    /// Sum of the living units' tactical cost (the strength used for XP) *(guess)*.
+    /// Sum of the living units' tactical cost with their items (experience.md §1), as the
+    /// original sums its army strength; that the dead are left out is a *(guess)*.
     fn army_strength(&self) -> i64 {
-        self.squad.iter().filter(|u| u.alive()).map(|u| self.content.tactical_cost(u.def, u.level) as i64).sum()
+        self.squad.iter().filter(|u| u.alive()).map(|u| u.tactical(&self.content, 0) as i64).sum()
     }
 
     /// The player's buildings are his; a building held by an army is its faction's; a
@@ -357,9 +359,10 @@ impl EventWorld for Game {
         self.world.points.iter().find(|p| p.tile == t).map(|p| Place::Point(p.id))
     }
 
+    /// Event XP goes to the hero alone, as it is: no modifier, no cap; a negative amount
+    /// does nothing (experience.md §5).
     fn add_experience(&mut self, xp: i64) {
-        let c = self.content.clone();
-        self.squad[0].gain_xp(&c, xp.clamp(0, i32::MAX as i64) as i32);
+        self.unit_gains(0, xp);
     }
 
     /// Gold never goes below 0 *(guess)*.
@@ -700,32 +703,24 @@ impl EventWorld for Game {
         }
     }
 
-    /// The player's units gain it as XP; an AI troop, which keeps no XP, rises the levels
-    /// the amount pays for from its level on *(guess)*.
+    /// Opcode 13: the unit (or every unit, the dead too, as the original walks all the
+    /// records) gains the XP as it is; an AI troop banks it towards its levels like the
+    /// player's units (experience.md §5).
     fn give_unit_xp(&mut self, holder: Holder, unit: Option<u8>, xp: i64) {
-        let xp = xp.clamp(0, i32::MAX as i64) as i32;
         let c = self.content.clone();
         if holder == Holder::Player {
-            for (k, u) in self.squad.iter_mut().enumerate() {
-                if u.alive() && unit.is_none_or(|n| n as usize == k) {
-                    u.gain_xp(&c, xp);
+            for k in 0..self.squad.len() {
+                if unit.is_none_or(|n| n as usize == k) {
+                    self.unit_gains(k, xp);
                 }
             }
             return;
         }
+        let xp = xp.clamp(0, i32::MAX as i64) as i32;
         let Some(troops) = self.troops_of(holder) else { return };
         for (k, t) in troops.iter_mut().enumerate() {
-            if unit.is_some_and(|n| n as usize != k) {
-                continue;
-            }
-            let mut left = xp;
-            loop {
-                let need = c.xp_to_next(t.unit, t.level);
-                if need <= 0 || left < need {
-                    break;
-                }
-                left -= need;
-                t.level += 1;
+            if unit.is_none_or(|n| n as usize == k) {
+                super::ai::troop_gain_xp(&c, t, xp);
             }
         }
     }
@@ -867,6 +862,42 @@ impl Game {
             inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
             army: if carry[6] { self.squad.iter().skip(1).filter(|u| u.alive()).cloned().collect() } else { Vec::new() },
         })
+    }
+
+    /// Squad member `k` gains `xp` outside battle; a new level is reported on the map.
+    fn unit_gains(&mut self, k: usize, xp: i64) {
+        let c = self.content.clone();
+        let Some(u) = self.squad.get_mut(k) else { return };
+        if u.gain_xp(&c, xp.clamp(0, i32::MAX as i64) as i32) > 0 {
+            let level = u.level;
+            self.effect_events.push(Event::LevelUp(k, level));
+        }
+    }
+
+    /// Starts this (next) campaign map with what `prev` carries over (header 0x110): the
+    /// hero keeps his level and XP only when the scenario carries them (else level 1 with
+    /// no XP), gold is added, mana set, items go to the pack, and the carried army joins
+    /// with its levels and XP where the formation has room.
+    pub fn apply_carry_over(&mut self, prev: &NextMap) {
+        let c = self.content.clone();
+        let hero = &mut self.squad[0];
+        (hero.level, hero.xp) = prev.hero.unwrap_or((1, 0));
+        hero.heal_full(&c);
+        if let Some(g) = prev.gold {
+            self.gold += g;
+        }
+        if let Some(m) = prev.mana {
+            self.mana = m;
+        }
+        let items: Vec<ItemId> = prev.personal_items.iter().chain(&prev.inventory).copied().collect();
+        self.pack.extend(items);
+        for u in &prev.army {
+            let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
+            let Some(slot) = c.formation.free_slot(&taken, u.base_stats(&c).preferred_row()) else { break };
+            let mut u = u.clone();
+            u.slot = slot;
+            self.squad.push(u);
+        }
     }
 
     /// The troops of an AI army (on the map or waiting) or of a building's garrison.
@@ -1246,8 +1277,70 @@ mod tests {
             level += 1;
         }
         assert_eq!(l.garrison[0].level, level);
+        assert_eq!(l.garrison[0].xp, left, "an AI troop keeps what is left towards the next level");
         assert!(level > 1);
         assert_eq!((l.faction, l.owner), (1, crate::rules::world::Owner::Player), "the fort joins the player");
+    }
+
+    #[test]
+    fn event_xp_goes_to_the_hero_as_it_is_and_new_levels_are_reported() {
+        let mut gift = ev(EventKind::Global);
+        gift.results.experience = 100;
+        let mut g = start(&world(vec![gift]));
+        let events = g.drain_events();
+        // The knight of the test content needs 60, then 84: level 2 with 40 left.
+        assert_eq!((g.squad[0].level, g.squad[0].xp), (2, 40));
+        assert_eq!(g.squad[1].xp, 0, "only the hero");
+        assert!(events.iter().any(|e| matches!(e, Event::LevelUp(0, 2))));
+        let mut loss = ev(EventKind::Global);
+        loss.results.experience = -50;
+        let g = start(&world(vec![loss]));
+        assert_eq!((g.squad[0].level, g.squad[0].xp), (1, 0), "negative XP does nothing");
+    }
+
+    #[test]
+    fn level_conditions_count_from_zero() {
+        let mut e = ev(EventKind::Global);
+        (e.conditions.stats_check, e.conditions.level) = (1, 1);
+        e.results.gold = 5;
+        let mut g = start(&world(vec![e]));
+        assert_eq!(g.gold, 100, "level 1 is the original's level 0");
+        g.squad[0].level = 2;
+        g.wait(1);
+        assert_eq!(g.gold, 105, "level 2 passes a level-1 condition");
+    }
+
+    #[test]
+    fn the_next_map_starts_with_what_carries_over() {
+        let mut g = start(&world(vec![]));
+        g.squad[0].level = 4;
+        g.squad[0].xp = 33;
+        g.squad[1].level = 3;
+        let next = NextMap {
+            name: "Road".into(),
+            branch: None,
+            gold: Some(70),
+            mana: Some(9),
+            fame: false,
+            hero: Some((g.squad[0].level, g.squad[0].xp)),
+            personal_items: Vec::new(),
+            inventory: vec![ItemId(7)],
+            army: vec![g.squad[1].clone()],
+        };
+        let mut fresh = start(&world(vec![]));
+        fresh.squad.truncate(1);
+        let gold = fresh.gold;
+        fresh.apply_carry_over(&next);
+        assert_eq!((fresh.squad[0].level, fresh.squad[0].xp), (4, 33));
+        assert_eq!((fresh.gold, fresh.mana), (gold + 70, 9));
+        assert_eq!(fresh.squad.len(), 2);
+        assert_eq!(fresh.squad[1].level, 3, "the army keeps its levels");
+        assert_eq!(fresh.pack, vec![ItemId(7)]);
+        // Without the flag the hero starts over at level 1.
+        let mut again = start(&world(vec![]));
+        again.squad[0].level = 5;
+        again.apply_carry_over(&NextMap { hero: None, army: Vec::new(), inventory: Vec::new(), gold: None, mana: None, ..next });
+        assert_eq!((again.squad[0].level, again.squad[0].xp), (1, 0));
     }
 
     #[test]
