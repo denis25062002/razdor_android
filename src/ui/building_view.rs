@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::Team;
+use razdor::trf;
 use razdor::rules::clock::{duration_label, MINUTES_PER_DAY};
 use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
@@ -56,13 +58,13 @@ impl BuildingView {
 
 pub fn tab_label(t: Tab) -> &'static str {
     match t {
-        Tab::MainHall => "Main hall",
-        Tab::Barracks => "Barracks",
-        Tab::Garrison => "Garrison",
-        Tab::Market => "Market",
-        Tab::Sanctuary => "Sanctuary",
-        Tab::Tribute => "Tribute",
-        Tab::Shipyard => "Ships",
+        Tab::MainHall => tr("Main hall"),
+        Tab::Barracks => tr("Barracks"),
+        Tab::Garrison => tr("Garrison"),
+        Tab::Market => tr("Market"),
+        Tab::Sanctuary => tr("Sanctuary"),
+        Tab::Tribute => tr("Tribute"),
+        Tab::Shipyard => tr("Ships"),
     }
 }
 
@@ -77,29 +79,29 @@ fn title(game: &Game) -> String {
 
 pub fn service_error(e: ServiceError) -> String {
     match e {
-        ServiceError::NotHere => "Not offered here.".into(),
-        ServiceError::CannotAfford => "You cannot afford it.".into(),
-        ServiceError::NotWounded => "Not wounded.".into(),
-        ServiceError::NotDead => "Alive and well.".into(),
-        ServiceError::TooLate => "Too late: the body can only be buried.".into(),
-        ServiceError::Dead => "The dead cannot stand guard.".into(),
-        ServiceError::SquadFull => "Your army is full.".into(),
-        ServiceError::GarrisonFull => "The garrison is full.".into(),
-        ServiceError::Hero => "The hero stays with his army.".into(),
-        ServiceError::AlreadyKnown => "Already in your book.".into(),
-        ServiceError::BookFull => "No room in the book.".into(),
-        ServiceError::PackFull => "The pack is full.".into(),
-        ServiceError::NoSuchUnit => "Nobody there.".into(),
+        ServiceError::NotHere => tr("Not offered here.").into(),
+        ServiceError::CannotAfford => tr("You cannot afford it.").into(),
+        ServiceError::NotWounded => tr("Not wounded.").into(),
+        ServiceError::NotDead => tr("Alive and well.").into(),
+        ServiceError::TooLate => tr("Too late: the body can only be buried.").into(),
+        ServiceError::Dead => tr("The dead cannot stand guard.").into(),
+        ServiceError::SquadFull => tr("Your army is full.").into(),
+        ServiceError::GarrisonFull => tr("The garrison is full.").into(),
+        ServiceError::Hero => tr("The hero stays with his army.").into(),
+        ServiceError::AlreadyKnown => tr("Already in your book.").into(),
+        ServiceError::BookFull => tr("No room in the book.").into(),
+        ServiceError::PackFull => tr("The pack is full.").into(),
+        ServiceError::NoSuchUnit => tr("Nobody there.").into(),
     }
 }
 
 pub fn trade_error(e: TradeError) -> String {
     match e {
-        TradeError::NoMarket => "There is no market here.".into(),
-        TradeError::NotEnoughGold => "Not enough gold.".into(),
-        TradeError::PackFull => "The pack is full.".into(),
-        TradeError::NoSuchItem => "Nothing there.".into(),
-        TradeError::NotForSale => "A personal item: it cannot be sold.".into(),
+        TradeError::NoMarket => tr("There is no market here.").into(),
+        TradeError::NotEnoughGold => tr("Not enough gold.").into(),
+        TradeError::PackFull => tr("The pack is full.").into(),
+        TradeError::NoSuchItem => tr("Nothing there.").into(),
+        TradeError::NotForSale => tr("A personal item: it cannot be sold.").into(),
     }
 }
 
@@ -160,7 +162,7 @@ fn tab_button(label: &str, tab: Option<Tab>, r: Rect, active: bool) -> bool {
         let (edge, width) = if active { (SILVER, 4.0) } else { (PARCHMENT_INK, 2.0) };
         draw_rectangle_lines(r.x + 6.0, r.y + 6.0, r.w - 12.0, r.h - 12.0, width, edge);
         draw_rectangle_lines(r.x + 12.0, r.y + 12.0, r.w - 24.0, r.h - 24.0, 1.0, Color { a: 0.6, ..edge });
-        let size = (r.h * 0.36).round();
+        let size = fit_size(label, r.w - 28.0, (r.h * 0.36).round());
         let d = measure(label, size);
         let color = if active { TAB_RED } else { PARCHMENT_INK };
         text(label, r.x + (r.w - d.width) / 2.0 + 1.5, r.y + (r.h + d.offset_y) / 2.0 - 1.5, size, Color::new(1.0, 0.95, 0.85, 0.5));
@@ -185,19 +187,19 @@ fn counters(game: &Game, x: f32, y: f32, w: f32) {
     chrome::silver_frame(Rect::new(x, y, w, 50.0), 1.0);
     let mut wages = format!("- {}", game.daily_wages());
     if game.daily_mana_wages() > 0 {
-        wages += &format!(" / {} mana", game.daily_mana_wages());
+        wages += &format!(" / {}", trf!("{mana} mana", mana = game.daily_mana_wages()));
     }
     let cells = [
-        (Resource::Gold, "Gold", format!("{}", game.gold)),
-        (Resource::Mana, "Mana", format!("{}", game.mana)),
-        (Resource::Wages, "Army wages", wages),
-        (Resource::Income, "Income", format!("+ {}", game.daily_income())),
+        (Resource::Gold, tr("Gold"), format!("{}", game.gold)),
+        (Resource::Mana, tr("Mana"), format!("{}", game.mana)),
+        (Resource::Wages, tr("Army wages"), wages),
+        (Resource::Income, tr("Income"), format!("+ {}", game.daily_income())),
     ];
     let step = w / cells.len() as f32;
     for (k, (r, label, value)) in cells.iter().enumerate() {
         let cx = x + step * k as f32;
         resource_icon(*r, cx + 28.0, y + 26.0, 34.0);
-        text(label, cx + 52.0, y + 21.0, 17.0, if *r == Resource::Mana { MANA } else { ACCENT });
+        text_fit(label, cx + 52.0, y + 21.0, step - 56.0, 17.0, if *r == Resource::Mana { MANA } else { ACCENT });
         text(value, cx + 52.0, y + 41.0, 18.0, INK);
     }
 }
@@ -219,7 +221,7 @@ fn unit_card(game: &Game, assets: &Assets, u: &Unit, x: f32, y: f32, w: f32, h: 
     } else if u.unpaid {
         chrome::badge("sign-payment", x + 12.0, y + 12.0, 20.0, RED);
     }
-    let lv = format!("Lv {}", u.level);
+    let lv = trf!("Lv {level}", level = u.level);
     let lw = measure(&lv, 14.0).width;
     draw_rectangle(x + w - lw - 6.0, y + 1.0, lw + 5.0, 16.0, Color::new(0.0, 0.0, 0.0, 0.55));
     chrome::shadow_text(&lv, x + w - lw - 3.0, y + 14.0, 14.0, XP_COLOR);
@@ -294,9 +296,9 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     let ly = y + pic_h + 12.0;
     draw_rectangle(x, ly, w, 36.0, Color::new(0.0, 0.0, 0.0, 0.3));
     chrome::silver_frame(Rect::new(x, ly, w, 36.0), 1.0);
-    chrome::shadow_text("Quests and rumours:", x + 14.0, ly + 25.0, 20.0, chrome::GOLD);
+    chrome::shadow_text(tr("Quests and rumours:"), x + 14.0, ly + 25.0, 20.0, chrome::GOLD);
     let mut next = None;
-    if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, "Hear rumour", rumour.is_some()) {
+    if button(x + w - 250.0, ly + 3.0, 240.0, 30.0, tr("Hear rumour"), rumour.is_some()) {
         if let Some(id) = rumour {
             match game.hear_rumour(id) {
                 Ok(events) => {
@@ -313,7 +315,7 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     let list_h = rows as f32 * row_h + 12.0;
     chrome::parchment(Rect::new(x, list_y, w, list_h), false);
     if entries.is_empty() {
-        let none = if game.script().is_some() { "Nothing is on offer here." } else { "No quests in the demo." };
+        let none = if game.script().is_some() { tr("Nothing is on offer here.") } else { tr("No quests in the demo.") };
         text_centered(none, x + w / 2.0, list_y + list_h / 2.0 + 6.0, 19.0, PARCHMENT_INK);
     }
     let max_scroll = entries.len().saturating_sub(rows);
@@ -329,15 +331,15 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     for (k, entry) in entries.iter().enumerate().skip(view.scroll).take(rows) {
         let ry = list_y + 6.0 + (k - view.scroll) as f32 * row_h;
         let (id, note, color) = match *entry {
-            HallEntry::Rumour(id) => (id, "rumour", Color::new(0.55, 0.1, 0.1, 1.0)),
-            HallEntry::Quest(id) => (id, "in your journal", Color::new(0.1, 0.3, 0.55, 1.0)),
-            HallEntry::Done(id) => (id, "done", PARCHMENT_INK),
+            HallEntry::Rumour(id) => (id, tr("rumour"), Color::new(0.55, 0.1, 0.1, 1.0)),
+            HallEntry::Quest(id) => (id, tr("in your journal"), Color::new(0.1, 0.3, 0.55, 1.0)),
+            HallEntry::Done(id) => (id, tr("done"), PARCHMENT_INK),
         };
         if view.pick == Some(k) {
             draw_rectangle(x + 4.0, ry, w - 8.0, row_h - 2.0, Color::new(0.72, 0.6, 0.4, 1.0));
         }
         let title: String = story::event_title(game, id).chars().take(60).collect();
-        text(&title, x + 16.0, ry + 18.0, 19.0, color);
+        text_fit(&title, x + 16.0, ry + 18.0, w - 48.0 - measure(note, 16.0).width, 19.0, color);
         text(note, x + w - 16.0 - measure(note, 16.0).width, ry + 17.0, 16.0, PARCHMENT_INK);
         if mouse_in(x, ry, w, row_h) && clicked() {
             view.pick = Some(k);
@@ -377,7 +379,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     chrome::silver_frame(back, 1.0);
     let mut hover_lines = Vec::new();
     if recruits.is_empty() {
-        chrome::shadow_centered("No recruits here.", x + w / 2.0, y + 70.0, 22.0, chrome::CREAM);
+        chrome::shadow_centered(tr("No recruits here."), x + w / 2.0, y + 70.0, 22.0, chrome::CREAM);
     }
     for (k, r) in recruits.iter().take(6).enumerate() {
         let (cx, cy) = (x + 8.0 + k as f32 * (rw + 8.0), y + 8.0);
@@ -388,25 +390,25 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
             hover_lines.push((def.name.clone(), ACCENT));
             hover_lines.push((level_label(1, 0, c.xp_to_next(r.unit, 1)), XP_COLOR));
             hover_lines.extend(stat_lines(&c, r.unit).into_iter().map(|s| (s, INK)));
-            hover_lines.push((format!("Per level: {}", level_gains(&c, r.unit)), INK));
-            hover_lines.push((format!("Daily wage {}", c.wage_for(r.unit, razdor::rules::content::WageKind::of(def))), Color::new(0.95, 0.6, 0.25, 1.0)));
+            hover_lines.push((trf!("Per level: {gains}", gains = level_gains(&c, r.unit)), INK));
+            hover_lines.push((trf!("Daily wage {wage}", wage = c.wage_for(r.unit, razdor::rules::content::WageKind::of(def))), Color::new(0.95, 0.6, 0.25, 1.0)));
         }
         let price = game.hire_price(r.unit);
         let stock_left = r.stock != Some(0);
         let can = hires && stock_left && game.can_afford(price) && game.squad.len() < game.max_squad();
-        if chrome::pill_button(Rect::new(cx + 4.0, cy + rh + 4.0, rw - 8.0, 22.0), "Hire", can, true) {
+        if chrome::pill_button(Rect::new(cx + 4.0, cy + rh + 4.0, rw - 8.0, 22.0), tr("Hire"), can, true) {
             let name = c.unit(r.unit).name.clone();
             *message = Some(match game.hire(r.unit) {
-                Ok(()) => format!("{name} joins your army."),
-                Err(HireError::NotEnoughGold) => "You cannot afford it.".into(),
-                Err(HireError::SquadFull) => "Your army is full.".into(),
-                Err(HireError::NotOffered) => "Not offered here.".into(),
+                Ok(()) => trf!("{name} joins your army.", name),
+                Err(HireError::NotEnoughGold) => tr("You cannot afford it.").into(),
+                Err(HireError::SquadFull) => tr("Your army is full.").into(),
+                Err(HireError::NotOffered) => tr("Not offered here.").into(),
             });
         }
-        chrome::shadow_centered(&format!("Price = {}", price.amount), cx + rw / 2.0, cy + rh + 44.0, 15.0, if price.currency == Currency::Mana { MANA } else { chrome::GOLD });
+        chrome::shadow_centered(&trf!("Price: {price}", price = price.amount), cx + rw / 2.0, cy + rh + 44.0, 15.0, if price.currency == Currency::Mana { MANA } else { chrome::GOLD });
         let left = match r.stock {
-            Some(n) => format!("{n} of {} left", r.max),
-            None => "always".to_string(),
+            Some(n) => trf!("{n} of {max} left", n, max = r.max),
+            None => tr("always").to_string(),
         };
         chrome::shadow_centered(&left, cx + rw / 2.0, cy + rh + 62.0, 13.0, chrome::CREAM);
     }
@@ -432,17 +434,17 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         }
         let (bx, by, bw) = (ux + 4.0, uy + ch + 3.0, cw - 8.0);
         if let Some(p) = game.heal_price(i).filter(|_| heals) {
-            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), "Heal", game.can_afford(p), false) {
+            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), tr("Heal"), game.can_afford(p), false) {
                 action = Some((i, false));
             }
-            chrome::shadow_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
+            chrome::shadow_centered(&trf!("Price: {price}", price = p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
         } else if let Some(p) = game.resurrect_price(i).filter(|_| raises) {
-            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), "Raise", game.can_afford(p), false) {
+            if chrome::pill_button(Rect::new(bx, by, bw, 22.0), tr("Raise"), game.can_afford(p), false) {
                 action = Some((i, true));
             }
-            chrome::shadow_centered(&format!("Price = {}", p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
+            chrome::shadow_centered(&trf!("Price: {price}", price = p.amount), ux + cw / 2.0, by + 38.0, 14.0, chrome::GOLD);
         } else if !u.alive() {
-            let left = game.resurrection_minutes_left(i).map_or("to be buried".into(), |m| duration_label(m as f64));
+            let left = game.resurrection_minutes_left(i).map_or(tr("to be buried").into(), |m| duration_label(m as f64));
             text_centered(&left, ux + cw / 2.0, by + 16.0, 14.0, DIM);
         }
     }
@@ -452,7 +454,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let r = if raise { game.resurrect(i) } else { game.heal(i) };
         match r {
             Ok(events) => {
-                *message = Some(if raise { format!("{name} rises again.") } else { format!("{name} is healed.") });
+                *message = Some(if raise { trf!("{name} rises again.", name) } else { trf!("{name} is healed.", name) });
                 // What happened meanwhile: a noon report, the scenario's events.
                 next = world_view::handle_events(game, events, message, dialogs);
             }
@@ -460,11 +462,12 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         }
     }
     let note = match (heals, raises) {
-        (true, true) => "Healing and raising the dead are paid at once.".to_string(),
-        (true, false) => "Healing is paid at once. The dead are raised in towns and churches.".to_string(),
-        _ => "No healing here.".into(),
+        (true, true) => tr("Healing and raising the dead are paid at once."),
+        (true, false) => tr("Healing is paid at once. The dead are raised in towns and churches."),
+        _ => tr("No healing here."),
     };
-    chrome::shadow_text(&note, x, f.y + f.h - 6.0, 15.0, chrome::CREAM);
+    let size = fit_size(note, w, 15.0);
+    chrome::shadow_text(&ellipsize(note, w, size), x, f.y + f.h - 6.0, size, chrome::CREAM);
     tooltip(&hover_lines);
     next
 }
@@ -476,7 +479,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     let gap = 6.0;
     let cw = (w - 5.0 * gap) / 6.0;
     let ch = 110.0;
-    text("Garrison: click a unit to take it back.", x, y + 20.0, 19.0, ACCENT);
+    text(tr("Garrison: click a unit to take it back."), x, y + 20.0, 19.0, ACCENT);
     let gy = y + 30.0;
     empty_cells(game, x, gy, cw, ch, gap);
     let mut take = None;
@@ -486,16 +489,16 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let (ux, uy) = grid_cell(game, s.unit.slot, x, gy, cw, ch, gap);
         unit_card(game, assets, &s.unit, ux, uy, cw, ch);
         if mouse_in(ux, uy, cw, ch) {
-            let paid = if now.saturating_sub(s.since) < MINUTES_PER_DAY { "paid until the next noon" } else { "no wage while on guard" };
+            let paid = if now.saturating_sub(s.since) < MINUTES_PER_DAY { tr("paid until the next noon") } else { tr("no wage while on guard") };
             let lv = level_label(s.unit.level, s.unit.xp, s.unit.xp_to_next(&c));
-            hover = vec![(s.unit.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (format!("{}/{} HP, {paid}", s.unit.hp, s.unit.max_hp(&c)), INK)];
+            hover = vec![(s.unit.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, {paid}", hp = s.unit.hp, max = s.unit.max_hp(&c), paid), INK)];
             if clicked() {
                 take = Some(j);
             }
         }
     }
     let ay = gy + 2.0 * (ch + gap) + 40.0;
-    text("Your army: click a unit to leave it here.", x, ay - 10.0, 19.0, ACCENT);
+    text(tr("Your army: click a unit to leave it here."), x, ay - 10.0, 19.0, ACCENT);
     empty_cells(game, x, ay, cw, ch, gap);
     let mut leave = None;
     for i in 0..game.squad.len() {
@@ -504,7 +507,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         unit_card(game, assets, u, ux, uy, cw, ch);
         if mouse_in(ux, uy, cw, ch) {
             let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
-            hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (format!("{}/{} HP, wage {}", u.hp, u.max_hp(&c), game.wage(i)), INK)];
+            hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, wage {wage}", hp = u.hp, max = u.max_hp(&c), wage = game.wage(i)), INK)];
             if clicked() {
                 leave = Some(i);
             }
@@ -512,19 +515,20 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     }
     if let Some(j) = take {
         *message = Some(match game.take_from_garrison(j) {
-            Ok(()) => "Back in your army.".into(),
+            Ok(()) => tr("Back in your army.").into(),
             Err(e) => service_error(e),
         });
     }
     if let Some(i) = leave {
         let name = game.squad[i].name(&c).to_string();
         *message = Some(match game.leave_in_garrison(i) {
-            Ok(()) => format!("{name} stays on guard."),
+            Ok(()) => trf!("{name} stays on guard.", name),
             Err(e) => service_error(e),
         });
     }
-    let note = format!("Units on guard are paid for their first day only and heal {}% a day.", c.options.garrison_auto_heal);
-    chrome::shadow_text(&note, x, f.y + f.h - 6.0, 15.0, chrome::CREAM);
+    let note = trf!("Units on guard are paid for their first day only and heal {pct}% a day.", pct = c.options.garrison_auto_heal);
+    let size = fit_size(&note, w, 15.0);
+    chrome::shadow_text(&ellipsize(&note, w, size), x, f.y + f.h - 6.0, size, chrome::CREAM);
     tooltip(&hover);
 }
 
@@ -535,8 +539,8 @@ fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)]
     let row_h = 30.0;
     draw_rectangle(x, y, w, 26.0 + visible as f32 * row_h, Color::new(0.0, 0.04, 0.02, 0.45));
     chrome::silver_frame(Rect::new(x, y, w, 26.0 + visible as f32 * row_h), 1.0);
-    text("Name", x + 50.0, y + 19.0, 17.0, ACCENT);
-    text("Price", x + w - 80.0, y + 19.0, 17.0, ACCENT);
+    text(tr("Name"), x + 50.0, y + 19.0, 17.0, ACCENT);
+    text(tr("Price"), x + w - 80.0, y + 19.0, 17.0, ACCENT);
     let max_scroll = rows.len().saturating_sub(visible);
     let over = mouse_in(x, y, w, 26.0 + visible as f32 * row_h);
     let wheel = if over { wheel() } else { 0.0 };
@@ -581,10 +585,10 @@ pub(super) fn item_description(game: &Game, assets: &Assets, item: ItemId, x: f3
     assets.draw_item(item, x + w / 2.0 - 28.0, y + 10.0, 56.0);
     text_centered(&d.name, x + w / 2.0, y + 90.0, 20.0, BOX_INK);
     let limit = match d.kind {
-        ArtefactType::BlowWeapon => Some("warriors only"),
-        ArtefactType::ShotWeapon => Some("shooters only"),
-        ArtefactType::Staff => Some("mages only"),
-        ArtefactType::Item => Some("trade goods: cannot be worn"),
+        ArtefactType::BlowWeapon => Some(tr("warriors only")),
+        ArtefactType::ShotWeapon => Some(tr("shooters only")),
+        ArtefactType::Staff => Some(tr("mages only")),
+        ArtefactType::Item => Some(tr("trade goods: cannot be worn")),
         _ => None,
     };
     let mut ly = y + 112.0;
@@ -614,7 +618,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     } else {
         game.market_here().unwrap_or(&[]).iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string())).collect()
     };
-    text_centered(if view.selling { "Your pack: what the market pays" } else { "Goods for sale" }, lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
+    text_centered(if view.selling { tr("Your pack: what the market pays") } else { tr("Goods for sale") }, lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
     if let Some(k) = price_list(Some(assets), &rows, view.pick, &mut view.scroll, lx, y + 26.0, lw, 8) {
         view.pick = Some(k);
     }
@@ -626,17 +630,17 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
         Some(item) => item_description(game, assets, item, x, y, dw, dh),
         None => {
             chrome::text_box(Rect::new(x, y, dw, dh));
-            text_centered("Pick an item from the list.", x + dw / 2.0, y + dh / 2.0, 18.0, BOX_INK);
+            text_centered(tr("Pick an item from the list."), x + dw / 2.0, y + dh / 2.0, 18.0, BOX_INK);
         }
     }
     let by = y + dh + 10.0;
     let mut next = None;
-    if button(x, by, 150.0, 40.0, "Inventory", true) {
+    if button(x, by, 150.0, 40.0, tr("Inventory"), true) {
         next = Some(Screen::Squad { selected: 0, scroll: 0, back: Some(view.clone()) });
     }
     resource_icon(Resource::Gold, x + 180.0, by + 20.0, 34.0);
-    text(&format!("Gold {}", game.gold), x + 202.0, by + 27.0, 20.0, ACCENT);
-    let label = if view.selling { "Sell" } else { "Buy" };
+    text(&trf!("Gold {gold}", gold = game.gold), x + 202.0, by + 27.0, 20.0, ACCENT);
+    let label = if view.selling { tr("Sell") } else { tr("Buy") };
     let can = match (view.selling, view.pick) {
         (true, Some(k)) => k < game.pack.len(),
         (false, Some(k)) => rows.get(k).and_then(|r| r.0).is_some_and(|i| game.gold >= game.buy_price(i) && game.pack.len() < PACK_SIZE),
@@ -647,21 +651,21 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
         *message = Some(if view.selling {
             let name = c.item(game.pack[k]).name.clone();
             match game.sell(k) {
-                Ok(g) => format!("Sold {name} for {g} gold."),
+                Ok(g) => trf!("Sold {name} for {g} gold.", name, g),
                 Err(e) => trade_error(e),
             }
         } else {
             match game.buy(k) {
                 Ok(item) => {
                     cue(Cue::Item(c.item(item).kind));
-                    format!("Bought {}. It is in your pack.", c.item(item).name)
+                    trf!("Bought {item}. It is in your pack.", item = c.item(item).name)
                 }
                 Err(e) => trade_error(e),
             }
         });
         view.pick = None;
     }
-    let toggle = if view.selling { "Back to the goods" } else { "Sell shop" };
+    let toggle = if view.selling { tr("Back to the goods") } else { tr("Sell shop") };
     if button(lx + lw - 190.0, by, 190.0, 40.0, toggle, true) {
         view.selling = !view.selling;
         view.pick = None;
@@ -681,7 +685,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     let dw = w * 0.45;
     let (lx, lw) = (x + dw + 10.0, w - dw - 10.0);
     let rows: Vec<_> = spells.iter().map(|s| (None, s.name.clone(), s.cost_gold.to_string())).collect();
-    text_centered("Spells", lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
+    text_centered(tr("Spells"), lx + lw / 2.0, y + 18.0, 18.0, ACCENT);
     if let Some(k) = price_list(None, &rows, view.pick, &mut view.scroll, lx, y + 26.0, lw, 7) {
         view.pick = Some(k);
     }
@@ -696,22 +700,22 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
                 text_centered(line, x + dw / 2.0, y + 60.0 + i as f32 * 22.0, 16.0, MANA);
             }
         }
-        None => text_centered("Pick a spell from the list.", x + dw / 2.0, y + dh / 2.0, 18.0, BOX_INK),
+        None => text_centered(tr("Pick a spell from the list."), x + dw / 2.0, y + dh / 2.0, 18.0, BOX_INK),
     }
     let by = y + dh + 14.0;
     if let Some(s) = chosen {
         if game.knows_spell(s.id) {
-            text_centered("This spell is already in your book!", x + dw / 2.0, by + 20.0, 18.0, MANA);
-        } else if button(x + dw - 130.0, by + 50.0, 130.0, 40.0, "Buy", game.gold >= s.cost_gold) {
+            text_centered(tr("This spell is already in your book!"), x + dw / 2.0, by + 20.0, 18.0, MANA);
+        } else if button(x + dw - 130.0, by + 50.0, 130.0, 40.0, tr("Buy"), game.gold >= s.cost_gold) {
             *message = Some(match game.learn_spell(s.id) {
-                Ok(()) => format!("{} is written into your book.", s.name),
+                Ok(()) => trf!("{spell} is written into your book.", spell = s.name),
                 Err(e) => service_error(e),
             });
         }
     }
     resource_icon(Resource::Gold, x + 26.0, by + 70.0, 34.0);
-    text(&format!("Gold {}", game.gold), x + 50.0, by + 77.0, 20.0, ACCENT);
-    text(&format!("Book {}/{SPELL_BOOK_SIZE}. Cast from the spell book on the map (B).", game.spells.len()), x, by + 118.0, 16.0, DIM);
+    text(&trf!("Gold {gold}", gold = game.gold), x + 50.0, by + 77.0, 20.0, ACCENT);
+    text_fit(&trf!("Book {n}/{max}. Cast from the spell book on the map (B).", n = game.spells.len(), max = SPELL_BOOK_SIZE), x, by + 118.0, w, 16.0, DIM);
     if let Some(l) = game.location {
         let dy = y + 26.0 + 26.0 + 7.0 * 30.0 + 50.0;
         description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0);
@@ -724,59 +728,59 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     let (x, y, w) = (f.cx, f.cy, f.cw);
     let v = game.world.locations[l].clone();
     draw_rectangle(x, y, w, 120.0, Color::new(0.2, 0.12, 0.07, 1.0));
-    text("The headman keeps the tribute for whoever protects the village.", x + 16.0, y + 28.0, 19.0, INK);
+    text_fit(tr("The headman keeps the tribute for whoever protects the village."), x + 16.0, y + 28.0, w - 32.0, 19.0, INK);
     resource_icon(Resource::Gold, x + 40.0, y + 76.0, 40.0);
-    text(&format!("Gold {} (up to {})", v.tribute_gold, v.gold_max.max(v.gold_income)), x + 70.0, y + 84.0, 20.0, ACCENT);
+    text(&trf!("Gold {gold} (up to {max})", gold = v.tribute_gold, max = v.gold_max.max(v.gold_income)), x + 70.0, y + 84.0, 20.0, ACCENT);
     resource_icon(Resource::Mana, x + 340.0, y + 76.0, 40.0);
-    text(&format!("Mana {} (up to {})", v.tribute_mana, v.mana_max.max(v.mana_income)), x + 370.0, y + 84.0, 20.0, MANA);
+    text(&trf!("Mana {mana} (up to {max})", mana = v.tribute_mana, max = v.mana_max.max(v.mana_income)), x + 370.0, y + 84.0, 20.0, MANA);
     // The tribute is taken on entering (economy.md §3); only an offer waits for an answer.
     let mut by = y + 140.0;
     let status = if game.village_offer().is_some() {
-        "The villagers ask you something before paying their tribute."
+        tr("The villagers ask you something before paying their tribute.")
     } else if v.hostile() {
-        "The village pays no tribute to you."
+        tr("The village pays no tribute to you.")
     } else {
-        "Tribute already collected."
+        tr("Tribute already collected.")
     };
-    text(status, x, by + 26.0, 19.0, DIM);
+    text_fit(status, x, by + 26.0, w, 19.0, DIM);
     by += 52.0;
     // The one offer this visit may bring (instead of the tribute: it empties the village).
     if let Some(offer) = game.village_offer() {
         use razdor::rules::economy::{OfferResult, VillageOffer, BLESSING_SPELLS, FURS_ITEM, PRIEST_SPELL};
         let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
         let label = match offer {
-            VillageOffer::Innkeeper => "Instead: the innkeeper pays your army".to_string(),
-            VillageOffer::Priest => format!("Instead: the priest heals ({})", spell_name(PRIEST_SPELL)),
+            VillageOffer::Innkeeper => tr("Instead: the innkeeper pays your army").to_string(),
+            VillageOffer::Priest => trf!("Instead: the priest heals ({spell})", spell = spell_name(PRIEST_SPELL)),
             VillageOffer::Blessing => {
                 let names: Vec<String> = BLESSING_SPELLS.iter().map(|&s| spell_name(s)).filter(|n| !n.is_empty()).collect();
-                format!("Instead: a long blessing ({})", names.join(" / "))
+                trf!("Instead: a long blessing ({spells})", spells = names.join(" / "))
             }
-            VillageOffer::Furs => format!("Instead: furs ({})", game.content.try_item(razdor::rules::content::ItemId(FURS_ITEM)).map_or("", |i| i.name.as_str())),
-            VillageOffer::Witch => "Instead: the witch's gift of mana".to_string(),
+            VillageOffer::Furs => trf!("Instead: furs ({item})", item = game.content.try_item(razdor::rules::content::ItemId(FURS_ITEM)).map_or("", |i| i.name.as_str())),
+            VillageOffer::Witch => tr("Instead: the witch's gift of mana").to_string(),
         };
-        if button(x, by, 420.0, 42.0, &label, true) {
+        if button(x, by, 460.0f32.min(w), 42.0, &label, true) {
             let result = game.accept_offer();
             let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
             *message = result.map(|r| match r {
-                OfferResult::Paid(n) => format!("The innkeeper pays off your {n} men."),
-                OfferResult::Healed(h) => format!("The priest tends to your wounded: {h:+} hits."),
-                OfferResult::Blessing(id) => format!("The villagers pray for you: {}.", spell_name(id)),
-                OfferResult::Furs(item) => format!("You get {}.", game.content.item(item).name),
-                OfferResult::Mana(m) => format!("The witch gives {m} mana."),
+                OfferResult::Paid(n) => trf!("The innkeeper pays off your {n} men.", n),
+                OfferResult::Healed(h) => trf!("The priest tends to your wounded: {h} hits.", h = format!("{h:+}")),
+                OfferResult::Blessing(id) => trf!("The villagers pray for you: {spell}.", spell = spell_name(id)),
+                OfferResult::Furs(item) => trf!("You get {item}.", item = game.content.item(item).name),
+                OfferResult::Mana(m) => trf!("The witch gives {m} mana.", m),
             });
         }
         by += 52.0;
-        if button(x, by, 420.0, 42.0, "No thanks: take the tribute", true) {
+        if button(x, by, 460.0f32.min(w), 42.0, tr("No thanks: take the tribute"), true) {
             let (gold, mana) = (v.tribute_gold, v.tribute_mana);
             *message = game.decline_offer().map(|t| match t {
-                razdor::rules::game::Tribute::Gold(_) => format!("The village pays {gold} gold and {mana} mana."),
-                razdor::rules::game::Tribute::Item(item) => format!("The village pays with a {}.", game.content.item(item).name),
+                razdor::rules::game::Tribute::Gold(_) => trf!("The village pays {gold} gold and {mana} mana.", gold, mana),
+                razdor::rules::game::Tribute::Item(item) => trf!("The village pays with a {item}.", item = game.content.item(item).name),
             });
         }
         by += 52.0;
     }
     by += 4.0;
-    text("The tribute grows every midnight, slower as it nears the village's maximum.", x, by, 16.0, DIM);
+    text_fit(tr("The tribute grows every midnight, slower as it nears the village's maximum."), x, by, w, 16.0, DIM);
     let dy = by + 24.0;
     description_box(&v.description, x, dy, w, f.y + f.h - dy - 10.0);
 }
@@ -787,22 +791,22 @@ fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     let (x, y, w) = (f.cx, f.cy, f.cw);
     let price = game.ship_price();
     draw_rectangle(x, y, w, 120.0, Color::new(0.2, 0.12, 0.07, 1.0));
-    text("The shipwright rents out ships. One ship at a time: a new one sends the old one home.", x + 16.0, y + 28.0, 18.0, INK);
+    text_fit(tr("The shipwright rents out ships. One ship at a time: a new one sends the old one home."), x + 16.0, y + 28.0, w - 32.0, 18.0, INK);
     resource_icon(Resource::Gold, x + 40.0, y + 76.0, 40.0);
-    text(&format!("A ship: {price} gold"), x + 70.0, y + 84.0, 20.0, ACCENT);
+    text(&trf!("A ship: {price} gold", price), x + 70.0, y + 84.0, 20.0, ACCENT);
     let by = y + 140.0;
-    let label = if game.ship.is_some() { "Rent a new ship" } else { "Rent a ship" };
+    let label = if game.ship.is_some() { tr("Rent a new ship") } else { tr("Rent a ship") };
     if button(x, by, 420.0, 42.0, label, game.gold >= price) {
         *message = Some(match game.rent_ship() {
-            Ok(_) => "The ship waits at the pier. Walk onto it, or click the water.".into(),
-            Err(razdor::rules::ships::ShipError::NoWater) => "There is no water to sail from here.".into(),
-            Err(razdor::rules::ships::ShipError::NotEnoughGold) => "Not enough gold.".into(),
-            Err(razdor::rules::ships::ShipError::NoShipyard) => "The shipwright will not deal with you.".into(),
+            Ok(_) => tr("The ship waits at the pier. Walk onto it, or click the water.").into(),
+            Err(razdor::rules::ships::ShipError::NoWater) => tr("There is no water to sail from here.").into(),
+            Err(razdor::rules::ships::ShipError::NotEnoughGold) => tr("Not enough gold.").into(),
+            Err(razdor::rules::ships::ShipError::NoShipyard) => tr("The shipwright will not deal with you.").into(),
         });
     }
-    let notes = ["With a ship, click the water to sail; click the shore to land.", "The ship waits where you land; walk back onto it to sail again."];
+    let notes = [tr("With a ship, click the water to sail; click the shore to land."), tr("The ship waits where you land; walk back onto it to sail again.")];
     for (i, n) in notes.iter().enumerate() {
-        text(n, x, by + 70.0 + i as f32 * 20.0, 16.0, DIM);
+        text_fit(n, x, by + 70.0 + i as f32 * 20.0, w, 16.0, DIM);
     }
     let dy = by + 120.0;
     description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0);
@@ -839,7 +843,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
             *message = None;
         }
     }
-    let exit = tab_button("Exit", None, Rect::new(tx, col.y + col.h - th - 10.0 * k, tw, th), false);
+    let exit = tab_button(tr("Exit"), None, Rect::new(tx, col.y + col.h - th - 10.0 * k, tw, th), false);
 
     let mut next = early;
     match view.tab {
