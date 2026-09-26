@@ -87,9 +87,9 @@ impl DtArt {
         }
     }
 
-    /// The install named by `RAZDOR_DT_DIR`, if it is set and loads.
+    /// The player's install ([`DtInstall::from_env`]: `RAZDOR_DT_DIR`, the remembered folder,
+    /// or one found in the usual places), if there is one and it loads.
     pub fn from_env() -> Option<DtArt> {
-        std::env::var_os(razdor::dt::install::ENV_VAR)?;
         match DtInstall::from_env() {
             Ok(install) => Some(DtArt::load(install)),
             Err(e) => {
