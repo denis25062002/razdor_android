@@ -117,6 +117,7 @@ Enter is "Yes" and **N** / Esc "No").
 | Where | Key | Does |
 |---|---|---|
 | Everywhere | F1 | the key list of this screen (F1, Esc or a click closes it) |
+| Everywhere (and in the map editor) | F2 | interface language: English / Russian |
 | Everywhere | F9 | quick load: loads the quick save |
 | Everywhere | N | music off / on |
 | World map | click / right click, Space | walk / stop |
@@ -133,6 +134,21 @@ Enter is "Yes" and **N** / Esc "No").
 | Army | A | close |
 | Battle, deployment | Q / Enter | quick battle |
 | Battle | Space / Q / Enter | end the unit's turn / finish automatically / OK on the result |
+
+## Language
+Razdor's own interface (buttons, windows, hints, messages, the battle log, the map editor, the
+built-in demo's names and texts) is in **Russian** or **English**. Switch with the **EN / RU**
+button on the title screen and in the game menu (Esc), or **F2** on any screen. The choice is
+kept in `settings.json` in the save folder (next to `audio.json`); when nothing is saved the
+game starts in Russian (in English if no font with Cyrillic was found). Scenario texts and the
+names of units, items and spells from your install are the original's and stay as they are.
+The demo's names switch for the next new game or load; a running game keeps its own.
+
+The Russian is our own translation: `data/lang/ru/*.txt`, one `English = Русский` line per
+text (the English is the key and the fallback), embedded at build time; `src/i18n.rs` has
+`tr("…")`, `trf!("… {name} …", name)` and the `n_("…")` marker. A test checks that every text
+the code translates is in the catalog, every catalog line is used and the placeholders agree,
+and another that no English literal is handed straight to a drawing helper in `src/ui`.
 
 ## Quick battle
 A Razdor extra, like the auto-combat of other strategy games: on the battle's deploy screen,
@@ -327,6 +343,7 @@ RAZDOR_ASSETS=./assets-local cargo run --release
 - `src/dt/` — readers for the original's files (ini data, `.DTm` maps). Pure, no macroquad.
 - `src/rules/` — pure game logic (no macroquad), unit-tested.
 - `src/editor/` — the map editor's model (documents, commands, undo, validation, saving). Pure, unit-tested.
+- `src/i18n.rs`, `data/lang/ru/` — the interface languages and the Russian catalog.
 - `src/ui/` — macroquad screens; `assets.rs` is the only place that draws units and items,
   `chrome.rs` the window art (original or placeholder), `unit_sheet.rs` the unit panel and
   card strip, `game_bar.rs` the bottom bar.
