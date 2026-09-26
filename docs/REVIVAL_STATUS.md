@@ -19,9 +19,13 @@ scenario's presets; type a name for the hero on that screen if you like (`#HERON
 texts; empty means the class's name). Unset `RAZDOR_DT_DIR` to play the demo only.
 
 Controls: click the map to walk (a dotted route shows the travel time); right click / Space
-stops; wheel or +/− zooms; 1 / 4 wait 1 or 4 hours; M minimap; J journal; B spell book;
-N music off/on; Esc menu (save, load, main menu, music and sound volume). In battle: click a framed card to attack or cast (right click picks
-the other action), a lit cell to step there, Space to end the unit's turn.
+stops; wheel or +/− zooms; 1 / 4 wait 1 or 4 hours; M minimap; Tab centres the camera on the
+hero; J journal; B spell book; A hero and army; F5 quick save, F9 quick load; N music off/on;
+Esc closes the open window (on the map: the minimap, else the menu with save, load, main
+menu, music and sound volume); F1 lists every screen's keys. In battle: click a framed card
+to attack or cast, a lit cell to step there, Space to end the unit's turn; on the deploy
+screen Q / Enter is a quick battle, during the battle Q finishes it automatically. No key
+acts while typing or while a dialog is open. The keys table is in the README.
 
 ## What is in
 
@@ -42,9 +46,10 @@ the other action), a lit cell to step there, Space to end the unit's turn.
 | **Sounds and music** | `_Sounds.ini` and `Sounds/` read at runtime (`.wav` as is, headerless `.raw` wrapped in a WAV header in memory, 22050 Hz, `RAZDOR_MUSIC_RATE` to override). Menu theme; the seven map themes shuffled; battle themes; triumph after a won battle and at victory; defeat. Effects for buttons, windows, the battle horn, every battle action (cannon by `ShotWeaponRange`), card moves, event chords, level-ups, spells good/evil, items by type, gold. N mutes the music; volumes and mutes in the Esc menu, kept in `audio.json`. |
 | **AI armies** | The scenario's armies choose goals as the original does: every candidate seeded with its `_Global.ini` priority into one flood, lowest priority + path cost wins; armies and the player within `AIDistance0..2` cells by behaviour style (feudal / rogue / peasant, byte 59), inside the patrol box; an attack only when a simulated battle is won. Goals: attack, take castles and forts (rogues retake their home fort), heal, garrison, hire, shop, collect tribute, talk, patrol, go home; all five editor flags. They walk on minutes banked from your steps (speed `max(1, 5 − correction)`). Feudal economy: income (byte 80 × 10), wages, a 5-day reserve, hiring and buying items. AI-vs-AI battles, captures, reports within sight. Beaten lords retreat and return; armies respawn at their home building's centre. 30 simulated days take 0.01–0.8 s per map (release). |
 | **Map editor (steps 1–2)** | `--editor` or "Map editor" on the title: new/open/save `.DTm` maps that load in the original and in Razdor (all 15 shipped maps re-save byte-identically); terrain brushes, fill and rectangles, objects, buildings with their pictures' footprints, armies, points, hero starts; property panels for every building, army, point and scenario setting of the original editor's forms; **the event editor**: the event list (type / group / title filters, new, duplicate, delete with every reference renumbered and a warning when the event is still used) and every field of the original's event window on its four tabs (each control mapped to its byte by reading the original editor's save routine), attaching events to buildings and points, the Community opcodes 1–20 with named arguments, imported event pictures; undo/redo; checks before saving (every id an event names, quests, flag scripts, string counts); test play in Razdor. Saves go to `~/.local/share/razdor/maps` (`RAZDOR_MAPS_DIR`); the game folder only by an explicit, confirmed action. No random map generator (not planned). Design: `docs/superpowers/specs/2026-09-25-map-editor-design.md`. |
-| **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. |
+| **Saves** | Manual saves and autosaves (before every battle, at every noon; newest 10 kept) in `~/.local/share/razdor/saves` (or `RAZDOR_SAVE_DIR`). A save refers to the map by name + hash and re-reads it from your install. F5 / F9: the quick save (a manual save named "Quick save", replaced each time) and its load. |
+| **Player extras** (asked for, not in the original) | **Quick battle**: Q / Enter or the button on the deploy screen plays the battle at once with the battle AI on both sides (`Battle::auto_play_to_end`: the player's units under the same rules as any AI side, never the off-screen simulation's shortcuts; deterministic, capped at 20 000 steps), "Finish automatically" (Q) mid-battle; the result box and the resolution are those of a played battle (tests: identical game state and result to the same battle stepped by the AI; env-gated, up to four armies of every shipped map). **Journal history** (`rules::journal`): quests received and completed, rumours heard and story messages, with the in-game date, on four tabs, newest first, with the full text; saved (old saves: empty history, their quests still listed undated), carried across campaign maps as chapters. **Keys**: A, Tab, F1 help overlay, F5 / F9, Esc closes windows (`ui::hotkeys`). |
 
-Tests: **523 library + 19 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
+Tests: **542 library + 27 app tests** pass with and without `RAZDOR_DT_DIR`; tests on the real
 files run only when it is set. `cargo clippy --all-targets` is clean.
 
 ## Decisions I made on my own
@@ -109,6 +114,11 @@ after `main` returned); the game now ends the process directly once everything i
 - Sounds: the menu bells (`MainMenuSelect-*`), the scroll sound and `BkgAuthors` (no
   credits screen) are not used yet. **Nobody has listened yet**: the sound was checked by
   logs, a decode round trip and quad-snd loading every file at volume 0.
+- **Player extras not seen**: the quick battle buttons (under the unit panel, which is now
+  36 px shorter at the reference size), the four-tab journal, the F1 key list and the quick
+  save / load notices were built with tests, clippy and a release build only; no window was
+  opened. Enter on the deploy screen now means a quick battle (as asked); **Fight!** is the
+  way into a played battle.
 - **Experience UI not seen**: the XP bars, level labels, "Level up!" badges, the level-up
   notice on the map and the upgrade tree view were built without opening a window (tests,
   clippy and a release build only). Check their layout on a small window first.
@@ -121,7 +131,9 @@ after `main` returned); the game now ends the process directly once everything i
 The repo contains no original content: no maps, `.ini` data, text or art. The built-in demo
 (`data/units.ini`, `data/items.ini`, `data/spells.ini`, `data/kingdom.txt`) is our own (names
 checked against the original's: no overlap). The reference docs in `docs/reference/` describe
-formats and rules in our own words. Saves hold only a reference to the map.
+formats and rules in our own words. Saves hold a reference to the map, and the journal
+history keeps the texts of the events the hero read (from the player's install, in his own
+save files only; tests use made-up texts).
 
 ## Documentation
 

@@ -32,7 +32,8 @@ cargo test          # game rules
 - Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
   2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row is
   supported too). Before the fight, click a card and then a cell to move or swap it, then
-  press **Fight!** (or Enter). The deployed formation is kept.
+  press **Fight!**, or **Quick battle** (Q / Enter) to have it played out at once (see
+  below). The deployed formation is kept.
 - Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
   actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
   card to preview the action ("strike: -12 hits", a curse's effect), left click to do it,
@@ -108,6 +109,50 @@ start building when the map names one, and the class screen takes a name for him
 system font is found automatically, or set `RAZDOR_FONT=/path/to/font.ttf` (without one,
 names are transliterated).
 
+## Keys
+Press **F1** on any screen for the list of its keys. No key acts while you type (the hero's
+name, a save name, an editor field) or while a dialog or question is open (there **Y** /
+Enter is "Yes" and **N** / Esc "No").
+
+| Where | Key | Does |
+|---|---|---|
+| Everywhere | F1 | the key list of this screen (F1, Esc or a click closes it) |
+| Everywhere | F9 | quick load: loads the quick save |
+| Everywhere | N | music off / on |
+| World map | click / right click, Space | walk / stop |
+| World map | wheel, + / − | zoom |
+| World map | 1 / 4 | wait 1 or 4 hours |
+| World map | M | minimap |
+| World map | Tab | centre the camera on the hero |
+| World map | J / B / A | journal / spell book / hero and army |
+| World map and its windows | F5 | quick save: a manual save named "Quick save" that replaces the last one |
+| World map | Esc | closes the minimap, else opens the game menu |
+| Any window (building, army, journal, spell book, menu, save, load) | Esc | back to the map (the army screen opened from a building: back to the building) |
+| Journal | Left / Right, Up / Down, wheel, PgUp / PgDn, J | tabs, entries, scrolling, close |
+| Spell book | Enter / B | cast on your army / close |
+| Army | A | close |
+| Battle, deployment | Q / Enter | quick battle |
+| Battle | Space / Q / Enter | end the unit's turn / finish automatically / OK on the result |
+
+## Quick battle
+A Razdor extra, like the auto-combat of other strategy games: on the battle's deploy screen,
+**Quick battle** (Q / Enter) plays the whole battle at once with the battle AI on both
+sides, and during a battle **Finish automatically** (Q) does the same for the rest of it.
+Your units follow exactly the rules of any AI side (one reserve move a turn, never into the
+reserve, no shortcuts of the AI's off-screen battles); only the watching is skipped. The
+result box comes at once and the battle resolves as a played one: losses, experience and
+level-ups, loot, captured castles, the events that follow. The same battle always ends
+the same way (`Battle::auto_play_to_end`).
+
+## Journal
+The journal (J, or the journal button of the bottom bar) keeps, with the in-game date, everything the
+hero learns: quests received (**Active quests**), quests completed (**Completed**), rumours
+heard (**Rumours**) and the story messages of scripted events (**Messages**; silent events
+are left out), newest first. Pick an entry for its full text and date. The history is part
+of the save (older saves start with an empty one; their active and completed quests still
+show, without a date) and carries over from map to map in a campaign. This is a Razdor
+extra: the original's journal lists only the quests.
+
 ## Interface
 The screens follow the original's layout (the 960×720 gameplay video, scaled to the window;
 `docs/reference/video-notes.md`). The **bottom bar** has the original's oval buttons: menu,
@@ -181,7 +226,8 @@ villages pay mana. Scenario events that cast spells on your army use the same ru
 
 ## Saves
 **Save** and **Load** on the bottom bar, the **Menu (Esc)**, and **Load a game** on the
-title screen. The load window has two tabs, your saves and the autosaves, newest first,
+title screen. **F5** writes the quick save (a manual save named "Quick save", replacing the
+previous one) and **F9** loads it. The load window has two tabs, your saves and the autosaves, newest first,
 with the scenario, the hero and the in-game date. The game autosaves before every battle
 and at every 12:00 report (named by the date, "1204.06.03, 12 h"); the newest 10 autosaves
 are kept.
@@ -192,6 +238,8 @@ Saves are your data and live in your data folder, never in the repo or the game 
 Windows, or wherever `RAZDOR_SAVE_DIR` points. A save of a scenario stores the map's file
 name and a hash of its bytes, not the map: loading reads the map again from
 `RAZDOR_DT_DIR` and refuses if it is missing or has changed. Demo saves need no install.
+The journal's history is saved with the texts the hero read (from your install, in your
+save only).
 
 ## Sounds and music
 With an install, Razdor plays the original's sounds and music, read at runtime from

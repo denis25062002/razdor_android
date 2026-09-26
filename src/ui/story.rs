@@ -10,6 +10,7 @@ use macroquad::prelude::*;
 use razdor::rules::content::{ItemId, UnitId};
 use razdor::rules::events::{extension, EventId, EventOutcome, Extension, PICTURE_DEFEAT, PICTURE_VICTORY};
 use razdor::rules::game::Game;
+use razdor::rules::journal::Tab;
 
 use super::dialog::{Dialog, Picture, Resource};
 use super::widgets::*;
@@ -21,12 +22,7 @@ pub const QUEST_COMPLETED: &str = "Quest completed";
 
 /// An event's title as shown: without its flag script, escapes filled in.
 pub fn event_title(game: &Game, id: EventId) -> String {
-    let t = game.script().and_then(|s| s.event(id)).map_or("", |e| e.title_text().trim());
-    if t.is_empty() {
-        "Event".to_string()
-    } else {
-        game.fill_text(t)
-    }
+    game.event_title(id)
 }
 
 /// Paragraphs of a scenario text.
@@ -113,8 +109,37 @@ fn notice(line: &str, event: Option<EventId>, message: &mut Option<String>, dial
     *message = Some(line.to_string());
 }
 
-/// The journal: active quests, then those completed; the selected one's text on the right.
-pub fn journal(game: &Game, assets: &super::assets::Assets, selected: &mut usize) -> Option<Screen> {
+/// The journal screen: its tab, the selected line, and how far the list and the text are
+/// scrolled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalView {
+    pub tab: Tab,
+    pub selected: usize,
+    pub scroll: usize,
+    pub text_scroll: usize,
+}
+
+impl Default for JournalView {
+    fn default() -> Self {
+        JournalView { tab: Tab::Active, selected: 0, scroll: 0, text_scroll: 0 }
+    }
+}
+
+/// What an empty tab says.
+fn empty_note(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Active => "No quests under way.",
+        Tab::Completed => "No quest completed yet.",
+        Tab::Rumours => "No rumours heard yet.",
+        Tab::Messages => "No messages yet.",
+    }
+}
+
+/// The journal (a Razdor extra on top of the original's quest list): tabs for the active
+/// quests, those completed, the rumours heard and the story messages, newest first; the
+/// list on the left, the selected entry's date and full text on the right. Wheel or arrows
+/// scroll; Left / Right change the tab; J, Esc or Back close it.
+pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalView) -> Option<Screen> {
     world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Journal));
     let (sw, sh) = (screen_width(), screen_height());
     let bar = super::chrome::bar_height();
@@ -122,81 +147,142 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, selected: &mut usize
     let (x, y) = ((sw - w) / 2.0, ((sh - bar - h) / 2.0).max(4.0));
     super::chrome::window(Rect::new(x, y, w, h), "The hero's journal", super::chrome::Skin::Marble, false);
 
-    let (active, done): (Vec<EventId>, Vec<EventId>) =
-        game.script().map_or((Vec::new(), Vec::new()), |s| (s.journal().to_vec(), s.completed_quests().to_vec()));
-    let rows: Vec<(EventId, bool)> = active.iter().map(|&q| (q, false)).chain(done.iter().rev().map(|&q| (q, true))).collect();
-    *selected = (*selected).min(rows.len().saturating_sub(1));
+    // The tabs, with their counts.
+    let mut switch = None;
+    let tw = ((w - 32.0) / 4.0).min(230.0);
+    for (k, tab) in Tab::ALL.into_iter().enumerate() {
+        let n = game.journal_rows(tab).len();
+        let bx = x + 16.0 + k as f32 * (tw + 4.0);
+        if button(bx, y + 36.0, tw, 34.0, &format!("{} ({n})", tab.label()), true) {
+            switch = Some(tab);
+        }
+        if view.tab == tab {
+            draw_rectangle_lines(bx - 3.0, y + 33.0, tw + 6.0, 40.0, 2.0, Color::new(1.0, 0.6, 0.2, 1.0));
+        }
+    }
+    let rows = game.journal_rows(view.tab);
+    view.selected = view.selected.min(rows.len().saturating_sub(1));
 
     // The list.
-    let (lx, ly, lw) = (x + 16.0, y + 44.0, 360.0);
-    let lh = h - 110.0;
+    let (lx, ly, lw) = (x + 16.0, y + 80.0, 360.0f32.min(w * 0.4));
+    let lh = h - 146.0;
     super::chrome::parchment(Rect::new(lx, ly, lw, lh), false);
     let ink = Color::new(0.45, 0.28, 0.14, 1.0);
-    let mut ry = ly + 8.0;
-    let header = |label: &str, ry: &mut f32| {
-        text(label, lx + 10.0, *ry + 18.0, 19.0, Color::new(0.55, 0.1, 0.1, 1.0));
-        *ry += 28.0;
-    };
-    header(&format!("Active quests ({})", active.len()), &mut ry);
-    if active.is_empty() {
-        text("None yet.", lx + 20.0, ry + 16.0, 17.0, ink);
-        ry += 26.0;
+    let rh = 42.0;
+    let fits = (((lh - 12.0) / rh).floor() as usize).max(1);
+    if mouse_in(lx, ly, lw, lh) {
+        let wh = wheel();
+        if wh < 0.0 && view.scroll + fits < rows.len() {
+            view.scroll += 1;
+        } else if wh > 0.0 {
+            view.scroll = view.scroll.saturating_sub(1);
+        }
     }
-    for (k, &(q, finished)) in rows.iter().enumerate() {
-        if finished && (k == 0 || !rows[k - 1].1) {
-            ry += 8.0;
-            header(&format!("Completed ({})", done.len()), &mut ry);
+    // Keep the selected line in sight.
+    if view.selected < view.scroll {
+        view.scroll = view.selected;
+    } else if view.selected >= view.scroll + fits {
+        view.scroll = view.selected + 1 - fits;
+    }
+    view.scroll = view.scroll.min(rows.len().saturating_sub(fits));
+    if rows.is_empty() {
+        text(empty_note(view.tab), lx + 16.0, ly + 30.0, 18.0, ink);
+    }
+    for (k, row) in rows.iter().enumerate().skip(view.scroll).take(fits) {
+        let ry = ly + 6.0 + (k - view.scroll) as f32 * rh;
+        if view.selected == k {
+            draw_rectangle(lx + 4.0, ry, lw - 8.0, rh - 2.0, Color::new(0.72, 0.6, 0.4, 1.0));
         }
-        if ry > ly + lh - 26.0 {
-            break;
+        let mut title = row.title.clone();
+        while measure(&title, 18.0).width > lw - 30.0 && title.chars().count() > 3 {
+            title.pop();
         }
-        let sel = *selected == k;
-        if sel {
-            draw_rectangle(lx + 4.0, ry - 2.0, lw - 8.0, 26.0, Color::new(0.72, 0.6, 0.4, 1.0));
+        text(&title, lx + 14.0, ry + 18.0, 18.0, ink);
+        let date = row.date.map_or_else(|| "date unknown".to_string(), |d| d.label());
+        text(&date, lx + 14.0, ry + 35.0, 14.0, Color::new(0.4, 0.36, 0.3, 1.0));
+        if mouse_in(lx, ry, lw, rh - 2.0) && clicked() && view.selected != k {
+            view.selected = k;
+            view.text_scroll = 0;
         }
-        let title: String = event_title(game, q).chars().take(34).collect();
-        text(&title, lx + 20.0, ry + 17.0, 18.0, if finished { Color::new(0.4, 0.36, 0.3, 1.0) } else { ink });
-        if mouse_in(lx, ry - 2.0, lw, 26.0) && clicked() {
-            *selected = k;
-        }
-        ry += 26.0;
+    }
+    if rows.len() > fits {
+        let line = format!("{}–{} of {}", view.scroll + 1, (view.scroll + fits).min(rows.len()), rows.len());
+        text(&line, lx + 8.0, ly + lh + 18.0, 15.0, DIM);
     }
 
-    // The selected quest's text.
+    // The selected entry: title, date and text.
     let (tx, tw) = (lx + lw + 16.0, w - lw - 48.0);
     super::chrome::text_box(Rect::new(tx, ly, tw, lh));
     let box_ink = Color::new(1.0, 0.86, 0.58, 1.0);
-    match rows.get(*selected) {
-        Some(&(q, finished)) => {
-            text_centered(&event_title(game, q), tx + tw / 2.0, ly + 30.0, 21.0, box_ink);
-            if finished {
-                text_centered(QUEST_COMPLETED, tx + tw / 2.0, ly + 54.0, 17.0, super::dialog::MANA);
+    match rows.get(view.selected) {
+        Some(row) => {
+            text_centered(&row.title, tx + tw / 2.0, ly + 32.0, 21.0, box_ink);
+            let mut sub = row.date.map_or_else(|| "Date unknown".to_string(), |d| d.label());
+            if view.tab == Tab::Completed {
+                sub = format!("{QUEST_COMPLETED}: {sub}");
             }
-            let body = game.script().and_then(|s| s.event(q)).map_or(String::new(), |e| e.message.clone());
-            let mut ty = ly + 84.0;
-            for para in paragraphs(game, &body) {
-                for line in wrap(&para, tw - 40.0, 18.0) {
-                    if ty > ly + lh - 10.0 {
-                        break;
-                    }
-                    text(&line, tx + 20.0, ty, 18.0, box_ink);
-                    ty += 22.0;
+            text_centered(&sub, tx + tw / 2.0, ly + 56.0, 16.0, super::dialog::MANA);
+            let lines: Vec<String> = row
+                .text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .flat_map(|p| {
+                    let mut v = wrap(p, tw - 40.0, 18.0);
+                    v.push(String::new());
+                    v
+                })
+                .collect();
+            let (top, bottom) = (ly + 88.0, ly + lh - 14.0);
+            let shown = (((bottom - top) / 22.0).floor() as usize).max(1);
+            if mouse_in(tx, ly, tw, lh) {
+                let wh = wheel();
+                if wh < 0.0 && view.text_scroll + shown < lines.len() {
+                    view.text_scroll += 1;
+                } else if wh > 0.0 {
+                    view.text_scroll = view.text_scroll.saturating_sub(1);
                 }
-                ty += 6.0;
+            }
+            if key(KeyCode::PageDown) && view.text_scroll + shown < lines.len() {
+                view.text_scroll += shown.saturating_sub(1).max(1);
+            }
+            if key(KeyCode::PageUp) {
+                view.text_scroll = view.text_scroll.saturating_sub(shown.saturating_sub(1).max(1));
+            }
+            view.text_scroll = view.text_scroll.min(lines.len().saturating_sub(shown));
+            for (i, line) in lines.iter().skip(view.text_scroll).take(shown).enumerate() {
+                text(line, tx + 20.0, top + i as f32 * 22.0, 18.0, box_ink);
+            }
+            if lines.len() > shown {
+                let more = format!("{}–{} of {} lines (wheel, PgUp / PgDn)", view.text_scroll + 1, (view.text_scroll + shown).min(lines.len()), lines.len());
+                text(&more, tx + 8.0, ly + lh + 18.0, 15.0, DIM);
             }
         }
-        None => text_centered("Quests you take appear here.", tx + tw / 2.0, ly + lh / 2.0, 19.0, box_ink),
+        None => text_centered("What the hero learns is written here.", tx + tw / 2.0, ly + lh / 2.0, 19.0, box_ink),
     }
 
-    let back = button(x + w / 2.0 - 70.0, y + h - 54.0, 140.0, 40.0, "Back", true);
+    let back = button(x + w / 2.0 - 70.0, y + h - 50.0, 140.0, 38.0, "Back", true);
     if back || key(KeyCode::Escape) || key(KeyCode::J) {
         return Some(Screen::WorldMap);
     }
-    if key(KeyCode::Down) {
-        *selected += 1;
+    let at = Tab::ALL.iter().position(|&t| t == view.tab).unwrap_or(0);
+    if key(KeyCode::Right) {
+        switch = Some(Tab::ALL[(at + 1) % Tab::ALL.len()]);
     }
-    if key(KeyCode::Up) {
-        *selected = selected.saturating_sub(1);
+    if key(KeyCode::Left) {
+        switch = Some(Tab::ALL[(at + Tab::ALL.len() - 1) % Tab::ALL.len()]);
+    }
+    if let Some(tab) = switch.filter(|&t| t != view.tab) {
+        *view = JournalView { tab, ..JournalView::default() };
+        return None;
+    }
+    if key(KeyCode::Down) && view.selected + 1 < rows.len() {
+        view.selected += 1;
+        view.text_scroll = 0;
+    }
+    if key(KeyCode::Up) && view.selected > 0 {
+        view.selected -= 1;
+        view.text_scroll = 0;
     }
     None
 }

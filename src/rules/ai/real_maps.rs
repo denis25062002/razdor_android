@@ -5,6 +5,7 @@ use std::time::Instant;
 use super::*;
 use crate::dt::install::DtInstall;
 use crate::rules::content::HeroClass;
+use crate::rules::game::BattleResult;
 
 /// Days simulated on every map.
 const DAYS: u64 = 30;
@@ -14,15 +15,38 @@ const RELEASE_BUDGET_SECS: f64 = 5.0;
 /// Auto-plays the player's pending battle, the AI on both sides.
 fn fight_it_out(g: &mut Game) -> Outcome {
     let mut b = g.start_battle();
-    b.begin();
-    for _ in 0..MAX_BATTLE_STEPS {
-        if b.outcome() != Outcome::Ongoing {
-            break;
-        }
-        b.ai_step();
-    }
+    b.auto_play_to_end();
     g.resolve_battle(&b);
     b.outcome()
+}
+
+/// Quick battle against the first armies of every shipped map: each reaches an outcome and
+/// resolves (XP, loot, capture, events) as a battle played to its end.
+#[test]
+fn quick_battles_against_real_armies() {
+    let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
+    let dt = DtInstall::load(std::path::Path::new(&dir)).unwrap();
+    let c = Arc::new(Content::from_dt(&dt));
+    let mut fought = 0;
+    for m in &dt.maps {
+        let s = m.load().unwrap();
+        let g0 = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 5);
+        for i in 0..g0.world.armies.len().min(4) {
+            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 5);
+            g.drain_events();
+            g.foe = Some(Foe::Army(i));
+            let mut b = g.start_battle();
+            let outcome = b.auto_play_to_end();
+            assert_ne!(outcome, Outcome::Ongoing, "{}: army {i}", m.name);
+            let result = g.resolve_battle(&b);
+            match outcome {
+                Outcome::Victory => assert!(matches!(result, BattleResult::Victory { .. }), "{}: army {i}", m.name),
+                _ => assert!(matches!(result, BattleResult::Defeat | BattleResult::Withdrew { .. }), "{}: army {i}", m.name),
+            }
+            fought += 1;
+        }
+    }
+    assert!(fought > 0);
 }
 
 /// Every shipped map for 30 days with the hero standing at his start (he fights whoever

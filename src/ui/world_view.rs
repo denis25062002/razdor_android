@@ -777,23 +777,24 @@ pub fn backdrop(game: &Game, assets: &Assets) {
 /// minimap was toggled.
 fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
     let idle = game.foe.is_none();
-    let quests = game.script().map(|s| s.journal().len());
     let modal = input_blocked();
     let look = |b: BarButton| match b {
         _ if modal => Look::Grey,
-        BarButton::Journal if quests.is_none() => Look::Grey,
         BarButton::Save | BarButton::Spells if !idle => Look::Grey,
         BarButton::Map if minimap_open => Look::Glow,
         _ => Look::Normal,
     };
     let mut pressed = game_bar::draw(game, look);
     if pressed.is_none() {
+        // Esc closes the minimap first; the menu only when nothing else is open.
         pressed = if key(KeyCode::Escape) {
-            Some(BarButton::Menu)
+            Some(if minimap_open { BarButton::Map } else { BarButton::Menu })
         } else if idle && key(KeyCode::B) {
             Some(BarButton::Spells)
-        } else if quests.is_some() && key(KeyCode::J) {
+        } else if key(KeyCode::J) {
             Some(BarButton::Journal)
+        } else if key(KeyCode::A) {
+            Some(BarButton::Squad)
         } else {
             None
         };
@@ -802,7 +803,7 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
         Some(BarButton::Menu | BarButton::Settings) => Some(Screen::Menu),
         Some(BarButton::Save) => Some(Screen::Save(SaveView::new(game, Back::Map))),
         Some(BarButton::Load) => Some(Screen::Load(LoadView::new(Back::Map))),
-        Some(BarButton::Journal) => Some(Screen::Journal { selected: 0 }),
+        Some(BarButton::Journal) => Some(Screen::Journal(Default::default())),
         Some(BarButton::Squad) => {
             *message = None;
             Some(Screen::Squad { selected: 0, scroll: 0, back: None })
@@ -837,6 +838,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     // Input: click to walk, right click or Space to stop; M toggles the minimap.
     if key(KeyCode::M) {
         view.minimap = !view.minimap;
+    }
+    // Tab: the camera back on the hero (after the minimap moved it).
+    if key(KeyCode::Tab) {
+        view.look = None;
     }
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(mouse_position()));

@@ -10,6 +10,7 @@ pub mod fog;
 pub mod formation;
 pub mod game;
 pub mod items;
+pub mod journal;
 pub mod magic;
 pub mod map;
 pub mod rng;

@@ -51,10 +51,10 @@ impl BarButton {
         match self {
             BarButton::Menu => "Main menu (Esc)",
             BarButton::Settings => "Sound settings",
-            BarButton::Save => "Save the game",
-            BarButton::Load => "Load a saved game",
+            BarButton::Save => "Save the game (F5: quick save)",
+            BarButton::Load => "Load a saved game (F9: quick load)",
             BarButton::Journal => "The hero's journal (J)",
-            BarButton::Squad => "The hero and his army",
+            BarButton::Squad => "The hero and his army (A)",
             BarButton::Spells => "The spell book (B)",
             BarButton::Map => "Map of the scenario (M)",
         }

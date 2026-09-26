@@ -36,6 +36,14 @@ impl Back {
             Back::Title => Screen::ScenarioSelect,
         }
     }
+
+    /// Where Esc goes: the map in a game (Esc closes every window), else the title.
+    fn escape(self) -> Screen {
+        match self {
+            Back::Title => Screen::ScenarioSelect,
+            Back::Map | Back::Menu => Screen::WorldMap,
+        }
+    }
 }
 
 pub struct SaveView {
@@ -233,8 +241,11 @@ pub fn save_screen(game: &Game, assets: &Assets, view: &mut SaveView, message: &
         });
         return Some(Screen::WorldMap);
     }
-    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) || key(KeyCode::Escape) {
+    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) {
         return Some(view.back.screen());
+    }
+    if key(KeyCode::Escape) {
+        return Some(view.back.escape());
     }
     None
 }
@@ -274,8 +285,11 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
     if (button(x + w - 280.0, y + h - 60.0, 120.0, 40.0, "Load", chosen.is_some()) || key(KeyCode::Enter)) && chosen.is_some() {
         *pending = chosen.map(|e| e.path.clone());
     }
-    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) || key(KeyCode::Escape) {
+    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) {
         return Some(view.back.screen());
+    }
+    if key(KeyCode::Escape) {
+        return Some(view.back.escape());
     }
     None
 }

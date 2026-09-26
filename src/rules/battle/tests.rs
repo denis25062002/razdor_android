@@ -1439,4 +1439,87 @@ fn real_armies_auto_battle_terminates() {
         assert_eq!(outcomes[0], 0);
         assert!(outcomes.iter().sum::<i32>() >= 12);
     }
+
+}
+
+/// Quick battle: a whole battle at once, the AI on both sides.
+mod quick_battle {
+    use super::*;
+
+    /// Unit ids and cells of one side.
+    type Side = Vec<(u32, Slot)>;
+
+    fn armies() -> (Side, Side) {
+        (vec![(1, f(1)), (10, f(2)), (11, b(1)), (13, b(2)), (10, r(0))], vec![(10, f(1)), (10, f(3)), (12, b(1)), (14, b(2)), (18, f(2))])
+    }
+
+    #[test]
+    fn it_reaches_an_outcome_from_the_deploy_screen() {
+        let c = content_with(vec![], Formation::WIDE);
+        let (p, e) = armies();
+        let mut bt = prepared(&c, &p, &e, Team::Enemy);
+        assert!(bt.is_deploying());
+        let outcome = bt.auto_play_to_end();
+        assert!(!bt.is_deploying());
+        assert_ne!(outcome, Outcome::Ongoing);
+        assert_eq!(outcome, bt.outcome());
+        assert!(bt.end_reason().is_some());
+        assert!(bt.round <= c.options.battle_end_turn as u32);
+        assert!(bt.auto_play_to_end() == outcome, "a finished battle stays as it is");
+    }
+
+    #[test]
+    fn it_ends_exactly_as_the_same_battle_played_step_by_step() {
+        let c = content_with(vec![], Formation::WIDE);
+        let (p, e) = armies();
+        let mut quick = prepared(&c, &p, &e, Team::Player);
+        quick.auto_play_to_end();
+        let mut played = prepared(&c, &p, &e, Team::Player);
+        played.begin();
+        while played.outcome() == Outcome::Ongoing {
+            played.ai_step();
+        }
+        assert_eq!(quick.outcome(), played.outcome());
+        assert_eq!(quick.end_reason(), played.end_reason());
+        assert_eq!(quick.round, played.round);
+        assert_eq!(quick.log, played.log);
+        let hp = |b: &Battle| b.fighters.iter().map(|f| f.hp).collect::<Vec<_>>();
+        assert_eq!(hp(&quick), hp(&played));
+        assert_eq!(quick.player_xp(), played.player_xp());
+        assert_eq!(quick.player_results(), played.player_results());
+        assert_eq!(quick.surrender_mana(Team::Player), played.surrender_mana(Team::Player));
+    }
+
+    #[test]
+    fn the_players_units_follow_the_same_rules() {
+        let c = content_with(vec![], Formation::WIDE);
+        let (p, e) = armies();
+        let mut bt = prepared(&c, &p, &e, Team::Player);
+        bt.set_improved_ai(false);
+        bt.auto_play_to_end();
+        assert!(bt.interactive && bt.ai_level == 1, "never the off-screen simulation's shortcuts");
+        // Step by step: no unit of either side steps into the reserve, and a unit leaves
+        // it at most once a turn.
+        let mut bt = prepared(&c, &p, &e, Team::Player);
+        bt.begin();
+        let mut left_reserve: Vec<(u32, usize)> = Vec::new();
+        while bt.outcome() == Outcome::Ongoing {
+            let round = bt.round;
+            if let Some(Step::Move { actor, from, to }) = bt.ai_step() {
+                assert!(to.row != Reserve || from.row == Reserve, "nobody enters the reserve");
+                if from.row == Reserve && to.row != Reserve {
+                    assert!(!left_reserve.contains(&(round, actor)), "one reserve move a turn");
+                    left_reserve.push((round, actor));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_lone_hero_against_a_strong_army_loses_and_gains_nothing() {
+        let c = content_with(vec![], Formation::WIDE);
+        let mut bt = prepared(&c, &[(18, f(1))], &[(10, f(1)), (10, f(2)), (11, b(1)), (12, b(2))], Team::Enemy);
+        assert_eq!(bt.auto_play_to_end(), Outcome::Defeat);
+        assert!(bt.player_xp().is_empty(), "no experience without a victory");
+    }
 }

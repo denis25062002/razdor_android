@@ -91,6 +91,7 @@ impl Game {
     }
 
     fn script_events(&mut self, out: Vec<EventOutcome>) -> Vec<Event> {
+        self.record_outcomes(&out);
         let mut events: Vec<Event> = out.into_iter().map(Event::Script).collect();
         let effects = std::mem::take(&mut self.effect_events);
         // A battle an event started: against the army as it stands after all the effects.
@@ -827,6 +828,9 @@ pub struct NextMap {
     pub class: HeroClass,
     pub hero_name: Option<String>,
     pub hero_unit: UnitId,
+    /// The journal's history (`rules::journal`), always carried: the next map is its next
+    /// chapter.
+    pub journal: crate::rules::journal::History,
 }
 
 /// The name of branch (map, variant) for a next-map name such as "0-0 …".
@@ -880,6 +884,7 @@ impl Game {
             },
             hero_name: self.hero_name.clone(),
             hero_unit: hero.def,
+            journal: self.journal.clone(),
         })
     }
 
@@ -917,6 +922,8 @@ impl Game {
         if prev.hero_name.is_some() {
             self.hero_name = prev.hero_name.clone();
         }
+        self.journal = prev.journal.clone();
+        self.journal.next_chapter();
         let hero = &mut self.squad[0];
         if c.try_unit(prev.hero_unit).is_some() {
             hero.def = prev.hero_unit;
@@ -1187,6 +1194,103 @@ mod tests {
     }
 
     #[test]
+    fn the_journal_history_records_quests_rumours_and_messages_with_dates() {
+        use crate::rules::journal::{EntryKind, Tab};
+        let mut rumour = ev(EventKind::Rumour);
+        (rumour.title, rumour.message) = ("Word in the inn".into(), "The mill is haunted.".into());
+        let mut quest = ev(EventKind::Quest);
+        (quest.title, quest.message) = ("The mill".into(), "Free the mill, #HERONAME.".into());
+        quest.results.chained_event = 3;
+        let mut done = ev(EventKind::Global);
+        (done.title, done.message) = ("Freed".into(), "The miller thanks you.".into());
+        done.results.completes_quest = 2;
+        done.subordinate = 1; // only through the quest's chain
+        let mut silent = ev(EventKind::Global);
+        silent.message = String::new();
+        let mut hello = ev(EventKind::Global);
+        (hello.title, hello.message) = ("Dawn".into(), "Hello, #HERONAME.".into());
+        let mut s = world(vec![rumour, quest, done, silent, hello]);
+        s.header.heroes[0] = hero(9, 3, 15, &[]);
+        let mut town = building(BuildingType::Town, 9, 2, (1, 1));
+        town.event_slots[..2].copy_from_slice(&[1, 2]);
+        town.event_count = 2;
+        s.buildings = vec![town];
+        let mut g = start(&s);
+        g.drain_events();
+        g.set_hero_name("Ivan");
+        let opened = g.clock.total_minutes() as u64;
+        let messages = g.journal_rows(Tab::Messages);
+        assert!(messages.iter().any(|r| r.title == "Dawn" && r.text == "Hello, Ivan."), "the opening message, the name filled in when shown: {messages:?}");
+        assert!(g.journal.entries.iter().all(|e| e.event != 4), "a silent event is not recorded");
+        assert!(messages.iter().all(|r| r.date.is_some_and(|d| d.total_minutes() as u64 == opened)));
+
+        g.set_destination((9, 2));
+        walk(&mut g);
+        let arrived = g.clock.total_minutes() as u64;
+        assert!(arrived > opened);
+        assert_eq!(g.journal.find(EntryKind::Quest, 2).map(|e| (e.minutes, e.title.as_str())), Some((arrived, "The mill")));
+        assert_eq!(g.journal.find(EntryKind::Completed, 2).map(|e| e.minutes), Some(arrived), "the chained event completed it");
+        assert!(g.journal_rows(Tab::Active).is_empty());
+        let completed = g.journal_rows(Tab::Completed);
+        assert_eq!(completed.len(), 1);
+        assert_eq!((completed[0].title.as_str(), completed[0].text.as_str()), ("The mill", "Free the mill, Ivan."));
+        assert_eq!(g.journal_rows(Tab::Messages)[0].title, "Freed", "newest first");
+
+        g.hear_rumour(1).unwrap();
+        let rumours = g.journal_rows(Tab::Rumours);
+        assert_eq!(rumours.len(), 1);
+        assert_eq!((rumours[0].title.as_str(), rumours[0].text.as_str()), ("Word in the inn", "The mill is haunted."));
+        assert!(g.journal_rows(Tab::Messages).iter().all(|r| r.title != "The mill"), "a quest is not a message too");
+    }
+
+    #[test]
+    fn active_quests_come_from_the_engine_even_without_history() {
+        use crate::rules::journal::Tab;
+        let mut quest = ev(EventKind::Quest);
+        (quest.title, quest.message) = ("Old quest".into(), "From an old save.".into());
+        let mut s = world(vec![quest]);
+        s.header.heroes[0] = hero(9, 3, 15, &[]);
+        let mut town = building(BuildingType::Town, 9, 2, (1, 1));
+        town.event_slots[0] = 1;
+        town.event_count = 1;
+        s.buildings = vec![town];
+        let mut g = start(&s);
+        g.set_destination((9, 2));
+        walk(&mut g);
+        assert_eq!(g.journal_rows(Tab::Active).len(), 1);
+        g.journal = Default::default(); // a save from before the history
+        let rows = g.journal_rows(Tab::Active);
+        assert_eq!((rows[0].title.as_str(), rows[0].text.as_str(), rows[0].date), ("Old quest", "From an old save.", None));
+    }
+
+    #[test]
+    fn the_history_carries_over_to_the_next_map_as_a_new_chapter() {
+        let mut g = start(&world(vec![]));
+        g.journal.record(crate::rules::journal::EntryKind::Message, 1, 0, "t", "x");
+        let next = NextMap {
+            name: "Road".into(),
+            branch: None,
+            gold: None,
+            mana: None,
+            fame: false,
+            hero: None,
+            spells: None,
+            hero_items: None,
+            inventory: Vec::new(),
+            army: Vec::new(),
+            flags: Vec::new(),
+            class: HeroClass::Knight,
+            hero_name: None,
+            hero_unit: g.squad[0].def,
+            journal: g.journal.clone(),
+        };
+        let mut fresh = start(&world(vec![]));
+        fresh.apply_carry_over(&next);
+        assert_eq!(fresh.journal.entries.len(), 1);
+        assert_eq!(fresh.journal.chapter, 1);
+    }
+
+    #[test]
     fn a_free_rumour_needs_no_gold() {
         let mut s = world(vec![ev(EventKind::Rumour)]);
         s.header.heroes[0] = hero(9, 3, 0, &[]);
@@ -1401,6 +1505,7 @@ mod tests {
             class: HeroClass::Knight,
             hero_name: None,
             hero_unit: g.squad[0].def,
+            journal: crate::rules::journal::History::default(),
         };
         let mut fresh = start(&world(vec![]));
         fresh.squad.truncate(1);

@@ -12,6 +12,7 @@ use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
 use super::formation::Slot;
 use super::items::{self, EquipError};
+use super::journal::History;
 use super::magic::{self, ActiveSpell};
 use super::save::ScenarioRef;
 use super::ships::Ship;
@@ -246,6 +247,9 @@ pub struct Game {
     /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
     #[serde(default)]
     pub hero_name: Option<String>,
+    /// What the player learnt, with dates (`rules::journal`); empty in older saves.
+    #[serde(default)]
+    pub journal: History,
     /// The offer of the village the hero stands in, made on entering (`rules::economy`).
     #[serde(default)]
     pub(crate) offer: Option<(usize, VillageOffer)>,
@@ -327,6 +331,7 @@ impl Game {
             autosave_due: None,
             ship: None,
             hero_name: None,
+            journal: History::default(),
             offer: None,
             offered_at: None,
             last_offer: None,
@@ -1707,6 +1712,38 @@ mod tests {
                 g.resolve_battle(&b);
             }
         }
+    }
+
+    #[test]
+    fn a_quick_battle_resolves_exactly_like_a_played_one() {
+        let setup = |seed: u64, lair: bool| {
+            let mut g = new_game(HeroClass::Knight, seed);
+            g.world.armies.clear();
+            g.hire(unit(&g, "spearman")).unwrap();
+            g.hire(unit(&g, "spearman")).unwrap();
+            g.foe = Some(Foe::Garrison(g.world.index_of(if lair { "Bandit lair" } else { "Bandit camp" })));
+            g
+        };
+        let json = |g: &Game| serde_json::to_string(g).unwrap();
+        let mut outcomes = Vec::new();
+        for seed in 0..6 {
+            let (mut quick, mut played) = (setup(seed, seed % 2 == 1), setup(seed, seed % 2 == 1));
+            let mut b = quick.start_battle();
+            let outcome = b.auto_play_to_end();
+            assert_ne!(outcome, Outcome::Ongoing);
+            let quick_result = quick.resolve_battle(&b);
+            let mut b = played.start_battle();
+            b.begin();
+            while b.outcome() == Outcome::Ongoing {
+                b.ai_step();
+            }
+            let played_result = played.resolve_battle(&b);
+            assert_eq!(quick_result, played_result, "seed {seed}");
+            assert_eq!(json(&quick), json(&played), "seed {seed}: the same game after it");
+            assert_eq!(quick.drain_events(), played.drain_events());
+            outcomes.push(outcome);
+        }
+        assert!(outcomes.contains(&Outcome::Victory));
     }
 
     #[test]

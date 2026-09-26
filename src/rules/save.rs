@@ -260,6 +260,20 @@ pub fn write(dir: &Path, kind: SaveKind, name: &str, game: &Game) -> Result<Path
     Ok(path)
 }
 
+/// The name of the quick save (F5): a manual save that each quick save replaces.
+pub const QUICK_SAVE: &str = "Quick save";
+
+/// Writes the quick save (F5), replacing the last one.
+pub fn quick_save(dir: &Path, game: &Game) -> Result<PathBuf, SaveError> {
+    write(dir, SaveKind::Manual, QUICK_SAVE, game)
+}
+
+/// The quick save's file (F9), if there is one.
+pub fn quick_save_path(dir: &Path) -> Option<PathBuf> {
+    let path = kind_dir(dir, SaveKind::Manual).join(format!("{}.{EXTENSION}", slug(QUICK_SAVE)));
+    path.is_file().then_some(path)
+}
+
 /// A save found in the folder.
 #[derive(Clone, Debug)]
 pub struct SaveEntry {
@@ -506,6 +520,45 @@ pub(crate) mod tests {
         assert_eq!(list(&dir, SaveKind::Manual).len(), 2, "unreadable files are skipped");
         assert!(matches!(load(&dir.join("manual").join("junk.rzsave"), demo(), None), Err(SaveError::Corrupt(_))));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_quick_save_replaces_the_last_and_is_found_again() {
+        let dir = temp_dir("quick");
+        let c = demo();
+        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        assert_eq!(quick_save_path(&dir), None);
+        write(&dir, SaveKind::Manual, "Mine", &g).unwrap();
+        let first = quick_save(&dir, &g).unwrap();
+        g.gold = 4321;
+        let second = quick_save(&dir, &g).unwrap();
+        assert_eq!(first, second, "the same file");
+        let saves = list(&dir, SaveKind::Manual);
+        assert_eq!(saves.len(), 2, "one quick save next to the player's own");
+        assert_eq!(saves.iter().filter(|s| s.meta.name == QUICK_SAVE).count(), 1);
+        let path = quick_save_path(&dir).unwrap();
+        assert_eq!(path, second);
+        assert_eq!(load(&path, c, None).unwrap().gold, 4321, "the newest quick save");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_journal_history_survives_a_save_and_old_saves_load_without_one() {
+        use crate::rules::journal::EntryKind;
+        let c = demo();
+        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        g.journal.record(EntryKind::Quest, 2, 100, "A quest", "Its text");
+        g.journal.record(EntryKind::Rumour, 5, 160, "A rumour", "Whispers");
+        g.journal.next_chapter();
+        let loaded = roundtrip(&g, c.clone(), None);
+        assert_eq!(loaded.journal, g.journal);
+        // A save written before the history existed.
+        let meta = meta_of(&g, SaveKind::Manual, "old").unwrap();
+        let mut value = serde_json::to_value(&g).unwrap();
+        value.as_object_mut().unwrap().remove("journal");
+        let old: Game = serde_json::from_value(value).unwrap();
+        let loaded = restore(&meta, old, c, None).unwrap();
+        assert!(loaded.journal.entries.is_empty());
     }
 
     #[test]

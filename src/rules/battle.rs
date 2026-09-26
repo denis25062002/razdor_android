@@ -37,6 +37,8 @@ const DRYING_PERCENT: i32 = 8;
 /// `Fortify`: defence bonus per turn after the first, % of DefenceBlow, for up to 5 turns.
 const FORTIFY_PERCENT: i32 = 25;
 const FORTIFY_TURNS: i32 = 5;
+/// Most steps [`Battle::auto_play_to_end`] plays (as the AI's simulated battles).
+pub const AUTO_PLAY_STEPS: usize = 20_000;
 /// `Splash`: the first hit and the neighbours' hits, % of attack or power.
 const SPLASH_MAIN: i32 = 80;
 const SPLASH_SIDE: i32 = 40;
@@ -2172,6 +2174,27 @@ impl Battle {
                 Some(Step::Wait { actor })
             }
         }
+    }
+
+    /// Quick battle (a Razdor extra the players asked for, like the auto-combat of other
+    /// games): the battle is played out at once with the battle AI on both sides, the
+    /// player's units under the same rules as any AI side (the reserve rules, no simulation
+    /// shortcuts; see [`Battle::ai_step`]). Only the watching is skipped: the outcome, the
+    /// log and the XP shares are those of a battle played step by step. Deploys as the
+    /// cards stand when still deploying. Deterministic; stops after [`AUTO_PLAY_STEPS`]
+    /// steps at most (the turn limit ends every battle long before). Returns the outcome.
+    pub fn auto_play_to_end(&mut self) -> Outcome {
+        self.begin();
+        for _ in 0..AUTO_PLAY_STEPS {
+            if self.outcome() != Outcome::Ongoing {
+                break;
+            }
+            // A plan that cannot be carried out still ends the unit's turn.
+            if self.ai_step().is_none() {
+                self.skip();
+            }
+        }
+        self.outcome()
     }
 
     // ------------------------------------------------------------------------------------

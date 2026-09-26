@@ -42,6 +42,8 @@ struct Layout {
     k: f32,
     win: Rect,
     panel: Rect,
+    /// Under the panel: the quick battle button.
+    quick: Rect,
     strip: Rect,
     card: Vec2,
     pitch: Vec2,
@@ -57,7 +59,8 @@ impl Layout {
         let x = ((sw - ww) / 2.0).round();
         let y = ((sh - chrome::bar_height() - wh) / 2.0).max(2.0).round();
         let win = Rect::new(x, y, ww, wh);
-        let panel = Rect::new(x + 2.0 * k, y + 27.0 * k, 244.0 * k, 570.0 * k);
+        let panel = Rect::new(x + 2.0 * k, y + 27.0 * k, 244.0 * k, 534.0 * k);
+        let quick = Rect::new(panel.x + 10.0 * k, panel.y + panel.h + 3.0 * k, panel.w - 20.0 * k, 30.0 * k);
         let (rx, rw) = (x + 248.0 * k, 586.0 * k);
         let strip = Rect::new(rx, y + 302.0 * k, rw, 20.0 * k);
         let f = battle.formation;
@@ -66,7 +69,7 @@ impl Layout {
         let card = vec2(88.0 * c * k, 128.0 * c * k).round();
         let pitch = vec2(96.0 * c * k, 133.0 * c * k);
         let grid_w = f.cols as f32 * pitch.x - 8.0 * c * k;
-        Layout { k, win, panel, strip, card, pitch, grid_x: (rx + (rw - grid_w) / 2.0).round(), formation: f }
+        Layout { k, win, panel, quick, strip, card, pitch, grid_x: (rx + (rw - grid_w) / 2.0).round(), formation: f }
     }
 
     /// Top-left of a cell. Display line 0 is the front row: the enemy's is just above the
@@ -121,6 +124,9 @@ pub struct BattleView {
     result_cued: bool,
     /// The last line of the log shown in the strip, and for how long more.
     news: Option<(String, f32)>,
+    /// The battle was just played out by a quick battle: the result box waits a frame, so
+    /// the key that started it does not also close it.
+    quick_played: bool,
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -203,7 +209,12 @@ fn battle_title(game: &Game) -> String {
 impl BattleView {
 
     pub fn new(battle: Battle) -> Self {
-        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false, news: None }
+        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false, news: None, quick_played: false }
+    }
+
+    /// Still on the deploy screen.
+    pub fn deploying(&self) -> bool {
+        self.battle.is_deploying()
     }
 
     fn cell_under_mouse(&self, l: &Layout) -> Option<(Team, Slot)> {
@@ -216,6 +227,16 @@ impl BattleView {
     fn fighter_under_mouse(&self, l: &Layout) -> Option<usize> {
         let (team, slot) = self.cell_under_mouse(l)?;
         self.battle.at(team, slot)
+    }
+
+    /// Quick battle (Razdor extra): the rest of the battle is played at once by the battle AI
+    /// on both sides (`Battle::auto_play_to_end`); the result box follows.
+    fn quick_battle(&mut self) {
+        self.selected = None;
+        self.fx = None;
+        self.news = None;
+        self.battle.auto_play_to_end();
+        self.quick_played = true;
     }
 
     /// Remembers the newest log line for the strip.
@@ -243,8 +264,11 @@ impl BattleView {
             }
         }
 
+        self.quick_played = false;
         if self.battle.is_deploying() {
             self.deploy_input(&l);
+        } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Q) {
+            self.quick_battle();
         } else if self.fx.is_none() {
             if let Some(active) = self.battle.active() {
                 if self.battle.fighters[active].team == Team::Player {
@@ -289,8 +313,16 @@ impl BattleView {
                 self.battle.begin();
             }
         }
+        // Quick battle: on the deploy screen, or to finish a battle under way.
+        if !over && self.battle.outcome() == Outcome::Ongoing {
+            let label = if self.battle.is_deploying() { "Quick battle (Q)" } else { "Finish automatically (Q)" };
+            let q = l.quick;
+            if button(q.x, q.y, q.w, q.h, label, self.fx.is_none()) {
+                self.quick_battle();
+            }
+        }
 
-        if over {
+        if over && !self.quick_played {
             if !self.result_cued {
                 // The triumph plays as soon as the victory box appears, and carries on over the
                 // map afterwards (a sting is not cut by the move to the map).
@@ -305,8 +337,9 @@ impl BattleView {
     }
 
     fn deploy_input(&mut self, l: &Layout) {
-        if is_key_pressed(KeyCode::Enter) {
-            self.battle.begin();
+        // Q or Enter: quick battle; the Fight! button fights it.
+        if key(KeyCode::Q) || key(KeyCode::Enter) || key(KeyCode::KpEnter) {
+            self.quick_battle();
             return;
         }
         if !clicked() {
@@ -329,7 +362,7 @@ impl BattleView {
     }
 
     fn player_input(&mut self, l: &Layout, active: usize) {
-        if is_key_pressed(KeyCode::Space) {
+        if key(KeyCode::Space) {
             self.battle.skip();
             return;
         }
@@ -469,7 +502,7 @@ impl BattleView {
     fn strip_text(&self, player_turn: bool, targets: &[usize], moves: &[Slot]) -> (String, Color) {
         let b = &self.battle;
         if b.is_deploying() {
-            return ("Arrange your army: click a card, then a cell. Enter or Fight! starts the battle".into(), GOLD);
+            return ("Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle".into(), GOLD);
         }
         if b.outcome() != Outcome::Ongoing {
             return ("The battle is over".into(), GOLD);

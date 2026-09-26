@@ -8,6 +8,7 @@ pub mod dialog;
 pub mod dt_art;
 pub mod editor;
 pub mod game_bar;
+pub mod hotkeys;
 pub mod items_view;
 pub mod jukebox;
 pub mod minimap;
@@ -51,8 +52,8 @@ pub enum Screen {
     /// "Back" returns to (the map if none).
     Squad { selected: usize, scroll: usize, back: Option<BuildingView> },
     Battle(Box<BattleView>),
-    /// The quest journal, with the selected line.
-    Journal { selected: usize },
+    /// The journal: its tab, selected line and scrolling.
+    Journal(story::JournalView),
     /// The spell book, with the selected cell.
     Spellbook { selected: usize },
     /// The Esc menu, and the save and load windows.
@@ -101,6 +102,8 @@ pub struct App {
     editor: Option<Box<editor::EditorScreen>>,
     /// The game is a test play of the editor's map: leaving it returns to the editor.
     test_play: bool,
+    /// The F1 key list is open over the screen.
+    help: bool,
 }
 
 impl App {
@@ -136,6 +139,7 @@ impl App {
             last_gold: None,
             editor: None,
             test_play: false,
+            help: false,
         }
     }
 
@@ -225,7 +229,7 @@ impl App {
                 Screen::Battle(_) => audio::cue(Cue::BattleHorn),
                 Screen::Building(_)
                 | Screen::Squad { .. }
-                | Screen::Journal { .. }
+                | Screen::Journal(_)
                 | Screen::Spellbook { .. }
                 | Screen::Menu
                 | Screen::Save(_)
@@ -246,12 +250,65 @@ impl App {
             d.cued = true;
             audio::cue(if d.event.is_some() { Cue::Event } else { Cue::Panel });
         }
-        // N: music on/off (not while typing a save name or answering a question).
-        if self.dialogs.is_empty() && !matches!(self.screen, Screen::Save(_)) && is_key_pressed(KeyCode::N) {
+        // N: music on/off (not while typing or answering a question: N is its "No").
+        if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
             self.audio.settings.music_muted = !self.audio.settings.music_muted;
         }
         let mood = self.mood();
         self.audio.frame(mood);
+    }
+
+    /// The current screen, by what its keys do.
+    fn place(&self) -> hotkeys::Place {
+        use hotkeys::Place;
+        match &self.screen {
+            Screen::ScenarioSelect => Place::Title,
+            Screen::ClassSelect { .. } => Place::ClassSelect,
+            Screen::WorldMap => Place::WorldMap,
+            Screen::Building(_) => Place::Building,
+            Screen::Squad { .. } => Place::Army,
+            Screen::Battle(v) => Place::Battle { deploying: v.deploying() },
+            Screen::Journal(_) => Place::Journal,
+            Screen::Spellbook { .. } => Place::Spellbook,
+            Screen::Menu => Place::Menu,
+            Screen::Save(_) => Place::Save,
+            Screen::Load(_) => Place::Load,
+            Screen::GameOver | Screen::Victory => Place::End,
+            Screen::Editor => Place::Editor,
+        }
+    }
+
+    /// What stands in the way of shortcut keys this frame.
+    fn guard(&self) -> hotkeys::Guard {
+        hotkeys::Guard {
+            typing: hotkeys::typing(self.place(), widgets::typing()),
+            dialog: !self.dialogs.is_empty(),
+            game: self.game.is_some(),
+            foe: self.game.as_ref().is_some_and(|g| g.foe.is_some()),
+        }
+    }
+
+    /// F5: writes the quick save (a manual save named "Quick save", replacing the last).
+    fn quick_save(&mut self) {
+        let Some(game) = &self.game else { return };
+        self.message = Some(match save::default_dir() {
+            None => "No data folder for saves: set RAZDOR_SAVE_DIR.".to_string(),
+            Some(dir) => match save::quick_save(&dir, game) {
+                Ok(_) => "Quick save written (F9 loads it).".to_string(),
+                Err(e) => format!("Not saved: {e}."),
+            },
+        });
+    }
+
+    /// F9: loads the quick save, if there is one.
+    fn quick_load(&mut self) {
+        match save::default_dir().and_then(|d| save::quick_save_path(&d)) {
+            Some(path) => {
+                self.load(&path);
+                self.message = Some(self.load_error.take().unwrap_or_else(|| "Quick save loaded.".to_string()));
+            }
+            None => self.message = Some("No quick save yet: F5 writes one.".to_string()),
+        }
     }
 
     /// The current screen's name, for the frame timer (`RAZDOR_PROFILE`).
@@ -263,7 +320,7 @@ impl App {
             Screen::Building(_) => "building",
             Screen::Squad { .. } => "army",
             Screen::Battle(_) => "battle",
-            Screen::Journal { .. } => "journal",
+            Screen::Journal(_) => "journal",
             Screen::Spellbook { .. } => "spell book",
             Screen::Menu => "menu",
             Screen::Save(_) => "save",
@@ -280,8 +337,10 @@ impl App {
             self.editor_frame();
             return;
         }
-        // A dialog on top: the screen below is drawn but takes no input.
-        widgets::set_input_blocked(!self.dialogs.is_empty());
+        // A dialog or the key list on top: the screen below is drawn but takes no input.
+        let place = self.place();
+        let guard = self.guard();
+        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
         let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::ScenarioSelect, _) => screens::scenario_select(&self.scenarios, self.dt_content.is_some()),
             (Screen::ClassSelect { scenario }, game) => {
@@ -298,7 +357,7 @@ impl App {
                 items_view::squad(game, &self.assets, selected, scroll, back, &mut self.message)
             }
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message, &mut self.dialogs),
-            (Screen::Journal { selected }, Some(game)) => story::journal(game, &self.assets, selected),
+            (Screen::Journal(view), Some(game)) => story::journal(game, &self.assets, view),
             (Screen::Spellbook { selected }, Some(game)) => {
                 spellbook::frame(game, &self.assets, selected, &mut self.message, &mut self.dialogs)
             }
@@ -311,6 +370,20 @@ impl App {
             (_, None) => Some(Screen::ScenarioSelect),
         };
         widgets::set_input_blocked(false);
+        // F1: the key list; F5 / F9: quick save and load (when the screen did not move on).
+        let pressed = |k: hotkeys::Global| next.is_none() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
+        if self.help {
+            if hotkeys::help_overlay(place) {
+                self.help = false;
+            }
+        } else if pressed(hotkeys::Global::Help) {
+            self.help = true;
+        } else if pressed(hotkeys::Global::QuickSave) {
+            self.quick_save();
+        } else if pressed(hotkeys::Global::QuickLoad) {
+            self.quick_load();
+            return;
+        }
         if let Some(d) = self.dialogs.front() {
             if let Some(close) = dialog::draw(d, &self.assets) {
                 let asked = self.dialogs.pop_front().is_some_and(|d| d.question);

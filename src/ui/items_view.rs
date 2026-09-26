@@ -410,7 +410,7 @@ pub fn squad(
         }
     }
 
-    if close || key(KeyCode::Escape) {
+    if close || key(KeyCode::Escape) || key(KeyCode::A) {
         *message = None;
         return Some(match back {
             Some(v) => Screen::Building(v.clone()),
