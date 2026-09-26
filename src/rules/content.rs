@@ -424,17 +424,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_demo_has_russian_names_and_descriptions() {
+        // Built in English (tests never switch the language): the Russian texts stay in `extra`.
+        let c = Content::builtin();
+        let russian = |s: Option<&String>| s.is_some_and(|s| s.chars().any(|ch| ('а'..='я').contains(&ch.to_lowercase().next().unwrap_or(ch))));
+        for u in &c.units {
+            assert!(russian(u.extra.get("NameRu")), "unit {} has no NameRu", u.name);
+            assert!(u.description.is_empty() || russian(u.extra.get("DescriptRu")), "unit {} has no DescriptRu", u.name);
+        }
+        for a in &c.items {
+            assert!(russian(a.extra.get("NameRu")), "item {} has no NameRu", a.name);
+            assert!(a.description.is_empty() || russian(a.extra.get("DescriptRu")), "item {} has no DescriptRu", a.name);
+        }
+        for s in &c.spells {
+            assert!(russian(s.extra.get("NameRu")), "spell {} has no NameRu", s.name);
+        }
+    }
+
+    #[test]
     fn builtin_parses_our_demo_data() {
         let c = Content::builtin();
         assert_eq!(c.units.len(), 10);
         assert_eq!(c.items.len(), 15);
         assert_eq!(c.spells.len(), 5);
-        assert!(c.spells.iter().all(|s| s.extra.is_empty()), "unknown spell keys");
+        assert!(c.spells.iter().all(|s| s.extra.keys().all(|k| k == "NameRu")), "unknown spell keys");
         for h in HeroClass::ALL {
             assert!(c.try_unit(h.unit()).is_some(), "{h:?}");
         }
-        assert!(c.units.iter().all(|u| u.extra.keys().all(|k| matches!(k.as_str(), "Key" | "StartGold" | "StartSpells"))), "unknown unit keys");
-        assert!(c.items.iter().all(|i| i.extra.keys().all(|k| k == "Key" || k == "Sources")), "unknown item keys");
+        assert!(c.units.iter().all(|u| u.extra.keys().all(|k| matches!(k.as_str(), "Key" | "StartGold" | "StartSpells" | "NameRu" | "DescriptRu"))), "unknown unit keys");
+        assert!(c.items.iter().all(|i| i.extra.keys().all(|k| matches!(k.as_str(), "Key" | "Sources" | "NameRu" | "DescriptRu"))), "unknown item keys");
         let spear = c.unit_by_key("spearman").unwrap();
         assert_eq!(c.unit(spear).bonus, Some(Bonus::SpearDefense));
         assert_eq!(c.unit(spear).upgrades[0].target, c.unit_by_key("swordsman").map(|u| u.0));

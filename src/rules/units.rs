@@ -6,6 +6,7 @@
 
 use std::ops::{Index, IndexMut};
 
+use crate::i18n::tr;
 use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, WageKind};
 use super::experience;
 use super::formation::{Row, Slot};
@@ -147,16 +148,16 @@ impl Stats {
     pub fn role(&self) -> String {
         let mut r = Vec::new();
         if self.is_warrior() {
-            r.push("warrior");
+            r.push(tr("warrior"));
         }
         if self.is_shooter() {
-            r.push("shooter");
+            r.push(tr("shooter"));
         }
         if self.is_mage() {
-            r.push("mage");
+            r.push(tr("mage"));
         }
         if r.is_empty() {
-            r.push("civilian");
+            r.push(tr("civilian"));
         }
         r.join(", ")
     }

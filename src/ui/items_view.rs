@@ -1,11 +1,12 @@
 //! The hero and army screen: gear, backpack, promotion.
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::Team;
 use razdor::rules::content::{ArtefactType, Content, ItemId, Stat, UnitId};
 use razdor::rules::experience::is_percent_stat;
 use razdor::rules::game::{Game, PACK_SIZE};
-use razdor::rules::items::EquipError;
+use razdor::rules::items::{bonus_name, EquipError};
 use razdor::rules::units::Unit;
 
 use super::assets::Assets;
@@ -23,19 +24,19 @@ use super::Screen;
 pub(super) fn level_gains(content: &Content, kind: UnitId) -> String {
     let def = content.unit(kind);
     let label = |st: Stat| match st {
-        Stat::Hits => "hits",
-        Stat::AttackBlow => "melee",
-        Stat::DefenceBlow => "melee def.",
-        Stat::AttackShot => "ranged",
-        Stat::DefenceShot => "ranged def.",
-        Stat::MagicPower => "magic",
-        Stat::Initiative => "initiative",
-        Stat::Manevres => "actions",
-        Stat::ProtectLife => "life prot.",
-        Stat::ProtectDeath => "death prot.",
-        Stat::ProtectElemental => "elem. prot.",
-        Stat::Regen => "regen",
-        Stat::Vampirizm => "vampirism",
+        Stat::Hits => tr("hits"),
+        Stat::AttackBlow => tr("melee"),
+        Stat::DefenceBlow => tr("melee def."),
+        Stat::AttackShot => tr("ranged"),
+        Stat::DefenceShot => tr("ranged def."),
+        Stat::MagicPower => tr("magic"),
+        Stat::Initiative => tr("initiative"),
+        Stat::Manevres => tr("actions"),
+        Stat::ProtectLife => tr("life prot."),
+        Stat::ProtectDeath => tr("death prot."),
+        Stat::ProtectElemental => tr("elem. prot."),
+        Stat::Regen => tr("regen"),
+        Stat::Vampirizm => tr("vampirism"),
     };
     let parts: Vec<String> = Stat::ALL
         .into_iter()
@@ -43,7 +44,7 @@ pub(super) fn level_gains(content: &Content, kind: UnitId) -> String {
         .map(|(st, d)| if is_percent_stat(st) { format!("+{d}% {}", label(st)) } else { format!("{d:+} {}", label(st)) })
         .collect();
     if parts.is_empty() {
-        "nothing".into()
+        tr("nothing").into()
     } else {
         parts.join(", ")
     }
@@ -54,31 +55,26 @@ pub(super) fn unit_stat_lines(content: &Content, u: &Unit, wage: i32) -> Vec<Str
     let s = u.stats(content);
     let need = u.xp_to_next(content);
     let mut lines = vec![
-        format!("{}   next level in {} XP", level_label(u.level, u.xp, need), (need - u.xp).max(0)),
-        format!("Per level: {}", level_gains(content, u.def)),
-        format!("Hits {}/{}   {}", u.hp, s.max_hp(), attack_line(&s)),
-        format!("Defence {} melee / {} ranged", s[Stat::DefenceBlow], s[Stat::DefenceShot]),
-        format!("Initiative {}   Actions {}", s[Stat::Initiative], s[Stat::Manevres]),
-        format!(
-            "Magic prot. life {}% / elem. {}% / death {}%",
-            s[Stat::ProtectLife],
-            s[Stat::ProtectElemental],
-            s[Stat::ProtectDeath]
-        ),
+        razdor::trf!("{level}   next level in {left} XP", level = level_label(u.level, u.xp, need), left = (need - u.xp).max(0)),
+        razdor::trf!("Per level: {gains}", gains = level_gains(content, u.def)),
+        razdor::trf!("Hits {hp}/{max}   {attack}", hp = u.hp, max = s.max_hp(), attack = attack_line(&s)),
+        razdor::trf!("Defence {blow} melee / {shot} ranged", blow = s[Stat::DefenceBlow], shot = s[Stat::DefenceShot]),
+        razdor::trf!("Initiative {ini}   Actions {actions}", ini = s[Stat::Initiative], actions = s[Stat::Manevres]),
+        razdor::trf!("Magic prot. life {life}% / elem. {elem}% / death {death}%", life = s[Stat::ProtectLife], elem = s[Stat::ProtectElemental], death = s[Stat::ProtectDeath]),
     ];
     let mut extra = Vec::new();
     if s[Stat::Regen] > 0 {
-        extra.push(format!("regen {}%", s[Stat::Regen]));
+        extra.push(razdor::trf!("regen {v}%", v = s[Stat::Regen]));
     }
     if s[Stat::Vampirizm] > 0 {
-        extra.push(format!("vampirism {}%", s[Stat::Vampirizm]));
+        extra.push(razdor::trf!("vampirism {v}%", v = s[Stat::Vampirizm]));
     }
-    extra.extend(s.bonuses.iter().map(|b| b.token().to_string()));
+    extra.extend(s.bonuses.iter().map(bonus_name));
     if !extra.is_empty() {
         lines.push(extra.join(", "));
     }
     if wage > 0 {
-        lines.push(format!("Daily wage {wage} gold"));
+        lines.push(razdor::trf!("Daily wage {wage} gold", wage));
     }
     lines
 }
@@ -86,15 +82,15 @@ pub(super) fn unit_stat_lines(content: &Content, u: &Unit, wage: i32) -> Vec<Str
 
 fn equip_error(e: EquipError) -> String {
     match e {
-        EquipError::NoFreeSlot => "No free slot.".into(),
-        EquipError::SameType => "Already wears an item of that type.".into(),
-        EquipError::SecondWeapon => "Only one weapon or staff at a time.".into(),
-        EquipError::WrongClass => "This unit cannot use that (warrior, shooter or mage only).".into(),
-        EquipError::NotWearable => "That cannot be worn.".into(),
-        EquipError::Dead => "The dead hold nothing.".into(),
-        EquipError::NotAPotion => "That is not a potion.".into(),
-        EquipError::PackFull => "The pack is full.".into(),
-        EquipError::NoSuchItem => "Nothing there.".into(),
+        EquipError::NoFreeSlot => tr("No free slot.").into(),
+        EquipError::SameType => tr("Already wears an item of that type.").into(),
+        EquipError::SecondWeapon => tr("Only one weapon or staff at a time.").into(),
+        EquipError::WrongClass => tr("This unit cannot use that (warrior, shooter or mage only).").into(),
+        EquipError::NotWearable => tr("That cannot be worn.").into(),
+        EquipError::Dead => tr("The dead hold nothing.").into(),
+        EquipError::NotAPotion => tr("That is not a potion.").into(),
+        EquipError::PackFull => tr("The pack is full.").into(),
+        EquipError::NoSuchItem => tr("Nothing there.").into(),
     }
 }
 
@@ -130,7 +126,7 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
             draw_rectangle(o.x, o.y, o.w, o.h, Color::new(0.0, 0.0, 0.0, 0.45));
         }
         draw_rectangle_lines(o.x, o.y, o.w, o.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
-        let label = format!("Lv {level}");
+        let label = razdor::trf!("Lv {level}", level);
         chrome::shadow_centered(&label, o.x + o.w / 2.0, o.y + o.h - 4.0 * k, (12.0 * k).round(), if ok { chrome::GOLD } else { chrome::CREAM });
         let over = mouse_in(o.x, o.y, o.w, o.h);
         if ok {
@@ -140,8 +136,8 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
             tooltip(&[(c.unit(to).name.clone(), chrome::GOLD), (level_gains(&c, to), chrome::CREAM)]);
             if ok && clicked() {
                 *message = Some(match game.promote(sel, to) {
-                    Ok(()) => cued(Cue::Upgrade, format!("{} is now a {} (level 1, XP 0).", u.name(&c), c.unit(to).name)),
-                    Err(_) => "Not possible.".into(),
+                    Ok(()) => cued(Cue::Upgrade, razdor::trf!("{name} is now a {class} (level 1, XP 0).", name = u.name(&c), class = c.unit(to).name)),
+                    Err(_) => tr("Not possible.").into(),
                 });
             }
         }
@@ -150,13 +146,13 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
     assets.draw_portrait(u.def, Team::Player, cur);
     draw_rectangle_lines(cur.x, cur.y, cur.w, cur.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
     let note = if sel == 0 {
-        "The hero rises by levels only."
+        tr("The hero rises by levels only.")
     } else if tree.is_empty() {
-        "The final class: it improves by levels only."
+        tr("The final class: it improves by levels only.")
     } else if tree.iter().any(|&(_, _, ok)| ok) {
-        "Click a lit class to promote (free; back to level 1)."
+        tr("Click a lit class to promote (free; back to level 1).")
     } else {
-        "Not enough experience to promote yet."
+        tr("Not enough experience to promote yet.")
     };
     for (i, line) in wrap(note, r.w - 12.0, (12.0 * k).round()).iter().enumerate() {
         chrome::shadow_centered(line, r.x + r.w / 2.0, r.y + r.h * 0.5 + i as f32 * 14.0 * k, (12.0 * k).round(), chrome::CREAM);
@@ -237,7 +233,7 @@ pub fn squad(
     let (sw, sh) = (screen_width(), screen_height());
     let (ww, wh) = ((836.0 * k).round(), (600.0 * k).round());
     let win = Rect::new(((sw - ww) / 2.0).round(), ((sh - chrome::bar_height() - wh) / 2.0).max(2.0).round(), ww, wh);
-    let (_, close) = chrome::window(win, "The hero's characteristics and army", chrome::Skin::Marble, true);
+    let (_, close) = chrome::window(win, tr("The hero's characteristics and army"), chrome::Skin::Marble, true);
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::new(win.x + x * k, win.y + y * k, w * k, h * k);
     let mut hover = None;
     let sel = *selected;
@@ -249,12 +245,12 @@ pub fn squad(
     let mut status = Vec::new();
     if !u.potions.is_empty() {
         let names: Vec<&str> = u.potions.iter().map(|&p| c.item(p).name.as_str()).collect();
-        status.push((format!("Until the next battle: {}", names.join(", ")), chrome::BLUE_TEXT));
+        status.push((razdor::trf!("Until the next battle: {names}", names = names.join(", ")), chrome::BLUE_TEXT));
     }
     if !u.alive() {
-        status.push(("Dead".to_string(), chrome::RED_TEXT));
+        status.push((tr("Dead").to_string(), chrome::RED_TEXT));
     } else if u.unpaid {
-        status.push(("Unpaid: refuses to fight".to_string(), chrome::RED_TEXT));
+        status.push((tr("Unpaid: refuses to fight").to_string(), chrome::RED_TEXT));
     }
     let sheet = unit_sheet::Sheet {
         kind: u.def,
@@ -283,7 +279,7 @@ pub fn squad(
     // Top middle: the backpack or the upgrade tree.
     let show_tree = SHOW_TREE.with(|t| t.get());
     let head = (13.0 * k).round();
-    for (i, (label, tree)) in [(format!("Backpack {}/{PACK_SIZE}", game.pack.len()), false), ("Upgrade tree".to_string(), true)].iter().enumerate() {
+    for (i, (label, tree)) in [(razdor::trf!("Backpack {n}/{max}", n = game.pack.len(), max = PACK_SIZE), false), (tr("Upgrade tree").to_string(), true)].iter().enumerate() {
         let r = at(258.0 + i as f32 * 150.0, 30.0, 146.0, 20.0);
         let on = show_tree == *tree;
         let over = mouse_in(r.x, r.y, r.w, r.h);
@@ -291,7 +287,7 @@ pub fn squad(
             draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.35));
             draw_line(r.x, r.y + r.h, r.x + r.w, r.y + r.h, 1.5, chrome::GOLD);
         }
-        chrome::shadow_centered(label, r.x + r.w / 2.0, r.y + r.h * 0.5 + head * 0.36, head, if on || over { chrome::GOLD } else { chrome::CREAM });
+        chrome::shadow_centered(&ellipsize(label, r.w - 4.0, head), r.x + r.w / 2.0, r.y + r.h * 0.5 + head * 0.36, head, if on || over { chrome::GOLD } else { chrome::CREAM });
         if over && clicked() {
             SHOW_TREE.with(|t| t.set(*tree));
         }
@@ -304,8 +300,8 @@ pub fn squad(
         let kind = c.item(item).kind;
         *message = if kind == ArtefactType::Potion {
             Some(match game.drink(sel, i) {
-                Ok(healed) if healed > 0 => cued(Cue::Item(kind), format!("{} drinks it: +{healed} hits.", u.name(&c))),
-                Ok(_) => cued(Cue::Item(kind), format!("{} drinks it. The effect lasts until the next battle ends.", u.name(&c))),
+                Ok(healed) if healed > 0 => cued(Cue::Item(kind), razdor::trf!("{name} drinks it: +{healed} hits.", name = u.name(&c), healed)),
+                Ok(_) => cued(Cue::Item(kind), razdor::trf!("{name} drinks it. The effect lasts until the next battle ends.", name = u.name(&c))),
                 Err(e) => equip_error(e),
             })
         } else {
@@ -318,13 +314,13 @@ pub fn squad(
     }
 
     // Top right: the item under the mouse, and sending the unit away.
-    chrome::shadow_centered("Item description", win.x + 697.0 * k, win.y + 30.0 * k + 10.0 * k + head * 0.36, head, chrome::GOLD);
+    chrome::shadow_centered(tr("Item description"), win.x + 697.0 * k, win.y + 30.0 * k + 10.0 * k + head * 0.36, head, chrome::GOLD);
     let desc = at(570.0, 54.0, 256.0, 172.0);
     match hover {
         Some(item) => super::building_view::item_description(game, assets, item, desc.x, desc.y, desc.w, desc.h),
         None => {
             chrome::text_box(desc);
-            let hint = "Hover an item to read about it. Click a pack item to wear or drink it, a worn one to take it off.";
+            let hint = tr("Hover an item to read about it. Click a pack item to wear or drink it, a worn one to take it off.");
             for (i, line) in wrap(hint, desc.w - 30.0, 14.0).iter().enumerate() {
                 chrome::shadow_centered(line, desc.x + desc.w / 2.0, desc.y + desc.h / 2.0 - 16.0 + i as f32 * 17.0, 14.0, Color::new(1.0, 0.9, 0.66, 1.0));
             }
@@ -336,26 +332,26 @@ pub fn squad(
     let face = Rect::new(row.x + 4.0 * k, row.y + 4.0 * k, row.h - 8.0 * k, row.h - 8.0 * k);
     assets.draw_portrait(u.def, Team::Player, face);
     if sel > 0 {
-        let label = if u.alive() { "Dismiss" } else { "Bury" };
+        let label = if u.alive() { tr("Dismiss") } else { tr("Bury") };
         let b = Rect::new(face.x + face.w + 12.0 * k, row.y + 14.0 * k, row.w - face.w - 24.0 * k, row.h - 28.0 * k);
         if button(b.x, b.y, b.w, b.h, label, true) {
             let name = u.name(&c).to_string();
             *message = Some(match game.dismiss(sel) {
-                Ok(()) if u.alive() => format!("{name} leaves your army."),
-                Ok(()) => format!("{name} is laid to rest."),
+                Ok(()) if u.alive() => razdor::trf!("{name} leaves your army.", name),
+                Ok(()) => razdor::trf!("{name} is laid to rest.", name),
                 Err(e) => service_error(e),
             });
             *selected = sel - 1;
         }
     } else {
-        chrome::shadow_text("The hero leads the army.", face.x + face.w + 12.0 * k, row.y + row.h / 2.0 + 5.0, 14.0, chrome::CREAM);
+        chrome::shadow_text(tr("The hero leads the army."), face.x + face.w + 12.0 * k, row.y + row.h / 2.0 + 5.0, 14.0, chrome::CREAM);
     }
 
     // The strip: the last message, or what to do.
     let strip = at(248.0, 302.0, 586.0, 20.0);
     let (hint, hc) = match message {
         Some(m) => (m.clone(), chrome::GOLD),
-        None => ("Click a unit to select it; Esc returns".to_string(), Color::new(1.0, 0.55, 0.25, 1.0)),
+        None => (tr("Click a unit to select it; Esc returns").to_string(), Color::new(1.0, 0.55, 0.25, 1.0)),
     };
     chrome::hint_strip(strip, &hint, hc);
 

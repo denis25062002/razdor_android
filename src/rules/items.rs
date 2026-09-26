@@ -5,7 +5,8 @@
 //! and trade goods are not worn: potions are drunk from the army screen, their healing is
 //! instant and their other modifiers last until the end of the next battle.
 
-use super::content::{ArtefactDef, ArtefactType, Content, Stat};
+use crate::i18n::tr;
+use super::content::{ArtefactDef, ArtefactType, Bonus, Content, Stat};
 pub use super::content::{ItemId, Source};
 use super::units::{Stats, Unit};
 
@@ -131,36 +132,66 @@ pub fn sell_price(content: &Content, item: ItemId) -> i32 {
 
 pub fn kind_name(kind: ArtefactType) -> &'static str {
     match kind {
-        ArtefactType::BlowWeapon => "melee weapon",
-        ArtefactType::ShotWeapon => "ranged weapon",
-        ArtefactType::Staff => "staff",
-        ArtefactType::Armor => "armour",
-        ArtefactType::Helm => "helm",
-        ArtefactType::Shield => "shield",
-        ArtefactType::Ring => "ring",
-        ArtefactType::Amulet => "amulet",
-        ArtefactType::Potion => "potion",
-        ArtefactType::Item => "trade goods",
+        ArtefactType::BlowWeapon => tr("melee weapon"),
+        ArtefactType::ShotWeapon => tr("ranged weapon"),
+        ArtefactType::Staff => tr("staff"),
+        ArtefactType::Armor => tr("armour"),
+        ArtefactType::Helm => tr("helm"),
+        ArtefactType::Shield => tr("shield"),
+        ArtefactType::Ring => tr("ring"),
+        ArtefactType::Amulet => tr("amulet"),
+        ArtefactType::Potion => tr("potion"),
+        ArtefactType::Item => tr("trade goods"),
     }
 }
 
 /// Short label of a stat for descriptions and cards.
 pub fn stat_label(s: Stat) -> &'static str {
     match s {
-        Stat::Hits => "hits",
-        Stat::AttackBlow => "attack",
-        Stat::DefenceBlow => "defence",
-        Stat::AttackShot => "shot",
-        Stat::DefenceShot => "shot defence",
-        Stat::MagicPower => "magic",
-        Stat::Initiative => "initiative",
-        Stat::Manevres => "actions",
-        Stat::ProtectLife => "life prot.",
-        Stat::ProtectDeath => "death prot.",
-        Stat::ProtectElemental => "elem. prot.",
-        Stat::Regen => "regen %",
-        Stat::Vampirizm => "vampirism %",
+        Stat::Hits => tr("hits"),
+        Stat::AttackBlow => tr("attack"),
+        Stat::DefenceBlow => tr("defence"),
+        Stat::AttackShot => tr("shot"),
+        Stat::DefenceShot => tr("shot defence"),
+        Stat::MagicPower => tr("magic"),
+        Stat::Initiative => tr("initiative"),
+        Stat::Manevres => tr("actions"),
+        Stat::ProtectLife => tr("life prot."),
+        Stat::ProtectDeath => tr("death prot."),
+        Stat::ProtectElemental => tr("elem. prot."),
+        Stat::Regen => tr("regen %"),
+        Stat::Vampirizm => tr("vampirism %"),
     }
+}
+
+/// Short name of a unit bonus for descriptions ("Long weapon"); the ini token for bonuses
+/// without one.
+pub fn bonus_name(b: &Bonus) -> String {
+    let name = match b {
+        Bonus::SpearDefense => tr("Long weapon"),
+        Bonus::HorseAtack => tr("Fast attack"),
+        Bonus::ArmorIgnore => tr("Piercing blow"),
+        Bonus::ArmyMedic => tr("Healer"),
+        Bonus::Merchant => tr("Expert trader"),
+        Bonus::DeathCurse => tr("Death's curse"),
+        Bonus::GodAnger => tr("Wrath of God"),
+        Bonus::GodStrike => tr("Anger of God"),
+        Bonus::Unvulnerabe => tr("Invulnerable"),
+        Bonus::VampirsGist => tr("Dark gift"),
+        Bonus::OldVampirsGist => tr("Dark art"),
+        Bonus::Evasive => tr("Evasive"),
+        Bonus::Ghost => tr("Ghost"),
+        Bonus::Artillery => tr("Barrage"),
+        Bonus::Garrison => tr("Garrison"),
+        Bonus::AddPayment => tr("Quartermaster"),
+        Bonus::Poison => tr("Poisoned weapon"),
+        Bonus::Dead => tr("Undead"),
+        Bonus::FastDead => tr("Fast undead"),
+        Bonus::Counterblow => tr("Counterblow"),
+        Bonus::FlankStrike => tr("Flank strike"),
+        other => other.token(),
+    };
+    name.to_string()
 }
 
 /// Short summary, e.g. "melee weapon, attack +6, initiative -1".
@@ -169,7 +200,7 @@ pub fn describe(content: &Content, item: ItemId) -> String {
     let mut parts = vec![kind_name(d.kind).to_string()];
     for (&st, &v) in &d.fixed {
         parts.push(if d.kind == ArtefactType::Potion && st == Stat::Hits {
-            format!("heals {v}")
+            crate::trf!("heals {v}", v)
         } else {
             format!("{} = {v}", stat_label(st))
         });
@@ -181,7 +212,7 @@ pub fn describe(content: &Content, item: ItemId) -> String {
         parts.push(format!("{} {v:+}%", stat_label(st)));
     }
     if let Some(b) = &d.bonus {
-        parts.push(b.token().to_string());
+        parts.push(bonus_name(b));
     }
     parts.join(", ")
 }
@@ -291,6 +322,6 @@ mod tests {
         assert_eq!(sell_price(&c, ItemId(1)), 25, "ItemSaleCost 25%");
         assert_eq!(describe(&c, ItemId(4)), "armour, defence = 26, defence +2");
         assert_eq!(describe(&c, ItemId(6)), "potion, heals 30");
-        assert_eq!(describe(&c, ItemId(5)), "ring, attack +50%, defence +10%, ArmorIgnore");
+        assert_eq!(describe(&c, ItemId(5)), "ring, attack +50%, defence +10%, Piercing blow");
     }
 }

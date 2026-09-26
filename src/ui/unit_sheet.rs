@@ -4,6 +4,7 @@
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::{bless_effect, curse_effect, Buff};
 use razdor::rules::content::{Bonus, Content, HeroClass, ItemId, MagicDirection, MagicSchool, Stat, UnitId};
 use razdor::rules::units::Stats;
@@ -43,27 +44,27 @@ fn bonus_number(b: &Bonus) -> Option<usize> {
 /// English stand-ins for the trait texts, used without an install.
 fn bonus_english(b: &Bonus) -> String {
     let s = match b {
-        Bonus::SpearDefense => "Long weapon: triple melee defence on the first turn of a battle",
-        Bonus::HorseAtack => "Fast attack: +1 action on the first turn of a battle",
-        Bonus::ArmorIgnore => "Piercing blow: ignores the enemy's defence (not a building's)",
-        Bonus::ArmyMedic => "Healer: the army heals 15% of its wounds every day",
-        Bonus::Merchant => "Expert trader: +50% when selling, -30% when buying",
-        Bonus::DeathCurse => "Death's curse: whoever kills this unit dies too",
-        Bonus::GodAnger => "Wrath of God: +10 damage past any defence",
-        Bonus::GodStrike => "Anger of God: +20 damage past any defence",
-        Bonus::Unvulnerabe => "Invulnerable: loses only 1 hit per blow",
-        Bonus::VampirsGist => "Dark gift: ignores armour and absorbs 30% of a blow",
-        Bonus::OldVampirsGist => "Dark art: ignores armour, absorbs 30%, +1 action on the first turn",
-        Bonus::Evasive => "Evasive: only 70% of physical damage gets through",
-        Bonus::Ghost => "Ghost: immune to weapons; its killer dies",
-        Bonus::Artillery => "Barrage: always acts first and ignores defence",
-        Bonus::Garrison => "Garrison: double strength inside a castle or fort",
-        Bonus::AddPayment => "Quartermaster: the army's wages are 30% lower",
-        Bonus::Poison => "Poisoned weapon: the target loses 15% of its life each turn",
-        Bonus::Dead => "Undead: arrows do 70% less damage",
-        Bonus::FastDead => "Fast undead: arrows do 70% less, +1 action on the first turn",
-        Bonus::Counterblow => "Counterblow: strikes back when struck",
-        Bonus::FlankStrike => "Flank strike: double attack through an empty cell",
+        Bonus::SpearDefense => tr("Long weapon: triple melee defence on the first turn of a battle"),
+        Bonus::HorseAtack => tr("Fast attack: +1 action on the first turn of a battle"),
+        Bonus::ArmorIgnore => tr("Piercing blow: ignores the enemy's defence (not a building's)"),
+        Bonus::ArmyMedic => tr("Healer: the army heals 15% of its wounds every day"),
+        Bonus::Merchant => tr("Expert trader: +50% when selling, -30% when buying"),
+        Bonus::DeathCurse => tr("Death's curse: whoever kills this unit dies too"),
+        Bonus::GodAnger => tr("Wrath of God: +10 damage past any defence"),
+        Bonus::GodStrike => tr("Anger of God: +20 damage past any defence"),
+        Bonus::Unvulnerabe => tr("Invulnerable: loses only 1 hit per blow"),
+        Bonus::VampirsGist => tr("Dark gift: ignores armour and absorbs 30% of a blow"),
+        Bonus::OldVampirsGist => tr("Dark art: ignores armour, absorbs 30%, +1 action on the first turn"),
+        Bonus::Evasive => tr("Evasive: only 70% of physical damage gets through"),
+        Bonus::Ghost => tr("Ghost: immune to weapons; its killer dies"),
+        Bonus::Artillery => tr("Barrage: always acts first and ignores defence"),
+        Bonus::Garrison => tr("Garrison: double strength inside a castle or fort"),
+        Bonus::AddPayment => tr("Quartermaster: the army's wages are 30% lower"),
+        Bonus::Poison => tr("Poisoned weapon: the target loses 15% of its life each turn"),
+        Bonus::Dead => tr("Undead: arrows do 70% less damage"),
+        Bonus::FastDead => tr("Fast undead: arrows do 70% less, +1 action on the first turn"),
+        Bonus::Counterblow => tr("Counterblow: strikes back when struck"),
+        Bonus::FlankStrike => tr("Flank strike: double attack through an empty cell"),
         other => return other.token().to_string(),
     };
     s.to_string()
@@ -79,9 +80,9 @@ fn trait_line(b: &Bonus) -> (String, String) {
 fn hero_trait(h: HeroClass) -> (String, String) {
     let n = HeroClass::ALL.iter().position(|&c| c == h).unwrap_or(0) + 1;
     let english = match h {
-        HeroClass::Knight => "The army of this hero takes 10% less damage from enemy attacks (magic excepted).",
-        HeroClass::Archmage => "The Archmage casts spells twice as fast for 50% less mana, but his army gets no bonuses.",
-        HeroClass::Ranger => "The army of this hero travels 20% faster, and the wounded heal 20% of their hits every day.",
+        HeroClass::Knight => tr("The army of this hero takes 10% less damage from enemy attacks (magic excepted)."),
+        HeroClass::Archmage => tr("The Archmage casts spells twice as fast for 50% less mana, but his army gets no bonuses."),
+        HeroClass::Ranger => tr("The army of this hero travels 20% faster, and the wounded heal 20% of their hits every day."),
     };
     (format!("HeroBonus{n}"), chrome::ui_text("NewHero", &format!("Bonus{n}")).unwrap_or_else(|| english.to_string()))
 }
@@ -108,9 +109,9 @@ fn cmp_color(now: i32, start: i32) -> Color {
 
 fn buff_lines(lines: &mut Vec<Line>, b: Buff, raise: bool) {
     let (ad, ini, act) = if raise {
-        ("Adds to attack/defence", "Adds to initiative", "Hastens (+ actions)")
+        (tr("Adds to attack/defence"), tr("Adds to initiative"), tr("Hastens (+ actions)"))
     } else {
-        ("Lowers attack/defence", "Lowers initiative", "Slows (- actions)")
+        (tr("Lowers attack/defence"), tr("Lowers initiative"), tr("Slows (- actions)"))
     };
     if b.attack != 0 || b.defence != 0 {
         lines.push((ad.into(), format!("{}/{}", signed(b.attack), signed(b.defence)), CREAM));
@@ -130,7 +131,7 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let max = now.max_hp();
     let hits = if s.hp < max { format!("{} / {max}", s.hp.max(0)) } else { max.to_string() };
-    lines.push(("Hits".into(), hits, if s.hp < max { RED_TEXT } else { cmp_color(max, start.max_hp()) }));
+    lines.push((tr("Hits").into(), hits, if s.hp < max { RED_TEXT } else { cmp_color(max, start.max_hp()) }));
     // "base + bonus" for what items and traits add, as the original writes it.
     let split = |st: Stat| -> (String, Color) {
         let (n, b) = (naked[st], start[st] - naked[st]);
@@ -139,16 +140,16 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
     };
     if start[Stat::AttackBlow] > 0 || now[Stat::AttackBlow] > 0 {
         let (v, c) = split(Stat::AttackBlow);
-        lines.push(("Melee attack".into(), v, c));
+        lines.push((tr("Melee attack").into(), v, c));
     }
     if start[Stat::AttackShot] > 0 || now[Stat::AttackShot] > 0 {
         let (v, c) = split(Stat::AttackShot);
-        lines.push(("Ranged attack".into(), v, c));
+        lines.push((tr("Ranged attack").into(), v, c));
     }
     let (v, c) = split(Stat::DefenceBlow);
-    lines.push(("Melee defence".into(), v, c));
+    lines.push((tr("Melee defence").into(), v, c));
     let (v, c) = split(Stat::DefenceShot);
-    lines.push(("Ranged defence".into(), v, c));
+    lines.push((tr("Ranged defence").into(), v, c));
     if now.is_mage() || start.is_mage() {
         let school = now.magic.unwrap_or(MagicSchool::Elemental);
         let p = s.power;
@@ -156,7 +157,7 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
         let pc = cmp_color(p, start[Stat::MagicPower]);
         let dir = now.magic_direction();
         if matches!(dir, MagicDirection::ToEnemy | MagicDirection::ToAll) {
-            lines.push(("Magic strike (- hits)".into(), format!("-{p}"), pc));
+            lines.push((tr("Magic strike (- hits)").into(), format!("-{p}"), pc));
             buff_lines(&mut lines, curse_effect(o, school, p), false);
         }
         if matches!(dir, MagicDirection::ToAlly | MagicDirection::ToAll) {
@@ -166,26 +167,26 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
                 MagicSchool::Death => 0,
             };
             if heal > 0 {
-                lines.push(("Heals (+ hits)".into(), format!("+{heal}"), pc));
+                lines.push((tr("Heals (+ hits)").into(), format!("+{heal}"), pc));
             }
             buff_lines(&mut lines, bless_effect(o, school, p), true);
         }
     }
     for (label, st) in [
-        ("Life magic protection", Stat::ProtectLife),
-        ("Elemental magic protection", Stat::ProtectElemental),
-        ("Death magic protection", Stat::ProtectDeath),
-        ("Regeneration", Stat::Regen),
-        ("Vampirism", Stat::Vampirizm),
+        (tr("Life magic protection"), Stat::ProtectLife),
+        (tr("Elemental magic protection"), Stat::ProtectElemental),
+        (tr("Death magic protection"), Stat::ProtectDeath),
+        (tr("Regeneration"), Stat::Regen),
+        (tr("Vampirism"), Stat::Vampirizm),
     ] {
         if now[st] != 0 || start[st] != 0 {
             lines.push((label.into(), format!("{}%", now[st]), cmp_color(now[st], start[st])));
         }
     }
-    lines.push(("Initiative".into(), now[Stat::Initiative].to_string(), cmp_color(now[Stat::Initiative], start[Stat::Initiative])));
-    lines.push(("Actions".into(), now[Stat::Manevres].to_string(), cmp_color(now[Stat::Manevres], start[Stat::Manevres])));
+    lines.push((tr("Initiative").into(), now[Stat::Initiative].to_string(), cmp_color(now[Stat::Initiative], start[Stat::Initiative])));
+    lines.push((tr("Actions").into(), now[Stat::Manevres].to_string(), cmp_color(now[Stat::Manevres], start[Stat::Manevres])));
     if s.wage > 0 {
-        lines.push(("Daily wage".into(), s.wage.to_string(), ORANGE_TEXT));
+        lines.push((tr("Daily wage").into(), s.wage.to_string(), ORANGE_TEXT));
     }
     lines
 }
@@ -206,11 +207,11 @@ fn strip_color(cur: i32, base: i32) -> Color {
 /// The card's attack piece: `A:` melee, `S:` ranged, `Pwr:` magic.
 fn attack_piece(s: &Stats, base: &Stats, power: i32) -> (String, Color) {
     if s.is_warrior() || base.is_warrior() {
-        (format!("A: {}", s[Stat::AttackBlow]), strip_color(s[Stat::AttackBlow], base[Stat::AttackBlow]))
+        (razdor::trf!("A: {v}", v = s[Stat::AttackBlow]), strip_color(s[Stat::AttackBlow], base[Stat::AttackBlow]))
     } else if s.is_shooter() || base.is_shooter() {
-        (format!("S: {}", s[Stat::AttackShot]), strip_color(s[Stat::AttackShot], base[Stat::AttackShot]))
+        (razdor::trf!("S: {v}", v = s[Stat::AttackShot]), strip_color(s[Stat::AttackShot], base[Stat::AttackShot]))
     } else {
-        (format!("Pwr: {power}"), strip_color(power, base[Stat::MagicPower]))
+        (razdor::trf!("Pwr: {power}", power), strip_color(power, base[Stat::MagicPower]))
     }
 }
 
@@ -229,14 +230,14 @@ pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, l
     let (x0, x1) = (strip.x + 3.0 * k, strip.x + strip.w - 3.0 * k);
     let (att, ac) = attack_piece(now, base, power);
     shadow_text(&att, x0, strip.y + lh - 2.0 * k, fs, ac);
-    let d = format!("D: {}/{}", now[Stat::DefenceBlow], now[Stat::DefenceShot]);
+    let d = razdor::trf!("D: {blow}/{shot}", blow = now[Stat::DefenceBlow], shot = now[Stat::DefenceShot]);
     let dc = strip_color(now[Stat::DefenceBlow] + now[Stat::DefenceShot], base[Stat::DefenceBlow] + base[Stat::DefenceShot]);
     shadow_right(&d, x1, strip.y + lh - 2.0 * k, fs, dc);
     let (mn, ini) = (now[Stat::Manevres], now[Stat::Initiative]);
-    shadow_text(&format!("Mnvr: {mn}"), x0, strip.y + 2.0 * lh - 2.0 * k, fs, strip_color(mn, base[Stat::Manevres]));
-    shadow_right(&format!("Ini: {ini}"), x1, strip.y + 2.0 * lh - 2.0 * k, fs, strip_color(ini, base[Stat::Initiative]));
+    shadow_text(&razdor::trf!("Mnvr: {mn}", mn), x0, strip.y + 2.0 * lh - 2.0 * k, fs, strip_color(mn, base[Stat::Manevres]));
+    shadow_right(&razdor::trf!("Ini: {ini}", ini), x1, strip.y + 2.0 * lh - 2.0 * k, fs, strip_color(ini, base[Stat::Initiative]));
     let max = now.max_hp();
-    let hits = if hp < max { format!("Hits: {}/{max}", hp.max(0)) } else { format!("Hits: {max}") };
+    let hits = if hp < max { razdor::trf!("Hits: {hp}/{max}", hp = hp.max(0), max) } else { razdor::trf!("Hits: {max}", max) };
     shadow_centered(&hits, strip.x + strip.w / 2.0, strip.y + 3.0 * lh - 2.5 * k, fs, if hp < max { Color::new(1.0, 0.6, 0.4, 1.0) } else { HITS_INK });
 }
 
@@ -316,17 +317,18 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
     let size = (12.0 * k).round();
     let lh = 13.6 * k;
     // Level and experience on one line.
-    chrome::strong_text(&format!("Level {}", s.level), x0, y, size, CREAM);
-    chrome::strong_right(&format!("XP {} / {}", s.xp, s.need), x1, y, size, CREAM);
+    chrome::strong_text(&razdor::trf!("Level {level}", level = s.level), x0, y, size, CREAM);
+    chrome::strong_right(&razdor::trf!("XP {xp} / {need}", xp = s.xp, need = s.need), x1, y, size, CREAM);
     y += lh;
     for (label, value, color) in stat_lines(content, s) {
         let c = if color == CREAM { CREAM } else { color };
-        chrome::strong_text(&label, x0, y, size, c);
+        let room = x1 - x0 - measure(&value, size).width - 6.0 * k;
+        chrome::strong_text(&label, x0, y, super::widgets::fit_size(&label, room, size), c);
         chrome::strong_right(&value, x1, y, size, c);
         y += lh;
     }
     for (line, color) in &s.status {
-        chrome::strong_text(line, x0, y, size, *color);
+        chrome::strong_text(line, x0, y, super::widgets::fit_size(line, x1 - x0, size), *color);
         y += lh;
     }
     // The description, then the traits with their icons.
@@ -347,10 +349,10 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
         traits.insert(0, hero_trait(h));
     }
     if s.back_row {
-        traits.push(("Bonus-2Row".into(), chrome::ui_text("Army", "Hint1").unwrap_or_else(|| "In the second row the unit gets a bonus to its ranged defence!".into())));
+        traits.push(("Bonus-2Row".into(), chrome::ui_text("Army", "Hint1").unwrap_or_else(|| tr("In the second row the unit gets a bonus to its ranged defence!").into())));
     }
     if s.in_building {
-        traits.push(("Bonus-InCastle".into(), chrome::ui_text("Army", "Hint2").unwrap_or_else(|| "In its own building the unit gets a bonus to all defences!".into())));
+        traits.push(("Bonus-InCastle".into(), chrome::ui_text("Army", "Hint2").unwrap_or_else(|| tr("In its own building the unit gets a bonus to all defences!").into())));
     }
     let icon = 24.0 * k;
     for (art, line) in traits {

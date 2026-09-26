@@ -1,2 +1,261 @@
 # Razdor interface in Russian: our own translation. "English = Russian", one per line;
 # \n is a line break, {name} a value filled in by the game. See src/i18n.rs.
+
+# Battle screen: hover box over a target
+Click to attack "{name}" = Щёлкните, чтобы атаковать: «{name}»
+Click to curse "{name}" = Щёлкните, чтобы проклясть: «{name}»
+Click to heal "{name}" = Щёлкните, чтобы исцелить: «{name}»
+Click to bless "{name}" = Щёлкните, чтобы благословить: «{name}»
+Damage -{d} hits (kills) = Урон: −{d} жизни (насмерть)
+Long strike: damage -{d} hits = Длинный удар: −{d} жизни
+Damage -{d} hits = Урон: −{d} жизни
+Heals +{h} hits = Исцеление: +{h} жизни
+Attack = Атака
+Defence = Защита
+Initiative = Инициатива
+Actions = Действия
+No effect = Без действия
+Click (or press SPACE) to pass one action of "{name}" = Щёлкните (или нажмите Пробел): «{name}» пропускает одно действие
+Click to move "{name}" here = Щёлкните, чтобы переставить сюда: «{name}»
+
+# Battle screen: title, buttons, strip
+the enemy = врага
+Battle: the army of hero {hero} against {enemy}! = Битва: армия героя {hero} против: {enemy}!
+Fight! = В бой!
+Quick battle (Q) = Быстрый бой (Q)
+Finish automatically (Q) = Доиграть самим (Q)
+Turn {round}/{limit} = Ход {round}/{limit}
+XP +{xp} = Опыт +{xp}
+Level up! = Новый уровень!
+Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle = Расставьте армию: щёлкните воина, затем клетку; «В бой!» начинает битву, Q / Enter — быстрый бой
+The battle is over = Битва окончена
+Click a framed card to act, your own to pass one action; SPACE ends the turn = Щёлкните воина в рамке, чтобы действовать, своего — чтобы пропустить действие; Пробел завершает ход
+Nothing in reach: step to a lit cell, or press SPACE = Никого не достать: шагните на светлую клетку или нажмите Пробел
+Nothing to do: press SPACE to end the turn = Делать нечего: нажмите Пробел, чтобы завершить ход
+The enemy moves... = Ход противника...
+can't reach = не достать
+blessed = благословлён
+cursed = проклят
+-{amount} long! = −{amount} длинный!
+-{c} counter = −{c} ответ
+Acting: {left} of {total} actions left = Действует: осталось {left} из {total}
+This turn: {mods} = В этот ход: {mods}
+Poisoned = Отравлен
+Bleeding = Истекает кровью
+
+# Battle result
+Victory! = Победа!
+The enemy surrenders. = Враг сдаётся.
+The turns run out; the field is yours. = Ходы истекли; поле боя за вами.
+Defeat = Поражение
+Your army surrenders. = Ваша армия сдаётся.
+Your whole army has fallen. = Вся ваша армия пала.
+Victory over the enemy! = Победа над врагом!
+Defeat in battle! = Поражение в бою!
+Experience gained: {total} = Получено опыта: {total}
+Nobody breaks. You withdraw, {lost} fell; no experience without a victory. = Никто не дрогнул. Вы отступаете, павших: {lost}; без победы нет и опыта.
+Nobody breaks. You withdraw; no experience without a victory. = Никто не дрогнул. Вы отступаете; без победы нет и опыта.
+
+# Battle log
+-- Turn {round} -- = -- Ход {round} --
+{name} loses {loss} to poison = {name}: яд отнимает {loss} жизни
+{name} regenerates +{change} = {name}: регенерация +{change}
+Your rear steps forward = Ваш задний ряд выходит вперёд
+Your reserve steps forward = Ваш резерв выходит вперёд
+The enemy rear steps forward = Задний ряд врага выходит вперёд
+The enemy reserve steps forward = Резерв врага выходит вперёд
+Your army surrenders = Ваша армия сдаётся
+The enemy surrenders = Враг сдаётся
+Turn {round} ends the battle = Ход {round} завершает битву
+{name} bleeds for {loss} = {name}: кровотечение, −{loss}
+{name} moves = {name}: перемещение
+{name} waits = {name}: ожидание
+{name} gives its life = {name}: жизнь отдана
+{name} strikes first for {dmg} = {name}: упреждающий удар, урон {dmg}
+{name} hits back for {dmg} = {name}: ответный удар, урон {dmg}
+{name} kills {tname} ({dealt}) = {name} сражает: {tname} ({dealt})
+{name} kills {tname} with a long strike ({dealt}) = {name} сражает длинным ударом: {tname} ({dealt})
+{name} hits {tname} for {dealt} = {name} бьёт: {tname}, урон {dealt}
+{name} hits {tname} with a long strike for {dealt} = {name} бьёт длинным ударом: {tname}, урон {dealt}
+{name} hits {tname} with magic for {dealt} = {name} поражает магией: {tname}, урон {dealt}
+{name} curses {tname}: {what} = {name} проклинает: {tname} ({what})
+{name} kills {tname} with magic = {name} сражает магией: {tname}
+{name} heals {tname} +{healed} = {name} исцеляет: {tname}, +{healed}
+{name} blesses {tname}: {what} = {name} благословляет: {tname} ({what})
+{name} finishes {tname} = {name} добивает: {tname}
+{name} is spared by fate = {name}: судьба хранит от гибели
+{name} dies by {caster}'s curse = {name}: гибель от проклятия ({caster})
+
+# Actions
+strike = удар
+long strike = длинный удар
+shoot = выстрел
+magic strike = магический удар
+curse = проклятие
+heal = исцеление
+bless = благословение
+
+# Unit panel: traits (used when the install has no text for them)
+Long weapon: triple melee defence on the first turn of a battle = Длинное оружие: тройная защита от ударов в первый ход битвы
+Fast attack: +1 action on the first turn of a battle = Стремительная атака: +1 действие в первый ход битвы
+Piercing blow: ignores the enemy's defence (not a building's) = Пробивающий удар: не замечает защиты врага (кроме защиты зданий)
+Healer: the army heals 15% of its wounds every day = Лекарь: армия ежедневно залечивает 15% ран
+Expert trader: +50% when selling, -30% when buying = Опытный торговец: +50% при продаже, −30% при покупке
+Death's curse: whoever kills this unit dies too = Проклятие смерти: убивший этого воина гибнет и сам
+Wrath of God: +10 damage past any defence = Гнев Божий: +10 урона сквозь любую защиту
+Anger of God: +20 damage past any defence = Ярость Божья: +20 урона сквозь любую защиту
+Invulnerable: loses only 1 hit per blow = Неуязвимость: теряет лишь 1 жизнь от удара
+Dark gift: ignores armour and absorbs 30% of a blow = Тёмный дар: пробивает доспех и забирает 30% удара
+Dark art: ignores armour, absorbs 30%, +1 action on the first turn = Тёмное искусство: пробивает доспех, забирает 30%, +1 действие в первый ход
+Evasive: only 70% of physical damage gets through = Увёртливость: проходит лишь 70% физического урона
+Ghost: immune to weapons; its killer dies = Призрак: неуязвим для оружия; убивший его гибнет
+Barrage: always acts first and ignores defence = Обстрел: всегда действует первым и не замечает защиты
+Garrison: double strength inside a castle or fort = Гарнизон: вдвое сильнее в замке или крепости
+Quartermaster: the army's wages are 30% lower = Интендант: жалованье армии на 30% меньше
+Poisoned weapon: the target loses 15% of its life each turn = Отравленное оружие: цель теряет 15% жизни каждый ход
+Undead: arrows do 70% less damage = Нежить: стрелы наносят на 70% меньше урона
+Fast undead: arrows do 70% less, +1 action on the first turn = Быстрая нежить: стрелы наносят на 70% меньше, +1 действие в первый ход
+Counterblow: strikes back when struck = Контрудар: отвечает ударом на удар
+Flank strike: double attack through an empty cell = Удар с фланга: двойная атака через пустую клетку
+The army of this hero takes 10% less damage from enemy attacks (magic excepted). = Армия этого героя получает на 10% меньше урона от вражеских атак (кроме магии).
+The Archmage casts spells twice as fast for 50% less mana, but his army gets no bonuses. = Архимаг творит заклинания вдвое быстрее и тратит вдвое меньше маны, но его армия не получает преимуществ.
+The army of this hero travels 20% faster, and the wounded heal 20% of their hits every day. = Армия этого героя движется на 20% быстрее, а раненые ежедневно восстанавливают 20% жизни.
+In the second row the unit gets a bonus to its ranged defence! = Во втором ряду воин получает прибавку к защите от выстрелов!
+In its own building the unit gets a bonus to all defences! = В своём здании воин получает прибавку ко всем защитам!
+
+# Unit panel: stat list
+Adds to attack/defence = Прибавка к атаке/защите
+Adds to initiative = Прибавка к инициативе
+Hastens (+ actions) = Ускоряет (+ действия)
+Lowers attack/defence = Снижает атаку/защиту
+Lowers initiative = Снижает инициативу
+Slows (- actions) = Замедляет (− действия)
+Hits = Жизнь
+Melee attack = Удар
+Ranged attack = Выстрел
+Melee defence = Защита от ударов
+Ranged defence = Защита от выстрелов
+Magic strike (- hits) = Магический удар (− жизнь)
+Heals (+ hits) = Исцеляет (+ жизнь)
+Life magic protection = Защита от магии Жизни
+Elemental magic protection = Защита от магии Стихий
+Death magic protection = Защита от магии Смерти
+Regeneration = Регенерация
+Vampirism = Вампиризм
+Daily wage = Жалованье в день
+Level {level} = Уровень {level}
+XP {xp} / {need} = Опыт {xp} / {need}
+
+# Card strip under a portrait
+A: {v} = Ат: {v}
+S: {v} = Выс: {v}
+Pwr: {power} = Сила: {power}
+D: {blow}/{shot} = Защ: {blow}/{shot}
+Mnvr: {mn} = Дей: {mn}
+Ini: {ini} = Ин: {ini}
+Hits: {hp}/{max} = Жизнь: {hp}/{max}
+Hits: {max} = Жизнь: {max}
+
+# Hero and army screen
+hits = жизнь
+melee = удар
+melee def. = защ. от ударов
+ranged = выстрел
+ranged def. = защ. от выстрелов
+magic = магия
+initiative = инициатива
+actions = действия
+life prot. = защ. Жизнь
+death prot. = защ. Смерть
+elem. prot. = защ. Стихии
+regen = регенерация
+vampirism = вампиризм
+nothing = ничего
+{level}   next level in {left} XP = {level}   до уровня: {left} опыта
+Per level: {gains} = За уровень: {gains}
+Hits {hp}/{max}   {attack} = Жизнь {hp}/{max}   {attack}
+Defence {blow} melee / {shot} ranged = Защита: {blow} от ударов / {shot} от выстрелов
+Initiative {ini}   Actions {actions} = Инициатива {ini}   Действия {actions}
+Magic prot. life {life}% / elem. {elem}% / death {death}% = Защита от магии: Жизнь {life}% / Стихии {elem}% / Смерть {death}%
+regen {v}% = регенерация {v}%
+vampirism {v}% = вампиризм {v}%
+Daily wage {wage} gold = Жалованье в день: {wage} золота
+No free slot. = Нет свободной ячейки.
+Already wears an item of that type. = Предмет такого рода уже надет.
+Only one weapon or staff at a time. = Можно держать лишь одно оружие или посох.
+This unit cannot use that (warrior, shooter or mage only). = Этому воину это не подходит (только для воина, стрелка или мага).
+That cannot be worn. = Это нельзя надеть.
+The dead hold nothing. = Мёртвым ничего не нужно.
+That is not a potion. = Это не зелье.
+The pack is full. = Рюкзак полон.
+Lv {level} = Ур. {level}
+{name} is now a {class} (level 1, XP 0). = {name} теперь — {class} (уровень 1, опыт 0).
+Not possible. = Невозможно.
+The hero rises by levels only. = Герой растёт только в уровнях.
+The final class: it improves by levels only. = Высшая ступень: дальше только рост в уровнях.
+Click a lit class to promote (free; back to level 1). = Щёлкните по светящейся ступени для повышения (бесплатно; уровень снова 1).
+Not enough experience to promote yet. = Для повышения пока мало опыта.
+The hero's characteristics and army = Характеристики героя и армия
+Until the next battle: {names} = До следующего боя: {names}
+Dead = Мёртв
+Unpaid: refuses to fight = Без жалованья: отказывается сражаться
+Backpack {n}/{max} = Рюкзак {n}/{max}
+Upgrade tree = Древо развития
+{name} drinks it: +{healed} hits. = {name} выпивает зелье: +{healed} жизни.
+{name} drinks it. The effect lasts until the next battle ends. = {name} выпивает зелье. Действие продлится до конца следующего боя.
+Item description = Описание предмета
+Hover an item to read about it. Click a pack item to wear or drink it, a worn one to take it off. = Наведите на предмет, чтобы прочесть о нём. Щелчок по предмету в рюкзаке надевает или выпивает его, по надетому — снимает.
+Dismiss = Распустить
+Bury = Похоронить
+{name} leaves your army. = {name} покидает вашу армию.
+{name} is laid to rest. = Павший предан земле: {name}.
+The hero leads the army. = Герой ведёт армию.
+Click a unit to select it; Esc returns = Щёлкните воина, чтобы выбрать его; Esc — назад
+
+# Item types and stats in descriptions
+melee weapon = оружие ближнего боя
+ranged weapon = стрелковое оружие
+staff = посох
+armour = доспех
+helm = шлем
+shield = щит
+ring = кольцо
+amulet = амулет
+potion = зелье
+trade goods = товар
+attack = атака
+defence = защита
+shot = выстрел
+shot defence = защ. от выстрелов
+regen % = регенерация %
+vampirism % = вампиризм %
+heals {v} = лечит {v}
+
+# Unit bonuses, short
+Long weapon = Длинное оружие
+Fast attack = Стремительная атака
+Piercing blow = Пробивающий удар
+Healer = Лекарь
+Expert trader = Опытный торговец
+Death's curse = Проклятие смерти
+Wrath of God = Гнев Божий
+Anger of God = Ярость Божья
+Invulnerable = Неуязвимость
+Dark gift = Тёмный дар
+Dark art = Тёмное искусство
+Evasive = Увёртливость
+Ghost = Призрак
+Barrage = Обстрел
+Garrison = Гарнизон
+Quartermaster = Интендант
+Poisoned weapon = Отравленное оружие
+Undead = Нежить
+Fast undead = Быстрая нежить
+Counterblow = Контрудар
+Flank strike = Удар с фланга
+
+# Unit roles
+warrior = воин
+shooter = стрелок
+mage = маг
+civilian = мирный

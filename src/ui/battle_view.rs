@@ -15,6 +15,7 @@ use std::f32::consts::PI;
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::{ActionKind, Battle, EndReason, Fighter, Hit, Outcome, Preview, Step, Team, XpAward};
 use razdor::rules::content::{HeroClass, ItemId, MagicSchool, Stat};
 use razdor::rules::formation::{Row, Slot};
@@ -136,26 +137,28 @@ fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
 
 /// "Click to curse X" and the effect below it, as the original's hover box.
 fn preview_lines(p: Preview, kind: ActionKind, name: &str, hp: i32) -> (String, String) {
-    let verb = match kind {
-        ActionKind::Melee | ActionKind::LongStrike | ActionKind::Shot | ActionKind::Strike => "attack",
-        ActionKind::Curse => "curse",
-        ActionKind::Heal => "heal",
-        ActionKind::Bless => "bless",
+    let head = match kind {
+        ActionKind::Melee | ActionKind::LongStrike | ActionKind::Shot | ActionKind::Strike => {
+            razdor::trf!("Click to attack \"{name}\"", name)
+        }
+        ActionKind::Curse => razdor::trf!("Click to curse \"{name}\"", name),
+        ActionKind::Heal => razdor::trf!("Click to heal \"{name}\"", name),
+        ActionKind::Bless => razdor::trf!("Click to bless \"{name}\"", name),
     };
-    let head = format!("Click to {verb} \"{name}\"");
     let effect = match p {
-        Preview::Damage(d) if d >= hp => format!("Damage -{d} hits (kills)"),
-        Preview::Damage(d) if kind == ActionKind::LongStrike => format!("Long strike: damage -{d} hits"),
-        Preview::Damage(d) => format!("Damage -{d} hits"),
-        Preview::Heal(h) => format!("Heals +{h} hits"),
+        Preview::Damage(d) if d >= hp => razdor::trf!("Damage -{d} hits (kills)", d),
+        Preview::Damage(d) if kind == ActionKind::LongStrike => razdor::trf!("Long strike: damage -{d} hits", d),
+        Preview::Damage(d) => razdor::trf!("Damage -{d} hits", d),
+        Preview::Heal(h) => razdor::trf!("Heals +{h} hits", h),
         Preview::Buff(b) => {
-            let parts: Vec<String> = [("Attack", b.attack), ("Defence", b.defence), ("Initiative", b.initiative), ("Actions", b.actions)]
-                .iter()
-                .filter(|(_, v)| *v != 0)
-                .map(|(n, v)| format!("{n}: {v:+}"))
-                .collect();
+            let parts: Vec<String> =
+                [(tr("Attack"), b.attack), (tr("Defence"), b.defence), (tr("Initiative"), b.initiative), (tr("Actions"), b.actions)]
+                    .iter()
+                    .filter(|(_, v)| *v != 0)
+                    .map(|(n, v)| format!("{n}: {v:+}"))
+                    .collect();
             if parts.is_empty() {
-                "No effect".to_string()
+                tr("No effect").to_string()
             } else {
                 parts.join("  ")
             }
@@ -202,8 +205,8 @@ fn battle_title(game: &Game) -> String {
         None => None,
     }
     .filter(|n| !n.trim().is_empty())
-    .unwrap_or_else(|| "the enemy".to_string());
-    format!("Battle: the army of hero {} against {}!", game.hero_name(), enemy.trim())
+    .unwrap_or_else(|| tr("the enemy").to_string());
+    razdor::trf!("Battle: the army of hero {hero} against {enemy}!", hero = game.hero_name(), enemy = enemy.trim())
 }
 
 impl BattleView {
@@ -308,14 +311,14 @@ impl BattleView {
 
         if self.battle.is_deploying() {
             let r = Rect::new(l.strip.x + l.strip.w - 118.0 * l.k, l.strip.y - 3.0 * l.k, 112.0 * l.k, l.strip.h + 6.0 * l.k);
-            if button(r.x, r.y, r.w, r.h, "Fight!", true) {
+            if button(r.x, r.y, r.w, r.h, tr("Fight!"), true) {
                 self.selected = None;
                 self.battle.begin();
             }
         }
         // Quick battle: on the deploy screen, or to finish a battle under way.
         if !over && self.battle.outcome() == Outcome::Ongoing {
-            let label = if self.battle.is_deploying() { "Quick battle (Q)" } else { "Finish automatically (Q)" };
+            let label = if self.battle.is_deploying() { tr("Quick battle (Q)") } else { tr("Finish automatically (Q)") };
             let q = l.quick;
             if button(q.x, q.y, q.w, q.h, label, self.fx.is_none()) {
                 self.quick_battle();
@@ -434,7 +437,7 @@ impl BattleView {
         if !b.is_deploying() {
             let limit = b.content().options.battle_end_turn;
             let size = (11.0 * k).round();
-            shadow_right(&format!("Turn {}/{limit}", b.round), l.strip.x + l.strip.w - 6.0 * k, l.strip.y + l.strip.h * 0.5 + size * 0.36, size, GOLD);
+            shadow_right(&razdor::trf!("Turn {round}/{limit}", round = b.round, limit), l.strip.x + l.strip.w - 6.0 * k, l.strip.y + l.strip.h * 0.5 + size * 0.36, size, GOLD);
         }
 
         // Cards: the order of the next units after the active one, as small numbers.
@@ -479,11 +482,11 @@ impl BattleView {
                 let sq = l.portrait(l.cell_pos(f.team, f.slot));
                 let y = sq.y + sq.h * 0.38;
                 draw_rectangle(sq.x + 4.0 * k, y, sq.w - 8.0 * k, 20.0 * k, Color::new(0.0, 0.12, 0.16, 0.8));
-                shadow_centered(&format!("XP +{}", a.xp), sq.x + sq.w / 2.0, y + 15.0 * k, (15.0 * k).round(), XP_COLOR);
+                shadow_centered(&razdor::trf!("XP +{xp}", xp = a.xp), sq.x + sq.w / 2.0, y + 15.0 * k, (15.0 * k).round(), XP_COLOR);
                 if self.levels_gained(a) > 0 {
                     let y = y + 22.0 * k;
                     draw_rectangle(sq.x + 4.0 * k, y, sq.w - 8.0 * k, 18.0 * k, Color::new(0.3, 0.22, 0.02, 0.85));
-                    shadow_centered("Level up!", sq.x + sq.w / 2.0, y + 14.0 * k, (13.0 * k).round(), GOLD);
+                    shadow_centered(tr("Level up!"), sq.x + sq.w / 2.0, y + 14.0 * k, (13.0 * k).round(), GOLD);
                 }
             }
         }
@@ -502,10 +505,10 @@ impl BattleView {
     fn strip_text(&self, player_turn: bool, targets: &[usize], moves: &[Slot]) -> (String, Color) {
         let b = &self.battle;
         if b.is_deploying() {
-            return ("Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle".into(), GOLD);
+            return (tr("Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle").into(), GOLD);
         }
         if b.outcome() != Outcome::Ongoing {
-            return ("The battle is over".into(), GOLD);
+            return (tr("The battle is over").into(), GOLD);
         }
         if let Some((line, _)) = &self.news {
             if !player_turn || self.fx.is_some() {
@@ -514,13 +517,13 @@ impl BattleView {
         }
         if player_turn {
             let hint = match (targets.is_empty(), moves.is_empty()) {
-                (false, _) => "Click a framed card to act, your own to pass one action; SPACE ends the turn",
-                (true, false) => "Nothing in reach: step to a lit cell, or press SPACE",
-                (true, true) => "Nothing to do: press SPACE to end the turn",
+                (false, _) => tr("Click a framed card to act, your own to pass one action; SPACE ends the turn"),
+                (true, false) => tr("Nothing in reach: step to a lit cell, or press SPACE"),
+                (true, true) => tr("Nothing to do: press SPACE to end the turn"),
             };
             return (hint.into(), Color::new(1.0, 0.55, 0.25, 1.0));
         }
-        ("The enemy moves...".into(), Color::new(1.0, 0.55, 0.25, 1.0))
+        (tr("The enemy moves...").into(), Color::new(1.0, 0.55, 0.25, 1.0))
     }
 
     /// XP needed for fighter `f`'s next level, as the battle began.
@@ -587,7 +590,7 @@ impl BattleView {
         let fighting = !self.battle.is_deploying() && self.battle.outcome() == Outcome::Ongoing;
         if fighting && f.alive() && f.slot.row != Row::Reserve && self.battle.helpless(id) {
             draw_rectangle(sq.x, sq.y + sq.h - 16.0 * k, sq.w, 15.0 * k, Color::new(0.0, 0.0, 0.0, 0.5));
-            shadow_centered("can't reach", sq.x + sq.w / 2.0, sq.y + sq.h - 4.0 * k, (11.0 * k).round(), Color::new(0.8, 0.8, 0.75, 1.0));
+            shadow_centered(tr("can't reach"), sq.x + sq.w / 2.0, sq.y + sq.h - 4.0 * k, (11.0 * k).round(), Color::new(0.8, 0.8, 0.75, 1.0));
         }
         if let Some((c, strong)) = frame {
             chrome::glow_frame(sq, c, strong);
@@ -605,9 +608,9 @@ impl BattleView {
         let drawn = chrome::effect(art, centre, sq.w * size, k, WHITE);
         let (flash, label, color) = match hit.kind {
             ActionKind::Heal => (Color::new(0.2, 1.0, 0.3, 0.4 * (1.0 - k)), format!("+{}", hit.amount), GREEN),
-            ActionKind::Bless => (Color::new(0.4, 0.7, 1.0, 0.4 * (1.0 - k)), "blessed".into(), BLUE_TEXT),
-            ActionKind::Curse => (Color::new(0.7, 0.2, 0.9, 0.4 * (1.0 - k)), "cursed".into(), PURPLE),
-            ActionKind::LongStrike => (Color::new(1.0, 0.1, 0.1, 0.45 * (1.0 - k)), format!("-{} long!", hit.amount), WHITE),
+            ActionKind::Bless => (Color::new(0.4, 0.7, 1.0, 0.4 * (1.0 - k)), tr("blessed").into(), BLUE_TEXT),
+            ActionKind::Curse => (Color::new(0.7, 0.2, 0.9, 0.4 * (1.0 - k)), tr("cursed").into(), PURPLE),
+            ActionKind::LongStrike => (Color::new(1.0, 0.1, 0.1, 0.45 * (1.0 - k)), razdor::trf!("-{amount} long!", amount = hit.amount), WHITE),
             ActionKind::Strike => (Color::new(1.0, 0.5, 0.1, 0.45 * (1.0 - k)), format!("-{}", hit.amount), ORANGE),
             _ => (Color::new(1.0, 0.1, 0.1, 0.45 * (1.0 - k)), format!("-{}", hit.amount), WHITE),
         };
@@ -619,7 +622,7 @@ impl BattleView {
         if let Some(c) = hit.counter {
             let a = &self.battle.fighters[fx.actor];
             let q = l.portrait(l.cell_pos(a.team, a.slot));
-            shadow_centered(&format!("-{c} counter"), q.x + q.w / 2.0, q.y + q.h * 0.45 - 26.0 * l.k * k, (18.0 * l.k).round(), RED);
+            shadow_centered(&razdor::trf!("-{c} counter", c), q.x + q.w / 2.0, q.y + q.h * 0.45 - 26.0 * l.k * k, (18.0 * l.k).round(), RED);
         }
     }
 
@@ -635,14 +638,14 @@ impl BattleView {
                     let c = if kind.is_hostile() { Color::new(0.75, 0.05, 0.02, 1.0) } else { Color::new(0.05, 0.25, 0.75, 1.0) };
                     (h, Some(e), c)
                 }
-                None if t == active => (format!("Click (or press SPACE) to pass one action of \"{}\"", b.fighters[t].name), None, BLACK),
+                None if t == active => (razdor::trf!("Click (or press SPACE) to pass one action of \"{name}\"", name = b.fighters[t].name), None, BLACK),
                 None => return,
             }
         } else if let Some((Team::Player, slot)) = self.cell_under_mouse(l) {
             if !b.moves(active).contains(&slot) {
                 return;
             }
-            (format!("Click to move \"{}\" here", b.fighters[active].name), None, BLACK)
+            (razdor::trf!("Click to move \"{name}\" here", name = b.fighters[active].name), None, BLACK)
         } else {
             return;
         };
@@ -672,16 +675,16 @@ impl BattleView {
         };
         let mut status = Vec::new();
         if b.active() == Some(id) && !b.is_deploying() {
-            status.push((format!("Acting: {} of {} actions left", b.actions_left(), f.stats[Stat::Manevres].max(b.actions_left())), Color::new(0.5, 1.0, 0.5, 1.0)));
+            status.push((razdor::trf!("Acting: {left} of {total} actions left", left = b.actions_left(), total = f.stats[Stat::Manevres].max(b.actions_left())), Color::new(0.5, 1.0, 0.5, 1.0)));
         }
         if !f.mods.is_empty() {
-            status.push((format!("This turn: {}", f.mods.describe()), BLUE_TEXT));
+            status.push((razdor::trf!("This turn: {mods}", mods = f.mods.describe()), BLUE_TEXT));
         }
         if f.poisoned() {
-            status.push(("Poisoned".into(), Color::new(0.5, 1.0, 0.4, 1.0)));
+            status.push((tr("Poisoned").into(), Color::new(0.5, 1.0, 0.4, 1.0)));
         }
         if f.bleed > 0 {
-            status.push(("Bleeding".into(), RED_TEXT));
+            status.push((tr("Bleeding").into(), RED_TEXT));
         }
         let hero = f.is_hero.then(|| HeroClass::ALL.into_iter().find(|h| h.unit() == f.unit)).flatten();
         let sheet = Sheet {
@@ -710,27 +713,27 @@ impl BattleView {
         let k = l.k;
         let r = Rect::new(l.panel.x + 8.0 * k, l.panel.y + 150.0 * k, l.panel.w - 16.0 * k, 200.0 * k);
         let (title, sub, color) = match (outcome, self.battle.end_reason()) {
-            (Outcome::Victory, Some(EndReason::Surrender(_))) => ("Victory!", "The enemy surrenders.", GOLD),
-            (Outcome::Victory, Some(EndReason::TurnLimit)) => ("Victory!", "The turns run out; the field is yours.", GOLD),
-            (Outcome::Victory, _) => ("Victory!", "", GOLD),
-            (_, Some(EndReason::Surrender(_))) => ("Defeat", "Your army surrenders.", RED_TEXT),
-            _ => ("Defeat", "Your whole army has fallen.", RED_TEXT),
+            (Outcome::Victory, Some(EndReason::Surrender(_))) => (tr("Victory!"), tr("The enemy surrenders."), GOLD),
+            (Outcome::Victory, Some(EndReason::TurnLimit)) => (tr("Victory!"), tr("The turns run out; the field is yours."), GOLD),
+            (Outcome::Victory, _) => (tr("Victory!"), "", GOLD),
+            (_, Some(EndReason::Surrender(_))) => (tr("Defeat"), tr("Your army surrenders."), RED_TEXT),
+            _ => (tr("Defeat"), tr("Your whole army has fallen."), RED_TEXT),
         };
-        let (inner, _) = chrome::window(r, if outcome == Outcome::Victory { "Victory over the enemy!" } else { "Defeat in battle!" }, Skin::Marble, false);
+        let window_title = if outcome == Outcome::Victory { tr("Victory over the enemy!") } else { tr("Defeat in battle!") };
+        let (inner, _) = chrome::window(r, window_title, Skin::Marble, false);
         shadow_centered(title, inner.x + inner.w / 2.0, inner.y + 40.0 * k, (32.0 * k).round(), color);
         for (i, line) in wrap(sub, inner.w - 16.0 * k, (13.0 * k).round()).iter().enumerate() {
             shadow_centered(line, inner.x + inner.w / 2.0, inner.y + 64.0 * k + i as f32 * 15.0 * k, (13.0 * k).round(), CREAM);
         }
         let total: i32 = self.xp.iter().flatten().map(|a| a.xp).sum();
         if total > 0 {
-            shadow_centered(&format!("Experience gained: {total}"), inner.x + inner.w / 2.0, inner.y + 100.0 * k, (14.0 * k).round(), XP_COLOR);
+            shadow_centered(&razdor::trf!("Experience gained: {total}", total), inner.x + inner.w / 2.0, inner.y + 100.0 * k, (14.0 * k).round(), XP_COLOR);
         }
         let (bw, bh) = (120.0 * k, 30.0 * k);
         let pressed = button(inner.x + (inner.w - bw) / 2.0, inner.y + inner.h - bh - 10.0 * k, bw, bh, "OK", true) || key(KeyCode::Enter);
         if !pressed {
             return None;
         }
-        let losses = |lost: usize| if lost > 0 { format!(", {lost} fell") } else { String::new() };
         let result = game.resolve_battle(&self.battle);
         if let BattleResult::Victory { level_ups, .. } = &result {
             if !level_ups.is_empty() {
@@ -746,7 +749,11 @@ impl BattleView {
                 Some(Screen::WorldMap)
             }
             BattleResult::Withdrew { lost } => {
-                *message = Some(format!("Nobody breaks. You withdraw{}; no experience without a victory.", losses(lost)));
+                *message = Some(if lost > 0 {
+                    razdor::trf!("Nobody breaks. You withdraw, {lost} fell; no experience without a victory.", lost)
+                } else {
+                    tr("Nobody breaks. You withdraw; no experience without a victory.").to_string()
+                });
                 Some(Screen::WorldMap)
             }
         }

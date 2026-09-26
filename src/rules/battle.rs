@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use crate::i18n::tr;
 use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, SpellDef, Stat, UnitId};
 use super::experience::{self, Role, SideUnit};
 use super::formation::{Formation, Row, Slot};
@@ -137,13 +138,13 @@ impl ActionKind {
 
     pub fn label(self) -> &'static str {
         match self {
-            ActionKind::Melee => "strike",
-            ActionKind::LongStrike => "long strike",
-            ActionKind::Shot => "shoot",
-            ActionKind::Strike => "magic strike",
-            ActionKind::Curse => "curse",
-            ActionKind::Heal => "heal",
-            ActionKind::Bless => "bless",
+            ActionKind::Melee => tr("strike"),
+            ActionKind::LongStrike => tr("long strike"),
+            ActionKind::Shot => tr("shoot"),
+            ActionKind::Strike => tr("magic strike"),
+            ActionKind::Curse => tr("curse"),
+            ActionKind::Heal => tr("heal"),
+            ActionKind::Bless => tr("bless"),
         }
     }
 }
@@ -169,10 +170,10 @@ impl Buff {
     /// "Attack -3, Defence -5".
     pub fn describe(&self) -> String {
         let parts: Vec<String> = [
-            ("Attack", self.attack),
-            ("Defence", self.defence),
-            ("Initiative", self.initiative),
-            ("Actions", self.actions),
+            (tr("Attack"), self.attack),
+            (tr("Defence"), self.defence),
+            (tr("Initiative"), self.initiative),
+            (tr("Actions"), self.actions),
         ]
         .iter()
         .filter(|(_, v)| *v != 0)
@@ -796,7 +797,7 @@ impl Battle {
         self.threshold = if round == 1 { TURN_ONE_THRESHOLD } else { self.first_threshold };
         self.first_threshold = 0;
         self.cursor = (0, 0);
-        self.log.push(format!("-- Turn {round} --"));
+        self.log.push(crate::trf!("-- Turn {round} --", round));
         for f in self.fighters.iter_mut().filter(|f| f.alive()) {
             f.mods = Buff::default();
             f.blessed = false;
@@ -854,13 +855,13 @@ impl Battle {
         f.hp = new;
         if change < 0 {
             f.lost -= change;
-            let msg = format!("{} loses {} to poison", f.name, -change);
+            let msg = crate::trf!("{name} loses {loss} to poison", name = f.name, loss = -change);
             self.log.push(msg);
             if !self.fighters[i].alive() {
                 self.died(i);
             }
         } else {
-            let msg = format!("{} regenerates +{change}", f.name);
+            let msg = crate::trf!("{name} regenerates +{change}", name = f.name, change);
             self.log.push(msg);
         }
     }
@@ -1009,9 +1010,13 @@ impl Battle {
             moved = true;
         }
         if moved {
-            let side = if team == Team::Player { "Your" } else { "The enemy" };
-            let what = if back { "rear" } else { "reserve" };
-            self.log.push(format!("{side} {what} steps forward"));
+            let msg = match (team == Team::Player, back) {
+                (true, true) => tr("Your rear steps forward"),
+                (true, false) => tr("Your reserve steps forward"),
+                (false, true) => tr("The enemy rear steps forward"),
+                (false, false) => tr("The enemy reserve steps forward"),
+            };
+            self.log.push(msg.to_string());
         }
     }
 
@@ -1039,14 +1044,14 @@ impl Battle {
                 f.hp = 0;
             }
             self.surrender_mana[team.other().index()] += mana;
-            let side = if team == Team::Player { "Your army" } else { "The enemy" };
-            self.log.push(format!("{side} surrenders"));
+            let msg = if team == Team::Player { tr("Your army surrenders") } else { tr("The enemy surrenders") };
+            self.log.push(msg.to_string());
         }
         if let Some(&team) = giving_up.first() {
             self.ended = Some(EndReason::Surrender(team));
         } else if limit {
             self.ended = Some(EndReason::TurnLimit);
-            self.log.push(format!("Turn {} ends the battle", self.round));
+            self.log.push(crate::trf!("Turn {round} ends the battle", round = self.round));
         }
     }
 
@@ -1379,7 +1384,7 @@ impl Battle {
             if loss > 0 {
                 f.hp -= loss;
                 f.lost += loss;
-                let msg = format!("{} bleeds for {loss}", f.name);
+                let msg = crate::trf!("{name} bleeds for {loss}", name = f.name, loss);
                 self.log.push(msg);
                 if !self.fighters[id].alive() {
                     self.died(id);
@@ -1414,7 +1419,7 @@ impl Battle {
                 f.reserve_move = false;
             }
             f.slot = to;
-            let msg = format!("{} moves", f.name);
+            let msg = crate::trf!("{name} moves", name = f.name);
             self.log.push(msg);
         }
         self.finish_action(id);
@@ -1432,7 +1437,7 @@ impl Battle {
     /// The active fighter passes all its remaining actions.
     pub fn skip(&mut self) {
         if let Some(id) = self.active() {
-            self.log.push(format!("{} waits", self.fighters[id].name));
+            self.log.push(crate::trf!("{name} waits", name = self.fighters[id].name));
             for _ in 0..self.fighters[id].actions {
                 if self.active() != Some(id) {
                     break;
@@ -1471,7 +1476,7 @@ impl Battle {
                 let f = &mut self.fighters[id];
                 f.lost += f.hp;
                 f.hp = 0;
-                let msg = format!("{} gives its life", f.name);
+                let msg = crate::trf!("{name} gives its life", name = f.name);
                 self.log.push(msg);
                 self.died(id);
             }
@@ -1498,7 +1503,7 @@ impl Battle {
         let dmg = self.physical_damage_at(target, id, answer, 100).min(self.fighters[id].hp);
         self.wound(id, dmg);
         hit.counter = Some(dmg);
-        self.log.push(format!("{} strikes first for {dmg}", self.fighters[target].name));
+        self.log.push(crate::trf!("{name} strikes first for {dmg}", name = self.fighters[target].name, dmg));
         !self.check_death(id, Some(target), false)
     }
 
@@ -1526,7 +1531,7 @@ impl Battle {
             let dmg = self.physical_damage_at(target, id, ActionKind::Melee, 100).min(self.fighters[id].hp);
             self.wound(id, dmg);
             hit.counter = Some(dmg);
-            self.log.push(format!("{} hits back for {dmg}", self.fighters[target].name));
+            self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
             self.check_death(id, Some(target), false);
         }
     }
@@ -1590,10 +1595,15 @@ impl Battle {
             self.refresh(id);
         }
         self.after_hit(id, target, raw);
-        let how = if kind == ActionKind::LongStrike { " with a long strike" } else { "" };
+        let long = kind == ActionKind::LongStrike;
         let killed = self.check_death(target, Some(id), true);
         let (name, tname) = (&self.fighters[id].name, &self.fighters[target].name);
-        let msg = if killed { format!("{name} kills {tname}{how} ({dealt})") } else { format!("{name} hits {tname}{how} for {dealt}") };
+        let msg = match (killed, long) {
+            (true, false) => crate::trf!("{name} kills {tname} ({dealt})", name, tname, dealt),
+            (true, true) => crate::trf!("{name} kills {tname} with a long strike ({dealt})", name, tname, dealt),
+            (false, false) => crate::trf!("{name} hits {tname} for {dealt}", name, tname, dealt),
+            (false, true) => crate::trf!("{name} hits {tname} with a long strike for {dealt}", name, tname, dealt),
+        };
         self.log.push(msg);
         (dealt, killed)
     }
@@ -1628,7 +1638,7 @@ impl Battle {
             let raw = self.strike_damage(id, target, p);
             dealt = raw.min(self.fighters[target].hp);
             self.wound(target, dealt);
-            self.log.push(format!("{name} hits {tname} with magic for {dealt}"));
+            self.log.push(crate::trf!("{name} hits {tname} with magic for {dealt}", name, tname, dealt));
             // Vampirism on magic: Death strikes only, not from undead or elementals.
             let vamp = self.fighters[id].stats[Stat::Vampirizm];
             if school == MagicSchool::Death && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
@@ -1639,7 +1649,7 @@ impl Battle {
             buff = self.curse_of(id, target, p);
             self.apply_buff(id, target, buff, false);
             self.fighters[target].cursed = true;
-            self.log.push(format!("{name} curses {tname}: {}", buff.describe()));
+            self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = buff.describe()));
             // An undead caster's Elemental or Death curse drains life to it.
             if self.fighters[id].base.nature == Nature::Undead && school != MagicSchool::Life {
                 let drain = (p / self.opt().curse_main_spell.max(1) / 2 + 1).min(self.fighters[target].hp);
@@ -1675,7 +1685,7 @@ impl Battle {
         self.after_hit(id, target, p);
         let killed = self.check_death(target, Some(id), true);
         if killed {
-            self.log.push(format!("{name} kills {tname} with magic"));
+            self.log.push(crate::trf!("{name} kills {tname} with magic", name, tname));
         }
         (dealt, buff, killed)
     }
@@ -1703,13 +1713,13 @@ impl Battle {
         if t.wounded() && heal > 0 {
             let healed = heal.min(t.max_hp() - t.hp);
             self.fighters[target].hp += healed;
-            self.log.push(format!("{name} heals {tname} +{healed}"));
+            self.log.push(crate::trf!("{name} heals {tname} +{healed}", name, tname, healed));
             return (healed, Buff::default());
         }
         let buff = self.bless_of(id, target, p);
         self.apply_buff(id, target, buff, true);
         self.fighters[target].blessed = true;
-        self.log.push(format!("{name} blesses {tname}: {}", buff.describe()));
+        self.log.push(crate::trf!("{name} blesses {tname}: {what}", name, tname, what = buff.describe()));
         (0, buff)
     }
 
@@ -1741,7 +1751,7 @@ impl Battle {
     /// block). `v` is the damage, or the spell's power for magic.
     fn after_hit(&mut self, id: usize, target: usize, v: i32) {
         let a = self.fighters[id].base.clone();
-        let finish = format!("{} finishes {}", self.fighters[id].name, self.fighters[target].name);
+        let finish = crate::trf!("{name} finishes {tname}", name = self.fighters[id].name, tname = self.fighters[target].name);
         let t = &mut self.fighters[target];
         if t.has(Bonus::Berserk) && t.alive() {
             t.mods.attack = berserk(t);
@@ -1803,7 +1813,7 @@ impl Battle {
             f.base[Stat::Hits] += f.base[Stat::Hits] * FATE_HP_PERCENT / 100;
             f.hp = f.base.max_hp();
             f.mods.initiative += FATE_INITIATIVE;
-            let msg = format!("{} is spared by fate", f.name);
+            let msg = crate::trf!("{name} is spared by fate", name = f.name);
             self.log.push(msg);
             self.refresh(i);
             return false;
@@ -1816,7 +1826,7 @@ impl Battle {
                 let kf = &mut self.fighters[k];
                 kf.lost += kf.hp;
                 kf.hp = 0;
-                let msg = format!("{} dies by {}'s curse", self.fighters[k].name, self.fighters[i].name);
+                let msg = crate::trf!("{name} dies by {caster}'s curse", name = self.fighters[k].name, caster = self.fighters[i].name);
                 self.log.push(msg);
                 self.died(k);
             }
