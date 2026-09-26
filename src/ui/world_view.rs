@@ -8,7 +8,9 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::Team;
+use razdor::trf;
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
 use razdor::rules::game::{Event, Foe, Game};
@@ -539,31 +541,31 @@ struct Tooltip {
 }
 
 fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
-    let title = if a.name.is_empty() { "Army".to_string() } else { a.name.clone() };
+    let title = if a.name.is_empty() { tr("Army").to_string() } else { a.name.clone() };
     let mut footer = Vec::new();
     if !a.leader_name.is_empty() {
-        footer.push(("Leader".to_string(), DIM));
+        footer.push((tr("Leader").to_string(), DIM));
         footer.push((a.leader_name.clone(), GREEN));
     }
-    let stance = if a.hostile() { ("Hostile: attacks on sight", RED) } else { ("Not hostile", DIM) };
+    let stance = if a.hostile() { (tr("Hostile: attacks on sight"), RED) } else { (tr("Not hostile"), DIM) };
     footer.push((stance.0.to_string(), stance.1));
     // World spells on it, and wounds they left.
     let now = game.clock.total_minutes() as u64;
     let spells: Vec<&str> = a.effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| game.spell(e.spell)).map(|s| s.name.as_str()).collect();
     if !spells.is_empty() {
-        footer.push((format!("Under spells: {}", spells.join(", ")), MANA));
+        footer.push((trf!("Under spells: {spells}", spells = spells.join(", ")), MANA));
     }
     let hurt: i32 = a.troops.iter().map(|t| t.hurt).sum();
     if hurt > 0 {
-        footer.push((format!("Wounded by magic: -{hurt} hits"), MANA));
+        footer.push((trf!("Wounded by magic: -{hurt} hits", hurt), MANA));
     }
     for line in wrap(&a.description, 330.0, 16.0).into_iter().take(4) {
         footer.push((line, INK));
     }
     let mut lines = Vec::new();
     if let (Some(lo), Some(hi)) = (a.troops.iter().map(|t| t.level).min(), a.troops.iter().map(|t| t.level).max()) {
-        let span = if lo == hi { format!("level {lo}") } else { format!("levels {lo}-{hi}") };
-        lines.push((format!("{} units, {span}", a.troops.len()), XP_COLOR));
+        let span = if lo == hi { trf!("level {lo}", lo) } else { trf!("levels {lo}-{hi}", lo, hi) };
+        lines.push((trf!("{n} units, {span}", n = a.troops.len(), span), XP_COLOR));
     }
     Tooltip { title, lines, troops: a.troops.clone(), team: if a.hostile() { Team::Enemy } else { Team::Player }, footer }
 }
@@ -572,20 +574,20 @@ fn location_tooltip(game: &Game, l: &Location) -> Tooltip {
     let title = if l.name.is_empty() { l.kind.label().to_string() } else { l.name.clone() };
     let mut lines = vec![(l.kind.label().to_string(), DIM)];
     if l.owned() {
-        lines.push(("Owner: you".to_string(), GREEN));
+        lines.push((tr("Owner: you").to_string(), GREEN));
     } else if !l.owner_name.is_empty() {
-        lines.push((format!("Owner: {}", l.owner_name), INK));
+        lines.push((trf!("Owner: {owner}", owner = l.owner_name), INK));
     }
     if l.hostile() {
-        lines.push(("Hostile".to_string(), RED));
+        lines.push((tr("Hostile").to_string(), RED));
     }
     match l.kind {
         LocationKind::Village if l.tribute_gold > 0 || l.tribute_mana > 0 => {
-            lines.push((format!("Tribute waiting: {} gold, {} mana", l.tribute_gold, l.tribute_mana), ACCENT))
+            lines.push((trf!("Tribute waiting: {gold} gold, {mana} mana", gold = l.tribute_gold, mana = l.tribute_mana), ACCENT))
         }
-        LocationKind::Village => lines.push(("(tribute already collected)".to_string(), rgb(240, 150, 60))),
+        LocationKind::Village => lines.push((tr("(tribute already collected)").to_string(), rgb(240, 150, 60))),
         _ if l.gold_income > 0 || l.mana_income > 0 => {
-            lines.push((format!("Income {} gold, {} mana a day", l.gold_income, l.mana_income), ACCENT))
+            lines.push((trf!("Income {gold} gold, {mana} mana a day", gold = l.gold_income, mana = l.mana_income), ACCENT))
         }
         _ => {}
     }
@@ -673,7 +675,7 @@ fn reopen_here(game: &Game, t: Tile) -> Option<Screen> {
 /// The location the party stands on: enter it, or attack its garrison.
 fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     let Some(l) = game.location else {
-        text(if game.aboard() { "At sea." } else { "On the road." }, x, y + 20.0, 20.0, DIM);
+        text(if game.aboard() { tr("At sea.") } else { tr("On the road.") }, x, y + 20.0, 20.0, DIM);
         return None;
     };
     let loc = &game.world.locations[l];
@@ -685,18 +687,18 @@ fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
     text(loc.kind.label(), x, y + 14.0, 16.0, DIM);
     y += 26.0;
     if loc.kind == LocationKind::Camp && loc.cleared {
-        text("Only ashes remain.", x, y + 14.0, 17.0, DIM);
+        text(tr("Only ashes remain."), x, y + 14.0, 17.0, DIM);
     } else if loc.defended() {
-        if button(x, y, 240.0, 44.0, "Attack the garrison", true) {
+        if button(x, y, 240.0, 44.0, tr("Attack the garrison"), true) {
             game.foe = Some(Foe::Garrison(l));
             return Some(saves::battle(game));
         }
     } else if let Some(first) = first_tab(loc) {
-        if button(x, y, 240.0, 44.0, "Enter", true) {
+        if button(x, y, 240.0, 44.0, tr("Enter"), true) {
             return Some(Screen::Building(BuildingView::new(first)));
         }
         if loc.kind == LocationKind::Village {
-            let status = if game.tribute_available().is_some() { "Tribute is waiting." } else { "Tribute already collected." };
+            let status = if game.tribute_available().is_some() { tr("Tribute is waiting.") } else { tr("Tribute already collected.") };
             text(status, x, y + 64.0, 16.0, DIM);
         }
     }
@@ -707,23 +709,23 @@ fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
         Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
         Event::Tribute { paid, mana, .. } => Some(match paid {
-            razdor::rules::game::Tribute::Gold(g) => format!("The village pays its tribute: {g} gold and {mana} mana."),
-            razdor::rules::game::Tribute::Item(item) => format!("The village pays with a {} and {mana} mana.", game.content.item(*item).name),
+            razdor::rules::game::Tribute::Gold(g) => trf!("The village pays its tribute: {g} gold and {mana} mana.", g, mana),
+            razdor::rules::game::Tribute::Item(item) => trf!("The village pays with a {item} and {mana} mana.", item = game.content.item(*item).name, mana),
         }),
-        Event::LevelUp(i, level) => game.squad.get(*i).map(|u| format!("{} reaches level {level}!", u.name(&game.content))),
+        Event::LevelUp(i, level) => game.squad.get(*i).map(|u| trf!("{name} reaches level {level}!", name = u.name(&game.content), level)),
         Event::Battle(news) => Some(news.text.clone()),
         Event::Arrived(l) => {
             let loc = &game.world.locations[*l];
-            game.foe.is_some().then(|| format!("{}: the garrison bars your way!", loc.name))
+            game.foe.is_some().then(|| trf!("{place}: the garrison bars your way!", place = loc.name))
         }
         Event::Encounter(i) => {
             let a = &game.world.armies[*i];
-            Some(if a.name.is_empty() { "An army attacks!".to_string() } else { format!("{} attacks!", a.name) })
+            Some(if a.name.is_empty() { tr("An army attacks!").to_string() } else { trf!("{name} attacks!", name = a.name) })
         }
         Event::Met(i) => {
             let a = &game.world.armies[*i];
-            let who = if a.name.is_empty() { "An army" } else { a.name.as_str() };
-            Some(format!("A meeting on the road: {who} lets you pass."))
+            let who = if a.name.is_empty() { tr("An army") } else { a.name.as_str() };
+            Some(trf!("A meeting on the road: {who} lets you pass.", who))
         }
     }
 }
@@ -860,7 +862,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
                 game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t)
             };
             if target != game.tile() && !game.set_destination(target) {
-                *message = Some("No way through.".into());
+                *message = Some(tr("No way through.").into());
             }
             view.preview = None;
             view.look = None;
@@ -929,22 +931,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         text(line, x + 15.0, panel_h - 150.0 + i as f32 * 18.0, 16.0, MANA);
     }
     if game.aboard() {
-        text("At sea: click the shore to land.", x + 15.0, panel_h - 100.0, 15.0, ACCENT);
+        text_fit(tr("At sea: click the shore to land."), x + 15.0, panel_h - 100.0, PANEL_W - 25.0, 15.0, ACCENT);
     } else if game.ship.is_some() {
-        text("Your ship waits; walk onto it to sail.", x + 15.0, panel_h - 100.0, 15.0, ACCENT);
+        text_fit(tr("Your ship waits; walk onto it to sail."), x + 15.0, panel_h - 100.0, PANEL_W - 25.0, 15.0, ACCENT);
     }
     // Waits play in real time, a 30-minute tick every 150 ms (`Game::tick`).
     let can_wait = game.foe.is_none() && !game.waiting();
     let wy = panel_h - 150.0 - 44.0;
-    if button(x + 15.0, wy, 115.0, 34.0, "Wait 1 h", can_wait) || (can_wait && key(KeyCode::Key1)) {
+    if button(x + 15.0, wy, 115.0, 34.0, tr("Wait 1 h"), can_wait) || (can_wait && key(KeyCode::Key1)) {
         game.begin_wait(1);
     }
-    if button(x + 140.0, wy, 115.0, 34.0, "Wait 4 h", can_wait) || (can_wait && key(KeyCode::Key4)) {
+    if button(x + 140.0, wy, 115.0, 34.0, tr("Wait 4 h"), can_wait) || (can_wait && key(KeyCode::Key4)) {
         game.begin_wait(4);
     }
-    let help = ["Click the map to travel; time passes", "only while you move or wait.", "Right click / Space: stop.", "Wheel or +/-: zoom. 1 / 4: wait."];
-    for (i, line) in help.iter().enumerate() {
-        text(line, x + 15.0, panel_h - 80.0 + i as f32 * 18.0, 15.0, DIM);
+    let help = tr("Click the map to travel; time passes only while you move or wait. Right click / Space: stop. Wheel or +/-: zoom. 1 / 4: wait.");
+    for (i, line) in wrap(help, PANEL_W - 25.0, 14.0).iter().take(5).enumerate() {
+        text(line, x + 15.0, panel_h - 82.0 + i as f32 * 16.0, 14.0, DIM);
     }
 
     let (bar, toggle_map) = bottom_bar(game, message, view.minimap);

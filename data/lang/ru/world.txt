@@ -1,2 +1,246 @@
 # Razdor interface in Russian: our own translation. "English = Russian", one per line;
 # \n is a line break, {name} a value filled in by the game. See src/i18n.rs.
+
+# Kinds of buildings (rules::world)
+Palace = Дворец
+Town = Город
+Village = Деревня
+Castle = Замок
+Fort = Крепость
+Tavern = Таверна
+Market = Рынок
+Church = Храм
+Smithy = Кузница
+Shipyard = Верфь
+Altar = Алтарь
+Dungeon entrance = Вход в подземелье
+Ruins = Руины
+Stone bridge = Каменный мост
+Wooden bridge = Деревянный мост
+Obelisk = Обелиск
+Bandit camp = Разбойничий лагерь
+
+# The demo kingdom (our own names)
+Demo kingdom = Демо-королевство
+Oakford = Дубравный Брод
+Greywall = Серостенье
+Millbrook = Мельничий Ручей
+Ashford = Ясенев Брод
+Saltmarsh = Солончаки
+St. Beor's church = Храм святого Беора
+Bandit lair = Разбойничье логово
+Bandit gang = Разбойничья шайка
+
+# Reports of the AI armies (rules::ai)
+An army = Армия
+{name} took {place}. = {name} захватывает: {place}.
+{winner} defeated {loser}. = {winner} побеждает: {loser}.
+{name} fell at the walls of {place}. = {name} терпит поражение при штурме: {place}.
+
+# World map: tooltips
+Army = Армия
+Leader = Предводитель
+Hostile: attacks on sight = Враждебна: нападает сразу
+Not hostile = Не враждебна
+Under spells: {spells} = Под заклинаниями: {spells}
+Wounded by magic: -{hurt} hits = Раны от магии: жизнь -{hurt}
+level {lo} = уровень {lo}
+levels {lo}-{hi} = уровни {lo}–{hi}
+{n} units, {span} = Воинов: {n}, {span}
+Owner: you = Владелец: вы
+Owner: {owner} = Владелец: {owner}
+Hostile = Враждебно
+Tribute waiting: {gold} gold, {mana} mana = Ждёт дань: золото {gold}, мана {mana}
+(tribute already collected) = (дань уже собрана)
+Income {gold} gold, {mana} mana a day = Доход в день: золото {gold}, мана {mana}
+
+# World map: side panel and notices
+At sea. = В море.
+On the road. = В пути.
+Only ashes remain. = Остались лишь пепелища.
+Attack the garrison = Атаковать гарнизон
+Enter = Войти
+Tribute is waiting. = Дань ждёт.
+Tribute already collected. = Дань уже собрана.
+The village pays its tribute: {g} gold and {mana} mana. = Деревня платит дань: золото {g}, мана {mana}.
+The village pays with a {item} and {mana} mana. = Деревня платит предметом «{item}» и маной: {mana}.
+{name} reaches level {level}! = {name}: достигнут уровень {level}!
+{place}: the garrison bars your way! = {place}: гарнизон преграждает путь!
+An army attacks! = На вас нападает армия!
+{name} attacks! = {name} нападает!
+A meeting on the road: {who} lets you pass. = Встреча в пути: {who} пропускает вас.
+No way through. = Пути нет.
+At sea: click the shore to land. = В море: щёлкните по берегу, чтобы высадиться.
+Your ship waits; walk onto it to sail. = Корабль ждёт: взойдите на него, чтобы отплыть.
+Wait 1 h = Ждать 1 ч
+Wait 4 h = Ждать 4 ч
+Click the map to travel; time passes only while you move or wait. Right click / Space: stop. Wheel or +/-: zoom. 1 / 4: wait. = Щёлкните по карте, чтобы идти; время идёт, лишь пока вы в пути или ждёте. Правый щелчок / Пробел: стоп. Колесо или +/-: масштаб. 1 / 4: ждать.
+
+# Spell book
+heals {h} hits = лечит: жизнь +{h}
+{h} hits = жизнь {h}
+hits {p}% at once = жизнь {p}% сразу
+max hits {p}% = макс. жизнь {p}%
+lifts life-draining curses = снимает проклятия, отнимающие жизнь
+no effect = без действия
+instant = мгновенно
+lasts {time} = действует {time}
+(base {base}) = (обычно {base})
+an enemy army = на вражескую армию
+your army = на свою армию
+Mana {mana} = Мана {mana}
+casting {time} = сотворение {time}
+{duration}, cast on {target} = {duration}, применяется {target}
+Life magic. = Магия Жизни.
+Elemental magic. = Магия Стихий.
+Death magic. = Магия Смерти.
+That spell is not in your book. = Этого заклинания нет в вашей книге.
+Not enough mana. = Недостаточно маны.
+That spell does not work on that target. = Это заклинание не действует на эту цель.
+The enemy is out of reach. = Враг слишком далеко.
+Not now: a battle is coming. = Не сейчас: близится бой.
+The hero's spell book = Книга заклинаний героя
+{mana} mana, {time} = Мана {mana}, {time}
+Your book is empty. Learn spells at a sanctuary. = Книга пуста. Заклинаниям учат в святилище.
+No enemy army in sight within {range} cells. = В пределах {range} клеток не видно вражеских армий.
+an army = армия
+Cast on {name} ({d} cells) = Применить: {name} (клеток: {d})
+Cast on your army = Применить на свою армию
+: {hits} hits = : жизнь {hits}
+, {killed} fell = , павших: {killed}
+. The army is no more. = . Армия уничтожена.
+An enemy fell on you while you were casting: the spell is lost. = Враг напал, пока вы творили заклинание: оно потеряно.
+The target got away before the spell was ready. = Цель ушла прежде, чем заклинание было готово.
+Not enough mana left when the spell was ready. = К концу сотворения не хватило маны.
+On your army: = На вашей армии:
+{name}: for good = {name}: навсегда
+{name}: {time} left = {name}: осталось {time}
+no spells = заклинаний нет
+Book {n}/{max}. Casting takes game time: armies move meanwhile. = Книга: {n}/{max}. Сотворение занимает игровое время: армии тем временем движутся.
+Close = Закрыть
+
+# Building window: tabs and messages
+Main hall = Главный зал
+Barracks = Казармы
+Garrison = Гарнизон
+Sanctuary = Святилище
+Tribute = Дань
+Ships = Корабли
+Exit = Выход
+Not offered here. = Здесь этого не предлагают.
+You cannot afford it. = Вам это не по карману.
+Not wounded. = Не ранен.
+Alive and well. = Жив и здоров.
+Too late: the body can only be buried. = Поздно: тело остаётся лишь похоронить.
+The dead cannot stand guard. = Мёртвые не несут стражу.
+Your army is full. = Ваша армия полна.
+The garrison is full. = Гарнизон полон.
+The hero stays with his army. = Герой остаётся со своей армией.
+Already in your book. = Уже есть в вашей книге.
+No room in the book. = В книге нет места.
+The pack is full. = Рюкзак полон.
+Nobody there. = Там никого нет.
+There is no market here. = Здесь нет рынка.
+Not enough gold. = Недостаточно золота.
+Nothing there. = Там ничего нет.
+A personal item: it cannot be sold. = Личная вещь: продать нельзя.
+{mana} mana = мана {mana}
+Gold = Золото
+Mana = Мана
+Army wages = Жалованье армии
+Income = Доход
+Lv {level} = Ур. {level}
+
+# Building window: main hall
+Quests and rumours: = Задания и слухи:
+Hear rumour = Выслушать слух
+Nothing is on offer here. = Здесь ничего не предлагают.
+No quests in the demo. = В демо нет заданий.
+rumour = слух
+in your journal = в журнале
+done = выполнено
+
+# Building window: barracks
+No recruits here. = Здесь некого нанять.
+Per level: {gains} = За уровень: {gains}
+Daily wage {wage} = Жалованье в день: {wage}
+Hire = Нанять
+{name} joins your army. = {name}: теперь в вашей армии.
+Price: {price} = Цена: {price}
+{n} of {max} left = Осталось {n} из {max}
+always = всегда
+Heal = Лечить
+Raise = Воскресить
+to be buried = к погребению
+{name} rises again. = {name}: воскрешён.
+{name} is healed. = {name}: исцелён.
+Healing and raising the dead are paid at once. = Лечение и воскрешение оплачиваются сразу.
+Healing is paid at once. The dead are raised in towns and churches. = Лечение оплачивается сразу. Мёртвых воскрешают в городах и храмах.
+No healing here. = Здесь не лечат.
+
+# Building window: garrison
+Garrison: click a unit to take it back. = Гарнизон: щёлкните по воину, чтобы забрать его.
+paid until the next noon = оплачен до следующего полудня
+no wage while on guard = на страже без жалованья
+{hp}/{max} HP, {paid} = Жизнь {hp}/{max}, {paid}
+Your army: click a unit to leave it here. = Ваша армия: щёлкните по воину, чтобы оставить его здесь.
+{hp}/{max} HP, wage {wage} = Жизнь {hp}/{max}, жалованье {wage}
+Back in your army. = Снова в вашей армии.
+{name} stays on guard. = {name}: остаётся на страже.
+Units on guard are paid for their first day only and heal {pct}% a day. = Стражникам платят только за первый день; они исцеляются на {pct}% в день.
+
+# Building window: market and sanctuary
+Name = Название
+Price = Цена
+warriors only = только для воинов
+shooters only = только для стрелков
+mages only = только для магов
+trade goods: cannot be worn = товар: надеть нельзя
+Your pack: what the market pays = Ваш рюкзак: цены рынка
+Goods for sale = Товары на продажу
+Pick an item from the list. = Выберите предмет из списка.
+Inventory = Снаряжение
+Gold {gold} = Золото {gold}
+Sell = Продать
+Buy = Купить
+Sold {name} for {g} gold. = Продано: {name}, за {g} золота.
+Bought {item}. It is in your pack. = Куплено: {item}. Предмет в рюкзаке.
+Back to the goods = К товарам
+Sell shop = Продажа
+Spells = Заклинания
+Pick a spell from the list. = Выберите заклинание из списка.
+This spell is already in your book! = Это заклинание уже есть в вашей книге!
+{spell} is written into your book. = {spell}: вписано в вашу книгу.
+Book {n}/{max}. Cast from the spell book on the map (B). = Книга: {n}/{max}. Заклинания творят из книги на карте (B).
+
+# Building window: village tribute
+The headman keeps the tribute for whoever protects the village. = Староста хранит дань для того, кто защищает деревню.
+Gold {gold} (up to {max}) = Золото {gold} (до {max})
+Mana {mana} (up to {max}) = Мана {mana} (до {max})
+The villagers ask you something before paying their tribute. = Прежде чем платить дань, селяне хотят вас о чём-то попросить.
+The village pays no tribute to you. = Деревня не платит вам дани.
+Instead: the innkeeper pays your army = Вместо дани: трактирщик платит вашей армии
+Instead: the priest heals ({spell}) = Вместо дани: исцеление у священника ({spell})
+Instead: a long blessing ({spells}) = Вместо дани: долгое благословение ({spells})
+Instead: furs ({item}) = Вместо дани: меха ({item})
+Instead: the witch's gift of mana = Вместо дани: мана в дар от ведьмы
+The innkeeper pays off your {n} men. = Трактирщик расплачивается с вашими воинами. Воинов: {n}.
+The priest tends to your wounded: {h} hits. = Священник врачует раненых: жизнь {h}.
+The villagers pray for you: {spell}. = Селяне молятся за вас: {spell}.
+You get {item}. = Вы получаете: {item}.
+The witch gives {m} mana. = Ведьма дарует ману: {m}.
+No thanks: take the tribute = Нет, спасибо: взять дань
+The village pays {gold} gold and {mana} mana. = Деревня платит: золото {gold}, мана {mana}.
+The village pays with a {item}. = Деревня платит предметом «{item}».
+The tribute grows every midnight, slower as it nears the village's maximum. = Дань растёт каждую полночь, тем медленнее, чем ближе к пределу деревни.
+
+# Building window: shipyard
+The shipwright rents out ships. One ship at a time: a new one sends the old one home. = Корабел сдаёт корабли внаём. Лишь один за раз: новый отсылает прежний домой.
+A ship: {price} gold = Корабль: {price} золота
+Rent a new ship = Нанять новый корабль
+Rent a ship = Нанять корабль
+The ship waits at the pier. Walk onto it, or click the water. = Корабль ждёт у пристани. Взойдите на него или щёлкните по воде.
+There is no water to sail from here. = Отсюда некуда плыть.
+The shipwright will not deal with you. = Корабел не желает иметь с вами дела.
+With a ship, click the water to sail; click the shore to land. = С кораблём щёлкните по воде, чтобы плыть, и по берегу, чтобы высадиться.
+The ship waits where you land; walk back onto it to sail again. = Корабль ждёт там, где вы сошли; взойдите на него, чтобы плыть дальше.

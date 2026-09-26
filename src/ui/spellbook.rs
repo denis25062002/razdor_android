@@ -7,6 +7,10 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
+use razdor::dt::data::MagicSchool;
+use razdor::i18n::tr;
+use razdor::trf;
+
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::SpellDef;
 use razdor::rules::game::{Game, SPELL_BOOK_SIZE};
@@ -27,10 +31,10 @@ pub fn effect_summary(s: &SpellDef) -> String {
     use razdor::rules::items::stat_label;
     let mut effects = Vec::new();
     if let Some(h) = s.delta_fixed_hits {
-        effects.push(if h >= 0 { format!("heals {h} hits") } else { format!("{h} hits") });
+        effects.push(if h >= 0 { trf!("heals {h} hits", h) } else { trf!("{h} hits", h) });
     }
     if let Some(p) = s.delta_percent_hits {
-        effects.push(format!("hits {p:+}% at once"));
+        effects.push(trf!("hits {p}% at once", p = format!("{p:+}")));
     }
     for (&st, &v) in &s.add {
         effects.push(format!("{} {v:+}", stat_label(st)));
@@ -39,12 +43,12 @@ pub fn effect_summary(s: &SpellDef) -> String {
         effects.push(format!("{} {v:+}%", stat_label(st)));
     }
     match s.life_lose_percent {
-        Some(p) if p < 0 => effects.push(format!("max hits {p}%")),
-        Some(_) => effects.push("lifts life-draining curses".into()),
+        Some(p) if p < 0 => effects.push(trf!("max hits {p}%", p)),
+        Some(_) => effects.push(tr("lifts life-draining curses").into()),
         None => {}
     }
     if effects.is_empty() {
-        "no effect".into()
+        tr("no effect").into()
     } else {
         effects.join(", ")
     }
@@ -52,31 +56,40 @@ pub fn effect_summary(s: &SpellDef) -> String {
 
 pub fn duration_text(s: &SpellDef) -> String {
     match Duration::of(s) {
-        Duration::Instant => "instant".into(),
-        Duration::Minutes(m) => format!("lasts {}", duration_label(m as f64)),
+        Duration::Instant => tr("instant").into(),
+        Duration::Minutes(m) => trf!("lasts {time}", time = duration_label(m as f64)),
     }
 }
 
 /// The lines describing a spell: effect, school and cost for this hero, duration, target.
 pub fn spell_lines(game: &Game, s: &SpellDef) -> Vec<String> {
     let cost = game.cast_cost(s);
-    let school = s.school.map_or(String::new(), |m| format!("{m:?} magic. "));
-    let base = if cost.mana != s.cost_mana.max(0) { format!(" (base {})", s.cost_mana) } else { String::new() };
-    let target = if magic::targets_enemy(s) { "an enemy army" } else { "your army" };
+    let school = s.school.map_or(String::new(), |m| format!("{} ", school_label(m)));
+    let base = if cost.mana != s.cost_mana.max(0) { format!(" {}", trf!("(base {base})", base = s.cost_mana)) } else { String::new() };
+    let target = if magic::targets_enemy(s) { tr("an enemy army") } else { tr("your army") };
     vec![
         effect_summary(s),
-        format!("{school}Mana {}{base}, casting {}", cost.mana, duration_label(cost.minutes as f64)),
-        format!("{}, cast on {target}", duration_text(s)),
+        format!("{school}{}{base}, {}", trf!("Mana {mana}", mana = cost.mana), trf!("casting {time}", time = duration_label(cost.minutes as f64))),
+        trf!("{duration}, cast on {target}", duration = duration_text(s), target),
     ]
+}
+
+/// "Life magic.", "Death magic.", "Elemental magic.".
+pub fn school_label(m: MagicSchool) -> &'static str {
+    match m {
+        MagicSchool::Life => tr("Life magic."),
+        MagicSchool::Elemental => tr("Elemental magic."),
+        MagicSchool::Death => tr("Death magic."),
+    }
 }
 
 fn cast_error(e: CastError) -> &'static str {
     match e {
-        CastError::NotInBook | CastError::NoSuchSpell => "That spell is not in your book.",
-        CastError::NotEnoughMana => "Not enough mana.",
-        CastError::WrongTarget => "That spell does not work on that target.",
-        CastError::OutOfRange => "The enemy is out of reach.",
-        CastError::Busy => "Not now: a battle is coming.",
+        CastError::NotInBook | CastError::NoSuchSpell => tr("That spell is not in your book."),
+        CastError::NotEnoughMana => tr("Not enough mana."),
+        CastError::WrongTarget => tr("That spell does not work on that target."),
+        CastError::OutOfRange => tr("The enemy is out of reach."),
+        CastError::Busy => tr("Not now: a battle is coming."),
     }
 }
 
@@ -93,8 +106,8 @@ pub fn frame(
     let bar = super::chrome::bar_height();
     let (w, h) = (1080.0f32.min(sw - 20.0), 640.0f32.min(sh - bar - 8.0));
     let (x, y) = ((sw - w) / 2.0, ((sh - bar - h) / 2.0).max(4.0));
-    super::chrome::window(Rect::new(x, y, w, h), "The hero's spell book", super::chrome::Skin::Marble, false);
-    super::chrome::shadow_text(&format!("Mana {}", game.mana), x + w - 140.0, y + 20.0, 18.0, MANA);
+    super::chrome::window(Rect::new(x, y, w, h), tr("The hero's spell book"), super::chrome::Skin::Marble, false);
+    super::chrome::shadow_text(&trf!("Mana {mana}", mana = game.mana), x + w - 160.0, y + 20.0, 18.0, MANA);
 
     // The book: 3 × 5 cells.
     let book: Vec<SpellDef> = game.book().into_iter().cloned().collect();
@@ -120,13 +133,13 @@ pub fn frame(
         }
         let cost = game.cast_cost(s);
         let color = if game.mana >= cost.mana { MANA } else { Color::new(0.9, 0.4, 0.35, 1.0) };
-        text(&format!("{} mana, {}", cost.mana, duration_label(cost.minutes as f64)), tx, cy + ch - 10.0, 16.0, color);
+        text_fit(&trf!("{mana} mana, {time}", mana = cost.mana, time = duration_label(cost.minutes as f64)), tx, cy + ch - 10.0, cx + cw - tx - 4.0, 16.0, color);
         if hover && clicked() {
             *selected = k;
         }
     }
     if book.is_empty() {
-        text("Your book is empty. Learn spells at a sanctuary.", gx, gy + 5.0 * (ch + 8.0) + 24.0, 18.0, DIM);
+        text(tr("Your book is empty. Learn spells at a sanctuary."), gx, gy + 5.0 * (ch + 8.0) + 24.0, 18.0, DIM);
     }
 
     // The chosen spell and its targets.
@@ -149,24 +162,24 @@ pub fn frame(
         if magic::targets_enemy(s) {
             let armies = game.spell_targets();
             if armies.is_empty() {
-                let line = format!("No enemy army in sight within {CAST_RANGE} cells.");
+                let line = trf!("No enemy army in sight within {range} cells.", range = CAST_RANGE);
                 text_centered(&line, px + pw / 2.0, cy + 24.0, 18.0, DIM);
             }
             let here = game.tile();
             for (k, &i) in armies.iter().take(4).enumerate() {
                 let a = &game.world.armies[i];
-                let name = if a.name.is_empty() { "an army".to_string() } else { a.name.clone() };
+                let name = if a.name.is_empty() { tr("an army").to_string() } else { a.name.clone() };
                 let d = game.world.map.distance(a.tile(&game.world.map), here);
-                let label = format!("Cast on {name} ({d} cells)");
+                let label = trf!("Cast on {name} ({d} cells)", name, d);
                 if button(px, cy + k as f32 * 50.0, pw, 42.0, &label, can) {
                     target = Some(CastTarget::Army(a.uid));
                 }
             }
-        } else if button(px, cy, pw, 44.0, "Cast on your army", can) || (can && key(KeyCode::Enter)) {
+        } else if button(px, cy, pw, 44.0, tr("Cast on your army"), can) || (can && key(KeyCode::Enter)) {
             target = Some(CastTarget::Own);
         }
         if game.mana < cost.mana {
-            text_centered("Not enough mana.", px + pw / 2.0, cy + 230.0, 18.0, Color::new(0.9, 0.4, 0.35, 1.0));
+            text_centered(tr("Not enough mana."), px + pw / 2.0, cy + 230.0, 18.0, Color::new(0.9, 0.4, 0.35, 1.0));
         }
         if let Some(t) = target {
             match game.cast(s.id, t) {
@@ -179,21 +192,21 @@ pub fn frame(
                         CastOutcome::Done { hits, killed, destroyed } => {
                             let mut m = s.name.clone();
                             if hits != 0 {
-                                m += &format!(": {hits:+} hits");
+                                m += &trf!(": {hits} hits", hits = format!("{hits:+}"));
                             }
                             if killed > 0 {
-                                m += &format!(", {killed} fell");
+                                m += &trf!(", {killed} fell", killed);
                             }
                             if destroyed {
-                                m += ". The army is no more.";
+                                m += tr(". The army is no more.");
                             } else if magic::is_lasting(s) {
                                 m += &format!(" ({})", duration_text(s));
                             }
                             m
                         }
-                        CastOutcome::Interrupted => "An enemy fell on you while you were casting: the spell is lost.".into(),
-                        CastOutcome::TargetLost => "The target got away before the spell was ready.".into(),
-                        CastOutcome::OutOfMana => "Not enough mana left when the spell was ready.".into(),
+                        CastOutcome::Interrupted => tr("An enemy fell on you while you were casting: the spell is lost.").into(),
+                        CastOutcome::TargetLost => tr("The target got away before the spell was ready.").into(),
+                        CastOutcome::OutOfMana => tr("Not enough mana left when the spell was ready.").into(),
                     });
                     next = world_view::handle_events(game, cast.events, message, dialogs).or(Some(Screen::WorldMap));
                 }
@@ -204,7 +217,7 @@ pub fn frame(
 
     // Spells on the army now.
     let ay = y + h - 118.0;
-    text("On your army:", px, ay, 18.0, ACCENT);
+    text(tr("On your army:"), px, ay, 18.0, ACCENT);
     let now = game.clock.total_minutes() as u64;
     let active: Vec<String> = game
         .active_spells()
@@ -212,20 +225,20 @@ pub fn frame(
         .filter_map(|e| {
             let name = &game.spell(e.spell)?.name;
             Some(match e.until {
-                None => format!("{name}: for good"),
-                Some(t) => format!("{name}: {} left", duration_label(t.saturating_sub(now) as f64)),
+                None => trf!("{name}: for good", name),
+                Some(t) => trf!("{name}: {time} left", name, time = duration_label(t.saturating_sub(now) as f64)),
             })
         })
         .collect();
     if active.is_empty() {
-        text("no spells", px, ay + 22.0, 17.0, DIM);
+        text(tr("no spells"), px, ay + 22.0, 17.0, DIM);
     }
     for (i, line) in active.iter().take(4).enumerate() {
         text(line, px, ay + 22.0 + i as f32 * 20.0, 17.0, MANA);
     }
 
-    text(&format!("Book {}/{SPELL_BOOK_SIZE}. Casting takes game time: armies move meanwhile.", book.len()), gx, y + h - 18.0, 16.0, DIM);
-    if button(x + w - 140.0, y + h - 54.0, 120.0, 40.0, "Close", true) || key(KeyCode::Escape) || key(KeyCode::B) {
+    text_fit(&trf!("Book {n}/{max}. Casting takes game time: armies move meanwhile.", n = book.len(), max = SPELL_BOOK_SIZE), gx, y + h - 18.0, x + w - 160.0 - gx, 16.0, DIM);
+    if button(x + w - 140.0, y + h - 54.0, 120.0, 40.0, tr("Close"), true) || key(KeyCode::Escape) || key(KeyCode::B) {
         next = next.or(Some(Screen::WorldMap));
     }
     if let Some(m) = message.as_ref().filter(|_| next.is_none()) {

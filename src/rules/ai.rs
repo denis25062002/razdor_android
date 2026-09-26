@@ -1330,7 +1330,7 @@ impl Game {
         loc.attitude = attitude;
         loc.cleared = false;
         loc.stationed.clear();
-        let text = format!("{name} took {}.", building_name(loc));
+        let text = crate::trf!("{name} took {place}.", name, place = building_name(loc));
         let tile = loc.tile;
         self.ai_stats.captures += 1;
         self.leave_garrison(i, l);
@@ -1504,7 +1504,7 @@ impl Game {
             (Outcome::Victory, Defender::Army(j)) => {
                 let b_name = army_name(&self.world.armies[j]);
                 self.take_loot(att, j);
-                self.report(format!("{a_name} defeated {b_name}."), a_tile, false, events);
+                self.report(crate::trf!("{winner} defeated {loser}.", winner = a_name, loser = b_name), a_tile, false, events);
                 self.army_beaten(j, Beaten::ByAi);
             }
             (Outcome::Victory, Defender::Garrison(l)) => {
@@ -1514,12 +1514,12 @@ impl Game {
             (Outcome::Defeat, Defender::Army(j)) => {
                 let b_name = army_name(&self.world.armies[j]);
                 self.take_loot(j, att);
-                self.report(format!("{b_name} defeated {a_name}."), a_tile, false, events);
+                self.report(crate::trf!("{winner} defeated {loser}.", winner = b_name, loser = a_name), a_tile, false, events);
                 self.army_beaten(att, Beaten::ByAi);
             }
             (Outcome::Defeat, Defender::Garrison(l)) => {
                 let loc = &self.world.locations[l];
-                let text = format!("{a_name} fell at the walls of {}.", building_name(loc));
+                let text = crate::trf!("{name} fell at the walls of {place}.", name = a_name, place = building_name(loc));
                 let (tile, mine) = (loc.tile, loc.owned());
                 self.report(text, tile, mine, events);
                 self.army_beaten(att, Beaten::ByAi);
@@ -1879,7 +1879,7 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
 
 fn army_name(a: &Army) -> String {
     if a.name.trim().is_empty() {
-        "An army".to_string()
+        crate::i18n::tr("An army").to_string()
     } else {
         a.name.trim().to_string()
     }
@@ -1887,7 +1887,10 @@ fn army_name(a: &Army) -> String {
 
 fn building_name(l: &Location) -> String {
     if l.name.trim().is_empty() {
-        format!("a {}", l.kind.label().to_lowercase())
+        match crate::i18n::lang() {
+            crate::i18n::Lang::En => format!("a {}", l.kind.label().to_lowercase()),
+            crate::i18n::Lang::Ru => l.kind.label().to_lowercase(),
+        }
     } else {
         l.name.trim().to_string()
     }

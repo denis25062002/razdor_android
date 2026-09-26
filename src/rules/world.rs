@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use crate::i18n::{n_, tr};
+
 use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 
 use super::clock::Clock;
@@ -140,23 +142,23 @@ impl LocationKind {
     pub fn label(self) -> &'static str {
         use LocationKind::*;
         match self {
-            Palace => "Palace",
-            Town => "Town",
-            Village => "Village",
-            Castle => "Castle",
-            Fort => "Fort",
-            Tavern => "Tavern",
-            Market => "Market",
-            Church => "Church",
-            Smithy => "Smithy",
-            Shipyard => "Shipyard",
-            Altar => "Altar",
-            Entrance => "Dungeon entrance",
-            Ruins => "Ruins",
-            StoneBridge => "Stone bridge",
-            WoodenBridge => "Wooden bridge",
-            Obelisk => "Obelisk",
-            Camp => "Bandit camp",
+            Palace => tr("Palace"),
+            Town => tr("Town"),
+            Village => tr("Village"),
+            Castle => tr("Castle"),
+            Fort => tr("Fort"),
+            Tavern => tr("Tavern"),
+            Market => tr("Market"),
+            Church => tr("Church"),
+            Smithy => tr("Smithy"),
+            Shipyard => tr("Shipyard"),
+            Altar => tr("Altar"),
+            Entrance => tr("Dungeon entrance"),
+            Ruins => tr("Ruins"),
+            StoneBridge => tr("Stone bridge"),
+            WoodenBridge => tr("Wooden bridge"),
+            Obelisk => tr("Obelisk"),
+            Camp => tr("Bandit camp"),
         }
     }
 }
@@ -576,7 +578,7 @@ pub const PLACE_RADIUS: i32 = 8;
 
 pub const GANG_REWARD: i32 = 30;
 /// What the demo calls its roaming gangs.
-const GANG_NAME: &str = "Bandit gang";
+const GANG_NAME: &str = n_("Bandit gang");
 /// Uids above the scenario's army ids (1..=255) go to the demo's gangs.
 const FIRST_GANG_UID: u32 = 256;
 /// Demo gangs carry this much gold; the victor takes `VictoryGoldDiv` of it.
@@ -896,7 +898,7 @@ impl World {
         let recruits = |units: Vec<UnitId>| units.into_iter().map(|unit| Recruit { unit, stock: None, max: 0, progress: 0 }).collect();
         let shop = || Some(Shop { fixed: Vec::new(), random: 6, price: (0, 0), stock: Vec::new() });
 
-        let mut oakford = Location::new(LocationKind::Castle, "Oakford", tile('C'));
+        let mut oakford = Location::new(LocationKind::Castle, tr("Oakford"), tile('C'));
         oakford.picture = (3, 0);
         oakford.owner = Owner::Player;
         oakford.faction = 1;
@@ -904,7 +906,7 @@ impl World {
         oakford.gold_income = 20;
         oakford.recruits = recruits(vec![spearman, archer, healer]);
         oakford.shop = shop();
-        let mut greywall = Location::new(LocationKind::Castle, "Greywall", tile('G'));
+        let mut greywall = Location::new(LocationKind::Castle, tr("Greywall"), tile('G'));
         greywall.picture = (3, 2);
         greywall.recruits = recruits(vec![swordsman, archer, healer]);
         greywall.shop = shop();
@@ -933,34 +935,34 @@ impl World {
         };
         let locations = vec![
             oakford,
-            village("Millbrook", 'M'),
-            village("Ashford", 'A'),
-            village("Saltmarsh", 'S'),
-            Location { picture: (7, 4), spells: vec![1, 2, 4], ..Location::new(LocationKind::Church, "St. Beor's church", tile('+')) },
+            village(tr("Millbrook"), 'M'),
+            village(tr("Ashford"), 'A'),
+            village(tr("Saltmarsh"), 'S'),
+            Location { picture: (7, 4), spells: vec![1, 2, 4], ..Location::new(LocationKind::Church, tr("St. Beor's church"), tile('+')) },
             greywall,
             camp(
-                "Bandit camp",
+                tr("Bandit camp"),
                 'B',
                 vec![t(bandit, f, 1), t(bandit, f, 2), t(bandit, f, 3), t(bandit_archer, b, 2), t(bandit_archer, b, 3)],
                 100,
                 1,
             ),
             camp(
-                "Bandit lair",
+                tr("Bandit lair"),
                 'L',
                 vec![t(bandit_chief, f, 2), t(bandit, f, 1), t(bandit, f, 3), t(bandit_archer, b, 1), t(bandit_archer, b, 3)],
                 150,
                 2,
             ),
         ];
-        let mut w = World::empty("Demo kingdom", map, Clock::demo_start());
+        let mut w = World::empty(tr("Demo kingdom"), map, Clock::demo_start());
         w.locations = locations;
         w.demo = true;
         w.gang = gang(content);
         w.place_buildings();
         // Two gangs already on the roads, one from each camp.
-        let camp = w.index_of("Bandit camp");
-        let lair = w.index_of("Bandit lair");
+        let camp = w.index_of(tr("Bandit camp"));
+        let lair = w.index_of(tr("Bandit lair"));
         w.spawn_gang(camp, (39, 16));
         w.spawn_gang(lair, (14, 24));
         w.regions = w.map.regions().0;
@@ -987,7 +989,7 @@ impl World {
         for a in self.armies.iter_mut().chain(self.inactive.iter_mut()).chain(respawning) {
             match texts.get(&a.id) {
                 _ if a.id == 0 => {
-                    a.name = GANG_NAME.to_string();
+                    a.name = tr(GANG_NAME).to_string();
                     if a.speed == 0 {
                         a.speed = GANG_SPEED;
                     }
@@ -1058,7 +1060,7 @@ impl World {
         self.armies.push(Army {
             id: 0,
             uid: self.next_uid,
-            name: GANG_NAME.to_string(),
+            name: tr(GANG_NAME).to_string(),
             leader_name: String::new(),
             description: String::new(),
             model: 5,
