@@ -164,8 +164,8 @@ pub fn stat_label(s: Stat) -> &'static str {
     }
 }
 
-/// Short name of a unit bonus for descriptions ("Long weapon"); the ini token for bonuses
-/// without one.
+/// Short name of a unit bonus for descriptions ("Long weapon"); the ini token for tokens
+/// the game does not know.
 pub fn bonus_name(b: &Bonus) -> String {
     let name = match b {
         Bonus::SpearDefense => tr("Long weapon"),
@@ -189,6 +189,37 @@ pub fn bonus_name(b: &Bonus) -> String {
         Bonus::FastDead => tr("Fast undead"),
         Bonus::Counterblow => tr("Counterblow"),
         Bonus::FlankStrike => tr("Flank strike"),
+        Bonus::Hunger => tr("Hunger"),
+        Bonus::Berserk => tr("Berserk"),
+        Bonus::Exhaustion => tr("Exhausting magic"),
+        Bonus::Drying => tr("Withering magic"),
+        Bonus::CtrPoison => tr("Poisonous body"),
+        Bonus::Suicide => tr("Last strike"),
+        Bonus::Caster => tr("Spellcaster"),
+        Bonus::Splash => tr("Sweeping blow"),
+        Bonus::Fortify => tr("Entrenchment"),
+        Bonus::Dominate => tr("Dominance"),
+        Bonus::PoisonS => tr("Strong poison"),
+        Bonus::Concentration => tr("Concentration"),
+        Bonus::Potent => tr("Potent magic"),
+        Bonus::Stun => tr("Stunning blow"),
+        Bonus::FirstShot => tr("First shot"),
+        Bonus::Bastion => tr("Bastion"),
+        Bonus::Flying => tr("Flying"),
+        Bonus::Bleed => tr("Bleeding wounds"),
+        Bonus::PreventiveStrike => tr("Preventive strike"),
+        Bonus::Flock => tr("Strength in numbers"),
+        Bonus::ArmorBreaker => tr("Armour breaker"),
+        Bonus::NoHeal => tr("Festering wounds"),
+        Bonus::FasterAttack => tr("Swift assault"),
+        Bonus::PoisonArmorIgnore => tr("Poisoned piercing"),
+        Bonus::HoldLine => tr("Hold the line"),
+        Bonus::Neutralize => tr("Neutralising blow"),
+        Bonus::KillingStrike => tr("Killing strike"),
+        Bonus::BloodThrist => tr("Bloodthirst"),
+        Bonus::Assault => tr("Assault"),
+        Bonus::EternalGift => tr("Lasting gift"),
+        Bonus::FateGift => tr("Gift of fate"),
         other => other.token(),
     };
     name.to_string()

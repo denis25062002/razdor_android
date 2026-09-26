@@ -65,7 +65,7 @@ fn bonus_english(b: &Bonus) -> String {
         Bonus::FastDead => tr("Fast undead: arrows do 70% less, +1 action on the first turn"),
         Bonus::Counterblow => tr("Counterblow: strikes back when struck"),
         Bonus::FlankStrike => tr("Flank strike: double attack through an empty cell"),
-        other => return other.token().to_string(),
+        other => return razdor::rules::items::bonus_name(other),
     };
     s.to_string()
 }

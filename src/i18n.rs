@@ -108,7 +108,8 @@ fn unescape(s: &str) -> String {
 }
 
 /// Parses a catalog file: `English = Russian` lines (split at the first " = "), `#`
-/// comments and blank lines; `\n` stands for a line break. Malformed lines are errors.
+/// comments and blank lines; `\n` stands for a line break and `\=` for an `=` that must not
+/// be taken for the separator (an English text with " = " in it). Malformed lines are errors.
 pub fn parse_catalog(file: &'static str, text: &str) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -253,6 +254,8 @@ mod tests {
         assert_eq!(Lang::from_code("de"), None);
         assert_eq!(parse_catalog("t", "# c\n\nA\\nB = Б\\nВ\n").unwrap()[0].value, "Б\nВ");
         assert!(parse_catalog("t", "no separator").is_err());
+        let e = &parse_catalog("t", "0 \\= no, or \\= = 0 = нет, или =").unwrap()[0];
+        assert_eq!((e.key.as_str(), e.value.as_str()), ("0 = no, or =", "0 = нет, или ="));
     }
 
     // --------------------------------------------------------------------------------------
@@ -400,7 +403,6 @@ mod tests {
     ];
 
     #[test]
-    #[ignore = "until the whole interface is translated"]
     fn interface_texts_go_through_the_catalog() {
         // An English literal handed straight to a drawing helper in src/ui is a text the
         // player would see untranslated.
