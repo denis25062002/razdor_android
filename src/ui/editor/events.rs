@@ -11,6 +11,8 @@ use macroquad::prelude::*;
 
 use razdor::dt::dtm::{Event, GameDate, Scenario};
 use razdor::editor::events::{self as ev, Arg, EventFilter};
+use razdor::i18n::{n_, tr};
+use razdor::trf;
 use razdor::editor::palette::Names;
 use razdor::editor::{Command, Target};
 use razdor::rules::events::EventEdit;
@@ -50,7 +52,7 @@ pub enum EventsAction {
     Close,
 }
 
-const TABS: [&str; 6] = ["Event and player", "Event and heroes", "Result 1", "Result 2", "Places", "Community"];
+const TABS: [&str; 6] = [n_("Event and player"), n_("Event and heroes"), n_("Result 1"), n_("Result 2"), n_("Places"), n_("Community")];
 
 /// Group colours of the list (our own palette).
 const GROUP_COLOURS: [Color; 6] = [
@@ -67,49 +69,49 @@ fn group_colour(g: u8) -> Color {
 }
 
 fn kind_options() -> Options {
-    ev::KIND_LABELS.iter().map(|(k, l)| (*k as i64, l.to_string())).collect()
+    ev::KIND_LABELS.iter().map(|(k, l)| (*k as i64, tr(l).to_string())).collect()
 }
 
 fn group_options() -> Options {
-    (0..ev::GROUPS).map(|g| (g as i64, format!("Group {}", g + 1))).collect()
+    (0..ev::GROUPS).map(|g| (g as i64, trf!("Group {n}", n = g + 1))).collect()
 }
 
 fn owner_options() -> Options {
-    ev::OWNERS.iter().map(|(k, l)| (*k as i64, l.to_string())).collect()
+    ev::OWNERS.iter().map(|(k, l)| (*k as i64, tr(l).to_string())).collect()
 }
 
 /// Quests, plus the current value if it is not one (so it still shows).
 fn quest_options(s: &Scenario, current: u16) -> Options {
-    let mut o: Options = vec![(0, "(none)".into())];
+    let mut o: Options = vec![(0, tr("(none)").into())];
     o.extend(event_options(s).into_iter().filter(|(id, _)| ev::is_quest(s, *id as u16) || *id == current as i64));
     o
 }
 
 fn removed_unit_options(n: &Names) -> Options {
     let mut o = unit_options(n);
-    o.push((ev::REMOVE_ADDED_UNIT as i64, "A unit an event added".into()));
-    o.push((ev::REMOVE_ANY_UNIT as i64, "Any unit".into()));
+    o.push((ev::REMOVE_ADDED_UNIT as i64, tr("A unit an event added").into()));
+    o.push((ev::REMOVE_ANY_UNIT as i64, tr("Any unit").into()));
     o
 }
 
 fn picture_options(n: &Names) -> Options {
-    let mut o: Options = vec![(0, "(none)".into()), (ev::PICTURE_VICTORY as i64, "Victory".into()), (ev::PICTURE_DEFEAT as i64, "Defeat".into())];
-    o.extend(n.units.iter().filter(|u| u.id < 200).map(|u| (u.id as i64, format!("Portrait: {} ({})", u.name, u.id))));
+    let mut o: Options = vec![(0, tr("(none)").into()), (ev::PICTURE_VICTORY as i64, tr("Victory").into()), (ev::PICTURE_DEFEAT as i64, tr("Defeat").into())];
+    o.extend(n.units.iter().filter(|u| u.id < 200).map(|u| (u.id as i64, trf!("Portrait: {name} ({id})", name = u.name, id = u.id))));
     o
 }
 
 /// What a Community "holder" argument names.
 fn holder_label(s: &Scenario, v: i16) -> String {
     match v {
-        0 => "the player's army".into(),
+        0 => tr("the player's army").into(),
         v if v > 0 => {
             if (v as usize) <= s.armies.len() {
                 army_label(s, v as u8)
             } else {
-                format!("army {v} (missing)")
+                trf!("army {v} (missing)", v)
             }
         }
-        v => building_options(s).into_iter().find(|b| b.0 == v.unsigned_abs() as i64).map_or(format!("building {} (missing)", -v), |b| b.1),
+        v => building_options(s).into_iter().find(|b| b.0 == v.unsigned_abs() as i64).map_or(trf!("building {id} (missing)", id = -v), |b| b.1),
     }
 }
 
@@ -143,8 +145,8 @@ pub fn window(state: &mut EventsState, s: &Scenario, names: &Names) -> EventsAct
     let r = Rect::new((sw - w) / 2.0, 30.0, w, h);
     draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.1, 0.095, 0.09, 0.98));
     draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, ACCENT);
-    text("Events", r.x + 14.0, r.y + 28.0, 24.0, ACCENT);
-    if button(r.right() - 130.0, r.bottom() - 50.0, 116.0, 38.0, "Close", true) || (!typing() && !popup_open() && is_key_pressed(KeyCode::Escape)) {
+    text(tr("Events"), r.x + 14.0, r.y + 28.0, 24.0, ACCENT);
+    if button(r.right() - 130.0, r.bottom() - 50.0, 116.0, 38.0, tr("Close"), true) || (!typing() && !popup_open() && is_key_pressed(KeyCode::Escape)) {
         return EventsAction::Close;
     }
     if state.selected.is_some_and(|id| s.event(id).is_none()) {
@@ -158,7 +160,7 @@ pub fn window(state: &mut EventsState, s: &Scenario, names: &Names) -> EventsAct
     match state.selected {
         Some(id) => properties(state, s, names, id, area),
         None => {
-            text("Pick an event from the list, or make a new one.", area.x, area.y + 20.0, 17.0, DIM);
+            text_fit(tr("Pick an event from the list, or make a new one."), area.x, area.y + 20.0, area.w, 17.0, DIM);
             EventsAction::None
         }
     }
@@ -168,24 +170,24 @@ pub fn window(state: &mut EventsState, s: &Scenario, names: &Names) -> EventsAct
 fn event_list(state: &mut EventsState, s: &Scenario, r: Rect) -> Option<EventsAction> {
     let mut y = r.y;
     // Type filter.
-    let kinds: [(Option<u8>, &str); 5] = [(None, "All"), (Some(1), "Global"), (Some(2), "Local"), (Some(3), "Quest"), (Some(4), "Rumour")];
+    let kinds: [(Option<u8>, &str); 5] = [(None, n_("All")), (Some(1), n_("Global")), (Some(2), n_("Local")), (Some(3), n_("Quest")), (Some(4), n_("Rumour"))];
     let bw = (r.w - 16.0) / 5.0;
     for (i, (k, l)) in kinds.iter().enumerate() {
-        if toggle_button(r.x + i as f32 * (bw + 4.0), y, bw, 26.0, l, state.filter.kind == *k) {
+        if toggle_button(r.x + i as f32 * (bw + 4.0), y, bw, 26.0, tr(l), state.filter.kind == *k) {
             state.filter.kind = *k;
             state.list_scroll = 0;
         }
     }
     y += 32.0;
-    let mut groups: Options = vec![(-1, "All groups".into())];
+    let mut groups: Options = vec![(-1, tr("All groups").into())];
     groups.extend(group_options());
     let g = state.filter.group.map_or(-1, |g| g as i64);
     if let Some(v) = dropdown("events:group", r.x, y, 120.0, g, &groups) {
         state.filter.group = (v >= 0).then_some(v as u8);
         state.list_scroll = 0;
     }
-    text("Find", r.x + 128.0, y + 17.0, 16.0, DIM);
-    if text_field("events:search", r.x + 166.0, y, r.w - 166.0, 24.0, &mut state.filter.search, false) {
+    text_fit(tr("Find"), r.x + 128.0, y + 17.0, 44.0, 16.0, DIM);
+    if text_field("events:search", r.x + 174.0, y, r.w - 174.0, 24.0, &mut state.filter.search, false) {
         state.list_scroll = 0;
     }
     y += 32.0;
@@ -221,19 +223,19 @@ fn event_list(state: &mut EventsState, s: &Scenario, r: Rect) -> Option<EventsAc
             state.selected = Some(*id);
         }
     }
-    text(&format!("{} of {} events", ids.len(), s.events.len()), r.x, r.bottom() - 58.0, 15.0, DIM);
+    text(&trf!("{shown} of {total} events", shown = ids.len(), total = s.events.len()), r.x, r.bottom() - 58.0, 15.0, DIM);
     let by = r.bottom() - 40.0;
     let bw = (r.w - 8.0) / 3.0;
     let full = s.events.len() >= ev::MAX_EVENTS;
-    if small_button(r.x, by, bw, 30.0, "New", !full) {
+    if small_button(r.x, by, bw, 30.0, tr("New"), !full) {
         let kind = state.filter.kind.unwrap_or(1);
         return Some(EventsAction::Apply(Command::NewEvent { kind }, String::new()));
     }
-    if small_button(r.x + bw + 4.0, by, bw, 30.0, "Duplicate", state.selected.is_some() && !full) {
+    if small_button(r.x + bw + 4.0, by, bw, 30.0, tr("Duplicate"), state.selected.is_some() && !full) {
         let id = state.selected?;
         return Some(EventsAction::Apply(Command::DuplicateEvent { id }, String::new()));
     }
-    if small_button(r.x + 2.0 * (bw + 4.0), by, bw, 30.0, "Delete", state.selected.is_some()) {
+    if small_button(r.x + 2.0 * (bw + 4.0), by, bw, 30.0, tr("Delete"), state.selected.is_some()) {
         return Some(EventsAction::Delete(state.selected?));
     }
     None
@@ -247,13 +249,13 @@ fn properties(state: &mut EventsState, s: &Scenario, names: &Names, id: u16, r: 
         state.scroll = 0.0;
     }
     // The title (its name part; the flag fields are on the tabs).
-    text(&format!("Event {id}"), r.x, r.y + 17.0, 18.0, ACCENT);
+    text_fit(&trf!("Event {id}", id), r.x, r.y + 17.0, 86.0, 18.0, ACCENT);
     let mut name = ev::split_title(&e.title).name;
     if text_field(&format!("e{id}:name"), r.x + 90.0, r.y, r.w - 90.0, 24.0, &mut name, false) {
         e.title = ev::with_name(&e.title, &name);
     }
     let before = state.tab;
-    tabs(r.x, r.y + 30.0, r.w, &TABS, &mut state.tab);
+    tabs(r.x, r.y + 30.0, r.w, &TABS.map(tr), &mut state.tab);
     if state.tab != before {
         state.scroll = 0.0;
     }
@@ -294,85 +296,85 @@ fn properties(state: &mut EventsState, s: &Scenario, names: &Names, id: u16, r: 
 /// Tab 1: type, group, time window, archetype, event and flag conditions, the question,
 /// defeated and met armies, the hero's stats.
 fn tab_player(f: &mut Form, s: &Scenario, e: &mut Event) {
-    f.heading("Event");
-    f.pick("kind", "Type", &mut e.kind, &kind_options());
-    f.pick("group", "Group (list colour)", &mut e.group_colour, &group_options());
-    f.pick("archetype", "For which hero", &mut e.archetype, &list_options(&ev::ARCHETYPES, 0));
-    f.heading("When");
+    f.heading(tr("Event"));
+    f.pick("kind", tr("Event type"), &mut e.kind, &kind_options());
+    f.pick("group", tr("Group (list colour)"), &mut e.group_colour, &group_options());
+    f.pick("archetype", tr("For which hero"), &mut e.archetype, &list_options(&ev::ARCHETYPES.map(tr), 0));
+    f.heading(tr("When"));
     let mut relative = ev::is_relative(e) as u8;
-    f.flag("relative", "Relative time only (another event sets its start)", &mut relative);
+    f.flag("relative", tr("Relative time only (another event sets its start)"), &mut relative);
     if (relative != 0) != ev::is_relative(e) {
         ev::set_relative(e, relative != 0, s.header.start_time);
     }
     if !ev::is_relative(e) {
         let mut d = GameDate::from_minutes(e.start_time);
-        f.num("year", "Start: year", &mut d.year, 0, 2999);
-        f.num("month", "Month", &mut d.month, 1, 12);
+        f.num("year", tr("Start: year"), &mut d.year, 0, 2999);
+        f.num("month", tr("Month"), &mut d.month, 1, 12);
         let mut day = d.day - 1;
-        f.num("day", "Day (0-29)", &mut day, 0, 29);
+        f.num("day", tr("Day (0-29)"), &mut day, 0, 29);
         d.day = day + 1;
-        f.num("hour", "Hour", &mut d.hour, 0, 23);
+        f.num("hour", tr("Hour"), &mut d.hour, 0, 23);
         e.start_time = d.to_minutes();
     }
     let mut hours = ev::duration_hours(e);
-    f.num("duration", "Open for (hours)", &mut hours, 0, ev::MAX_DURATION_HOURS as i64);
+    f.num("duration", tr("Open for (hours)"), &mut hours, 0, ev::MAX_DURATION_HOURS as i64);
     if hours != ev::duration_hours(e) {
         ev::set_duration_hours(e, hours);
     }
     if e.duration > 0 {
-        f.note(&format!("As the game reads it: {} hours (it takes the stored minutes as hours).", e.duration), DIM);
+        f.note(&trf!("As the game reads it: {hours} hours (it takes the stored minutes as hours).", hours = e.duration), DIM);
     }
     let mut days = ev::repeat_days(e);
-    f.num("repeat", "Repeat every (days, 0 = no)", &mut days, 0, ev::MAX_REPEAT_DAYS as i64);
+    f.num("repeat", tr("Repeat every (days, 0 = no)"), &mut days, 0, ev::MAX_REPEAT_DAYS as i64);
     if days != ev::repeat_days(e) {
         ev::set_repeat_days(e, days);
     }
     let mut many = ev::repeatable(e) as u8;
-    f.flag("many", "Can happen many times", &mut many);
+    f.flag("many", tr("Can happen many times"), &mut many);
     if (many != 0) != ev::repeatable(e) {
         ev::set_repeatable(e, many != 0);
     }
-    f.flag("subordinate", "Subordinate (runs only when another event chains it)", &mut e.subordinate);
+    f.flag("subordinate", tr("Subordinate (runs only when another event chains it)"), &mut e.subordinate);
 
-    f.heading("Other events");
+    f.heading(tr("Other events"));
     let events = event_options_none(s);
     let c = &mut e.conditions;
-    event_pair(f, "yes", "Happened, answered yes", &mut c.happened_yes_check, &mut c.happened_yes, &events);
-    event_pair(f, "no", "Happened, answered no", &mut c.happened_no_check, &mut c.happened_no, &events);
-    event_pair(f, "not", "Not happened", &mut c.not_happened_check, &mut c.not_happened, &events);
+    event_pair(f, "yes", tr("Happened, answered yes"), &mut c.happened_yes_check, &mut c.happened_yes, &events);
+    event_pair(f, "no", tr("Happened, answered no"), &mut c.happened_no_check, &mut c.happened_no, &events);
+    event_pair(f, "not", tr("Not happened"), &mut c.not_happened_check, &mut c.not_happened, &events);
     let parts = ev::split_title(&e.title);
     let mut test = parts.test.clone();
-    f.text("test_flag", "Check flag (X, or /X = not set)", &mut test);
+    f.text("test_flag", tr("Check flag (X, or /X = not set)"), &mut test);
     if test != parts.test {
         e.title = ev::with_flags(&e.title, &parts.set, &test);
     }
     for m in ev::flag_problems(&e.title) {
-        f.note(&format!("Flag script: {m}"), RED);
+        f.note(&trf!("Flag script: {m}", m), RED);
     }
 
-    f.heading("Question");
+    f.heading(tr("Question"));
     let c = &mut e.conditions;
-    f.flag("ask", "Ask a yes/no question first", &mut c.confirm_question);
-    f.flag("repeat_yes", "Ask again after a yes", &mut e.results.repeat_after_yes);
-    f.memo("question", "Question text", &mut e.question, 3);
+    f.flag("ask", tr("Ask a yes/no question first"), &mut c.confirm_question);
+    f.flag("repeat_yes", tr("Ask again after a yes"), &mut e.results.repeat_after_yes);
+    f.memo("question", tr("Question text"), &mut e.question, 3);
 
-    f.heading("Armies");
+    f.heading(tr("Armies"));
     let armies = army_options(s);
     let c = &mut e.conditions;
-    f.flag("defeated_c", "The player beat these armies", &mut c.defeated_check);
+    f.flag("defeated_c", tr("The player beat these armies"), &mut c.defeated_check);
     army_pair(f, "defeated", &mut c.defeated_armies, &armies);
-    f.pick("meet", "Meeting this army", &mut c.meet_army, &armies);
-    f.note("Needed to talk to a friendly army instead of fighting it.", DIM);
+    f.pick("meet", tr("Meeting this army"), &mut c.meet_army, &armies);
+    f.note(tr("Needed to talk to a friendly army instead of fighting it."), DIM);
 
-    f.heading("The hero");
-    f.flag("stats", "Check the current stats", &mut c.stats_check);
-    f.threshold("level", "Level (from 0)", &mut c.level, 99);
-    f.threshold("gold", "Gold", &mut c.gold, i16::MAX as i64);
-    f.threshold("mana", "Holiness and mana", &mut c.holiness_mana, i16::MAX as i64);
-    f.threshold("squads", "Squads in the army", &mut c.squad_count, 12);
-    f.threshold("strength", "Army strength", &mut c.army_strength, i16::MAX as i64);
-    f.note("A value of 0 is not checked; the switch picks at least or at most.", DIM);
-    f.flag("one_hp", "Result: the hero is left with 1 HP", &mut e.results.hero_one_hp);
+    f.heading(tr("The hero"));
+    f.flag("stats", tr("Check the current stats"), &mut c.stats_check);
+    f.threshold("level", tr("Level (from 0)"), &mut c.level, 99);
+    f.threshold("gold", tr("Gold"), &mut c.gold, i16::MAX as i64);
+    f.threshold("mana", tr("Holiness and mana"), &mut c.holiness_mana, i16::MAX as i64);
+    f.threshold("squads", tr("Squads in the army"), &mut c.squad_count, 12);
+    f.threshold("strength", tr("Army strength"), &mut c.army_strength, i16::MAX as i64);
+    f.note(tr("A value of 0 is not checked; the switch picks at least or at most."), DIM);
+    f.flag("one_hp", tr("Result: the hero is left with 1 HP"), &mut e.results.hero_one_hp);
 }
 
 /// Tab 2: who owns buildings, artefacts and named squads; armies beaten, active, inactive,
@@ -380,24 +382,24 @@ fn tab_player(f: &mut Form, s: &Scenario, e: &mut Event) {
 fn tab_heroes(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event) {
     let owners = owner_options();
     let c = &mut e.conditions;
-    f.heading("Buildings");
-    f.flag("bld_c", "These buildings belong to", &mut c.buildings_check);
+    f.heading(tr("Buildings"));
+    f.flag("bld_c", tr("These buildings belong to"), &mut c.buildings_check);
     let buildings = building_options(s);
     for k in 0..3 {
         let (mut b, mut o) = (c.buildings[k] as i64, c.buildings_owner[k] as i64);
         f.pick_row(&format!("bld{k}"), &mut [(&mut b, &buildings, 2.0), (&mut o, &owners, 1.0)]);
         (c.buildings[k], c.buildings_owner[k]) = (b as u8, o as u8);
     }
-    f.heading("Artefacts");
-    f.flag("art_c", "These artefacts are held by", &mut c.artifacts_check);
+    f.heading(tr("Artefacts"));
+    f.flag("art_c", tr("These artefacts are held by"), &mut c.artifacts_check);
     let arts = artefact_options(names);
     for k in 0..3 {
         let (mut a, mut o) = (c.artifacts[k] as i64, c.artifacts_owner[k] as i64);
         f.pick_row(&format!("art{k}"), &mut [(&mut a, &arts, 2.0), (&mut o, &owners, 1.0)]);
         (c.artifacts[k], c.artifacts_owner[k]) = (a as u8, o as u8);
     }
-    f.heading("Named squads");
-    f.flag("unit_c", "Squads of this unit and name are in the army of", &mut c.units_check);
+    f.heading(tr("Named squads"));
+    f.flag("unit_c", tr("Squads of this unit and name are in the army of"), &mut c.units_check);
     let units = unit_options(names);
     let named = named_options(s);
     for k in 0..3 {
@@ -405,46 +407,46 @@ fn tab_heroes(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event) {
         f.pick_row(&format!("unit{k}"), &mut [(&mut u, &units, 1.4), (&mut n, &named, 1.2), (&mut o, &owners, 1.0)]);
         (c.units[k], c.units_named[k], c.units_owner[k]) = (u as u8, n as u8, o as u8);
     }
-    f.heading("Armies");
+    f.heading(tr("Armies"));
     let armies = army_options(s);
-    f.flag("beaten_c", "Beaten by anyone", &mut c.beaten_check);
+    f.flag("beaten_c", tr("Beaten by anyone"), &mut c.beaten_check);
     army_pair(f, "beaten", &mut c.beaten_armies, &armies);
-    f.pick("active", "Army is active", &mut c.army_active, &armies);
-    f.pick("inactive", "Army is not active", &mut c.army_inactive, &armies);
-    f.pick("home", "Army is in its home building", &mut c.army_at_home, &armies);
+    f.pick("active", tr("Army is active"), &mut c.army_active, &armies);
+    f.pick("inactive", tr("Army is not active"), &mut c.army_inactive, &armies);
+    f.pick("home", tr("Army is in its home building"), &mut c.army_at_home, &armies);
 }
 
 /// Tab 3: the message, chained event, quest, resources, relative event, delay, flag,
 /// units added, spells, artefacts gained.
 fn tab_result1(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event) {
-    f.memo("message", "Message (empty: the event happens silently)", &mut e.message, 5);
+    f.memo("message", tr("Message (empty: the event happens silently)"), &mut e.message, 5);
     let events = event_options_none(s);
     let r = &mut e.results;
-    f.pick("chained", "Chained event (runs at once)", &mut r.chained_event, &events);
+    f.pick("chained", tr("Chained event (runs at once)"), &mut r.chained_event, &events);
     let quests = quest_options(s, r.completes_quest);
-    f.pick("quest", "Quest completed", &mut r.completes_quest, &quests);
-    f.heading("Resources");
+    f.pick("quest", tr("Quest completed"), &mut r.completes_quest, &quests);
+    f.heading(tr("Resources"));
     if ev::opcode(e).is_some() {
-        f.note("This event runs a Community opcode: these three fields are its arguments (see Community).", ACCENT);
+        f.note(tr("This event runs a Community opcode: these three fields are its arguments (see Community)."), ACCENT);
     }
     let r = &mut e.results;
-    f.num("xp", "Experience", &mut r.experience, -32000, 32000);
-    f.num("gold", "Gold", &mut r.gold, -32000, 32000);
-    f.num("mana", "Mana", &mut r.mana, -32000, 32000);
-    f.heading("Time");
-    f.pick("rel_event", "Relative event", &mut r.relative_event, &events);
-    f.num("relative_h", "... starts in (hours)", &mut r.relative_delay_hours, 0, 5000);
-    f.num("delay", "The hero waits (hours)", &mut r.delay_hours, 0, 65535);
+    f.num("xp", tr("Experience"), &mut r.experience, -32000, 32000);
+    f.num("gold", tr("Gold"), &mut r.gold, -32000, 32000);
+    f.num("mana", tr("Mana"), &mut r.mana, -32000, 32000);
+    f.heading(tr("Time"));
+    f.pick("rel_event", tr("Relative event"), &mut r.relative_event, &events);
+    f.num("relative_h", tr("... starts in (hours)"), &mut r.relative_delay_hours, 0, 5000);
+    f.num("delay", tr("The hero waits (hours)"), &mut r.delay_hours, 0, 65535);
     let parts = ev::split_title(&e.title);
     let mut set = parts.set.clone();
-    f.text("set_flag", "Flag (+X sets, -X clears)", &mut set);
+    f.text("set_flag", tr("Flag (+X sets, -X clears)"), &mut set);
     if set != parts.set {
         e.title = ev::with_flags(&e.title, &set, &parts.test);
     }
     if !set.is_empty() && !set.starts_with(['+', '-']) {
-        f.note("Start the flag with + or -, or it is not saved (as in the original).", RED);
+        f.note(tr("Start the flag with + or -, or it is not saved (as in the original)."), RED);
     }
-    f.heading("Units joining the army");
+    f.heading(tr("Units joining the army"));
     let units = unit_options(names);
     let named = named_options(s);
     let r = &mut e.results;
@@ -453,10 +455,10 @@ fn tab_result1(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event) {
         f.pick_row(&format!("add{k}"), &mut [(&mut u, &units, 1.0), (&mut n, &named, 1.0)]);
         (r.units_add[k], r.units_add_named[k]) = (u as u8, n as u8);
     }
-    f.pick("from_army", "Taken from army", &mut r.units_from_army, &army_options(s));
-    f.heading("Spells learned");
+    f.pick("from_army", tr("Taken from army"), &mut r.units_from_army, &army_options(s));
+    f.heading(tr("Spells learned"));
     four_picks(f, "spells", &mut r.spells_learned, &spell_options(names));
-    f.heading("Artefacts gained");
+    f.heading(tr("Artefacts gained"));
     four_picks(f, "arts_add", &mut r.artifacts_add, &artefact_options(names));
 }
 
@@ -466,19 +468,19 @@ fn tab_result2(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event, picture
     let armies = army_options(s);
     let named = named_options(s);
     let r = &mut e.results;
-    f.heading("Units leaving the army");
-    f.note("The last to join leaves first.", DIM);
+    f.heading(tr("Units leaving the army"));
+    f.note(tr("The last to join leaves first."), DIM);
     let removed = removed_unit_options(names);
     for k in 0..4 {
         let (mut u, mut n) = (r.units_remove[k] as i64, r.units_remove_named[k] as i64);
         f.pick_row(&format!("rem{k}"), &mut [(&mut u, &removed, 1.0), (&mut n, &named, 1.0)]);
         (r.units_remove[k], r.units_remove_named[k]) = (u as u8, n as u8);
     }
-    f.pick("to_army", "They go to army", &mut r.removed_units_to_army, &armies);
-    f.flag("to_hero", "Move that army to the hero", &mut r.move_to_hero);
-    f.heading("Artefacts lost");
+    f.pick("to_army", tr("They go to army"), &mut r.removed_units_to_army, &armies);
+    f.flag("to_hero", tr("Move that army to the hero"), &mut r.move_to_hero);
+    f.heading(tr("Artefacts lost"));
     four_picks(f, "arts_rem", &mut r.artifacts_remove, &artefact_options(names));
-    f.heading("Lanterns lit");
+    f.heading(tr("Lanterns lit"));
     let points = point_options(s);
     let mut l = r.light_lanterns.map(|v| v as i64);
     {
@@ -487,48 +489,48 @@ fn tab_result2(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event, picture
         f.pick_row("lampsb", &mut [(c, &points, 1.0), (d, &points, 1.0)]);
     }
     r.light_lanterns = l.map(|v| v as u16);
-    f.heading("Armies");
-    f.pick("show", "Show army", &mut r.show_army, &armies);
+    f.heading(tr("Armies"));
+    f.pick("show", tr("Show army"), &mut r.show_army, &armies);
     army_pair(f, "activate", &mut r.activate_armies, &armies);
-    f.pick("deactivate", "Deactivate army", &mut r.deactivate_army, &armies);
+    f.pick("deactivate", tr("Deactivate army"), &mut r.deactivate_army, &armies);
     let opcode = ev::opcode(e).is_some();
     let r = &mut e.results;
     if opcode {
-        f.note("Patrol change: this event's patrol value selects a Community opcode (see Community).", ACCENT);
+        f.note(tr("Patrol change: this event's patrol value selects a Community opcode (see Community)."), ACCENT);
     } else {
-        f.pick("patrol_army", "Change the patrol of", &mut r.patrol_army, &armies);
-        f.num("patrol", "... by", &mut r.patrol_delta, -120, 120);
+        f.pick("patrol_army", tr("Change the patrol of"), &mut r.patrol_army, &armies);
+        f.num("patrol", tr("... by"), &mut r.patrol_delta, -120, 120);
     }
-    f.pick("battle", "Start a battle with", &mut r.start_battle_with, &armies);
-    f.flag("generate", "Generate that army to match the player", &mut e.generate_battle_army);
+    f.pick("battle", tr("Start a battle with"), &mut r.start_battle_with, &armies);
+    f.flag("generate", tr("Generate that army to match the player"), &mut e.generate_battle_army);
     let r = &mut e.results;
-    f.flag("no_meeting", "No meeting with the army (for later checks)", &mut r.no_meeting);
+    f.flag("no_meeting", tr("No meeting with the army (for later checks)"), &mut r.no_meeting);
     if r.no_meeting != 0 && e.conditions.meet_army != 0 {
-        f.note("! This event also needs a meeting with an army.", ACCENT);
+        f.note(tr("! This event also needs a meeting with an army."), ACCENT);
     }
-    f.heading("Hero");
+    f.heading(tr("Hero"));
     let r = &mut e.results;
-    f.pick("class", "New hero class", &mut r.new_hero_class, &unit_options(names));
-    f.pick("spell", "Spell on the player's army", &mut r.cast_spell, &spell_options(names));
-    f.heading("Picture");
-    f.pick("picture", "Standard picture", &mut r.picture, &picture_options(names));
+    f.pick("class", tr("New hero class"), &mut r.new_hero_class, &unit_options(names));
+    f.pick("spell", tr("Spell on the player's army"), &mut r.cast_spell, &spell_options(names));
+    f.heading(tr("Picture"));
+    f.pick("picture", tr("Standard picture"), &mut r.picture, &picture_options(names));
     match e.custom_picture.as_deref().map(ev::picture_size) {
-        Some(Some((w, h))) => f.note(&format!("Own picture: {w} x {h} (shown instead of the standard one)."), INK),
-        Some(None) => f.note("Own picture: stored, but its size does not match its data.", RED),
-        None => f.note("No own picture.", DIM),
+        Some(Some((w, h))) => f.note(&trf!("Own picture: {w} x {h} (shown instead of the standard one).", w, h), INK),
+        Some(None) => f.note(tr("Own picture: stored, but its size does not match its data."), RED),
+        None => f.note(tr("No own picture."), DIM),
     }
-    f.text("pic_path", "Import a PNG (path)", picture_path);
+    f.text("pic_path", tr("Import a PNG (path)"), picture_path);
     let mut action = EventsAction::None;
-    match f.buttons(&["Import picture", "Remove own picture"]) {
+    match f.buttons(&[tr("Import picture"), tr("Remove own picture")]) {
         Some(0) => match std::fs::read(picture_path.trim()).ok().and_then(|b| Image::from_file_with_format(&b, None).ok()) {
             Some(img) => match ev::picture_from_rgba(img.width as u32, img.height as u32, &img.bytes) {
                 Some(p) => {
                     e.custom_picture = Some(p);
                     f.changed = Some("picture_file".into());
                 }
-                None => action = EventsAction::Status("The picture is empty.".into()),
+                None => action = EventsAction::Status(tr("The picture is empty.").into()),
             },
-            None => action = EventsAction::Status(format!("Cannot read a picture from \"{}\".", picture_path.trim())),
+            None => action = EventsAction::Status(trf!("Cannot read a picture from \"{path}\".", path = picture_path.trim())),
         },
         Some(_) => {
             e.custom_picture = None;
@@ -536,50 +538,50 @@ fn tab_result2(f: &mut Form, s: &Scenario, names: &Names, e: &mut Event, picture
         }
         None => {}
     }
-    f.note("Imported pictures are scaled to 128 x 128 and stored as 16-bit colour.", DIM);
+    f.note(tr("Imported pictures are scaled to 128 x 128 and stored as 16-bit colour."), DIM);
     action
 }
 
 /// Tab 5: the buildings and points that list the event, and what refers to it.
 fn tab_places(f: &mut Form, s: &Scenario, id: u16) -> Option<EventsAction> {
     let (buildings, points) = ev::places_of(s, id);
-    f.heading("Checked in these buildings");
+    f.heading(tr("Checked in these buildings"));
     let bopts = building_options(s);
     for b in &buildings {
         let label = bopts.iter().find(|o| o.0 == *b as i64).map_or(format!("#{b}"), |o| o.1.clone());
         f.note(&label, INK);
-        if f.button("Detach", true) {
+        if f.button(tr("Detach"), true) {
             return Some(EventsAction::Apply(Command::DetachEvent { place: Target::Building(*b), event: id }, String::new()));
         }
     }
     let mut add: i64 = 0;
-    let mut o: Options = vec![(0, "Attach to a building...".into())];
+    let mut o: Options = vec![(0, tr("Attach to a building...").into())];
     o.extend(bopts.into_iter().skip(1).filter(|b| !buildings.contains(&(b.0 as u16))));
     f.pick("attach_b", "", &mut add, &o);
     if add > 0 {
         return Some(EventsAction::Apply(Command::AttachEvent { place: Target::Building(add as u16), event: id }, String::new()));
     }
-    f.heading("Checked on these points");
+    f.heading(tr("Checked on these points"));
     let popts = point_options(s);
     for p in &points {
         let label = popts.iter().find(|o| o.0 == *p as i64).map_or(format!("#{p}"), |o| o.1.clone());
         f.note(&label, INK);
-        if f.button("Detach", true) {
+        if f.button(tr("Detach"), true) {
             return Some(EventsAction::Apply(Command::DetachEvent { place: Target::Point(*p), event: id }, String::new()));
         }
     }
     let mut add: i64 = 0;
-    let mut o: Options = vec![(0, "Attach to a point...".into())];
+    let mut o: Options = vec![(0, tr("Attach to a point...").into())];
     o.extend(popts.into_iter().skip(1).filter(|p| !points.contains(&(p.0 as u8))));
     f.pick("attach_p", "", &mut add, &o);
     if add > 0 {
         return Some(EventsAction::Apply(Command::AttachEvent { place: Target::Point(add as u8), event: id }, String::new()));
     }
-    f.note("A point holds at most 5 events. Global events need no place.", DIM);
-    f.heading("Referred to by");
+    f.note(tr("A point holds at most 5 events. Global events need no place."), DIM);
+    f.heading(tr("Referred to by"));
     let refs = ev::references_to(s, id);
     if refs.is_empty() {
-        f.note("Nothing.", DIM);
+        f.note(tr("Nothing."), DIM);
     }
     for r in refs {
         f.note(&r.to_string(), INK);
@@ -589,33 +591,34 @@ fn tab_places(f: &mut Form, s: &Scenario, id: u16) -> Option<EventsAction> {
 
 /// Tab 6: the Community opcode ("no meeting" + patrol value) and its arguments.
 fn tab_community(f: &mut Form, s: &Scenario, names: &Names, id: u16, e: &mut Event) {
-    f.note("The Community Update reads \"no meeting\" with a patrol change of 1-20 as an opcode; its arguments are the experience, gold and mana changes of Result 1, which are then not given.", DIM);
-    let mut ops: Options = vec![(0, "(none)".into())];
-    ops.extend(ev::OPCODES.iter().map(|o| (o.code as i64, format!("{} {}", o.code, o.name))));
+    f.note(tr("The Community Update reads \"no meeting\" with a patrol change of 1-20 as an opcode; its arguments are the experience, gold and mana changes of Result 1, which are then not given."), DIM);
+    let mut ops: Options = vec![(0, tr("(none)").into())];
+    ops.extend(ev::OPCODES.iter().map(|o| (o.code as i64, format!("{} {}", o.code, tr(o.name)))));
     let mut op = ev::opcode(e).unwrap_or(0);
-    f.pick("opcode", "Opcode", &mut op, &ops);
+    f.pick("opcode", tr("Opcode"), &mut op, &ops);
     if Some(op) != ev::opcode(e).or(Some(0)) {
         ev::set_opcode(e, (op > 0).then_some(op));
     }
     if ev::opcode(e).is_none() {
         let r = &e.results;
         if r.no_meeting != 0 && r.cast_spell != 0 {
-            f.note("\"No meeting\" + a spell: the spell is lifted from the player instead of cast.", INK);
+            f.note(tr("\"No meeting\" + a spell: the spell is lifted from the player instead of cast."), INK);
         }
         if r.no_meeting != 0 && e.conditions.units_check != 0 {
-            f.note("\"No meeting\" + named squads: the named unit's class is checked too.", INK);
+            f.note(tr("\"No meeting\" + named squads: the named unit's class is checked too."), INK);
         }
         return;
     }
     let Some(info) = ev::opcode_info(op) else { return };
-    f.heading(info.name);
+    f.heading(tr(info.name));
     if info.condition {
-        f.note("A condition: the event fires only when the check holds.", DIM);
+        f.note(tr("A condition: the event fires only when the check holds."), DIM);
     }
     let mut args = ev::opcode_args(e);
-    let fields: Options = ev::EVENT_FIELDS.iter().map(|(o, l)| (*o as i64, format!("{l} ({o})"))).collect();
+    let fields: Options = ev::EVENT_FIELDS.iter().map(|(o, l)| (*o as i64, format!("{} ({o})", tr(l)))).collect();
     for (k, arg) in info.args.iter().enumerate() {
         let Some((label, kind)) = arg else { continue };
+        let label = tr(label);
         let key = format!("arg{k}");
         match kind {
             Arg::EventField => f.pick(&key, label, &mut args[k], &fields),
@@ -632,29 +635,29 @@ fn tab_community(f: &mut Form, s: &Scenario, names: &Names, id: u16, e: &mut Eve
     }
     ev::set_opcode_args(e, args);
     if let Some(uses) = info.uses {
-        f.note(&format!("Also uses {uses}."), INK);
+        f.note(&trf!("Also uses {uses}.", uses = tr(uses)), INK);
     }
     if (1..=5).contains(&op) {
-        f.heading("Second setting");
+        f.heading(tr("Second setting"));
         let mut on = ev::second_edit(e).is_some() as u8;
-        f.flag("second", "Also a second edit (in the conditions)", &mut on);
+        f.flag("second", tr("Also a second edit (in the conditions)"), &mut on);
         let mut x = ev::second_edit(e).unwrap_or(EventEdit { action: 1, shift: 0, field: 85, value: 0 });
         if on != 0 {
-            let actions: Options = ev::OPCODES[..5].iter().map(|o| (o.code as i64, o.name.to_string())).collect();
-            f.pick("second_action", "Action (squad count)", &mut x.action, &actions);
-            f.num("second_shift", "Target event (gold)", &mut x.shift, -32000, 32000);
+            let actions: Options = ev::OPCODES[..5].iter().map(|o| (o.code as i64, tr(o.name).to_string())).collect();
+            f.pick("second_action", tr("Action (squad count)"), &mut x.action, &actions);
+            f.num("second_shift", tr("Target event (gold)"), &mut x.shift, -32000, 32000);
             f.note(&format!("= {}", ev::event_label(s, (id as i64 + x.shift as i64).clamp(0, u16::MAX as i64) as u16)), DIM);
-            f.pick("second_field", "Field (level)", &mut x.field, &fields);
-            f.num("second_value", "Value (holiness and mana)", &mut x.value, -32000, 32000);
+            f.pick("second_field", tr("Field (level)"), &mut x.field, &fields);
+            f.num("second_value", tr("Value (holiness and mana)"), &mut x.value, -32000, 32000);
         }
         ev::set_second_edit(e, (on != 0).then_some(x));
     }
     if op == 19 {
-        f.heading("Position check");
+        f.heading(tr("Position check"));
         let c = &mut e.conditions;
-        f.num("pos_army", "Army (strength field)", &mut c.army_strength, 0, 255);
-        f.num("pos_x", "X (gold field)", &mut c.gold, 0, 32000);
-        f.num("pos_y", "Y (holiness field)", &mut c.holiness_mana, 0, 32000);
-        f.note("0 = no check.", DIM);
+        f.num("pos_army", tr("Army (strength field)"), &mut c.army_strength, 0, 255);
+        f.num("pos_x", tr("X (gold field)"), &mut c.gold, 0, 32000);
+        f.num("pos_y", tr("Y (holiness field)"), &mut c.holiness_mana, 0, 32000);
+        f.note(tr("0 = no check."), DIM);
     }
 }

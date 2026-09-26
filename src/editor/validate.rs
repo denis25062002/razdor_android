@@ -9,6 +9,8 @@ use std::fmt;
 
 use crate::dt::dtm::{Scenario, BUILDING_SIZE, EVENT_SIZE};
 use crate::dt::text;
+use crate::i18n::{n_, tr};
+use crate::trf;
 
 use super::geometry::Footprint;
 use super::palette::{building_type_label, Names, Palette};
@@ -42,14 +44,14 @@ pub struct Issue {
 impl fmt::Display for Place {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Place::Map => write!(f, "Map"),
-            Place::Settings => write!(f, "Scenario settings"),
-            Place::Hero(k) => write!(f, "{} start", super::palette::HERO_CLASSES.get(*k).unwrap_or(&"Hero")),
-            Place::Object(i) => write!(f, "Object {}", i + 1),
-            Place::Building(id) => write!(f, "Building {id}"),
-            Place::Army(id) => write!(f, "Army {id}"),
-            Place::Point(id) => write!(f, "Point {id}"),
-            Place::Event(id) => write!(f, "Event {id}"),
+            Place::Map => f.write_str(tr("Map")),
+            Place::Settings => f.write_str(tr("Scenario settings")),
+            Place::Hero(k) => f.write_str(&trf!("{class} start", class = tr(super::palette::HERO_CLASSES.get(*k).unwrap_or(&n_("Hero"))))),
+            Place::Object(i) => f.write_str(&trf!("Object {n}", n = i + 1)),
+            Place::Building(id) => f.write_str(&trf!("Building {id}", id)),
+            Place::Army(id) => f.write_str(&trf!("Army {id}", id)),
+            Place::Point(id) => f.write_str(&trf!("Point {id}", id)),
+            Place::Event(id) => f.write_str(&trf!("Event {id}", id)),
         }
     }
 }
@@ -57,8 +59,8 @@ impl fmt::Display for Place {
 impl fmt::Display for Issue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
+            Severity::Error => tr("error"),
+            Severity::Warning => tr("warning"),
         };
         write!(f, "{} ({s}): {}", self.place, self.message)
     }
@@ -91,35 +93,35 @@ impl Checker<'_> {
 
     fn string(&mut self, place: Place, what: &str, s: &str) {
         if s.contains('\0') {
-            self.error(place, format!("the {what} contains a NUL character"));
+            self.error(place, trf!("the {what} contains a NUL character", what));
         } else if text::decode(&text::encode(s)) != s {
             let bad: String = s.chars().filter(|c| text::decode(&text::encode(&c.to_string())) != c.to_string()).take(5).collect();
-            self.warn(place, format!("the {what} has characters Windows-1251 cannot store ({bad}); they are saved as '?'"));
+            self.warn(place, trf!("the {what} has characters Windows-1251 cannot store ({bad}); they are saved as '?'", what, bad));
         }
     }
 
     fn building_ref(&mut self, place: Place, what: &str, id: u32) {
         if id as usize > self.s.buildings.len() {
-            self.error(place, format!("{what} refers to building {id}, which does not exist"));
+            self.error(place, trf!("{what} refers to building {id}, which does not exist", what, id));
         }
     }
 
     fn army_ref(&mut self, place: Place, what: &str, id: u32) {
         if id as usize > self.s.armies.len() {
-            self.error(place, format!("{what} refers to army {id}, which does not exist"));
+            self.error(place, trf!("{what} refers to army {id}, which does not exist", what, id));
         }
     }
 
     fn event_ref(&mut self, place: Place, what: &str, id: u32) {
         if id as usize > self.s.events.len() {
-            self.error(place, format!("{what} refers to event {id}, which does not exist"));
+            self.error(place, trf!("{what} refers to event {id}, which does not exist", what, id));
         }
     }
 
     fn unit(&mut self, place: Place, what: &str, id: u8) {
         if let Some(n) = self.names {
             if id != 0 && !n.has_unit(id as u32) {
-                self.error(place, format!("{what}: unit {id} is not in the game's unit list"));
+                self.error(place, trf!("{what}: unit {id} is not in the game's unit list", what, id));
             }
         }
     }
@@ -127,7 +129,7 @@ impl Checker<'_> {
     fn artefact(&mut self, place: Place, what: &str, id: u32) {
         if let Some(n) = self.names {
             if id != 0 && !n.has_artefact(id) {
-                self.error(place, format!("{what}: artefact {id} is not in the game's artefact list"));
+                self.error(place, trf!("{what}: artefact {id} is not in the game's artefact list", what, id));
             }
         }
     }
@@ -135,20 +137,20 @@ impl Checker<'_> {
     fn spell(&mut self, place: Place, what: &str, id: u8) {
         if let Some(n) = self.names {
             if id != 0 && !n.has_spell(id as u32) {
-                self.error(place, format!("{what}: spell {id} is not in the game's spell list"));
+                self.error(place, trf!("{what}: spell {id} is not in the game's spell list", what, id));
             }
         }
     }
 
     fn relations(&mut self, place: Place, what: &str, r: &[i8]) {
         if r.iter().any(|v| !(-3..=3).contains(v)) {
-            self.error(place, format!("{what} must lie between -3 and 3"));
+            self.error(place, trf!("{what} must lie between -3 and 3", what));
         }
     }
 
     fn faction(&mut self, place: Place, f: u8) {
         if !(1..=4).contains(&f) {
-            self.error(place, format!("faction {f} is not one of 1-4 (player, ally, neighbour, enemy)"));
+            self.error(place, trf!("faction {f} is not one of 1-4 (player, ally, neighbour, enemy)", f));
         }
     }
 
@@ -156,25 +158,25 @@ impl Checker<'_> {
         let s = self.s;
         let (w, h) = (s.width(), s.height());
         if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
-            self.error(Place::Map, format!("map size {w}x{h}: each side must be 1-{MAX_SIDE}"));
+            self.error(Place::Map, trf!("map size {w}x{h}: each side must be 1-{max}", w, h, max = MAX_SIDE));
         }
         if s.terrain.len() as u64 != w as u64 * h as u64 {
-            self.error(Place::Map, format!("the terrain has {} cells, the size needs {}", s.terrain.len(), w as u64 * h as u64));
+            self.error(Place::Map, trf!("the terrain has {cells} cells, the size needs {need}", cells = s.terrain.len(), need = w as u64 * h as u64));
         }
         if w != h {
-            self.warn(Place::Map, "the map is not square; every shipped map is".into());
+            self.warn(Place::Map, tr("the map is not square; every shipped map is").into());
         }
         if let Some(c) = s.terrain.iter().find(|c| **c > 15) {
-            self.error(Place::Map, format!("terrain code {c} is not one of the 16 surfaces"));
+            self.error(Place::Map, trf!("terrain code {c} is not one of the 16 surfaces", c));
         }
         let from_install = self.palette.filter(|p| p.from_install);
         for (i, o) in s.objects.iter().enumerate() {
             if !self.inside(o.x, o.y) {
-                self.error(Place::Object(i), format!("object at ({}, {}) is outside the map", o.x, o.y));
+                self.error(Place::Object(i), trf!("object at ({x}, {y}) is outside the map", x = o.x, y = o.y));
             }
             if let Some(p) = from_install {
                 if !p.has_object(o.class, o.sprite) {
-                    self.error(Place::Object(i), format!("the game has no picture for object class {} sprite {}", o.class, o.sprite));
+                    self.error(Place::Object(i), trf!("the game has no picture for object class {class} sprite {sprite}", class = o.class, sprite = o.sprite));
                 }
             }
         }
@@ -183,44 +185,44 @@ impl Checker<'_> {
     fn settings(&mut self) {
         let s = self.s;
         let h = &s.header;
-        for (what, v) in [("title", &s.title), ("description", &s.description), ("campaign name", &s.campaign_name), ("next map", &s.next_map)] {
+        for (what, v) in [(tr("title"), &s.title), (tr("description"), &s.description), (tr("campaign name"), &s.campaign_name), (tr("next map"), &s.next_map)] {
             self.string(Place::Settings, what, v);
         }
         if !s.next_map.is_empty() && !s.next_map.to_ascii_lowercase().ends_with(".dtm") {
-            self.warn(Place::Settings, format!("the next map \"{}\" should be a .DTm file name", s.next_map));
+            self.warn(Place::Settings, trf!("the next map \"{file}\" should be a .DTm file name", file = s.next_map));
         }
-        self.event_ref(Place::Settings, "the victory event", h.victory_event as u32);
-        self.event_ref(Place::Settings, "the defeat event", h.defeat_event as u32);
+        self.event_ref(Place::Settings, tr("the victory event"), h.victory_event as u32);
+        self.event_ref(Place::Settings, tr("the defeat event"), h.defeat_event as u32);
         for row in &h.relations {
-            self.relations(Place::Settings, "the faction relations", row);
+            self.relations(Place::Settings, tr("the faction relations"), row);
         }
         if h.scenario_kind > 2 {
-            self.error(Place::Settings, format!("scenario kind {} is not one of 0-2", h.scenario_kind));
+            self.error(Place::Settings, trf!("scenario kind {kind} is not one of 0-2", kind = h.scenario_kind));
         }
         if s.named_characters.len() > 32 {
-            self.error(Place::Settings, format!("{} named characters; at most 32 fit", s.named_characters.len()));
+            self.error(Place::Settings, trf!("{n} named characters; at most 32 fit", n = s.named_characters.len()));
         }
         for (k, n) in s.named_characters.iter().enumerate() {
-            self.unit(Place::Settings, &format!("named character {}", k + 1), n.unit);
-            self.string(Place::Settings, &format!("name of named character {}", k + 1), &n.name);
+            self.unit(Place::Settings, &trf!("named character {n}", n = k + 1), n.unit);
+            self.string(Place::Settings, &trf!("name of named character {n}", n = k + 1), &n.name);
         }
         for (k, p) in h.heroes.iter().enumerate() {
             let place = Place::Hero(k);
             if !self.inside(p.x, p.y) {
-                self.error(place, format!("the start ({}, {}) is outside the map", p.x, p.y));
+                self.error(place, trf!("the start ({x}, {y}) is outside the map", x = p.x, y = p.y));
             }
-            self.building_ref(place, "the start building", p.start_building as u32);
+            self.building_ref(place, tr("the start building"), p.start_building as u32);
             for t in p.troops.iter().filter(|t| t.unit != 0) {
-                self.unit(place, "starting troops", t.unit);
+                self.unit(place, tr("starting troops"), t.unit);
             }
             for a in p.artifacts {
-                self.artefact(place, "starting artefacts", a as u32);
+                self.artefact(place, tr("starting artefacts"), a as u32);
             }
             for sp in p.spells {
-                self.spell(place, "starting spells", sp);
+                self.spell(place, tr("starting spells"), sp);
             }
             if p.gold > i16::MAX as u32 || p.mana > i16::MAX as u32 {
-                self.error(place, format!("gold and mana must be at most {} (the game reads 16 bits)", i16::MAX));
+                self.error(place, trf!("gold and mana must be at most {max} (the game reads 16 bits)", max = i16::MAX));
             }
         }
     }
@@ -228,7 +230,7 @@ impl Checker<'_> {
     fn buildings(&mut self) {
         let s = self.s;
         if s.buildings.len() > MAX_RECORDS {
-            self.error(Place::Map, format!("{} buildings; at most {MAX_RECORDS} can be referred to", s.buildings.len()));
+            self.error(Place::Map, trf!("{n} buildings; at most {max} can be referred to", n = s.buildings.len(), max = MAX_RECORDS));
         }
         let footprints: Vec<Footprint> = s.buildings.iter().map(|b| Footprint::of(b.x as i32, b.y as i32, b.size_x, b.size_y)).collect();
         let from_install = self.palette.filter(|p| p.from_install);
@@ -236,65 +238,65 @@ impl Checker<'_> {
             let id = i as u16 + 1;
             let place = Place::Building(id);
             if b.kind > 15 {
-                self.error(place, format!("building type {} is not one of 0-15", b.kind));
+                self.error(place, trf!("building type {kind} is not one of 0-15", kind = b.kind));
             }
             if b.size_x == 0 || b.size_y == 0 {
-                self.error(place, "the footprint size must be at least 1x1".into());
+                self.error(place, tr("the footprint size must be at least 1x1").into());
             }
             if !footprints[i].inside(s.width(), s.height()) {
-                self.error(place, format!("the footprint of the {} at ({}, {}) reaches outside the map", building_type_label(b.kind), b.x, b.y));
+                self.error(place, trf!("the footprint of the {kind} at ({x}, {y}) reaches outside the map", kind = tr(building_type_label(b.kind)), x = b.x, y = b.y));
             }
             let is_bridge = matches!(b.kind, 13 | 14);
             if !is_bridge {
                 let bounds = footprints[i].bounds();
                 if let Some(j) = (0..i).find(|&j| !matches!(s.buildings[j].kind, 13 | 14) && footprints[j].bounds().overlaps(&bounds)) {
-                    self.warn(place, format!("overlaps building {}", j + 1));
+                    self.warn(place, trf!("overlaps building {n}", n = j + 1));
                 }
             }
             if let Some(p) = from_install {
                 match p.picture(b.picture_type, b.picture_variant) {
-                    None => self.error(place, format!("the game has no picture {} of type {}", b.picture_variant, b.picture_type)),
+                    None => self.error(place, trf!("the game has no picture {variant} of type {kind}", variant = b.picture_variant, kind = b.picture_type)),
                     Some(pic) if pic.size != (b.size_x, b.size_y) => self.warn(
                         place,
-                        format!("footprint {}x{} differs from its picture's {}x{}", b.size_x, b.size_y, pic.size.0, pic.size.1),
+                        trf!("footprint {w}x{h} differs from its picture's {pw}x{ph}", w = b.size_x, h = b.size_y, pw = pic.size.0, ph = pic.size.1),
                     ),
                     Some(_) => {}
                 }
             }
             if b.event_count as usize > b.event_slots.len() {
-                self.error(place, format!("{} local events; at most {} fit", b.event_count, b.event_slots.len()));
+                self.error(place, trf!("{n} local events; at most {max} fit", n = b.event_count, max = b.event_slots.len()));
             }
             for e in b.events() {
-                self.event_ref(place, "a local event", e as u32);
+                self.event_ref(place, tr("a local event"), e as u32);
             }
             if b.owner_army != 0 && b.owner_army != 0xFF {
-                self.army_ref(place, "the owner", b.owner_army as u32);
+                self.army_ref(place, tr("the owner"), b.owner_army as u32);
             }
-            self.building_ref(place, "the linked building", b.linked_building as u32);
+            self.building_ref(place, tr("the linked building"), b.linked_building as u32);
             if b.linked_building as u16 == id {
-                self.warn(place, "is linked to itself".into());
+                self.warn(place, tr("is linked to itself").into());
             }
             self.faction(place, b.faction);
-            self.relations(place, "attitudes", &b.relations);
+            self.relations(place, tr("attitudes"), &b.relations);
             for t in b.garrison.iter().filter(|t| t.unit != 0) {
-                self.unit(place, "garrison", t.unit);
+                self.unit(place, tr("garrison"), t.unit);
             }
             for r in b.barracks.iter().filter(|r| r.unit != 0) {
-                self.unit(place, "barracks", r.unit);
+                self.unit(place, tr("barracks"), r.unit);
                 if r.start_count > r.max_count {
-                    self.warn(place, format!("barracks start with {} units but hold at most {}", r.start_count, r.max_count));
+                    self.warn(place, trf!("barracks start with {start} units but hold at most {max}", start = r.start_count, max = r.max_count));
                 }
             }
             for a in b.artifacts() {
-                self.artefact(place, "goods", a as u32);
+                self.artefact(place, tr("goods"), a as u32);
             }
             for sp in b.spells_for_sale {
-                self.spell(place, "spells for sale", sp);
+                self.spell(place, tr("spells for sale"), sp);
             }
             if b.kind != 12 && b.random_artifacts_for_sale > 0 && b.price_min > b.price_max {
-                self.warn(place, format!("the lowest price {} is above the highest {}", b.price_min, b.price_max));
+                self.warn(place, trf!("the lowest price {low} is above the highest {high}", low = b.price_min, high = b.price_max));
             }
-            for (what, v) in [("name", &b.name), ("owner name", &b.owner_name), ("description", &b.description)] {
+            for (what, v) in [(tr("name"), &b.name), (tr("owner name"), &b.owner_name), (tr("description"), &b.description)] {
                 self.string(place, what, v);
             }
         }
@@ -303,40 +305,40 @@ impl Checker<'_> {
     fn armies(&mut self) {
         let s = self.s;
         if s.armies.len() > MAX_RECORDS {
-            self.error(Place::Map, format!("{} armies; at most {MAX_RECORDS} fit", s.armies.len()));
+            self.error(Place::Map, trf!("{n} armies; at most {max} fit", n = s.armies.len(), max = MAX_RECORDS));
         }
         for (i, a) in s.armies.iter().enumerate() {
             let place = Place::Army(i.min(254) as u8 + 1);
             if a.id as usize != i + 1 {
-                self.error(place, format!("stores id {}; armies must be numbered in order", a.id));
+                self.error(place, trf!("stores id {id}; armies must be numbered in order", id = a.id));
             }
             if !self.inside(a.x, a.y) {
-                self.error(place, format!("({}, {}) is outside the map", a.x, a.y));
+                self.error(place, trf!("({x}, {y}) is outside the map", x = a.x, y = a.y));
             }
             if !(1..=12).contains(&a.model) {
-                self.error(place, format!("map model {} is not one of 1-12", a.model));
+                self.error(place, trf!("map model {model} is not one of 1-12", model = a.model));
             }
-            self.building_ref(place, "the home building", a.home_building as u32);
+            self.building_ref(place, tr("the home building"), a.home_building as u32);
             if a.named_character as usize > s.named_characters.len() {
-                self.error(place, format!("named character {} does not exist", a.named_character));
+                self.error(place, trf!("named character {n} does not exist", n = a.named_character));
             }
-            self.unit(place, "the leader", a.leader_unit);
+            self.unit(place, tr("the leader"), a.leader_unit);
             for t in a.troops.iter().filter(|t| t.unit != 0) {
-                self.unit(place, "troops", t.unit);
+                self.unit(place, tr("troops"), t.unit);
             }
             if a.leader_unit == 0 && a.troops().next().is_none() {
-                self.warn(place, "has neither a leader nor troops".into());
+                self.warn(place, tr("has neither a leader nor troops").into());
             }
             for x in a.artifacts {
-                self.artefact(place, "carried artefacts", x as u32);
+                self.artefact(place, tr("carried artefacts"), x as u32);
             }
-            self.spell(place, "the spell on the army", a.spell);
+            self.spell(place, tr("the spell on the army"), a.spell);
             self.faction(place, a.faction);
-            self.relations(place, "attitudes", &a.relations);
+            self.relations(place, tr("attitudes"), &a.relations);
             if a.target_model > 4 {
-                self.error(place, format!("target model {} is not one of 0-4", a.target_model));
+                self.error(place, trf!("target model {model} is not one of 0-4", model = a.target_model));
             }
-            for (what, v) in [("name", &a.name), ("leader name", &a.leader_name), ("description", &a.description)] {
+            for (what, v) in [(tr("name"), &a.name), (tr("leader name"), &a.leader_name), (tr("description"), &a.description)] {
                 self.string(place, what, v);
             }
         }
@@ -345,27 +347,27 @@ impl Checker<'_> {
     fn points(&mut self) {
         let s = self.s;
         if s.points.len() > MAX_RECORDS {
-            self.error(Place::Map, format!("{} points; at most {MAX_RECORDS} fit", s.points.len()));
+            self.error(Place::Map, trf!("{n} points; at most {max} fit", n = s.points.len(), max = MAX_RECORDS));
         }
         for (i, p) in s.points.iter().enumerate() {
             let place = Place::Point(i.min(254) as u8 + 1);
             if p.id as usize != i + 1 {
-                self.error(place, format!("stores id {}; points must be numbered in order", p.id));
+                self.error(place, trf!("stores id {id}; points must be numbered in order", id = p.id));
             }
             if !self.inside(p.x, p.y) {
-                self.error(place, format!("({}, {}) is outside the map", p.x, p.y));
+                self.error(place, trf!("({x}, {y}) is outside the map", x = p.x, y = p.y));
             }
             if !matches!(p.model, 8 | 9) {
-                self.error(place, format!("model {} is neither 8 (lantern) nor 9 (event point)", p.model));
+                self.error(place, trf!("model {model} is neither 8 (lantern) nor 9 (event point)", model = p.model));
             }
             if p.event_count as usize > p.event_slots.len() {
-                self.error(place, format!("{} events; at most {} fit", p.event_count, p.event_slots.len()));
+                self.error(place, trf!("{n} events; at most {max} fit", n = p.event_count, max = p.event_slots.len()));
             }
             for e in p.events() {
-                self.event_ref(place, "an attached event", e as u32);
+                self.event_ref(place, tr("an attached event"), e as u32);
             }
             if p.radius > 24 {
-                self.warn(place, format!("radius {} is above the original's 24", p.radius));
+                self.warn(place, trf!("radius {r} is above the original's 24", r = p.radius));
             }
         }
     }
@@ -374,7 +376,7 @@ impl Checker<'_> {
         use super::events::{self as ev, Arg};
         let s = self.s;
         if s.events.len() > ev::MAX_EVENTS {
-            self.error(Place::Map, format!("{} events; the original editor holds at most {}", s.events.len(), ev::MAX_EVENTS));
+            self.error(Place::Map, trf!("{n} events; the original editor holds at most {max}", n = s.events.len(), max = ev::MAX_EVENTS));
         }
         let named = s.named_characters.len();
         for (i, e) in s.events.iter().enumerate() {
@@ -383,61 +385,61 @@ impl Checker<'_> {
             let (c, r) = (&e.conditions, &e.results);
             let opcode = ev::opcode(e);
             if !(1..=4).contains(&e.kind) {
-                self.error(place, format!("type {} is not one of 1-4 (global, local, quest, rumour)", e.kind));
+                self.error(place, trf!("type {kind} is not one of 1-4 (global, local, quest, rumour)", kind = e.kind));
             }
             if e.archetype > 3 {
-                self.error(place, format!("hero archetype {} is not one of 0-3", e.archetype));
+                self.error(place, trf!("hero archetype {n} is not one of 0-3", n = e.archetype));
             }
             for b in c.buildings {
-                self.building_ref(place, "a building condition", b as u32);
+                self.building_ref(place, tr("a building condition"), b as u32);
             }
             for a in c.defeated_armies.into_iter().chain(c.beaten_armies).chain([c.meet_army, c.army_active, c.army_inactive, c.army_at_home]) {
-                self.army_ref(place, "a condition", a as u32);
+                self.army_ref(place, tr("a condition"), a as u32);
             }
             for a in r.activate_armies.into_iter().chain([r.deactivate_army, r.show_army, r.start_battle_with, r.removed_units_to_army, r.units_from_army]) {
-                self.army_ref(place, "a result", a as u32);
+                self.army_ref(place, tr("a result"), a as u32);
             }
             if opcode.is_none() {
-                self.army_ref(place, "the patrol change", r.patrol_army as u32);
+                self.army_ref(place, tr("the patrol change"), r.patrol_army as u32);
             }
             for x in c.happened_yes.into_iter().chain(c.happened_no).chain(c.not_happened).chain([r.relative_event, r.completes_quest, r.chained_event]) {
-                self.event_ref(place, "a condition or result", x as u32);
+                self.event_ref(place, tr("a condition or result"), x as u32);
             }
             if r.completes_quest != 0 && (r.completes_quest as usize) <= s.events.len() && !ev::is_quest(s, r.completes_quest) {
-                self.error(place, format!("completes event {}, which is not a quest", r.completes_quest));
+                self.error(place, trf!("completes event {id}, which is not a quest", id = r.completes_quest));
             }
             for l in r.light_lanterns {
                 if l as usize > s.points.len() {
-                    self.error(place, format!("lights point {l}, which does not exist"));
+                    self.error(place, trf!("lights point {l}, which does not exist", l));
                 }
             }
-            for (what, list) in [("named squads", &c.units_named[..]), ("units added", &r.units_add_named[..]), ("units removed", &r.units_remove_named[..])] {
+            for (what, list) in [(tr("named squads"), &c.units_named[..]), (tr("units added"), &r.units_add_named[..]), (tr("units removed"), &r.units_remove_named[..])] {
                 for n in list.iter().filter(|n| **n as usize > named) {
-                    self.error(place, format!("{what}: named character {n} does not exist"));
+                    self.error(place, trf!("{what}: named character {n} does not exist", what, n));
                 }
             }
             for o in c.buildings_owner.into_iter().chain(c.units_owner).chain(c.artifacts_owner) {
                 if o > 6 {
-                    self.error(place, format!("owner code {o} is not one of 0-6"));
+                    self.error(place, trf!("owner code {o} is not one of 0-6", o));
                 }
             }
             for u in c.units.into_iter().chain(r.units_add).chain(r.units_remove.into_iter().filter(|u| *u < ev::REMOVE_ADDED_UNIT)).chain([r.new_hero_class]) {
-                self.unit(place, "the event", u);
+                self.unit(place, tr("the event"), u);
             }
             if !matches!(r.picture, 0 | ev::PICTURE_DEFEAT | ev::PICTURE_VICTORY) {
-                self.unit(place, "the picture", r.picture);
+                self.unit(place, tr("the picture"), r.picture);
             }
             for a in c.artifacts.into_iter().chain(r.artifacts_add).chain(r.artifacts_remove) {
-                self.artefact(place, "the event", a as u32);
+                self.artefact(place, tr("the event"), a as u32);
             }
             for sp in r.spells_learned.into_iter().chain([r.cast_spell]) {
-                self.spell(place, "the event", sp);
+                self.spell(place, tr("the event"), sp);
             }
             for m in ev::flag_problems(&e.title) {
-                self.error(place, format!("flag script: {m}"));
+                self.error(place, trf!("flag script: {m}", m));
             }
             if c.confirm_question != 0 && e.question.trim().is_empty() && e.message.trim().is_empty() {
-                self.warn(place, "asks a question but has neither a question nor a message text".into());
+                self.warn(place, tr("asks a question but has neither a question nor a message text").into());
             }
             if let Some(op) = opcode.and_then(ev::opcode_info) {
                 let args = ev::opcode_args(e);
@@ -454,26 +456,26 @@ impl Checker<'_> {
                         Arg::Number => false,
                     };
                     if bad {
-                        self.warn(place, format!("opcode {} ({}): {label} = {v} names nothing on this map", op.code, op.name));
+                        self.warn(place, trf!("opcode {code} ({name}): {label} = {v} names nothing on this map", code = op.code, name = tr(op.name), label = tr(label), v));
                     }
                 }
                 if let Some(x) = ev::second_edit(e) {
                     if !(1..=s.events.len() as i64).contains(&(id as i64 + x.shift as i64)) {
-                        self.warn(place, format!("opcode {}: the second setting's target event ({:+}) does not exist", op.code, x.shift));
+                        self.warn(place, trf!("opcode {code}: the second setting's target event ({shift}) does not exist", code = op.code, shift = format!("{:+}", x.shift)));
                     }
                     if !ev::EVENT_FIELDS.iter().any(|f| f.0 as i16 == x.field) {
-                        self.warn(place, format!("opcode {}: the second setting's field {} is not a field", op.code, x.field));
+                        self.warn(place, trf!("opcode {code}: the second setting's field {field} is not a field", code = op.code, field = x.field));
                     }
                 }
             }
             if let Some(p) = &e.custom_picture {
                 if p.len() > u16::MAX as usize {
-                    self.error(place, "the event picture is larger than 65535 bytes".into());
+                    self.error(place, tr("the event picture is larger than 65535 bytes").into());
                 } else if ev::picture_size(p).is_none() {
-                    self.warn(place, "the event picture's size does not match its data".into());
+                    self.warn(place, tr("the event picture's size does not match its data").into());
                 }
             }
-            for (what, v) in [("title", &e.title), ("question", &e.question), ("message", &e.message)] {
+            for (what, v) in [(tr("title"), &e.title), (tr("question"), &e.question), (tr("message"), &e.message)] {
                 self.string(place, what, v);
             }
         }
@@ -505,19 +507,19 @@ pub fn validate(s: &Scenario, names: Option<&Names>, palette: Option<&Palette>) 
 /// counts and the strings (one per field, in record order) all line up.
 pub fn self_check(s: &Scenario) -> Result<Vec<u8>, String> {
     let bytes = s.to_payload();
-    let back = Scenario::parse_payload(&bytes).map_err(|e| format!("the written map does not read back: {e}"))?;
+    let back = Scenario::parse_payload(&bytes).map_err(|e| trf!("the written map does not read back: {e}", e))?;
     let sizes = [back.buildings.len() * BUILDING_SIZE, back.events.len() * EVENT_SIZE];
     if sizes != [s.buildings.len() * BUILDING_SIZE, s.events.len() * EVENT_SIZE] || back.armies.len() != s.armies.len() || back.points.len() != s.points.len() {
-        return Err("the written map has a different number of records".into());
+        return Err(tr("the written map has a different number of records").into());
     }
     // Every record's strings are where the reader expects them: 4 of the scenario, 3 per
     // building, army and event, one per named character.
     let expected = 4 + 3 * (s.buildings.len() + s.armies.len() + s.events.len()) + s.named_characters.len();
     if count_strings(&bytes) != Some(expected) {
-        return Err("the written map has a different number of texts than its records need".into());
+        return Err(tr("the written map has a different number of texts than its records need").into());
     }
     if back.to_payload() != bytes {
-        return Err("the written map does not serialise back to the same bytes".into());
+        return Err(tr("the written map does not serialise back to the same bytes").into());
     }
     Ok(bytes)
 }

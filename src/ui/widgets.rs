@@ -493,6 +493,7 @@ pub fn small_button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) 
     draw_rectangle(x, y, w, h, bg);
     draw_rectangle_lines(x, y, w, h, 1.0, if enabled { DIM } else { Color::new(0.3, 0.3, 0.3, 1.0) });
     let size = fit_size(label, w - 6.0, 17.0);
+    let label = &ellipsize(label, w - 6.0, size);
     let d = measure(label, size);
     text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, size, if enabled { INK } else { DIM });
     hover && clicked()
@@ -505,6 +506,7 @@ pub fn toggle_button(x: f32, y: f32, w: f32, h: f32, label: &str, on: bool) -> b
     draw_rectangle(x, y, w, h, bg);
     draw_rectangle_lines(x, y, w, h, 1.0, if on { ACCENT } else { DIM });
     let size = fit_size(label, w - 6.0, 17.0);
+    let label = &ellipsize(label, w - 6.0, size);
     let d = measure(label, size);
     text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, size, INK);
     let pressed = hover && clicked();
@@ -514,9 +516,12 @@ pub fn toggle_button(x: f32, y: f32, w: f32, h: f32, label: &str, on: bool) -> b
     pressed
 }
 
-/// A check box with its label; returns the new state when clicked.
-pub fn checkbox(x: f32, y: f32, label: &str, value: bool) -> Option<bool> {
-    let w = 22.0 + measure(label, 17.0).width + 6.0;
+/// A check box with its label, at most `max_w` wide (a long label shrinks, then is
+/// shortened); returns the new state when clicked.
+pub fn checkbox(x: f32, y: f32, max_w: f32, label: &str, value: bool) -> Option<bool> {
+    let size = fit_size(label, max_w - 28.0, 17.0);
+    let label = &ellipsize(label, max_w - 28.0, size);
+    let w = 22.0 + measure(label, size).width + 6.0;
     let hover = mouse_in(x, y, w, 22.0);
     draw_rectangle(x, y + 2.0, 18.0, 18.0, FIELD_BG);
     draw_rectangle_lines(x, y + 2.0, 18.0, 18.0, 1.0, if hover { INK } else { DIM });
@@ -524,7 +529,7 @@ pub fn checkbox(x: f32, y: f32, label: &str, value: bool) -> Option<bool> {
         draw_line(x + 4.0, y + 11.0, x + 8.0, y + 16.0, 2.5, ACCENT);
         draw_line(x + 8.0, y + 16.0, x + 15.0, y + 5.0, 2.5, ACCENT);
     }
-    text(label, x + 24.0, y + 16.0, 17.0, INK);
+    text(label, x + 24.0, y + 16.0, size, INK);
     if hover && clicked() {
         claim();
         return Some(!value);

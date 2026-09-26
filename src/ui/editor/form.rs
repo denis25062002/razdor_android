@@ -139,7 +139,7 @@ impl Form {
     /// A 0/1 flag byte as a check box.
     pub fn flag(&mut self, k: &str, label: &str, v: &mut u8) {
         if self.shown(ROW) {
-            if let Some(on) = checkbox(self.x, self.y + 2.0, tr(label), *v != 0) {
+            if let Some(on) = checkbox(self.x, self.y + 2.0, self.w, tr(label), *v != 0) {
                 *v = on as u8;
                 self.mark(k);
             }

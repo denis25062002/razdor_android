@@ -10,6 +10,8 @@
 //! and the title is `name[%(+X|-X)][=X|=/X]`, built from two separate fields.
 
 use crate::dt::dtm::{Event, EventKind, Scenario, RELATIVE_START};
+use crate::i18n::{n_, tr};
+use crate::trf;
 use crate::rules::events::{event_edits, extension, EventEdit, Extension};
 
 /// The original editor keeps at most this many events (its arrays hold 5000).
@@ -21,19 +23,19 @@ pub const MAX_REPEAT_DAYS: u32 = 31;
 /// Longest active duration the field can store (65535 minutes).
 pub const MAX_DURATION_HOURS: u32 = u16::MAX as u32 / HOUR;
 
-/// Event type labels (byte 1), Razdor's own words.
-pub const KIND_LABELS: [(u8, &str); 4] = [(1, "Global"), (2, "Local"), (3, "Quest"), (4, "Rumour")];
+/// Event type labels (byte 1), Razdor's own words (translated where shown).
+pub const KIND_LABELS: [(u8, &str); 4] = [(1, n_("Global")), (2, n_("Local")), (3, n_("Quest")), (4, n_("Rumour"))];
 
 pub fn kind_label(kind: u8) -> &'static str {
-    KIND_LABELS.iter().find(|k| k.0 == kind).map_or("Unknown type", |k| k.1)
+    tr(KIND_LABELS.iter().find(|k| k.0 == kind).map_or(n_("Unknown type"), |k| k.1))
 }
 
 /// Owner codes of the ownership conditions (bytes 33, 43, 50): 0 is the empty entry.
 pub const OWNERS: [(u8, &str); 7] =
-    [(0, "(any)"), (1, "The player"), (2, "Green"), (3, "Blue"), (4, "Yellow"), (5, "Red"), (6, "Not the player")];
+    [(0, n_("(any)")), (1, n_("The player")), (2, n_("Green")), (3, n_("Blue")), (4, n_("Yellow")), (5, n_("Red")), (6, n_("Not the player"))];
 
 /// The archetype radio group (byte 10).
-pub const ARCHETYPES: [&str; 4] = ["Every hero", "Knight", "Archmage", "Ranger"];
+pub const ARCHETYPES: [&str; 4] = [n_("Every hero"), n_("Knight"), n_("Archmage"), n_("Ranger")];
 
 /// Special "units removed" entries (bytes 105–108).
 pub const REMOVE_ADDED_UNIT: u8 = 0xFE;
@@ -48,7 +50,7 @@ pub const GROUPS: u8 = 6;
 
 /// A new event of `kind`: open from the scenario's start, once, for every hero, silent.
 pub fn new_event(s: &Scenario, kind: u8) -> Event {
-    Event { kind, start_time: s.header.start_time, once: 1, title: format!("New {} event", kind_label(kind).to_lowercase()), ..Event::default() }
+    Event { kind, start_time: s.header.start_time, once: 1, title: trf!("New {kind} event", kind = kind_label(kind).to_lowercase()), ..Event::default() }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -183,13 +185,13 @@ pub fn with_flags(title: &str, set: &str, test: &str) -> String {
 
 fn bad_flag_name(n: &str) -> Option<String> {
     if n.is_empty() {
-        return Some("a flag name is empty".into());
+        return Some(tr("a flag name is empty").into());
     }
     if n.contains(['%', '=']) {
-        return Some(format!("the flag name \"{n}\" contains % or ="));
+        return Some(trf!("the flag name \"{n}\" contains % or =", n));
     }
     if n.chars().any(char::is_whitespace) {
-        return Some(format!("the flag name \"{n}\" contains a space"));
+        return Some(trf!("the flag name \"{n}\" contains a space", n));
     }
     None
 }
@@ -199,7 +201,7 @@ pub fn flag_problems(title: &str) -> Vec<String> {
     let Some((_, script)) = title.split_once('%') else { return Vec::new() };
     let mut out = Vec::new();
     if script.contains('%') {
-        out.push("the title has more than one %".into());
+        out.push(tr("the title has more than one %").into());
     }
     let (set, test) = match script.split_once('=') {
         Some((s, t)) => (s, Some(t)),
@@ -208,14 +210,14 @@ pub fn flag_problems(title: &str) -> Vec<String> {
     if !set.is_empty() {
         match set.strip_prefix('+').or_else(|| set.strip_prefix('-')) {
             Some(n) => out.extend(bad_flag_name(n)),
-            None => out.push(format!("the flag action \"{set}\" must start with + (set) or - (clear)")),
+            None => out.push(trf!("the flag action \"{set}\" must start with + (set) or - (clear)", set)),
         }
     }
     if let Some(t) = test {
         out.extend(bad_flag_name(t.strip_prefix('/').unwrap_or(t)));
     }
     if set.is_empty() && test.is_none() {
-        out.push("the title ends with % but has no flag script".into());
+        out.push(tr("the title ends with % but has no flag script").into());
     }
     out
 }
@@ -245,7 +247,7 @@ pub enum Arg {
 
 /// One Community opcode: its name and what its three arguments (the XP, gold and mana
 /// changes of the first results tab) mean. Labels are Razdor's own, after the Community
-/// guide.
+/// guide (English, translated where shown).
 #[derive(Clone, Copy, Debug)]
 pub struct OpcodeInfo {
     pub code: u8,
@@ -262,33 +264,33 @@ const fn a(label: &'static str, kind: Arg) -> Option<(&'static str, Arg)> {
     Some((label, kind))
 }
 
-const SHIFT: Option<(&str, Arg)> = a("Target event (+ down, - up)", Arg::EventShift);
-const FIELD: Option<(&str, Arg)> = a("Field (byte offset)", Arg::EventField);
-const HOLDER: Option<(&str, Arg)> = a("Army (0 = player, -N = building N)", Arg::Holder);
-const SLOT: Option<(&str, Arg)> = a("Unit slot (0 = leader)", Arg::Number);
-const SLOT_ALL: Option<(&str, Arg)> = a("Unit slot (-1 = every unit)", Arg::Number);
+const SHIFT: Option<(&str, Arg)> = a(n_("Target event (+ down, - up)"), Arg::EventShift);
+const FIELD: Option<(&str, Arg)> = a(n_("Field (byte offset)"), Arg::EventField);
+const HOLDER: Option<(&str, Arg)> = a(n_("Army (0 = player, -N = building N)"), Arg::Holder);
+const SLOT: Option<(&str, Arg)> = a(n_("Unit slot (0 = leader)"), Arg::Number);
+const SLOT_ALL: Option<(&str, Arg)> = a(n_("Unit slot (-1 = every unit)"), Arg::Number);
 
 pub const OPCODES: [OpcodeInfo; 20] = [
-    OpcodeInfo { code: 1, name: "Edit an event: add", args: [SHIFT, FIELD, a("Value added", Arg::Number)], uses: None, condition: false },
-    OpcodeInfo { code: 2, name: "Edit an event: set", args: [SHIFT, FIELD, a("Value set", Arg::Number)], uses: None, condition: false },
-    OpcodeInfo { code: 3, name: "Check an event: field at most", args: [SHIFT, FIELD, a("Value", Arg::Number)], uses: None, condition: true },
-    OpcodeInfo { code: 4, name: "Check an event: field equal", args: [SHIFT, FIELD, a("Value", Arg::Number)], uses: None, condition: true },
-    OpcodeInfo { code: 5, name: "Check an event: field at least", args: [SHIFT, FIELD, a("Value", Arg::Number)], uses: None, condition: true },
-    OpcodeInfo { code: 6, name: "Equip a unit", args: [HOLDER, SLOT, None], uses: Some("the four artefacts gained"), condition: false },
-    OpcodeInfo { code: 7, name: "Replace a unit", args: [HOLDER, SLOT, a("New unit", Arg::Unit)], uses: None, condition: false },
-    OpcodeInfo { code: 8, name: "Set an army's speed", args: [a("Army (0 = player)", Arg::Army), a("Speed (1 = +5 ... 8 = -3)", Arg::Number), None], uses: None, condition: false },
-    OpcodeInfo { code: 9, name: "Change faction", args: [HOLDER, a("Faction (1 player ... 4 enemy)", Arg::Number), None], uses: None, condition: false },
-    OpcodeInfo { code: 10, name: "Change an attitude", args: [HOLDER, a("Towards (0 player ... 3 enemy)", Arg::Number), a("Attitude (-3 to 3)", Arg::Number)], uses: None, condition: false },
-    OpcodeInfo { code: 11, name: "Lasting spells", args: [HOLDER, SLOT_ALL, None], uses: Some("the spells learned"), condition: false },
-    OpcodeInfo { code: 12, name: "Place a named character", args: [HOLDER, SLOT, a("Named character", Arg::Named)], uses: None, condition: false },
-    OpcodeInfo { code: 13, name: "Give experience", args: [HOLDER, SLOT_ALL, a("Experience", Arg::Number)], uses: None, condition: false },
-    OpcodeInfo { code: 14, name: "Check spells", args: [a("Army (0 = player)", Arg::Army), SLOT_ALL, None], uses: Some("the spells learned"), condition: true },
-    OpcodeInfo { code: 15, name: "Campaign branch", args: [a("Map number", Arg::Number), a("Variant", Arg::Number), None], uses: Some("the chained event (the victory event)"), condition: false },
-    OpcodeInfo { code: 16, name: "Forget spells", args: [None, None, None], uses: Some("the spells learned"), condition: false },
-    OpcodeInfo { code: 17, name: "Change the map figure", args: [a("Army", Arg::Army), a("Figure (0-12)", Arg::Number), None], uses: None, condition: false },
-    OpcodeInfo { code: 18, name: "Random flag RAND", args: [a("Lowest character code", Arg::Number), a("Highest character code", Arg::Number), None], uses: None, condition: false },
-    OpcodeInfo { code: 19, name: "AI army target / position check", args: [a("Army to send (1-255)", Arg::Army), a("Target X", Arg::Number), a("Target Y", Arg::Number)], uses: Some("strength, gold and mana conditions: army and cell to check"), condition: false },
-    OpcodeInfo { code: 20, name: "Teleport the player", args: [a("X", Arg::Number), a("Y", Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 1, name: n_("Edit an event: add"), args: [SHIFT, FIELD, a(n_("Value added"), Arg::Number)], uses: None, condition: false },
+    OpcodeInfo { code: 2, name: n_("Edit an event: set"), args: [SHIFT, FIELD, a(n_("Value set"), Arg::Number)], uses: None, condition: false },
+    OpcodeInfo { code: 3, name: n_("Check an event: field at most"), args: [SHIFT, FIELD, a(n_("Value"), Arg::Number)], uses: None, condition: true },
+    OpcodeInfo { code: 4, name: n_("Check an event: field equal"), args: [SHIFT, FIELD, a(n_("Value"), Arg::Number)], uses: None, condition: true },
+    OpcodeInfo { code: 5, name: n_("Check an event: field at least"), args: [SHIFT, FIELD, a(n_("Value"), Arg::Number)], uses: None, condition: true },
+    OpcodeInfo { code: 6, name: n_("Equip a unit"), args: [HOLDER, SLOT, None], uses: Some(n_("the four artefacts gained")), condition: false },
+    OpcodeInfo { code: 7, name: n_("Replace a unit"), args: [HOLDER, SLOT, a(n_("New unit"), Arg::Unit)], uses: None, condition: false },
+    OpcodeInfo { code: 8, name: n_("Set an army's speed"), args: [a(n_("Army (0 = player)"), Arg::Army), a(n_("Speed (1 = +5 ... 8 = -3)"), Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 9, name: n_("Change faction"), args: [HOLDER, a(n_("Faction (1 player ... 4 enemy)"), Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 10, name: n_("Change an attitude"), args: [HOLDER, a(n_("Towards (0 player ... 3 enemy)"), Arg::Number), a(n_("Attitude (-3 to 3)"), Arg::Number)], uses: None, condition: false },
+    OpcodeInfo { code: 11, name: n_("Lasting spells"), args: [HOLDER, SLOT_ALL, None], uses: Some(n_("the spells learned")), condition: false },
+    OpcodeInfo { code: 12, name: n_("Place a named character"), args: [HOLDER, SLOT, a(n_("Named character"), Arg::Named)], uses: None, condition: false },
+    OpcodeInfo { code: 13, name: n_("Give experience"), args: [HOLDER, SLOT_ALL, a(n_("Experience"), Arg::Number)], uses: None, condition: false },
+    OpcodeInfo { code: 14, name: n_("Check spells"), args: [a(n_("Army (0 = player)"), Arg::Army), SLOT_ALL, None], uses: Some(n_("the spells learned")), condition: true },
+    OpcodeInfo { code: 15, name: n_("Campaign branch"), args: [a(n_("Map number"), Arg::Number), a(n_("Variant"), Arg::Number), None], uses: Some(n_("the chained event (the victory event)")), condition: false },
+    OpcodeInfo { code: 16, name: n_("Forget spells"), args: [None, None, None], uses: Some(n_("the spells learned")), condition: false },
+    OpcodeInfo { code: 17, name: n_("Change the map figure"), args: [a(n_("Army"), Arg::Army), a(n_("Figure (0-12)"), Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 18, name: n_("Random flag RAND"), args: [a(n_("Lowest character code"), Arg::Number), a(n_("Highest character code"), Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 19, name: n_("AI army target / position check"), args: [a(n_("Army to send (1-255)"), Arg::Army), a(n_("Target X"), Arg::Number), a(n_("Target Y"), Arg::Number)], uses: Some(n_("strength, gold and mana conditions: army and cell to check")), condition: false },
+    OpcodeInfo { code: 20, name: n_("Teleport the player"), args: [a("X", Arg::Number), a("Y", Arg::Number), None], uses: None, condition: false },
 ];
 
 pub fn opcode_info(code: u8) -> Option<&'static OpcodeInfo> {
@@ -353,30 +355,30 @@ pub fn set_second_edit(e: &mut Event, edit: Option<EventEdit>) {
 /// The event record's fields by byte offset, for the opcode 1–5 field picker (Razdor's own
 /// labels; the offsets are `docs/reference/dtm-format.md` §9).
 pub const EVENT_FIELDS: [(u16, &str); 90] = [
-    (0, "Group"), (1, "Type"), (2, "Start time"), (6, "Repeat period"), (8, "Active duration"), (10, "Hero archetype"),
-    (11, "Squad count"), (13, "Army strength"), (15, "Army inactive"), (16, "Patrol army"), (17, "Patrol change"),
-    (18, "Check current stats"), (19, "Level"), (21, "Gold (condition)"), (25, "Holiness and mana (condition)"),
-    (29, "Check buildings"), (30, "Building 1"), (31, "Building 2"), (32, "Building 3"), (33, "Building 1 owner"), (34, "Building 2 owner"), (35, "Building 3 owner"),
-    (36, "Check named squads"), (37, "Squad 1 unit"), (38, "Squad 2 unit"), (39, "Squad 3 unit"), (40, "Squad 1 name"), (41, "Squad 2 name"), (42, "Squad 3 name"),
-    (43, "Squad 1 owner"), (44, "Squad 2 owner"), (45, "Squad 3 owner"),
-    (46, "Check artefacts"), (47, "Artefact 1"), (48, "Artefact 2"), (49, "Artefact 3"), (50, "Artefact 1 owner"), (51, "Artefact 2 owner"), (52, "Artefact 3 owner"),
-    (53, "Check defeated armies"), (54, "Defeated army 1"), (55, "Defeated army 2"),
-    (56, "Check happened (yes)"), (57, "Happened (yes) 1"), (59, "Happened (yes) 2"),
-    (61, "Check not happened"), (62, "Not happened 1"), (64, "Not happened 2"),
-    (66, "Check beaten armies"), (67, "Beaten army 1"), (68, "Beaten army 2"),
-    (69, "Check happened (no)"), (70, "Happened (no) 1"), (72, "Happened (no) 2"),
-    (74, "Meet army"), (75, "Army active"), (76, "Ask a question"),
-    (77, "Relative event"), (79, "Relative delay (hours)"), (81, "Spell on the player"), (82, "Picture"),
-    (83, "Experience change"), (85, "Gold change"), (89, "Mana change"),
-    (93, "Spell learned 1"), (97, "Unit added 1"), (101, "Added unit 1 name"), (105, "Unit removed 1"), (109, "Removed unit 1 name"),
-    (113, "Artefact gained 1"), (117, "Artefact lost 1"), (121, "Army activated 1"), (122, "Army activated 2"), (123, "Army deactivated"),
-    (124, "Quest completed"), (126, "Delay (hours)"), (128, "Lantern 1"), (136, "Removed units go to"), (137, "New hero class"),
-    (138, "Chained event"), (140, "Subordinate"), (141, "Once"), (142, "Added units come from"), (143, "Move to the hero"),
-    (144, "Show army"), (145, "Hero has 1 HP"), (146, "Army at home"), (147, "Battle with army"), (148, "No meeting"), (149, "Repeat after yes"),
+    (0, n_("Group")), (1, n_("Event type")), (2, n_("Start time")), (6, n_("Repeat period")), (8, n_("Active duration")), (10, n_("Hero archetype")),
+    (11, n_("Squad count")), (13, n_("Army strength")), (15, n_("Army inactive")), (16, n_("Patrol army")), (17, n_("Patrol change")),
+    (18, n_("Check current stats")), (19, n_("Level")), (21, n_("Gold (condition)")), (25, n_("Holiness and mana (condition)")),
+    (29, n_("Check buildings")), (30, n_("Building 1")), (31, n_("Building 2")), (32, n_("Building 3")), (33, n_("Building 1 owner")), (34, n_("Building 2 owner")), (35, n_("Building 3 owner")),
+    (36, n_("Check named squads")), (37, n_("Squad 1 unit")), (38, n_("Squad 2 unit")), (39, n_("Squad 3 unit")), (40, n_("Squad 1 name")), (41, n_("Squad 2 name")), (42, n_("Squad 3 name")),
+    (43, n_("Squad 1 owner")), (44, n_("Squad 2 owner")), (45, n_("Squad 3 owner")),
+    (46, n_("Check artefacts")), (47, n_("Artefact 1")), (48, n_("Artefact 2")), (49, n_("Artefact 3")), (50, n_("Artefact 1 owner")), (51, n_("Artefact 2 owner")), (52, n_("Artefact 3 owner")),
+    (53, n_("Check defeated armies")), (54, n_("Defeated army 1")), (55, n_("Defeated army 2")),
+    (56, n_("Check happened (yes)")), (57, n_("Happened (yes) 1")), (59, n_("Happened (yes) 2")),
+    (61, n_("Check not happened")), (62, n_("Not happened 1")), (64, n_("Not happened 2")),
+    (66, n_("Check beaten armies")), (67, n_("Beaten army 1")), (68, n_("Beaten army 2")),
+    (69, n_("Check happened (no)")), (70, n_("Happened (no) 1")), (72, n_("Happened (no) 2")),
+    (74, n_("Meet army")), (75, n_("Army active")), (76, n_("Ask a question")),
+    (77, n_("Relative event")), (79, n_("Relative delay (hours)")), (81, n_("Spell on the player")), (82, n_("Picture")),
+    (83, n_("Experience change")), (85, n_("Gold change")), (89, n_("Mana change")),
+    (93, n_("Spell learned 1")), (97, n_("Unit added 1")), (101, n_("Added unit 1 name")), (105, n_("Unit removed 1")), (109, n_("Removed unit 1 name")),
+    (113, n_("Artefact gained 1")), (117, n_("Artefact lost 1")), (121, n_("Army activated 1")), (122, n_("Army activated 2")), (123, n_("Army deactivated")),
+    (124, n_("Quest completed")), (126, n_("Delay (hours)")), (128, n_("Lantern 1")), (136, n_("Removed units go to")), (137, n_("New hero class")),
+    (138, n_("Chained event")), (140, n_("Subordinate")), (141, n_("Once")), (142, n_("Added units come from")), (143, n_("Move to the hero")),
+    (144, n_("Show army")), (145, n_("Hero has 1 HP")), (146, n_("Army at home")), (147, n_("Battle with army")), (148, n_("No meeting")), (149, n_("Repeat after yes")),
 ];
 
 pub fn event_field_label(off: i16) -> String {
-    EVENT_FIELDS.iter().find(|f| f.0 as i16 == off).map_or(format!("Byte {off}"), |f| format!("{} ({off})", f.1))
+    EVENT_FIELDS.iter().find(|f| f.0 as i16 == off).map_or(trf!("Byte {off}", off), |f| format!("{} ({off})", tr(f.1)))
 }
 
 // ------------------------------------------------------------------------------------------
@@ -399,11 +401,11 @@ pub enum RefSite {
 impl std::fmt::Display for RefSite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RefSite::Event { id, what } => write!(f, "event {id} ({what})"),
-            RefSite::Building(id) => write!(f, "building {id}"),
-            RefSite::Point(id) => write!(f, "point {id}"),
-            RefSite::Victory => write!(f, "the victory event"),
-            RefSite::Defeat => write!(f, "the defeat event"),
+            RefSite::Event { id, what } => f.write_str(&trf!("event {id} ({what})", id, what = tr(what))),
+            RefSite::Building(id) => f.write_str(&trf!("building {id}", id)),
+            RefSite::Point(id) => f.write_str(&trf!("point {id}", id)),
+            RefSite::Victory => f.write_str(tr("the victory event")),
+            RefSite::Defeat => f.write_str(tr("the defeat event")),
         }
     }
 }
@@ -414,21 +416,21 @@ pub fn event_links(id: u16, e: &Event) -> Vec<(u16, &'static str)> {
     let (c, r) = (&e.conditions, &e.results);
     let mut out = Vec::new();
     for x in c.happened_yes {
-        out.push((x, "happened with yes"));
+        out.push((x, n_("happened with yes")));
     }
     for x in c.happened_no {
-        out.push((x, "happened with no"));
+        out.push((x, n_("happened with no")));
     }
     for x in c.not_happened {
-        out.push((x, "not happened"));
+        out.push((x, n_("not happened")));
     }
-    out.push((r.relative_event, "relative event"));
-    out.push((r.completes_quest, "quest completed"));
-    out.push((r.chained_event, "chained event"));
+    out.push((r.relative_event, n_("relative event")));
+    out.push((r.completes_quest, n_("quest completed")));
+    out.push((r.chained_event, n_("chained event")));
     for edit in event_edits(e) {
         let target = id as i64 + edit.shift as i64;
         if edit.shift != 0 && (1..=u16::MAX as i64).contains(&target) {
-            out.push((target as u16, "edited by its opcode"));
+            out.push((target as u16, n_("edited by its opcode")));
         }
     }
     out.retain(|x| x.0 != 0);
@@ -504,7 +506,7 @@ pub fn event_label(s: &Scenario, id: u16) -> String {
     match s.event(id) {
         Some(e) if !e.title_text().trim().is_empty() => format!("#{id} {}", e.title_text().trim()),
         Some(_) => format!("#{id}"),
-        None => format!("#{id} (missing)"),
+        None => format!("#{id} {}", tr("(missing)")),
     }
 }
 
