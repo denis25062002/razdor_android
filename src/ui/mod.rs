@@ -11,6 +11,7 @@ pub mod game_bar;
 pub mod hotkeys;
 pub mod items_view;
 pub mod jukebox;
+pub mod language;
 pub mod minimap;
 pub mod saves;
 pub mod screens;
@@ -104,6 +105,8 @@ pub struct App {
     test_play: bool,
     /// The F1 key list is open over the screen.
     help: bool,
+    /// The interface language the demo content was built in.
+    lang: razdor::i18n::Lang,
 }
 
 impl App {
@@ -140,6 +143,7 @@ impl App {
             editor: None,
             test_play: false,
             help: false,
+            lang: razdor::i18n::lang(),
         }
     }
 
@@ -151,8 +155,24 @@ impl App {
         self.screen = Screen::Editor;
     }
 
+    /// After an EN / RU switch: the demo's names and descriptions in the new language (for
+    /// the next new game or load; a running game keeps its content).
+    fn follow_language(&mut self) {
+        let now = razdor::i18n::lang();
+        if now != self.lang {
+            self.lang = now;
+            self.demo = Arc::new(Content::builtin());
+        }
+    }
+
     /// A frame of the editor; test play starts a game on the edited map.
     fn editor_frame(&mut self) {
+        if hotkeys::allowed(hotkeys::Place::Editor, hotkeys::Global::Language, self.guard())
+            && !widgets::popup_open()
+            && is_key_pressed(language::KEY)
+        {
+            language::toggle();
+        }
         let Some(ed) = self.editor.as_mut() else {
             self.open_editor();
             return;
@@ -332,6 +352,7 @@ impl App {
     }
 
     pub fn frame(&mut self) {
+        self.follow_language();
         self.sounds();
         if matches!(self.screen, Screen::Editor) {
             self.editor_frame();
@@ -378,6 +399,8 @@ impl App {
             }
         } else if pressed(hotkeys::Global::Help) {
             self.help = true;
+        } else if pressed(hotkeys::Global::Language) {
+            language::toggle();
         } else if pressed(hotkeys::Global::QuickSave) {
             self.quick_save();
         } else if pressed(hotkeys::Global::QuickLoad) {

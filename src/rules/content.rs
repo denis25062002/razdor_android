@@ -5,7 +5,7 @@
 //! which is our own content written in the same ini schema. Definitions reuse the reader types
 //! of [`crate::dt::data`]; field meanings are in `docs/reference/mechanics.md`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub use crate::dt::data::{
     ArtefactDef, ArtefactType, Bonus, GlobalOptions, MagicDirection, MagicSchool, Nature, SpellDef, Stat, StatMods,
@@ -162,9 +162,28 @@ impl Content {
     /// content). The options are the vanilla defaults except for faster XP (the player's
     /// modifier and the difficulty factor at 100%), so the short demo shows levels.
     pub fn builtin() -> Content {
-        let units = parse_units(&Ini::parse(BUILTIN_UNITS)).unwrap_or_else(|e| panic!("data/units.ini: {e}"));
-        let items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).unwrap_or_else(|e| panic!("data/items.ini: {e}"));
-        let spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
+        let mut units = parse_units(&Ini::parse(BUILTIN_UNITS)).unwrap_or_else(|e| panic!("data/units.ini: {e}"));
+        let mut items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).unwrap_or_else(|e| panic!("data/items.ini: {e}"));
+        let mut spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
+        // The demo's texts in the interface language: `NameRu=` / `DescriptRu=` (our own).
+        if crate::i18n::lang() == crate::i18n::Lang::Ru {
+            let ru = |extra: &BTreeMap<String, String>, key: &str, text: &mut String| {
+                if let Some(t) = extra.get(key) {
+                    t.clone_into(text);
+                }
+            };
+            for u in &mut units {
+                ru(&u.extra, "NameRu", &mut u.name);
+                ru(&u.extra, "DescriptRu", &mut u.description);
+            }
+            for a in &mut items {
+                ru(&a.extra, "NameRu", &mut a.name);
+                ru(&a.extra, "DescriptRu", &mut a.description);
+            }
+            for s in &mut spells {
+                ru(&s.extra, "NameRu", &mut s.name);
+            }
+        }
         let options = GlobalOptions { hero_experience_modificator: 100, difficulty_factor: 100, ..GlobalOptions::default() };
         Content::new(units, items, spells, options, Formation::WIDE)
     }

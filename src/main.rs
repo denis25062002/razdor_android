@@ -69,6 +69,7 @@ async fn main() {
     // `exit_now`.
     prevent_quit();
     ui::widgets::load_font().await;
+    ui::language::init();
     let content = Arc::new(Content::builtin());
     let mut app = App::new(Assets::load(content.clone()).await, content);
     // `--editor`: start in the map editor.

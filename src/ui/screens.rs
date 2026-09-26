@@ -90,6 +90,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     clear_background(Color::from_rgba(24, 22, 20, 255));
     text_centered("RAZDOR", screen_width() / 2.0, 80.0, 64.0, ACCENT);
     text_centered("Choose a scenario", screen_width() / 2.0, 114.0, 24.0, DIM);
+    super::language::switch_button(screen_width() - 136.0, 20.0, 116.0, 36.0);
     let (x, w) = (60.0, screen_width() - 120.0);
     let row_h = 52.0;
     let top = 140.0;
@@ -110,7 +111,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
         let hover = mouse_in(ex, ey, col_w, row_h);
         draw_rectangle(ex, ey, col_w, row_h, PANEL);
         draw_rectangle_lines(ex, ey, col_w, row_h, 2.0, if hover { ACCENT } else { DIM });
-        text(title, ex + 12.0, ey + 22.0, 20.0, if idx.is_none() { ACCENT } else { INK });
+        text_fit(title, ex + 12.0, ey + 22.0, col_w - 24.0, 20.0, if idx.is_none() { ACCENT } else { INK });
         let first = wrap(desc, col_w - 24.0, 16.0).into_iter().next().unwrap_or_default();
         text(&first, ex + 12.0, ey + 42.0, 16.0, DIM);
         if hover {

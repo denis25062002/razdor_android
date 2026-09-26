@@ -316,7 +316,7 @@ fn volume_row(label: &str, volume: f32, muted: bool, x: f32, y: f32, w: f32) -> 
 pub fn menu(game: &Game, assets: &Assets, audio: &mut Settings) -> Option<Screen> {
     world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Menu));
     let (sw, sh) = (screen_width(), screen_height());
-    let (w, h) = (380.0, 440.0);
+    let (w, h) = (380.0, 490.0);
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0 - 30.0);
     super::chrome::window(Rect::new(x, y, w, h), "Game menu", super::chrome::Skin::Marble, false);
     let bx = x + 40.0;
@@ -343,6 +343,7 @@ pub fn menu(game: &Game, assets: &Assets, audio: &mut Settings) -> Option<Screen
     let (steps, toggle) = volume_row("Sounds", audio.sfx_volume, audio.sfx_muted, bx, y + 370.0, bw);
     audio.step_sfx(steps);
     audio.sfx_muted ^= toggle;
+    super::language::switch_button(bx + (bw - 140.0) / 2.0, y + 425.0, 140.0, 36.0);
     None
 }
 

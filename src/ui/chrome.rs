@@ -611,7 +611,7 @@ pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, if hover { GOLD } else { SILVER });
         }
     }
-    let size = (r.h * 0.62).round().clamp(11.0, 18.0);
+    let size = super::widgets::fit_size(label, r.w - 8.0, (r.h * 0.62).round().clamp(11.0, 18.0));
     let d = measure(label, size);
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, if enabled { WHITE } else { Color::new(0.8, 0.8, 0.8, 1.0) });
     let pressed = hover && super::widgets::clicked();

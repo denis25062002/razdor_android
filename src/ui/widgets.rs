@@ -42,6 +42,11 @@ pub async fn load_font() {
     eprintln!("no TrueType font with Cyrillic found (set RAZDOR_FONT); transliterating");
 }
 
+/// Whether a TrueType font (with Cyrillic) was found.
+pub fn has_font() -> bool {
+    FONT.with(|f| f.borrow().is_some())
+}
+
 /// Latin stand-ins for Russian letters, used when no TrueType font is available.
 fn transliterate(s: &str) -> String {
     const RU: &str = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя";
@@ -161,6 +166,34 @@ pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
     with_font(s, |font, s| {
         draw_text_ex(s, x, y, TextParams { font, font_size: size as u16, color, ..Default::default() });
     });
+}
+
+/// The font size, at most `size` and not below 70% of it, at which `s` fits in `width`
+/// (Russian texts run longer than the English ones the layouts were drawn for).
+pub fn fit_size(s: &str, width: f32, size: f32) -> f32 {
+    let mut fit = size;
+    while fit > (size * 0.7).max(9.0) && measure(s, fit).width > width {
+        fit -= 1.0;
+    }
+    fit
+}
+
+/// `s` shortened with "…" until it fits in `width` at `size`.
+pub fn ellipsize(s: &str, width: f32, size: f32) -> String {
+    if measure(s, size).width <= width {
+        return s.to_string();
+    }
+    let mut t: String = s.to_string();
+    while t.chars().count() > 1 && measure(&format!("{t}…"), size).width > width {
+        t.pop();
+    }
+    format!("{}…", t.trim_end())
+}
+
+/// Text in a box `width` wide: smaller if it must be (see [`fit_size`]), then shortened.
+pub fn text_fit(s: &str, x: f32, y: f32, width: f32, size: f32, color: Color) {
+    let fit = fit_size(s, width, size);
+    text(&ellipsize(s, width, fit), x, y, fit, color);
 }
 
 pub fn text_centered(s: &str, cx: f32, y: f32, size: f32, color: Color) {
@@ -459,8 +492,9 @@ pub fn small_button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) 
     };
     draw_rectangle(x, y, w, h, bg);
     draw_rectangle_lines(x, y, w, h, 1.0, if enabled { DIM } else { Color::new(0.3, 0.3, 0.3, 1.0) });
-    let d = measure(label, 17.0);
-    text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, 17.0, if enabled { INK } else { DIM });
+    let size = fit_size(label, w - 6.0, 17.0);
+    let d = measure(label, size);
+    text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, size, if enabled { INK } else { DIM });
     hover && clicked()
 }
 
@@ -470,7 +504,7 @@ pub fn toggle_button(x: f32, y: f32, w: f32, h: f32, label: &str, on: bool) -> b
     let bg = if on { Color::new(0.55, 0.42, 0.18, 1.0) } else if hover { Color::new(0.36, 0.28, 0.18, 1.0) } else { Color::new(0.22, 0.18, 0.12, 1.0) };
     draw_rectangle(x, y, w, h, bg);
     draw_rectangle_lines(x, y, w, h, 1.0, if on { ACCENT } else { DIM });
-    let size = if measure(label, 17.0).width > w - 6.0 { 14.0 } else { 17.0 };
+    let size = fit_size(label, w - 6.0, 17.0);
     let d = measure(label, size);
     text(label, x + (w - d.width) / 2.0, y + (h + d.offset_y) / 2.0 - 1.0, size, INK);
     let pressed = hover && clicked();

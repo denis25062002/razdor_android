@@ -1,0 +1,2 @@
+# Razdor interface in Russian: our own translation. "English = Russian", one per line;
+# \n is a line break, {name} a value filled in by the game. See src/i18n.rs.

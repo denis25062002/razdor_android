@@ -38,17 +38,20 @@ pub enum Global {
     QuickSave,
     /// F9: load the quick save.
     QuickLoad,
+    /// F2: the interface language, English / Russian.
+    Language,
 }
 
 impl Global {
     #[cfg(test)]
-    pub const ALL: [Global; 3] = [Global::Help, Global::QuickSave, Global::QuickLoad];
+    pub const ALL: [Global; 4] = [Global::Help, Global::QuickSave, Global::QuickLoad, Global::Language];
 
     pub fn key(self) -> KeyCode {
         match self {
             Global::Help => KeyCode::F1,
             Global::QuickSave => KeyCode::F5,
             Global::QuickLoad => KeyCode::F9,
+            Global::Language => super::language::KEY,
         }
     }
 }
@@ -81,9 +84,9 @@ pub fn shortcuts_allowed(g: Guard) -> bool {
     !g.typing && !g.dialog
 }
 
-/// Whether `key` may fire at `place`. The editor has its own keys.
+/// Whether `key` may fire at `place`. The editor has its own keys (and F2).
 pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
-    if place == Place::Editor || !shortcuts_allowed(g) {
+    if !shortcuts_allowed(g) || (place == Place::Editor && key != Global::Language) {
         return false;
     }
     match key {
@@ -91,7 +94,7 @@ pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
         Global::QuickSave => {
             g.game && !g.foe && matches!(place, Place::WorldMap | Place::Building | Place::Army | Place::Journal | Place::Spellbook | Place::Menu)
         }
-        Global::QuickLoad => true,
+        Global::QuickLoad | Global::Language => true,
     }
 }
 
@@ -145,8 +148,9 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
 }
 
 /// Keys that work on every screen of a game, and in the dialogs.
-pub const EVERYWHERE: [(&str, &str); 5] = [
+pub const EVERYWHERE: [(&str, &str); 6] = [
     ("F1", "this list (F1 or Esc closes it)"),
+    ("F2", "interface language: English / Russian"),
     ("F9", "load the quick save"),
     ("N", "music off / on"),
     ("Y / Enter", "\"Yes\" in a question (Enter: OK)"),
@@ -261,6 +265,8 @@ mod tests {
             assert!(allowed(place, Global::Help, in_game()), "{place:?}");
         }
         assert!(!allowed(Place::Editor, Global::Help, in_game()));
+        assert!(allowed(Place::Editor, Global::Language, in_game()), "F2 works in the editor too");
+        assert!(!allowed(Place::Editor, Global::Language, Guard { typing: true, ..in_game() }));
     }
 
     #[test]
