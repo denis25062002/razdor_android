@@ -1047,6 +1047,11 @@ impl Game {
         if defence > 0 {
             b.set_building_defence(Team::Enemy, defence);
         }
+        // The hero fighting in a building of his own: its extra defence is added to every
+        // defence of his units (battle.md §0, 485908), as for any garrison at home.
+        if let Some(own) = self.location.map(|l| &self.world.locations[l]).filter(|l| l.owned() && l.garrison_defence > 0) {
+            b.set_building_defence(Team::Player, own.garrison_defence);
+        }
         b
     }
 
@@ -2067,6 +2072,27 @@ mod tests {
         assert!(g.world.armies[0].chasing);
         assert!(matches!(events.last(), Some(Event::Encounter(0))), "it comes for the waiting hero: {events:?}");
         assert!(g.clock.total_minutes() < g.world.start.total_minutes() + 240.0, "the fight cuts the wait short");
+    }
+
+    #[test]
+    fn fighting_in_his_own_building_gives_the_heros_side_its_defence() {
+        // battle.md §0 (485908): every unit's defence gets + building defence, for the side in
+        // its own building; the footage's panel: "in its own building, a bonus to all defences".
+        let mut s = strip();
+        let mut castle = building(BuildingType::Castle, 6, 3, (2, 2));
+        castle.garrison_extra_defence = 12;
+        s.buildings = vec![castle];
+        s.armies = vec![army(1, 12, 2, -2, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.world.locations[0].owner = Owner::Player;
+        // Standing outside: no bonus.
+        g.foe = Some(Foe::Army(0));
+        assert_eq!(g.start_battle().building_defence(Team::Player), 0);
+        // In his own castle: its extra defence for every unit of his.
+        g.location = Some(0);
+        let b = g.start_battle();
+        assert_eq!(b.building_defence(Team::Player), 12);
+        assert_eq!(b.building_defence(Team::Enemy), 0, "the attackers stand outside");
     }
 
     #[test]
