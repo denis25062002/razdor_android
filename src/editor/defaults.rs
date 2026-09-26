@@ -46,7 +46,7 @@ pub fn new_scenario(o: NewMap) -> Scenario {
             ..Header::default()
         },
         terrain: vec![o.fill.min(15); o.width as usize * o.height as usize],
-        title: "New scenario".into(),
+        title: crate::i18n::tr("New scenario").into(),
         ..Scenario::default()
     }
 }

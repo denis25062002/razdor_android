@@ -24,7 +24,9 @@ use razdor::editor::files::{self, Consent, Destination, SaveBlock};
 use razdor::editor::palette::{object_class_label, SURFACE_LABELS};
 use razdor::editor::validate::has_errors;
 use razdor::editor::{Command, EditorDoc, Issue, Names, NewMap, Origin, Palette, Place, SaveError, Severity, Target, Tool, ToolState};
+use razdor::i18n::tr;
 use razdor::rules::content::{Content, HeroClass};
+use razdor::trf;
 
 use crate::ui::assets::Assets;
 use crate::ui::widgets::*;
@@ -128,7 +130,7 @@ impl EditorScreen {
             settings: SettingsState::default(),
             events: EventsState::default(),
             modal: None,
-            status: Some("New 50 x 50 map. Maps are saved to your own folder; see Save as.".into()),
+            status: Some(tr("New 50 x 50 map. Maps are saved to your own folder; see Save as.").into()),
             issues: Vec::new(),
             palette,
             install_names: dt_content.as_deref().map(Names::from_content),
@@ -167,11 +169,15 @@ impl EditorScreen {
     fn open_file(&mut self, path: PathBuf) {
         match EditorDoc::open(&path, self.game_dir.as_deref()) {
             Ok(d) => {
-                let note = if matches!(d.origin, Origin::Game(_)) { " (a game map: saving goes to your own folder)" } else { "" };
-                self.status = Some(format!("Opened {}{note}.", path.display()));
+                let path = path.display();
+                self.status = Some(if matches!(d.origin, Origin::Game(_)) {
+                    trf!("Opened {path} (a game map: saving goes to your own folder).", path)
+                } else {
+                    trf!("Opened {path}.", path)
+                });
                 self.set_doc(d);
             }
-            Err(e) => self.status = Some(format!("Cannot open {}: {e}", path.display())),
+            Err(e) => self.status = Some(trf!("Cannot open {path}: {e}", path = path.display(), e)),
         }
     }
 
@@ -180,14 +186,14 @@ impl EditorScreen {
         match then {
             Then::New(o) => {
                 self.set_doc(EditorDoc::new_map(o));
-                self.status = Some(format!("New {} x {} map.", o.width, o.height));
+                self.status = Some(trf!("New {w} x {h} map.", w = o.width, h = o.height));
             }
             Then::Open(p) => self.open_file(p),
             Then::Exit => return EditorAction::Exit,
             Then::Save { name, dest, consent } => self.save(&name, dest, consent),
             Then::DeleteEvent(id) => {
                 self.apply(Command::DeleteEvent { id }, "");
-                self.status = Some(format!("Deleted event {id}; later events moved up one and every reference followed."));
+                self.status = Some(trf!("Deleted event {id}; later events moved up one and every reference followed.", id));
                 self.modal = Some(Modal::Events);
             }
         }
@@ -197,7 +203,7 @@ impl EditorScreen {
     /// `then`, after asking about unsaved changes if there are any.
     fn guarded(&mut self, then: Then) -> EditorAction {
         if self.doc.dirty() {
-            self.modal = Some(Modal::Confirm { message: "The map has unsaved changes. Discard them?".into(), then });
+            self.modal = Some(Modal::Confirm { message: tr("The map has unsaved changes. Discard them?").into(), then });
             EditorAction::None
         } else {
             self.run(then)
@@ -209,13 +215,13 @@ impl EditorScreen {
         let current = self.doc.saved_path.clone();
         match files::plan_save(name, dest, self.user_dir.as_deref(), self.game_dir.as_deref(), current.as_deref(), consent) {
             Ok(path) => match self.doc.save_to(&path, self.install_names.as_ref(), Some(&self.palette)) {
-                Ok(()) => self.status = Some(format!("Saved {}.", path.display())),
+                Ok(()) => self.status = Some(trf!("Saved {path}.", path = path.display())),
                 Err(SaveError::Invalid(issues)) => {
                     self.issues = issues;
                     self.modal = Some(Modal::Issues { scroll: 0 });
-                    self.status = Some("Not saved: the map has errors.".into());
+                    self.status = Some(tr("Not saved: the map has errors.").into());
                 }
-                Err(e) => self.status = Some(format!("Not saved: {e}")),
+                Err(e) => self.status = Some(trf!("Not saved: {e}", e)),
             },
             Err(block) => {
                 let mut next = consent;
@@ -224,7 +230,7 @@ impl EditorScreen {
                     SaveBlock::ConfirmReplaceGameMap(_) => next.replace_game_map = true,
                     SaveBlock::ConfirmReplaceOwnMap(_) => next.replace_own_map = true,
                     SaveBlock::BadName(_) | SaveBlock::NoFolder => {
-                        self.status = Some(format!("Not saved: {block}."));
+                        self.status = Some(trf!("Not saved: {block}.", block));
                         return;
                     }
                 }
@@ -247,12 +253,12 @@ impl EditorScreen {
                 } else {
                     // A file opened from elsewhere: saved where it is.
                     match self.doc.save_to(&p, self.install_names.as_ref(), Some(&self.palette)) {
-                        Ok(()) => self.status = Some(format!("Saved {}.", p.display())),
+                        Ok(()) => self.status = Some(trf!("Saved {path}.", path = p.display())),
                         Err(SaveError::Invalid(issues)) => {
                             self.issues = issues;
                             self.modal = Some(Modal::Issues { scroll: 0 });
                         }
-                        Err(e) => self.status = Some(format!("Not saved: {e}")),
+                        Err(e) => self.status = Some(trf!("Not saved: {e}", e)),
                     }
                 }
             }
@@ -263,7 +269,7 @@ impl EditorScreen {
     fn apply(&mut self, cmd: Command, key: &str) {
         let key = (!key.is_empty()).then_some(key);
         if let Err(e) = self.doc.apply_merging(cmd, key) {
-            self.status = Some(format!("Refused: {e}."));
+            self.status = Some(trf!("Refused: {e}.", e));
         }
         self.tools.check_selection(&self.doc);
     }
@@ -314,10 +320,10 @@ impl EditorScreen {
                     Ok(a) => {
                         if let Some(id) = a.new_id {
                             self.events.select(id as u16);
-                            self.status = Some(format!("Event {id} made."));
+                            self.status = Some(trf!("Event {id} made.", id));
                         }
                     }
-                    Err(e) => self.status = Some(format!("Refused: {e}.")),
+                    Err(e) => self.status = Some(trf!("Refused: {e}.", e)),
                 }
                 self.tools.check_selection(&self.doc);
             }
@@ -327,8 +333,12 @@ impl EditorScreen {
                     self.run(Then::DeleteEvent(id));
                 } else {
                     let list: Vec<String> = refs.iter().take(6).map(|r| r.to_string()).collect();
-                    let more = if refs.len() > 6 { format!(" and {} more", refs.len() - 6) } else { String::new() };
-                    let message = format!("Event {id} is still used by {}{more}. Delete it and clear those references?", list.join(", "));
+                    let list = list.join(", ");
+                    let message = if refs.len() > 6 {
+                        trf!("Event {id} is still used by {list} and {more} more. Delete it and clear those references?", id, list, more = refs.len() - 6)
+                    } else {
+                        trf!("Event {id} is still used by {list}. Delete it and clear those references?", id, list)
+                    };
                     self.modal = Some(Modal::Confirm { message, then: Then::DeleteEvent(id) });
                 }
             }
@@ -342,7 +352,7 @@ impl EditorScreen {
         if has_errors(&issues) {
             self.issues = issues;
             self.modal = Some(Modal::Issues { scroll: 0 });
-            self.status = Some("Fix the errors before test play.".into());
+            self.status = Some(tr("Fix the errors before test play.").into());
             return EditorAction::None;
         }
         self.modal = None;
@@ -556,7 +566,7 @@ impl EditorScreen {
 
     fn after_tool(&mut self) {
         if let Some(m) = self.tools.message.take() {
-            self.status = Some(format!("Refused: {m}."));
+            self.status = Some(trf!("Refused: {m}.", m));
         }
         if self.tools.selected.is_some() && !matches!(self.tools.tool, Tool::Select) {
             // A record just placed: its panel opens at the first tab.
@@ -568,52 +578,68 @@ impl EditorScreen {
         let w = screen_width();
         draw_rectangle(0.0, 0.0, w, TOP, Color::new(0.14, 0.12, 0.1, 1.0));
         draw_line(0.0, TOP, w, TOP, 1.0, DIM);
-        let mut x = 6.0;
-        let mut b = |label: &str, bw: f32, enabled: bool| {
-            let hit = small_button(x, 8.0, bw, 28.0, label, enabled);
-            x += bw + 4.0;
-            hit
-        };
-        let mut action = EditorAction::None;
-        if b("New", 50.0, true) {
-            self.modal = Some(Modal::NewMap { size: 0, w: 50, h: 50, fill: 6 });
-        }
-        if b("Open", 56.0, true) {
-            self.modal = Some(Modal::Open { path: String::new(), scroll: 0 });
-        }
-        if b("Save", 52.0, true) {
-            self.quick_save();
-        }
-        if b("Save as", 72.0, true) {
-            self.modal = Some(Modal::SaveAs { name: self.doc.suggested_name() });
-        }
-        if b("Save to game folder", 160.0, self.game_dir.is_some()) {
-            let name = self.doc.suggested_name();
-            self.save(&name, Destination::GameFolder, Consent::default());
-        }
         let (cu, cr) = (self.doc.can_undo(), self.doc.can_redo());
-        if b("Undo", 54.0, cu) {
-            self.doc.undo();
-            self.tools.check_selection(&self.doc);
+        let buttons = [
+            (tr("New"), true),
+            (tr("Open"), true),
+            (tr("Save"), true),
+            (tr("Save as"), true),
+            (tr("Save to game folder"), self.game_dir.is_some()),
+            (tr("Undo"), cu),
+            (tr("Redo"), cr),
+            (tr("Settings"), true),
+            (tr("Events"), true),
+            (tr("Check"), true),
+            (tr("Test play"), true),
+            (tr("Exit"), true),
+        ];
+        // Each button as wide as its label; all narrower (smaller labels) if the row would
+        // not fit the window.
+        let natural: Vec<f32> = buttons.iter().map(|(l, _)| measure(l, 17.0).width + 16.0).collect();
+        let room = w - 12.0 - 4.0 * (buttons.len() - 1) as f32;
+        let k = (room / natural.iter().sum::<f32>()).min(1.0);
+        let mut x = 6.0;
+        let mut hit = None;
+        for (i, ((label, enabled), nw)) in buttons.iter().zip(&natural).enumerate() {
+            let bw = nw * k;
+            if small_button(x, 8.0, bw, 28.0, label, *enabled) {
+                hit = Some(i);
+            }
+            // Undo / Redo: what they would undo or redo.
+            let what = match i {
+                5 => self.doc.undo_label(),
+                6 => self.doc.redo_label(),
+                _ => None,
+            };
+            if let Some(what) = what.filter(|_| mouse_in(x, 8.0, bw, 28.0)) {
+                tooltip(&[(tr(what).to_string(), INK)]);
+            }
+            x += bw + 4.0;
         }
-        if b("Redo", 54.0, cr) {
-            self.doc.redo();
-            self.tools.check_selection(&self.doc);
-        }
-        if b("Settings", 80.0, true) {
-            self.modal = Some(Modal::Settings);
-        }
-        if b("Events", 64.0, true) {
-            self.modal = Some(Modal::Events);
-        }
-        if b("Check", 60.0, true) {
-            self.check();
-        }
-        if b("Test play", 84.0, true) {
-            self.modal = Some(Modal::TestPlay);
-        }
-        if b("Exit", 50.0, true) {
-            action = self.guarded(Then::Exit);
+        let mut action = EditorAction::None;
+        match hit {
+            Some(0) => self.modal = Some(Modal::NewMap { size: 0, w: 50, h: 50, fill: 6 }),
+            Some(1) => self.modal = Some(Modal::Open { path: String::new(), scroll: 0 }),
+            Some(2) => self.quick_save(),
+            Some(3) => self.modal = Some(Modal::SaveAs { name: self.doc.suggested_name() }),
+            Some(4) => {
+                let name = self.doc.suggested_name();
+                self.save(&name, Destination::GameFolder, Consent::default());
+            }
+            Some(5) => {
+                self.doc.undo();
+                self.tools.check_selection(&self.doc);
+            }
+            Some(6) => {
+                self.doc.redo();
+                self.tools.check_selection(&self.doc);
+            }
+            Some(7) => self.modal = Some(Modal::Settings),
+            Some(8) => self.modal = Some(Modal::Events),
+            Some(9) => self.check(),
+            Some(10) => self.modal = Some(Modal::TestPlay),
+            Some(11) => action = self.guarded(Then::Exit),
+            _ => {}
         }
         let s = &self.doc.scenario;
         let title = format!("{}{}  ({} x {})", if self.doc.dirty() { "* " } else { "" }, self.doc.suggested_name(), s.width(), s.height());
@@ -632,13 +658,13 @@ impl EditorScreen {
         let mut parts = Vec::new();
         if let Some((x, cy)) = hover.filter(|(x, y)| *x >= 0 && *y >= 0 && (*x as u32) < s.width() && (*y as u32) < s.height()) {
             let code = s.terrain_at(x as u32, cy as u32).unwrap_or(0);
-            parts.push(format!("({x}, {cy}) {}", SURFACE_LABELS[code as usize & 15]));
+            parts.push(format!("({x}, {cy}) {}", tr(SURFACE_LABELS[code as usize & 15])));
             let objs: Vec<String> = self.doc.objects_at(x as u16, cy as u16).map(|o| format!("{} {}", object_class_label(o.class), o.sprite)).collect();
             if !objs.is_empty() {
                 parts.push(objs.join(", "));
             }
         }
-        parts.push(format!("{} buildings, {} armies, {} points, {} events", s.buildings.len(), s.armies.len(), s.points.len(), s.events.len()));
+        parts.push(trf!("buildings {b}, armies {a}, points {p}, events {e}", b = s.buildings.len(), a = s.armies.len(), p = s.points.len(), e = s.events.len()));
         text(&parts.join("   |   "), 8.0, y + 18.0, 16.0, DIM);
         if let Some(m) = &self.status {
             let tw = measure(m, 16.0).width;
@@ -659,7 +685,7 @@ impl EditorScreen {
                 }
                 SettingsAction::PickStart(k) => {
                     self.tools.set_tool(Tool::HeroStart(k));
-                    self.status = Some("Click the hero's start cell on the map.".into());
+                    self.status = Some(tr("Click the hero's start cell on the map.").into());
                 }
                 SettingsAction::Close => {}
                 SettingsAction::None => self.modal = Some(Modal::Settings),
@@ -683,33 +709,33 @@ impl EditorScreen {
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, ACCENT);
         let esc = !typing() && is_key_pressed(KeyCode::Escape);
         let (x, mut y) = (r.x + 20.0, r.y + 32.0);
-        let cancel = |r: &Rect| button(r.right() - 140.0, r.bottom() - 54.0, 120.0, 40.0, "Cancel", true);
+        let cancel = |r: &Rect| button(r.right() - 140.0, r.bottom() - 54.0, 120.0, 40.0, tr("Cancel"), true);
         let mut keep = true;
         let mut next = modal;
         match &mut next {
             Modal::Confirm { message, then } => {
-                text("Please confirm", x, y, 22.0, ACCENT);
+                text(tr("Please confirm"), x, y, 22.0, ACCENT);
                 for (i, line) in wrap(message, r.w - 40.0, 18.0).iter().take(4).enumerate() {
                     text(line, x, y + 32.0 + i as f32 * 22.0, 18.0, INK);
                 }
-                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, "Yes", true) {
+                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, tr("Yes"), true) {
                     let then = then.clone();
                     self.modal = None;
                     return self.run(then);
                 }
                 if cancel(&r) || esc {
                     keep = false;
-                    self.status = Some("Cancelled.".into());
+                    self.status = Some(tr("Cancelled.").into());
                 }
             }
             Modal::TestPlay => {
-                text("Test play: choose the hero", x, y, 22.0, ACCENT);
-                let note = if self.install_names.is_some() { "With your install's units and rules." } else { "Without an install: the built-in demo's units." };
-                text(note, x, y + 28.0, 16.0, DIM);
-                text("Esc > Main menu in the game comes back here.", x, y + 48.0, 16.0, DIM);
+                text(tr("Test play: choose the hero"), x, y, 22.0, ACCENT);
+                let note = if self.install_names.is_some() { tr("With your install's units and rules.") } else { tr("Without an install: the built-in demo's units.") };
+                text_fit(note, x, y + 28.0, r.w - 40.0, 16.0, DIM);
+                text_fit(tr("Esc > Main menu in the game comes back here."), x, y + 48.0, r.w - 40.0, 16.0, DIM);
                 y += 70.0;
                 for (k, class) in HeroClass::ALL.into_iter().enumerate() {
-                    if button(x + k as f32 * 170.0, y, 160.0, 44.0, razdor::editor::palette::HERO_CLASSES[k], true) {
+                    if button(x + k as f32 * 170.0, y, 160.0, 44.0, tr(razdor::editor::palette::HERO_CLASSES[k]), true) {
                         self.modal = None;
                         return self.start_test_play(class);
                     }
@@ -719,13 +745,15 @@ impl EditorScreen {
                 }
             }
             Modal::SaveAs { name } => {
-                text("Save as", x, y, 22.0, ACCENT);
-                let folder = self.user_dir.as_ref().map_or("(no data folder)".to_string(), |d| d.display().to_string());
-                text(&format!("Into your maps folder: {folder}"), x, y + 26.0, 15.0, DIM);
-                text("Map name:", x, y + 60.0, 17.0, INK);
-                text_field("saveas:name", x + 100.0, y + 44.0, r.w - 140.0, 26.0, name, false);
-                text("Use \"Save to game folder\" in the toolbar to put it where the game finds it.", x, y + 100.0, 15.0, DIM);
-                let go = button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, "Save", true) || (is_key_pressed(KeyCode::Enter) && !popup_open());
+                text(tr("Save as"), x, y, 22.0, ACCENT);
+                let folder = self.user_dir.as_ref().map_or(tr("(no data folder)").to_string(), |d| d.display().to_string());
+                text_fit(&trf!("Into your maps folder: {folder}", folder), x, y + 26.0, r.w - 40.0, 15.0, DIM);
+                text_fit(tr("Map name:"), x, y + 60.0, 116.0, 17.0, INK);
+                text_field("saveas:name", x + 120.0, y + 44.0, r.w - 160.0, 26.0, name, false);
+                for (i, line) in wrap(tr("Use \"Save to game folder\" in the toolbar to put it where the game finds it."), r.w - 40.0, 15.0).iter().enumerate() {
+                    text(line, x, y + 100.0 + i as f32 * 18.0, 15.0, DIM);
+                }
+                let go = button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, tr("Save"), true) || (is_key_pressed(KeyCode::Enter) && !popup_open());
                 if go {
                     let n = name.clone();
                     self.modal = None;
@@ -737,36 +765,36 @@ impl EditorScreen {
                 }
             }
             Modal::NewMap { size, w: mw, h: mh, fill } => {
-                text("New map", x, y, 22.0, ACCENT);
+                text(tr("New map"), x, y, 22.0, ACCENT);
                 y += 20.0;
-                text("Size", x, y + 18.0, 17.0, INK);
+                text_fit(tr("Size"), x, y + 18.0, 86.0, 17.0, INK);
                 for (k, n) in MAP_SIZES.iter().enumerate() {
                     if toggle_button(x + 90.0 + k as f32 * 94.0, y, 88.0, 28.0, &format!("{n} x {n}"), *size == k) {
                         *size = k;
                         (*mw, *mh) = (*n, *n);
                     }
                 }
-                if toggle_button(x + 90.0 + 3.0 * 94.0, y, 88.0, 28.0, "Custom", *size == 3) {
+                if toggle_button(x + 90.0 + 3.0 * 94.0, y, 88.0, 28.0, tr("Custom"), *size == 3) {
                     *size = 3;
                 }
                 y += 40.0;
                 if *size == 3 {
-                    text("Width", x, y + 18.0, 17.0, INK);
+                    text_fit(tr("Width"), x, y + 18.0, 86.0, 17.0, INK);
                     if let Some(v) = number_field("new:w", x + 90.0, y, 150.0, *mw as i64, 10, 800) {
                         *mw = v as u32;
                     }
-                    text("Height", x + 260.0, y + 18.0, 17.0, INK);
+                    text_fit(tr("Height"), x + 250.0, y + 18.0, 76.0, 17.0, INK);
                     if let Some(v) = number_field("new:h", x + 330.0, y, 150.0, *mh as i64, 10, 800) {
                         *mh = v as u32;
                     }
                 }
                 y += 40.0;
-                text("Ground", x, y + 18.0, 17.0, INK);
-                let surfaces: Vec<(i64, String)> = SURFACE_LABELS.iter().enumerate().map(|(i, l)| (i as i64, l.to_string())).collect();
+                text_fit(tr("Ground"), x, y + 18.0, 86.0, 17.0, INK);
+                let surfaces: Vec<(i64, String)> = SURFACE_LABELS.iter().enumerate().map(|(i, l)| (i as i64, tr(l).to_string())).collect();
                 if let Some(v) = dropdown("new:fill", x + 90.0, y, 240.0, *fill as i64, &surfaces) {
                     *fill = v as u8;
                 }
-                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, "Create", true) {
+                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, tr("Create"), true) {
                     let o = NewMap { width: *mw, height: *mh, fill: *fill };
                     self.modal = None;
                     return self.guarded(Then::New(o));
@@ -776,15 +804,15 @@ impl EditorScreen {
                 }
             }
             Modal::Open { path, scroll } => {
-                text("Open a map", x, y, 22.0, ACCENT);
+                text(tr("Open a map"), x, y, 22.0, ACCENT);
                 y += 16.0;
                 let mut entries: Vec<(String, PathBuf)> = Vec::new();
                 for m in self.install_maps(assets) {
-                    entries.push((format!("Game: {}", m.name), m.path));
+                    entries.push((trf!("Game: {name}", name = m.name), m.path));
                 }
                 if let Some(d) = &self.user_dir {
                     for m in files::list_dir(d) {
-                        entries.push((format!("Yours: {}", m.name), m.path));
+                        entries.push((trf!("Yours: {name}", name = m.name), m.path));
                     }
                 }
                 let list = Rect::new(x, y, r.w - 40.0, r.h - 190.0);
@@ -799,7 +827,9 @@ impl EditorScreen {
                 }
                 *scroll = (*scroll).min(entries.len().saturating_sub(rows));
                 if entries.is_empty() {
-                    text("No maps found. Set RAZDOR_DT_DIR for the game's maps, or type a path below.", x, y + 20.0, 16.0, DIM);
+                    for (i, line) in wrap(tr("No maps found. Set RAZDOR_DT_DIR for the game's maps, or type a path below."), list.w, 16.0).iter().enumerate() {
+                        text(line, x, y + 20.0 + i as f32 * 20.0, 16.0, DIM);
+                    }
                 }
                 let mut pick = None;
                 for (i, (label, p)) in entries.iter().enumerate().skip(*scroll).take(rows) {
@@ -809,9 +839,9 @@ impl EditorScreen {
                     }
                 }
                 let fy = r.bottom() - 110.0;
-                text("Or a file:", x, fy + 18.0, 17.0, INK);
+                text_fit(tr("Or a file:"), x, fy + 18.0, 86.0, 17.0, INK);
                 text_field("open:path", x + 90.0, fy, r.w - 130.0, 26.0, path, false);
-                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, "Open file", !path.trim().is_empty()) {
+                if button(r.right() - 270.0, r.bottom() - 54.0, 120.0, 40.0, tr("Open file"), !path.trim().is_empty()) {
                     pick = Some(PathBuf::from(path.trim()));
                 }
                 if let Some(p) = pick {
@@ -825,9 +855,9 @@ impl EditorScreen {
             Modal::Issues { scroll } => {
                 let errors = self.issues.iter().filter(|i| i.severity == Severity::Error).count();
                 let warnings = self.issues.len() - errors;
-                let head = if self.issues.is_empty() { "No problems found.".to_string() } else { format!("{errors} error(s), {warnings} warning(s). Errors block saving. Click one to go there.") };
-                text("Map check", x, y, 22.0, ACCENT);
-                text(&head, x, y + 26.0, 16.0, if errors > 0 { RED } else { INK });
+                let head = if self.issues.is_empty() { tr("No problems found.").to_string() } else { trf!("Errors: {errors}, warnings: {warnings}. Errors block saving. Click one to go there.", errors, warnings) };
+                text(tr("Map check"), x, y, 22.0, ACCENT);
+                text_fit(&head, x, y + 26.0, r.w - 40.0, 16.0, if errors > 0 { RED } else { INK });
                 y += 40.0;
                 let list = Rect::new(x, y, r.w - 40.0, r.h - 130.0);
                 let rows = (list.h / 24.0).floor() as usize;
@@ -860,7 +890,7 @@ impl EditorScreen {
                     self.go_to(p);
                     return action;
                 }
-                if button(r.right() - 140.0, r.bottom() - 54.0, 120.0, 40.0, "Close", true) || esc {
+                if button(r.right() - 140.0, r.bottom() - 54.0, 120.0, 40.0, tr("Close"), true) || esc {
                     keep = false;
                 }
             }

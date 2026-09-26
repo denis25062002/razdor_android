@@ -354,13 +354,14 @@ pub fn draw_overlays(doc: &EditorDoc, tools: &ToolState, palette: &Palette, art:
             text(&format!("{}", i + 1), c.x + r + 2.0, c.y - r, 14.0, WHITE);
         }
     }
-    // Hero starts: K, A, R.
+    // Hero starts: the initials of the classes (K, A, R).
     for (k, h) in s.header.heroes.iter().enumerate() {
         let c = cam.to_screen(vec2(h.x as f32 + 0.5, h.y as f32 + 0.5));
         let r = (9.0 * cam.zoom).max(5.0);
         draw_circle(c.x, c.y, r, Color::new(0.2, 0.8, 0.3, 0.85));
         draw_circle_lines(c.x, c.y, r, 1.5, BLACK);
-        text_centered(["K", "A", "R"][k], c.x, c.y + r * 0.45, r * 1.3, BLACK);
+        let initial: String = razdor::editor::palette::HERO_CLASSES.get(k).map(|n| razdor::i18n::tr(n)).and_then(|n| n.chars().next()).map(String::from).unwrap_or_default();
+        text_centered(&initial, c.x, c.y + r * 0.45, r * 1.3, BLACK);
     }
     for a in s.armies.iter() {
         if o.patrols && a.patrols != 0 && a.patrol_radius > 0 {

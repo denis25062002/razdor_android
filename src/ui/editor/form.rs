@@ -1,10 +1,15 @@
 //! A column of labelled fields for the editor's panels: lays rows out top to bottom, skips
 //! drawing rows scrolled out of view, and remembers which field changed (the undo merge key).
+//!
+//! Labels, headings, notes and picker lists go through `i18n::tr` here, so tables of labels
+//! (`palette::FACTIONS`, …) show in the interface language; callers still write their
+//! literals as `tr("…")` for the catalog.
 
 use macroquad::prelude::*;
 
 use razdor::dt::dtm::{Scenario, Troop};
 use razdor::editor::palette::{building_type_label, Names};
+use razdor::i18n::tr;
 
 use crate::ui::widgets::*;
 
@@ -71,14 +76,14 @@ impl Form {
 
     pub fn heading(&mut self, s: &str) {
         if self.shown(ROW) {
-            text(s, self.x, self.y + 20.0, 19.0, ACCENT);
+            text_fit(tr(s), self.x, self.y + 20.0, self.w, 19.0, ACCENT);
             draw_line(self.x, self.y + 25.0, self.x + self.w, self.y + 25.0, 1.0, Color::new(0.5, 0.4, 0.2, 0.6));
         }
         self.next(ROW + 2.0);
     }
 
     pub fn note(&mut self, s: &str, color: Color) {
-        for line in wrap(s, self.w, 16.0) {
+        for line in wrap(tr(s), self.w, 16.0) {
             if self.shown(20.0) {
                 text(&line, self.x, self.y + 15.0, 16.0, color);
             }
@@ -87,11 +92,7 @@ impl Form {
     }
 
     fn label(&self, s: &str) {
-        let mut l = s.to_string();
-        while measure(&l, 16.0).width > self.label_w - 6.0 && !l.is_empty() {
-            l.pop();
-        }
-        text(&l, self.x, self.y + 17.0, 16.0, DIM);
+        text_fit(tr(s), self.x, self.y + 17.0, self.label_w - 6.0, 16.0, DIM);
     }
 
     fn field_x(&self) -> (f32, f32) {
@@ -113,7 +114,7 @@ impl Form {
     pub fn memo(&mut self, k: &str, label: &str, v: &mut String, lines: usize) {
         let h = 20.0 + lines as f32 * 19.0 + 8.0;
         if self.shown(h + 4.0) {
-            text(label, self.x, self.y + 15.0, 16.0, DIM);
+            text_fit(tr(label), self.x, self.y + 15.0, self.w, 16.0, DIM);
             if text_field(&self.key(k), self.x, self.y + 20.0, self.w, h - 20.0, v, true) {
                 self.mark(k);
             }
@@ -138,7 +139,7 @@ impl Form {
     /// A 0/1 flag byte as a check box.
     pub fn flag(&mut self, k: &str, label: &str, v: &mut u8) {
         if self.shown(ROW) {
-            if let Some(on) = checkbox(self.x, self.y + 2.0, label, *v != 0) {
+            if let Some(on) = checkbox(self.x, self.y + 2.0, tr(label), *v != 0) {
                 *v = on as u8;
                 self.mark(k);
             }
@@ -187,16 +188,16 @@ impl Form {
         if self.shown(20.0) {
             let nw = 74.0;
             let uw = self.w - 2.0 * nw - 8.0;
-            text(unit, self.x, self.y + 15.0, 15.0, DIM);
-            text(a, self.x + uw + 8.0, self.y + 15.0, 15.0, DIM);
-            text(b, self.x + uw + nw + 12.0, self.y + 15.0, 15.0, DIM);
+            text_fit(tr(unit), self.x, self.y + 15.0, uw, 15.0, DIM);
+            text_fit(tr(a), self.x + uw + 8.0, self.y + 15.0, nw - 4.0, 15.0, DIM);
+            text_fit(tr(b), self.x + uw + nw + 12.0, self.y + 15.0, nw - 4.0, 15.0, DIM);
         }
         self.next(20.0);
     }
 
     /// Six troops with levels shown 1-based (stored 0-based).
     pub fn troops(&mut self, k: &str, units: &[(i64, String)], troops: &mut [Troop; 6]) {
-        self.slot_header("Unit", "Level", "Count");
+        self.slot_header(tr("Unit"), tr("Level"), tr("Count"));
         for (i, t) in troops.iter_mut().enumerate() {
             let mut level = t.level + 1;
             let (mut unit, mut count) = (t.unit, t.count);
@@ -261,6 +262,7 @@ impl Form {
     pub fn button(&mut self, label: &str, enabled: bool) -> bool {
         let mut hit = false;
         if self.shown(ROW + 2.0) {
+            let label = tr(label);
             let w = (measure(label, 17.0).width + 24.0).min(self.w);
             hit = small_button(self.x, self.y, w, 26.0, label, enabled);
         }
@@ -274,7 +276,7 @@ impl Form {
         if self.shown(ROW + 2.0) {
             let bw = (self.w - 4.0 * (labels.len() as f32 - 1.0)) / labels.len() as f32;
             for (i, l) in labels.iter().enumerate() {
-                if small_button(self.x + i as f32 * (bw + 4.0), self.y, bw, 26.0, l, true) {
+                if small_button(self.x + i as f32 * (bw + 4.0), self.y, bw, 26.0, tr(l), true) {
                     hit = Some(i);
                 }
             }
@@ -288,12 +290,8 @@ impl Form {
         let mut out = EventListEdit::None;
         for (i, id) in used.iter().enumerate() {
             if self.shown(ROW) {
-                let label = events.iter().find(|e| e.0 == *id as i64).map_or(format!("#{id} (missing)"), |e| e.1.clone());
-                let mut l = label;
-                while measure(&l, 16.0).width > self.w - 40.0 && !l.is_empty() {
-                    l.pop();
-                }
-                text(&l, self.x, self.y + 17.0, 16.0, INK);
+                let label = events.iter().find(|e| e.0 == *id as i64).map_or(format!("#{id} {}", tr("(missing)")), |e| e.1.clone());
+                text(&ellipsize(&label, self.w - 40.0, 16.0), self.x, self.y + 17.0, 16.0, INK);
                 if small_button(self.x + self.w - 26.0, self.y, 26.0, 24.0, "x", true) {
                     out = EventListEdit::Remove(i);
                 }
@@ -301,7 +299,7 @@ impl Form {
             self.next(ROW);
         }
         let mut add: i64 = 0;
-        let mut options = vec![(0, "Add an event...".to_string())];
+        let mut options = vec![(0, tr("Add an event...").to_string())];
         options.extend(events.iter().filter(|e| !used.contains(&(e.0 as u16))).cloned());
         if self.shown(ROW) {
             if let Some(n) = dropdown(&self.key(&format!("{k}add")), self.x, self.y, self.w, add, &options) {
@@ -327,19 +325,19 @@ pub enum EventListEdit {
 // ------------------------------------------------------------------------------------------
 
 fn with_none(none: &str, items: impl Iterator<Item = (i64, String)>) -> Options {
-    std::iter::once((0, none.to_string())).chain(items).collect()
+    std::iter::once((0, tr(none).to_string())).chain(items).collect()
 }
 
 pub fn unit_options(n: &Names) -> Options {
-    with_none("(none)", n.units.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
+    with_none(tr("(none)"), n.units.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
 }
 
 pub fn artefact_options(n: &Names) -> Options {
-    with_none("(none)", n.artefacts.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
+    with_none(tr("(none)"), n.artefacts.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
 }
 
 pub fn spell_options(n: &Names) -> Options {
-    with_none("(none)", n.spells.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
+    with_none(tr("(none)"), n.spells.iter().map(|c| (c.id as i64, format!("{} ({})", c.name, c.id))))
 }
 
 /// "#3 Title" for every event (titles come from the map).
@@ -356,12 +354,12 @@ pub fn event_options(s: &Scenario) -> Options {
 }
 
 pub fn event_options_none(s: &Scenario) -> Options {
-    with_none("(none)", event_options(s).into_iter())
+    with_none(tr("(none)"), event_options(s).into_iter())
 }
 
 pub fn building_options(s: &Scenario) -> Options {
     with_none(
-        "(none)",
+        tr("(none)"),
         s.buildings.iter().enumerate().map(|(i, b)| {
             let name = if b.name.trim().is_empty() { building_type_label(b.kind).to_string() } else { b.name.trim().to_string() };
             (i as i64 + 1, format!("#{} {name}", i + 1))
@@ -373,25 +371,25 @@ pub fn army_label(s: &Scenario, id: u8) -> String {
     match s.army(id) {
         Some(a) if !a.name.trim().is_empty() => format!("#{id} {}", a.name.trim()),
         Some(a) if !a.leader_name.trim().is_empty() => format!("#{id} {}", a.leader_name.trim()),
-        _ => format!("#{id} army"),
+        _ => format!("#{id} {}", tr("army")),
     }
 }
 
 pub fn named_options(s: &Scenario) -> Options {
-    with_none("(none)", s.named_characters.iter().enumerate().map(|(i, n)| (i as i64 + 1, format!("{} {}", i + 1, n.name))))
+    with_none(tr("(none)"), s.named_characters.iter().enumerate().map(|(i, n)| (i as i64 + 1, format!("{} {}", i + 1, n.name))))
 }
 
 pub fn army_options(s: &Scenario) -> Options {
-    with_none("(none)", (1..=s.armies.len().min(255) as u8).map(|id| (id as i64, army_label(s, id))))
+    with_none(tr("(none)"), (1..=s.armies.len().min(255) as u8).map(|id| (id as i64, army_label(s, id))))
 }
 
 pub fn point_options(s: &Scenario) -> Options {
     with_none(
-        "(none)",
-        s.points.iter().map(|p| (p.id as i64, format!("#{} {} ({}, {})", p.id, if p.model == 8 { "lantern" } else { "event point" }, p.x, p.y))),
+        tr("(none)"),
+        s.points.iter().map(|p| (p.id as i64, format!("#{} {} ({}, {})", p.id, if p.model == 8 { tr("lantern") } else { tr("event point") }, p.x, p.y))),
     )
 }
 
 pub fn list_options(labels: &[&str], first: i64) -> Options {
-    labels.iter().enumerate().map(|(i, l)| (first + i as i64, l.to_string())).collect()
+    labels.iter().enumerate().map(|(i, l)| (first + i as i64, tr(l).to_string())).collect()
 }

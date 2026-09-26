@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use crate::dt::container;
 use crate::dt::dtm::{Army, Building, Event, MapObject, Point, Scenario, CONTAINER_VERSION};
 use crate::dt::DtError;
+use crate::i18n::{n_, tr};
+use crate::trf;
 
 use super::command::{Command, ObjectFilter, Sections, Settings};
 use super::defaults::{new_army, new_building, new_point, new_scenario, NewMap};
@@ -56,17 +58,17 @@ pub enum EditError {
 impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EditError::OutOfMap { x, y } => write!(f, "({x}, {y}) is outside the map"),
-            EditError::FootprintOutside => write!(f, "the building would reach outside the map"),
-            EditError::NoSuchBuilding(id) => write!(f, "there is no building {id}"),
-            EditError::NoSuchArmy(id) => write!(f, "there is no army {id}"),
-            EditError::NoSuchPoint(id) => write!(f, "there is no point {id}"),
-            EditError::NoSuchNamedCharacter(id) => write!(f, "there is no named character {id}"),
-            EditError::NoSuchEvent(id) => write!(f, "there is no event {id}"),
-            EditError::NoEventList => write!(f, "only buildings and points have local events"),
-            EditError::Full(what) => write!(f, "no room for more {what}"),
-            EditError::Resize => write!(f, "the map size cannot change here"),
-            EditError::IdChanged => write!(f, "a record's id is its position and cannot change"),
+            EditError::OutOfMap { x, y } => f.write_str(&trf!("({x}, {y}) is outside the map", x, y)),
+            EditError::FootprintOutside => f.write_str(tr("the building would reach outside the map")),
+            EditError::NoSuchBuilding(id) => f.write_str(&trf!("there is no building {id}", id)),
+            EditError::NoSuchArmy(id) => f.write_str(&trf!("there is no army {id}", id)),
+            EditError::NoSuchPoint(id) => f.write_str(&trf!("there is no point {id}", id)),
+            EditError::NoSuchNamedCharacter(id) => f.write_str(&trf!("there is no named character {id}", id)),
+            EditError::NoSuchEvent(id) => f.write_str(&trf!("there is no event {id}", id)),
+            EditError::NoEventList => f.write_str(tr("only buildings and points have local events")),
+            EditError::Full(what) => f.write_str(&trf!("no room for more {what}", what = tr(what))),
+            EditError::Resize => f.write_str(tr("the map size cannot change here")),
+            EditError::IdChanged => f.write_str(tr("a record's id is its position and cannot change")),
         }
     }
 }
@@ -84,9 +86,9 @@ impl std::fmt::Display for SaveError {
         match self {
             SaveError::Invalid(issues) => {
                 let n = issues.iter().filter(|i| i.severity == super::Severity::Error).count();
-                write!(f, "the map has {n} error(s); fix them first")
+                f.write_str(&trf!("the map has errors ({n}); fix them first", n))
             }
-            SaveError::Io(e) => write!(f, "cannot write the map: {e}"),
+            SaveError::Io(e) => f.write_str(&trf!("cannot write the map: {e}", e)),
         }
     }
 }
@@ -229,7 +231,7 @@ impl EditorDoc {
             Origin::New => None,
         };
         let stem = self.saved_path.as_ref().or(path).and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned());
-        stem.unwrap_or_else(|| if self.scenario.title.trim().is_empty() { "New map".into() } else { self.scenario.title.trim().to_string() })
+        stem.unwrap_or_else(|| if self.scenario.title.trim().is_empty() { tr("New map").into() } else { self.scenario.title.trim().to_string() })
     }
 
     // ---------------------------------------------------------------------------------
@@ -534,7 +536,7 @@ impl EditorDoc {
             }
             Command::PlaceBuilding { x, y, kind, picture_type, variant, size } => {
                 if self.scenario.buildings.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("buildings (at most 255)"));
+                    return Err(EditError::Full(n_("buildings (at most 255)")));
                 }
                 self.check_footprint(x, y, size)?;
                 let b = new_building(&self.scenario.header, x, y, kind, picture_type, variant, size);
@@ -558,7 +560,7 @@ impl EditorDoc {
             }
             Command::PlaceArmy { x, y } => {
                 if self.scenario.armies.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("armies (at most 255)"));
+                    return Err(EditError::Full(n_("armies (at most 255)")));
                 }
                 self.check_cell(x as i64, y as i64)?;
                 let id = self.scenario.armies.len() as u8 + 1;
@@ -585,7 +587,7 @@ impl EditorDoc {
             }
             Command::PlacePoint { x, y, lantern } => {
                 if self.scenario.points.len() >= MAX_RECORDS {
-                    return Err(EditError::Full("points (at most 255)"));
+                    return Err(EditError::Full(n_("points (at most 255)")));
                 }
                 self.check_cell(x as i64, y as i64)?;
                 let id = self.scenario.points.len() as u8 + 1;
@@ -619,7 +621,7 @@ impl EditorDoc {
             }
             Command::AddNamedCharacter { unit, name } => {
                 if self.scenario.named_characters.len() >= 32 {
-                    return Err(EditError::Full("named characters (32)"));
+                    return Err(EditError::Full(n_("named characters (32)")));
                 }
                 let k = self.scenario.named_characters.len();
                 self.scenario.header.named_character_slots[k] = unit;
@@ -654,7 +656,7 @@ impl EditorDoc {
                 let (slots, count) = self.event_list(place)?;
                 let used = records::used_events(slots, *count);
                 if !used.contains(&event) && !records::add_event(slots, count, event) {
-                    return Err(EditError::Full("events in this list"));
+                    return Err(EditError::Full(n_("events in this list")));
                 }
             }
             Command::DetachEvent { place, event } => {
@@ -669,7 +671,7 @@ impl EditorDoc {
 
     fn push_event(&mut self, e: Event) -> Result<u16, EditError> {
         if self.scenario.events.len() >= super::events::MAX_EVENTS {
-            return Err(EditError::Full("events (at most 5000)"));
+            return Err(EditError::Full(n_("events (at most 5000)")));
         }
         self.scenario.events.push(e);
         Ok(self.scenario.events.len() as u16)

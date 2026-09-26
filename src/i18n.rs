@@ -420,7 +420,8 @@ mod tests {
                     while let Some(i) = line[from..].find(d) {
                         let at = from + i;
                         from = at + d.len();
-                        if line[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                        // Methods (`f.text(key, label, …)` of the editor's forms) are not the helpers.
+                        if line[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
                             continue;
                         }
                         // The first string literal among the arguments, if any, before the call's end.

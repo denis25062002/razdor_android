@@ -12,6 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::dt::install::{list_maps, MapEntry, MAP_EXTENSION};
+use crate::i18n::tr;
+use crate::trf;
 
 /// Environment variable naming the user's map folder.
 pub const MAPS_DIR_ENV: &str = "RAZDOR_MAPS_DIR";
@@ -80,10 +82,10 @@ impl std::fmt::Display for SaveBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SaveBlock::BadName(why) => write!(f, "{why}"),
-            SaveBlock::NoFolder => write!(f, "there is no folder to save into"),
-            SaveBlock::ConfirmGameFolder(p) => write!(f, "save into the game's maps folder as {}?", p.display()),
-            SaveBlock::ConfirmReplaceGameMap(p) => write!(f, "{} already exists in the game's folder (it may be a shipped map). Replace it?", p.display()),
-            SaveBlock::ConfirmReplaceOwnMap(p) => write!(f, "{} already exists. Replace it?", p.display()),
+            SaveBlock::NoFolder => f.write_str(tr("there is no folder to save into")),
+            SaveBlock::ConfirmGameFolder(p) => f.write_str(&trf!("Save into the game's maps folder as {path}?", path = p.display())),
+            SaveBlock::ConfirmReplaceGameMap(p) => f.write_str(&trf!("{path} already exists in the game's folder (it may be a shipped map). Replace it?", path = p.display())),
+            SaveBlock::ConfirmReplaceOwnMap(p) => f.write_str(&trf!("{path} already exists. Replace it?", path = p.display())),
         }
     }
 }
@@ -98,10 +100,10 @@ pub fn file_name(name: &str) -> Result<String, SaveBlock> {
     };
     let stem = stem.trim();
     if stem.is_empty() || stem == "." || stem == ".." {
-        return Err(SaveBlock::BadName("type a name for the map".into()));
+        return Err(SaveBlock::BadName(tr("type a name for the map").into()));
     }
     if let Some(c) = stem.chars().find(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')) {
-        return Err(SaveBlock::BadName(format!("a map name cannot contain {c:?}")));
+        return Err(SaveBlock::BadName(trf!("a map name cannot contain {c}", c = format!("{c:?}"))));
     }
     Ok(format!("{stem}.{MAP_EXTENSION}"))
 }

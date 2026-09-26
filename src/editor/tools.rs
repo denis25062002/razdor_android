@@ -1,6 +1,8 @@
 //! The editing tools and what a press, drag and release on the map do with them. The window
 //! only turns mouse events into cells; everything else happens here.
 
+use crate::i18n::{n_, tr};
+
 use super::command::{Command, ObjectFilter};
 use super::doc::{EditorDoc, Target};
 use super::palette::Palette;
@@ -30,16 +32,16 @@ pub enum Tool {
 
 impl Tool {
     pub fn label(&self) -> &'static str {
-        match self {
-            Tool::Select => "Select and move",
-            Tool::Terrain { .. } => "Terrain",
-            Tool::Objects { .. } => "Objects",
-            Tool::Erase { .. } => "Erase objects",
-            Tool::Building { .. } => "Buildings",
-            Tool::Army => "Armies",
-            Tool::Point { .. } => "Points and lanterns",
-            Tool::HeroStart(_) => "Hero start",
-        }
+        tr(match self {
+            Tool::Select => n_("Select and move"),
+            Tool::Terrain { .. } => n_("Terrain"),
+            Tool::Objects { .. } => n_("Objects"),
+            Tool::Erase { .. } => n_("Erase objects"),
+            Tool::Building { .. } => n_("Buildings"),
+            Tool::Army => n_("Armies"),
+            Tool::Point { .. } => n_("Points and lanterns"),
+            Tool::HeroStart(_) => n_("Hero start"),
+        })
     }
 }
 
@@ -153,16 +155,16 @@ impl ToolState {
                     let (ax, ay) = anchor.unwrap_or((x, y));
                     let grab = (ax as i32 - cell.0, ay as i32 - cell.1);
                     doc.begin_group(match t {
-                        Target::Building(_) => "Move building",
-                        Target::Army(_) => "Move army",
-                        Target::Point(_) => "Move point",
+                        Target::Building(_) => n_("Move building"),
+                        Target::Army(_) => n_("Move army"),
+                        Target::Point(_) => n_("Move point"),
                     });
                     self.drag = Some(Drag::Move(t, grab));
                 }
             }
             Tool::Terrain { code, shape } => match shape {
                 TerrainShape::Brush(_) => {
-                    doc.begin_group("Paint terrain");
+                    doc.begin_group(n_("Paint terrain"));
                     self.stroke(doc, cell);
                     self.drag = Some(Drag::Stroke(cell));
                 }
@@ -172,7 +174,7 @@ impl ToolState {
                 TerrainShape::Rect => self.drag = Some(Drag::Rect(cell)),
             },
             Tool::Objects { .. } | Tool::Erase { .. } => {
-                doc.begin_group(if matches!(self.tool, Tool::Objects { .. }) { "Place objects" } else { "Erase objects" });
+                doc.begin_group(if matches!(self.tool, Tool::Objects { .. }) { n_("Place objects") } else { n_("Erase objects") });
                 self.stroke(doc, cell);
                 self.drag = Some(Drag::Stroke(cell));
             }

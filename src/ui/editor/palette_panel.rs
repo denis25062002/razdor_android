@@ -6,6 +6,8 @@ use macroquad::prelude::*;
 use razdor::editor::geometry::BRUSH_SIZES;
 use razdor::editor::palette::{self, building_type_label, object_class_label, Palette};
 use razdor::editor::{ObjectFilter, TerrainShape, Tool, ToolState};
+use razdor::i18n::{n_, tr};
+use razdor::trf;
 
 use crate::ui::dt_art::DtArt;
 use crate::ui::widgets::*;
@@ -47,13 +49,13 @@ impl Default for PaletteState {
 
 /// The tool buttons, in order, with their shortcut keys.
 pub const TOOL_KEYS: [(&str, KeyCode); 7] = [
-    ("Select (V)", KeyCode::V),
-    ("Terrain (T)", KeyCode::T),
-    ("Objects (O)", KeyCode::O),
-    ("Erase (E)", KeyCode::E),
-    ("Building (B)", KeyCode::B),
-    ("Army (A)", KeyCode::A),
-    ("Point (P)", KeyCode::P),
+    (n_("Select (V)"), KeyCode::V),
+    (n_("Terrain (T)"), KeyCode::T),
+    (n_("Objects (O)"), KeyCode::O),
+    (n_("Erase (E)"), KeyCode::E),
+    (n_("Building (B)"), KeyCode::B),
+    (n_("Army (A)"), KeyCode::A),
+    (n_("Point (P)"), KeyCode::P),
 ];
 
 impl PaletteState {
@@ -83,6 +85,15 @@ impl PaletteState {
             }
         }
     }
+}
+
+/// A hint paragraph wrapped to `w`; returns the height used.
+fn note(s: &str, x: f32, y: f32, w: f32, color: Color) -> f32 {
+    let lines = wrap(s, w, 15.0);
+    for (i, line) in lines.iter().enumerate() {
+        text(line, x, y + 16.0 + i as f32 * 18.0, 15.0, color);
+    }
+    lines.len() as f32 * 18.0
 }
 
 fn tool_index(t: &Tool) -> usize {
@@ -137,7 +148,7 @@ fn sprite_grid(r: Rect, count: usize, cell: f32, scroll: &mut usize, selected: O
         }
     }
     if rows > rows_fit {
-        text(&format!("wheel: more ({}/{})", *scroll + 1, rows - rows_fit + 1), r.x, r.bottom() + 14.0, 14.0, DIM);
+        text(&trf!("wheel: more ({page}/{pages})", page = *scroll + 1, pages = rows - rows_fit + 1), r.x, r.bottom() + 14.0, 14.0, DIM);
     }
     out
 }
@@ -158,7 +169,7 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
     let bw = (w - 4.0) / 2.0;
     for (k, (label, _)) in TOOL_KEYS.iter().enumerate() {
         let (bx, by) = (x + (k % 2) as f32 * (bw + 4.0), y + (k / 2) as f32 * 30.0);
-        if toggle_button(bx, by, bw, 26.0, label, current == k) {
+        if toggle_button(bx, by, bw, 26.0, tr(label), current == k) {
             tools.set_tool(state.tool(k));
         }
     }
@@ -169,7 +180,7 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
     let mut changed = false;
     match tools.tool {
         Tool::Terrain { .. } => {
-            text("Surface", x, y + 14.0, 17.0, ACCENT);
+            text(tr("Surface"), x, y + 14.0, 17.0, ACCENT);
             y += 22.0;
             let (cw, ch) = ((w - 12.0) / 4.0, 36.0);
             for code in 0..16u8 {
@@ -188,9 +199,9 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
                 }
             }
             y += 4.0 * (ch + 4.0) + 2.0;
-            text(palette::SURFACE_LABELS[state.code as usize & 15], x, y + 14.0, 17.0, INK);
+            text_fit(tr(palette::SURFACE_LABELS[state.code as usize & 15]), x, y + 14.0, w, 17.0, INK);
             y += 26.0;
-            text("Brush", x, y + 14.0, 17.0, ACCENT);
+            text(tr("Brush"), x, y + 14.0, 17.0, ACCENT);
             y += 22.0;
             let size = match state.shape {
                 TerrainShape::Brush(s) => s,
@@ -201,11 +212,11 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
                 changed = true;
             }
             y += 30.0;
-            if toggle_button(x, y, bw, 26.0, "Flood fill", state.shape == TerrainShape::Fill) {
+            if toggle_button(x, y, bw, 26.0, tr("Flood fill"), state.shape == TerrainShape::Fill) {
                 state.shape = TerrainShape::Fill;
                 changed = true;
             }
-            if toggle_button(x + bw + 4.0, y, bw, 26.0, "Rectangle", state.shape == TerrainShape::Rect) {
+            if toggle_button(x + bw + 4.0, y, bw, 26.0, tr("Rectangle"), state.shape == TerrainShape::Rect) {
                 state.shape = TerrainShape::Rect;
                 changed = true;
             }
@@ -221,8 +232,8 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
                 changed = true;
             }
             y += 30.0;
-            text("Brush", x, y + 14.0, 16.0, DIM);
-            if let Some(s) = size_buttons(x + 50.0, y, w - 50.0, state.size) {
+            text_fit(tr("Brush"), x, y + 14.0, 56.0, 16.0, DIM);
+            if let Some(s) = size_buttons(x + 60.0, y, w - 60.0, state.size) {
                 state.size = s;
                 changed = true;
             }
@@ -245,24 +256,23 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
             text(&label, x, r.bottom() - 10.0, 16.0, INK);
         }
         Tool::Erase { .. } => {
-            text("Brush", x, y + 14.0, 17.0, ACCENT);
+            text(tr("Brush"), x, y + 14.0, 17.0, ACCENT);
             y += 22.0;
             if let Some(s) = size_buttons(x, y, w, state.erase_size) {
                 state.erase_size = s;
                 changed = true;
             }
             y += 34.0;
-            text("Erase", x, y + 14.0, 17.0, ACCENT);
+            text(tr("Erase"), x, y + 14.0, 17.0, ACCENT);
             y += 22.0;
-            for (f, label) in [(ObjectFilter::All, "Everything"), (ObjectFilter::Massifs, "Hills, mountains, stones"), (ObjectFilter::Plants, "Trees and thickets")] {
+            for (f, label) in [(ObjectFilter::All, tr("Everything")), (ObjectFilter::Massifs, tr("Hills, mountains, stones")), (ObjectFilter::Plants, tr("Trees and thickets"))] {
                 if toggle_button(x, y, w, 26.0, label, state.filter == f) {
                     state.filter = f;
                     changed = true;
                 }
                 y += 30.0;
             }
-            text("Buildings, armies and points: select", x, y + 16.0, 15.0, DIM);
-            text("them and press Delete.", x, y + 34.0, 15.0, DIM);
+            note(tr("Buildings, armies and points: select them and press Delete."), x, y, w, DIM);
         }
         Tool::Building { .. } => {
             let mut kinds: Vec<u8> = palette.buildings.iter().map(|b| b.picture_type).collect();
@@ -289,41 +299,32 @@ pub fn tool_panel(state: &mut PaletteState, tools: &mut ToolState, palette: &Pal
                 state.variant = pics[i].variant;
                 changed = true;
             }
-            text("Click: the cell is the bottom-right corner.", x, r.bottom() - 10.0, 14.0, DIM);
+            text_fit(tr("Click: the cell is the bottom-right corner."), x, r.bottom() - 10.0, w, 14.0, DIM);
         }
         Tool::Point { .. } => {
-            if toggle_button(x, y, w, 26.0, "Lantern (reveals an area)", state.lantern) {
+            if toggle_button(x, y, w, 26.0, tr("Lantern (reveals an area)"), state.lantern) {
                 state.lantern = true;
                 changed = true;
             }
-            if toggle_button(x, y + 30.0, w, 26.0, "Event point", !state.lantern) {
+            if toggle_button(x, y + 30.0, w, 26.0, tr("Event point"), !state.lantern) {
                 state.lantern = false;
                 changed = true;
             }
-            text("Click the map to place one.", x, y + 80.0, 15.0, DIM);
+            note(tr("Click the map to place one."), x, y + 64.0, w, DIM);
         }
         Tool::Army => {
-            text("Click the map to place an army;", x, y + 16.0, 15.0, DIM);
-            text("set it up in its panel.", x, y + 34.0, 15.0, DIM);
+            note(tr("Click the map to place an army; set it up in its panel."), x, y, w, DIM);
         }
         Tool::HeroStart(k) => {
-            text(&format!("Click the {}'s start cell.", palette::HERO_CLASSES[k]), x, y + 16.0, 16.0, ACCENT);
+            note(&trf!("Click the start cell of the {class}.", class = tr(palette::HERO_CLASSES[k])), x, y, w, ACCENT);
         }
         Tool::Select => {
-            for (i, line) in [
-                "Click a building, army or point to",
-                "edit it; drag to move it.",
-                "Delete: remove it.",
-                "",
-                "Wheel: zoom. Right or middle drag,",
-                "or arrow keys: move the view.",
-                "G grid, H hill cover, R patrols,",
-                "Home: whole map.",
-            ]
-            .iter()
-            .enumerate()
-            {
-                text(line, x, y + 16.0 + i as f32 * 18.0, 15.0, DIM);
+            let mut ny = y;
+            for para in [
+                tr("Click a building, army or point to edit it; drag to move it. Delete: remove it."),
+                tr("Wheel: zoom. Right or middle drag, or arrow keys: move the view. G grid, H hill cover, R patrols, Home: whole map."),
+            ] {
+                ny += note(para, x, ny, w, DIM) + 18.0;
             }
         }
     }

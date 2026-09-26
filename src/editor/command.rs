@@ -3,6 +3,8 @@
 
 use crate::dt::dtm::{Army, Building, Event, Header, NamedCharacter, Point};
 
+use crate::i18n::n_;
+
 use super::doc::Target;
 
 /// Which objects an erase removes.
@@ -78,35 +80,35 @@ pub enum Command {
 }
 
 impl Command {
-    /// A short label for the undo list.
+    /// A short label for the undo list (English; shown through `i18n::tr`).
     pub fn label(&self) -> &'static str {
         match self {
-            Command::PaintTerrain { .. } => "Paint terrain",
-            Command::FillTerrain { .. } => "Fill terrain",
-            Command::RectTerrain { .. } => "Terrain rectangle",
-            Command::PlaceObjects { .. } => "Place objects",
-            Command::EraseObjects { .. } => "Erase objects",
-            Command::PlaceBuilding { .. } => "Place building",
-            Command::MoveBuilding { .. } => "Move building",
-            Command::DeleteBuilding { .. } => "Delete building",
-            Command::SetBuilding { .. } => "Edit building",
-            Command::PlaceArmy { .. } => "Place army",
-            Command::MoveArmy { .. } => "Move army",
-            Command::DeleteArmy { .. } => "Delete army",
-            Command::SetArmy { .. } => "Edit army",
-            Command::PlacePoint { .. } => "Place point",
-            Command::MovePoint { .. } => "Move point",
-            Command::DeletePoint { .. } => "Delete point",
-            Command::SetPoint { .. } => "Edit point",
-            Command::SetSettings(_) => "Edit scenario settings",
-            Command::AddNamedCharacter { .. } => "Add named character",
-            Command::RemoveNamedCharacter { .. } => "Remove named character",
-            Command::NewEvent { .. } => "New event",
-            Command::DuplicateEvent { .. } => "Duplicate event",
-            Command::DeleteEvent { .. } => "Delete event",
-            Command::SetEvent { .. } => "Edit event",
-            Command::AttachEvent { .. } => "Attach event",
-            Command::DetachEvent { .. } => "Detach event",
+            Command::PaintTerrain { .. } => n_("Paint terrain"),
+            Command::FillTerrain { .. } => n_("Fill terrain"),
+            Command::RectTerrain { .. } => n_("Terrain rectangle"),
+            Command::PlaceObjects { .. } => n_("Place objects"),
+            Command::EraseObjects { .. } => n_("Erase objects"),
+            Command::PlaceBuilding { .. } => n_("Place building"),
+            Command::MoveBuilding { .. } => n_("Move building"),
+            Command::DeleteBuilding { .. } => n_("Delete building"),
+            Command::SetBuilding { .. } => n_("Edit building"),
+            Command::PlaceArmy { .. } => n_("Place army"),
+            Command::MoveArmy { .. } => n_("Move army"),
+            Command::DeleteArmy { .. } => n_("Delete army"),
+            Command::SetArmy { .. } => n_("Edit army"),
+            Command::PlacePoint { .. } => n_("Place point"),
+            Command::MovePoint { .. } => n_("Move point"),
+            Command::DeletePoint { .. } => n_("Delete point"),
+            Command::SetPoint { .. } => n_("Edit point"),
+            Command::SetSettings(_) => n_("Edit scenario settings"),
+            Command::AddNamedCharacter { .. } => n_("Add named character"),
+            Command::RemoveNamedCharacter { .. } => n_("Remove named character"),
+            Command::NewEvent { .. } => n_("New event"),
+            Command::DuplicateEvent { .. } => n_("Duplicate event"),
+            Command::DeleteEvent { .. } => n_("Delete event"),
+            Command::SetEvent { .. } => n_("Edit event"),
+            Command::AttachEvent { .. } => n_("Attach event"),
+            Command::DetachEvent { .. } => n_("Detach event"),
         }
     }
 
