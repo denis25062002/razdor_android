@@ -133,7 +133,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             text(line, x, y + i as f32 * 22.0, 18.0, INK);
         }
     } else if !has_install {
-        let hint = "Set RAZDOR_DT_DIR to your Discord Times install to play its scenarios.";
+        let hint = "Discord Times not found: put the game in ~/Games, or start once with RAZDOR_DT_DIR set.";
         text_centered(hint, screen_width() / 2.0, y + 20.0, 20.0, DIM);
     }
     None

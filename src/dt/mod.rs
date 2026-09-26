@@ -57,7 +57,7 @@ impl fmt::Display for DtError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DtError::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
-            DtError::NoInstallDir => write!(f, "RAZDOR_DT_DIR is not set"),
+            DtError::NoInstallDir => write!(f, "no Discord Times install found (set RAZDOR_DT_DIR once, or put the game in ~/Games)"),
             DtError::BadMagic { what } => write!(f, "not a {what} (bad magic bytes)"),
             DtError::Truncated { what, offset } => write!(f, "{what} truncated at offset {offset:#x}"),
             DtError::Bzip2(e) => write!(f, "bzip2: {e}"),

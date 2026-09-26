@@ -119,8 +119,8 @@ impl DtInstall {
 
     /// Load the install named by `RAZDOR_DT_DIR`.
     pub fn from_env() -> Result<DtInstall, DtError> {
-        let dir = std::env::var_os(ENV_VAR).ok_or(DtError::NoInstallDir)?;
-        DtInstall::load(Path::new(&dir))
+        let dir = locate().ok_or(DtError::NoInstallDir)?;
+        DtInstall::load(&dir)
     }
 
     /// Unit type by `GlobalIndex`.
@@ -144,8 +144,106 @@ impl DtInstall {
     }
 }
 
+/// A Discord Times install: a folder holding the maps folder and the unit list.
+pub fn is_install(dir: &Path) -> bool {
+    dir.join(MAPS_DIR).is_dir() && dir.join(UNITS_FILE).is_file()
+}
+
+/// Where Razdor remembers the install folder: `$RAZDOR_CONFIG_DIR`, else
+/// `$XDG_CONFIG_HOME/razdor`, else `~/.config/razdor`; the file `install` holds the path.
+pub fn config_file() -> Option<PathBuf> {
+    let dir = std::env::var_os("RAZDOR_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|d| PathBuf::from(d).join("razdor")))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config/razdor")))?;
+    Some(dir.join("install"))
+}
+
+/// Folders searched for an install when none is set or remembered: `~/Games`, `~/Downloads`
+/// and the home folder.
+pub fn search_roots() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+    vec![home.join("Games"), home.join("Downloads"), home]
+}
+
+/// The install folder: `RAZDOR_DT_DIR` when set, else the remembered one, else the first
+/// install found under `roots` (3 levels deep, hidden folders skipped). A folder found by
+/// the variable or the search is remembered in `config` for next time.
+pub fn locate_with(env: Option<std::ffi::OsString>, config: Option<&Path>, roots: &[PathBuf]) -> Option<PathBuf> {
+    let remember = |dir: &Path| {
+        if let Some(c) = config {
+            let _ = c.parent().map(std::fs::create_dir_all);
+            let _ = std::fs::write(c, dir.to_string_lossy().as_bytes());
+        }
+    };
+    if let Some(dir) = env.map(PathBuf::from).filter(|d| is_install(d)) {
+        remember(&dir);
+        return Some(dir);
+    }
+    let saved = config.and_then(|c| std::fs::read_to_string(c).ok()).map(|t| PathBuf::from(t.trim()));
+    if let Some(dir) = saved.filter(|d| is_install(d)) {
+        return Some(dir);
+    }
+    fn search(dir: &Path, depth: u32) -> Option<PathBuf> {
+        if is_install(dir) {
+            return Some(dir.to_path_buf());
+        }
+        if depth == 0 {
+            return None;
+        }
+        let mut subdirs: Vec<PathBuf> = std::fs::read_dir(dir)
+            .ok()?
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            .map(|e| e.path())
+            .collect();
+        subdirs.sort();
+        subdirs.iter().find_map(|d| search(d, depth - 1))
+    }
+    let found = roots.iter().find_map(|r| search(r, 3))?;
+    remember(&found);
+    Some(found)
+}
+
+/// [`locate_with`] with the real environment, config file and search folders.
+pub fn locate() -> Option<PathBuf> {
+    locate_with(std::env::var_os(ENV_VAR), config_file().as_deref(), &search_roots())
+}
+
 #[cfg(test)]
 mod tests {
+
+    fn fake_install(dir: &Path) {
+        std::fs::create_dir_all(dir.join(MAPS_DIR)).unwrap();
+        std::fs::write(dir.join(UNITS_FILE), b"").unwrap();
+    }
+
+    #[test]
+    fn the_install_is_found_remembered_and_reused() {
+        let tmp = std::env::temp_dir().join(format!("razdor-locate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let game = tmp.join("home/Games/Discord Times Community Update");
+        fake_install(&game);
+        let config = tmp.join("config/razdor/install");
+        let roots = vec![tmp.join("home/Games"), tmp.join("home")];
+        assert!(!is_install(&tmp));
+        // Nothing set or remembered: the search finds it and remembers it.
+        assert_eq!(locate_with(None, Some(&config), &roots), Some(game.clone()));
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), game.to_string_lossy());
+        // Next time, without searching (no roots), the remembered folder.
+        assert_eq!(locate_with(None, Some(&config), &[]), Some(game.clone()));
+        // The variable wins and is remembered.
+        let other = tmp.join("elsewhere/DT");
+        fake_install(&other);
+        assert_eq!(locate_with(Some(other.clone().into()), Some(&config), &[]), Some(other.clone()));
+        assert_eq!(locate_with(None, Some(&config), &[]), Some(other));
+        // A variable pointing at no install is ignored; nothing anywhere gives None.
+        let empty = tmp.join("nothing");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(locate_with(Some(empty.clone().into()), None, std::slice::from_ref(&empty)), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
     use super::*;
     use crate::dt::dtm::{Archetype, BuildingType, GameDate};
 
