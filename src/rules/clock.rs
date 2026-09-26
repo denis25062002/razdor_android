@@ -102,7 +102,7 @@ impl Clock {
 
     /// "1204, month 5, day 19, 11 h".
     pub fn label(&self) -> String {
-        format!("{}, month {}, day {}, {} h", self.year(), self.month(), self.day(), self.hour())
+        crate::trf!("{year}, month {month}, day {day}, {hour} h", year = self.year(), month = self.month(), day = self.day(), hour = self.hour())
     }
 
     /// The original's wording: "1204 год, 5 месяц, 19 день, 11 час".
@@ -116,10 +116,10 @@ impl Clock {
 pub fn duration_label(minutes: f64) -> String {
     let hours = (minutes / MINUTES_PER_HOUR as f64).round() as u64;
     match hours {
-        0 => "less than an hour".to_string(),
-        h if h < 24 => format!("{h} h"),
-        h if h % 24 == 0 => format!("{} d", h / 24),
-        h => format!("{} d {} h", h / 24, h % 24),
+        0 => crate::i18n::tr("less than an hour").to_string(),
+        h if h < 24 => crate::trf!("{h} h", h),
+        h if h % 24 == 0 => crate::trf!("{d} d", d = h / 24),
+        h => crate::trf!("{d} d {h} h", d = h / 24, h = h % 24),
     }
 }
 

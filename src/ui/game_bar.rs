@@ -6,11 +6,13 @@
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::clock::duration_label;
 use razdor::rules::game::Game;
+use razdor::trf;
 
 use super::chrome::{self, shadow_centered, shadow_text, tex, three_slice, Fx, CREAM, GOLD};
-use super::widgets::{clicked, measure, mouse_in, tooltip};
+use super::widgets::{clicked, fit_size, measure, mouse_in, tooltip};
 
 /// A bar button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,14 +51,14 @@ impl BarButton {
 
     fn hint(self) -> &'static str {
         match self {
-            BarButton::Menu => "Main menu (Esc)",
-            BarButton::Settings => "Sound settings",
-            BarButton::Save => "Save the game (F5: quick save)",
-            BarButton::Load => "Load a saved game (F9: quick load)",
-            BarButton::Journal => "The hero's journal (J)",
-            BarButton::Squad => "The hero and his army (A)",
-            BarButton::Spells => "The spell book (B)",
-            BarButton::Map => "Map of the scenario (M)",
+            BarButton::Menu => tr("Main menu (Esc)"),
+            BarButton::Settings => tr("Sound settings"),
+            BarButton::Save => tr("Save the game (F5: quick save)"),
+            BarButton::Load => tr("Load a saved game (F9: quick load)"),
+            BarButton::Journal => tr("The hero's journal (J)"),
+            BarButton::Squad => tr("The hero and his army (A)"),
+            BarButton::Spells => tr("The spell book (B)"),
+            BarButton::Map => tr("Map of the scenario (M)"),
         }
     }
 }
@@ -82,10 +84,10 @@ fn resources(game: &Game, y: f32, h: f32) {
         wages += &format!(" / {}", game.daily_mana_wages());
     }
     let items = [
-        ("mana", "Res-Magic", game.mana.to_string(), Color::new(0.45, 0.85, 1.0, 1.0)),
-        ("gold", "Res-Money", game.gold.to_string(), GOLD),
-        ("income", "Res-Income", format!("+ {}", game.daily_income()), GOLD),
-        ("wages", "Res-Payment", wages, Color::new(1.0, 0.62, 0.25, 1.0)),
+        (tr("mana"), "Res-Magic", game.mana.to_string(), Color::new(0.45, 0.85, 1.0, 1.0)),
+        (tr("gold"), "Res-Money", game.gold.to_string(), GOLD),
+        (tr("income"), "Res-Income", format!("+ {}", game.daily_income()), GOLD),
+        (tr("wages"), "Res-Payment", wages, Color::new(1.0, 0.62, 0.25, 1.0)),
     ];
     let label_size = (11.0 * k).round();
     let value_size = (16.0 * k).round();
@@ -153,15 +155,15 @@ fn oval(b: BarButton, r: Rect, look: Look) -> bool {
     } else {
         let label = match b {
             BarButton::Menu => "X",
-            BarButton::Settings => "Opt",
-            BarButton::Save => "Save",
-            BarButton::Load => "Load",
-            BarButton::Journal => "Quests",
-            BarButton::Squad => "Army",
-            BarButton::Spells => "Book",
-            BarButton::Map => "Map",
+            BarButton::Settings => tr("Opt"),
+            BarButton::Save => tr("Save"),
+            BarButton::Load => tr("Load"),
+            BarButton::Journal => tr("Quests"),
+            BarButton::Squad => tr("Army"),
+            BarButton::Spells => tr("Book"),
+            BarButton::Map => tr("Map"),
         };
-        let s = (r.h * 0.34).round();
+        let s = fit_size(label, r.w - 8.0, (r.h * 0.34).round());
         shadow_centered(label, r.x + r.w / 2.0, r.y + r.h / 2.0 + s * 0.36, s, glyph);
     }
     if hover {
@@ -221,12 +223,15 @@ pub fn draw(game: &Game, look: impl Fn(BarButton) -> Look) -> Option<BarButton> 
     let cx = w / 2.0;
     let size = (13.0 * k).round();
     let (line1, line2) = if game.moving() {
-        (format!("Time: {}", game.clock.label()), Some(format!("Path left: {}", duration_label(game.minutes_left() as f64))))
+        (trf!("Time: {date}", date = game.clock.label()), Some(trf!("Path left: {left}", left = duration_label(game.minutes_left() as f64))))
     } else if game.waiting() {
-        (format!("Time: {}", game.clock.label()), Some("waiting…".to_string()))
+        (trf!("Time: {date}", date = game.clock.label()), Some(tr("waiting…").to_string()))
     } else {
-        ("Time:".to_string(), Some(game.clock.label()))
+        (tr("Time:").to_string(), Some(game.clock.label()))
     };
+    // Russian dates run longer: the lines shrink to the ribbon's middle.
+    let room = (w - 2.0 * ew - 16.0 * k).max(100.0);
+    let size = fit_size(&line1, room, size).min(line2.as_deref().map_or(size, |l| fit_size(l, room, size)));
     let top = y + row * 0.5 - size * 0.25;
     shadow_centered(&line1, cx, top, size, if game.moving() || game.waiting() { CREAM } else { GOLD });
     if let Some(l2) = line2 {

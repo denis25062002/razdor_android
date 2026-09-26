@@ -2,7 +2,10 @@ use macroquad::prelude::*;
 
 use std::sync::Arc;
 
+use razdor::dt::data::MagicSchool;
+use razdor::i18n::tr;
 use razdor::rules::battle::Team;
+use razdor::trf;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
 use razdor::rules::formation::Row;
 use razdor::rules::game::Game;
@@ -38,12 +41,12 @@ fn edit_name(name: &mut String) {
 
 /// The name field of the class screen: what was typed, or the class names as a hint.
 fn name_field(name: &str, x: f32, y: f32, w: f32) {
-    text("Hero's name (type it; empty: the class's name):", x, y - 8.0, 18.0, DIM);
+    text_fit(tr("Hero's name (type it; empty: the class's name):"), x, y - 8.0, w, 18.0, DIM);
     draw_rectangle(x, y, w, 36.0, PANEL);
     draw_rectangle_lines(x, y, w, 36.0, 2.0, ACCENT);
     let caret = if (get_time() * 2.0) as i64 % 2 == 0 { "|" } else { "" };
     if name.is_empty() {
-        text(&format!("{caret}(the class's name)"), x + 10.0, y + 25.0, 20.0, DIM);
+        text(&format!("{caret}{}", tr("(the class's name)")), x + 10.0, y + 25.0, 20.0, DIM);
     } else {
         text(&format!("{name}{caret}"), x + 10.0, y + 25.0, 20.0, INK);
     }
@@ -60,17 +63,22 @@ fn seed() -> u64 {
 pub(super) fn attack_line(s: &Stats) -> String {
     let mut parts = Vec::new();
     if s.is_warrior() {
-        parts.push(format!("attack {}", s[Stat::AttackBlow]));
+        parts.push(trf!("attack {n}", n = s[Stat::AttackBlow]));
     }
     if s.is_shooter() {
-        parts.push(format!("shot {}", s[Stat::AttackShot]));
+        parts.push(trf!("shot {n}", n = s[Stat::AttackShot]));
     }
     if s.is_mage() {
-        let school = s.magic.map_or(String::new(), |m| format!("{m:?} "));
-        parts.push(format!("{school}magic {}", s[Stat::MagicPower]));
+        let n = s[Stat::MagicPower];
+        parts.push(match s.magic {
+            Some(MagicSchool::Life) => trf!("Life magic {n}", n),
+            Some(MagicSchool::Elemental) => trf!("Elemental magic {n}", n),
+            Some(MagicSchool::Death) => trf!("Death magic {n}", n),
+            None => trf!("magic {n}", n),
+        });
     }
     if parts.is_empty() {
-        parts.push("no attack".into());
+        parts.push(tr("no attack").into());
     }
     parts.join(", ")
 }
@@ -78,9 +86,9 @@ pub(super) fn attack_line(s: &Stats) -> String {
 pub(super) fn stat_lines(content: &Content, kind: UnitId) -> [String; 3] {
     let s = Stats::of_level(content, kind, 1);
     [
-        format!("Hits {}   Defence {}/{}", s.max_hp(), s[Stat::DefenceBlow], s[Stat::DefenceShot]),
+        trf!("Hits {hp}   Defence {blow}/{shot}", hp = s.max_hp(), blow = s[Stat::DefenceBlow], shot = s[Stat::DefenceShot]),
         format!("{}: {}", s.role(), attack_line(&s)),
-        format!("Initiative {}   Actions {}", s[Stat::Initiative], s[Stat::Manevres]),
+        trf!("Initiative {ini}   Actions {act}", ini = s[Stat::Initiative], act = s[Stat::Manevres]),
     ]
 }
 
@@ -89,7 +97,7 @@ pub(super) fn stat_lines(content: &Content, kind: UnitId) -> [String; 3] {
 pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option<Screen> {
     clear_background(Color::from_rgba(24, 22, 20, 255));
     text_centered("RAZDOR", screen_width() / 2.0, 80.0, 64.0, ACCENT);
-    text_centered("Choose a scenario", screen_width() / 2.0, 114.0, 24.0, DIM);
+    text_centered(tr("Choose a scenario"), screen_width() / 2.0, 114.0, 24.0, DIM);
     super::language::switch_button(screen_width() - 136.0, 20.0, 116.0, 36.0);
     let (x, w) = (60.0, screen_width() - 120.0);
     let row_h = 52.0;
@@ -98,7 +106,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     let col_w = (w - 20.0 * (cols - 1) as f32) / cols as f32;
     let mut hovered = None;
     let mut entries: Vec<(Option<usize>, String, String)> =
-        vec![(None, "Built-in demo: the bandit kingdom".into(), "Our own small map and units. Clear both bandit camps.".into())];
+        vec![(None, tr("Built-in demo: the bandit kingdom").into(), tr("Our own small map and units. Clear both bandit camps.").into())];
     entries.extend(scenarios.iter().enumerate().map(|(i, e)| {
         let title = if e.scenario.title.trim().is_empty() { e.file.clone() } else { e.scenario.title.clone() };
         let size = format!("{}×{}", e.scenario.width(), e.scenario.height());
@@ -122,10 +130,10 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             }
         }
     }
-    if button(screen_width() - 220.0, 40.0, 180.0, 44.0, "Load a game", true) {
+    if button(screen_width() - 220.0, 40.0, 180.0, 44.0, tr("Load a game"), true) {
         return Some(Screen::Load(super::saves::LoadView::new(super::saves::Back::Title)));
     }
-    if button(40.0, 40.0, 180.0, 44.0, "Map editor", true) {
+    if button(40.0, 40.0, 180.0, 44.0, tr("Map editor"), true) {
         return Some(Screen::Editor);
     }
     let y = screen_height() - 110.0;
@@ -134,7 +142,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             text(line, x, y + i as f32 * 22.0, 18.0, INK);
         }
     } else if !has_install {
-        let hint = "Discord Times not found: put the game in ~/Games, or start once with RAZDOR_DT_DIR set.";
+        let hint = tr("Discord Times not found: put the game in ~/Games, or start once with RAZDOR_DT_DIR set.");
         text_centered(hint, screen_width() / 2.0, y + 20.0, 20.0, DIM);
     }
     None
@@ -149,12 +157,12 @@ pub fn class_select(
 ) -> Option<Screen> {
     clear_background(Color::from_rgba(24, 22, 20, 255));
     let content = scenario.as_ref().map_or(demo.clone(), |(_, c)| c.clone());
-    let title = scenario.as_ref().map_or("A time of discord".to_string(), |(e, _)| e.scenario.title.clone());
+    let title = scenario.as_ref().map_or(tr("A time of discord").to_string(), |(e, _)| e.scenario.title.clone());
     text_centered(&title, screen_width() / 2.0, 100.0, 44.0, ACCENT);
-    text_centered("Choose who you are.", screen_width() / 2.0, 140.0, 26.0, DIM);
+    text_centered(tr("Choose who you are."), screen_width() / 2.0, 140.0, 26.0, DIM);
     if let Some((e, _)) = &scenario {
         if e.scenario.header.scenario_kind == 2 {
-            let note = "A later campaign map: the original carries gold and army over from the previous one.";
+            let note = tr("A later campaign map: the original carries gold and army over from the previous one.");
             text_centered(note, screen_width() / 2.0, 168.0, 18.0, DIM);
         }
     }
@@ -182,19 +190,19 @@ pub fn class_select(
         match &scenario {
             Some((e, c)) => {
                 let preset = &e.scenario.header.heroes[i];
-                text_centered(&format!("{} gold", preset.gold), x + w / 2.0, y + 290.0, 24.0, ACCENT);
+                text_centered(&trf!("Gold: {gold}", gold = preset.gold), x + w / 2.0, y + 290.0, 24.0, ACCENT);
                 let army: Vec<String> = preset
                     .troops
                     .iter()
                     .filter(|t| t.unit != 0 && t.count > 0)
                     .filter_map(|t| c.try_unit(UnitId(t.unit as u32)).map(|u| format!("{} {}", t.count, u.name)))
                     .collect();
-                let army = if army.is_empty() { "alone".to_string() } else { army.join(", ") };
+                let army = if army.is_empty() { tr("alone").to_string() } else { army.join(", ") };
                 for (j, line) in wrap(&army, w - 20.0, 17.0).iter().take(3).enumerate() {
                     text_centered(line, x + w / 2.0, y + 318.0 + j as f32 * 20.0, 17.0, INK);
                 }
             }
-            None => text_centered(&format!("{} gold", content.start_gold(hero)), x + w / 2.0, y + 300.0, 24.0, ACCENT),
+            None => text_centered(&trf!("Gold: {gold}", gold = content.start_gold(hero)), x + w / 2.0, y + 300.0, 24.0, ACCENT),
         }
         if hover && clicked() {
             cue(Cue::MenuPress);
@@ -216,7 +224,7 @@ pub fn class_select(
             return Some(Screen::WorldMap);
         }
     }
-    if button(30.0, screen_height() - 70.0, 160.0, 44.0, "Back", true) {
+    if button(30.0, screen_height() - 70.0, 160.0, 44.0, tr("Back"), true) {
         return Some(Screen::ScenarioSelect);
     }
     None
@@ -230,7 +238,7 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     let h = 40.0 + lines as f32 * (CELL + 14.0) + 30.0;
     draw_rectangle(x, y, 240.0, h, Color::new(0.0, 0.0, 0.0, 0.3));
     super::chrome::silver_frame(Rect::new(x, y, 240.0, h), 1.0);
-    super::chrome::shadow_text(&format!("Squad {}/{}", game.squad.len(), game.max_squad()), x + 12.0, y + 28.0, 22.0, super::chrome::CREAM);
+    super::chrome::shadow_text(&trf!("Squad {n}/{max}", n = game.squad.len(), max = game.max_squad()), x + 12.0, y + 28.0, 22.0, super::chrome::CREAM);
     let mut hovered = None;
     let cell = (228.0 / formation.cols as f32 - 1.0).min(CELL);
     for r in 0..lines {
@@ -262,13 +270,13 @@ pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
     }
     let c = &game.content;
     let info = match hovered.map(|i| (i, &game.squad[i])) {
-        Some((_, u)) if !u.alive() => format!("{} (dead)", u.name(c)),
-        Some((_, u)) if u.unpaid => format!("{} unpaid!", u.name(c)),
-        Some((i, u)) => format!("{} {}  {}/{} HP  {}g/day", u.name(c), level_label(u.level, u.xp, u.xp_to_next(c)), u.hp, u.max_hp(c), game.wage(i)),
-        None if formation.reserve => "front / back / reserve".to_string(),
-        None => "front row / back row".to_string(),
+        Some((_, u)) if !u.alive() => trf!("{name} (dead)", name = u.name(c)),
+        Some((_, u)) if u.unpaid => trf!("{name} unpaid!", name = u.name(c)),
+        Some((i, u)) => trf!("{name} {level}  {hp}/{max} HP  {wage}g/day", name = u.name(c), level = level_label(u.level, u.xp, u.xp_to_next(c)), hp = u.hp, max = u.max_hp(c), wage = game.wage(i)),
+        None if formation.reserve => tr("front / back / reserve").to_string(),
+        None => tr("front row / back row").to_string(),
     };
-    text(&info, x + 12.0, y + h - 10.0, 18.0, DIM);
+    text_fit(&info, x + 12.0, y + h - 10.0, 222.0, 18.0, DIM);
     h
 }
 
@@ -276,7 +284,7 @@ fn end_screen(title: &str, subtitle: &str, color: Color, game: &mut Option<Game>
     clear_background(Color::from_rgba(20, 18, 16, 255));
     text_centered(title, screen_width() / 2.0, 260.0, 64.0, color);
     text_centered(subtitle, screen_width() / 2.0, 310.0, 26.0, DIM);
-    if button(screen_width() / 2.0 - 110.0, 380.0, 220.0, 50.0, "New game", true) {
+    if button(screen_width() / 2.0 - 110.0, 380.0, 220.0, 50.0, tr("New game"), true) {
         *game = None;
         return Some(Screen::ScenarioSelect);
     }
@@ -300,8 +308,8 @@ fn end_event(game: &Option<Game>) -> Option<String> {
 pub fn game_over(game: &mut Option<Game>) -> Option<Screen> {
     let days = days_played(game);
     match end_event(game) {
-        Some(title) => end_screen("Defeat", &format!("{title}. You lasted {days} days."), RED, game),
-        None => end_screen("Your hero has fallen", &format!("The discord goes on. You lasted {days} days."), RED, game),
+        Some(title) => end_screen(tr("Defeat"), &trf!("{title}. You lasted {days} days.", title, days), RED, game),
+        None => end_screen(tr("Your hero has fallen"), &trf!("The discord goes on. You lasted {days} days.", days), RED, game),
     }
 }
 
@@ -316,14 +324,14 @@ pub fn victory(game: &mut Option<Game>, scenarios: &[ScenarioEntry], content: Op
         scenarios.iter().find(|e| e.file.to_lowercase() == stem)
     });
     let shown = match end_event(game) {
-        Some(title) => end_screen("Victory!", &format!("{title}, after {days} days."), ACCENT, game),
-        None => end_screen("The bandits are broken", &format!("Peace returns to the land after {days} days."), ACCENT, game),
+        Some(title) => end_screen(tr("Victory!"), &trf!("{title}, after {days} days.", title, days), ACCENT, game),
+        None => end_screen(tr("The bandits are broken"), &trf!("Peace returns to the land after {days} days.", days), ACCENT, game),
     };
     if shown.is_some() {
         return shown;
     }
     if let (Some(prev), Some(e), Some(c)) = (next, entry, content) {
-        if button(screen_width() / 2.0 - 160.0, 450.0, 320.0, 50.0, &format!("Next map: {}", e.scenario.title), true) {
+        if button(screen_width() / 2.0 - 160.0, 450.0, 320.0, 50.0, &trf!("Next map: {title}", title = e.scenario.title), true) {
             cue(Cue::MenuPress);
             let mut g = Game::from_campaign(c, &e.scenario, &prev, seed());
             match ScenarioRef::of_map(&e.path, &e.file) {

@@ -4,7 +4,9 @@
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::battle::Team;
+use razdor::trf;
 use razdor::rules::content::{ItemId, UnitId};
 use razdor::rules::game::{BattleResult, DayReport, Game};
 
@@ -88,23 +90,23 @@ impl Dialog {
 
     /// The 12:00 report: gold, mana, income and wages (video notes §5).
     pub fn day_report(game: &Game, r: &DayReport) -> Dialog {
-        let mut d = Dialog::new("Report on resources, income and expenses");
-        d.text.push("The report shows your gold, the daily income of your castles and the wages paid to your army.".into());
+        let mut d = Dialog::new(tr("Report on resources, income and expenses"));
+        d.text.push(tr("The report shows your gold, the daily income of your castles and the wages paid to your army.").into());
         d.resources = vec![
-            (Resource::Gold, format!("Gold = {}", r.gold)),
-            (Resource::Mana, format!("Mana = {}", r.mana_total)),
-            (Resource::Income, format!("Income + {}", r.income)),
-            (Resource::Wages, format!("Wages - {}", r.wages)),
+            (Resource::Gold, format!("{} = {}", tr("Gold"), r.gold)),
+            (Resource::Mana, format!("{} = {}", tr("Mana"), r.mana_total)),
+            (Resource::Income, trf!("Income + {n}", n = r.income)),
+            (Resource::Wages, trf!("Wages - {n}", n = r.wages)),
         ];
         if r.mana > 0 || r.mana_wages > 0 {
-            d.text.push(format!("Mana today: + {} from your lands, - {} paid to elementals.", r.mana, r.mana_wages));
+            d.text.push(trf!("Mana today: + {got} from your lands, - {paid} paid to elementals.", got = r.mana, paid = r.mana_wages));
         }
         if r.unpaid > 0 {
-            d.notice = Some(format!("{} unpaid units refuse to fight until they are paid.", r.unpaid));
+            d.notice = Some(trf!("{n} unpaid units refuse to fight until they are paid.", n = r.unpaid));
         }
         if !r.deserted.is_empty() {
             let names: Vec<&str> = r.deserted.iter().map(|&u| game.content.unit(u).name.as_str()).collect();
-            d.text.push(format!("Left the army unpaid: {}.", names.join(", ")));
+            d.text.push(trf!("Left the army unpaid: {names}.", names = names.join(", ")));
         }
         d
     }
@@ -112,9 +114,9 @@ impl Dialog {
     /// A castle or fort taken without a fight.
     pub fn captured(game: &Game, l: usize) -> Dialog {
         let loc = &game.world.locations[l];
-        let mut d = Dialog::new("A new stronghold");
-        d.text.push(format!("Nobody defends {}. You take it: it pays you {} gold a day from now on.", loc.name, loc.gold_income));
-        d.resources.push((Resource::Income, format!("Income + {}", game.daily_income())));
+        let mut d = Dialog::new(tr("A new stronghold"));
+        d.text.push(trf!("Nobody defends {place}. You take it: it pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));
+        d.resources.push((Resource::Income, trf!("Income + {n}", n = game.daily_income())));
         d
     }
 
@@ -123,36 +125,36 @@ impl Dialog {
         let BattleResult::Victory { reward, mana, lost, loot, left_behind, level_ups, captured } = result else {
             return None;
         };
-        let mut d = Dialog::new("Victory over the enemy!");
+        let mut d = Dialog::new(tr("Victory over the enemy!"));
         if let Some(l) = captured {
             let loc = &game.world.locations[*l];
-            d.text.push(format!("You have taken {}. It pays you {} gold a day from now on.", loc.name, loc.gold_income));
+            d.text.push(trf!("You have taken {place}. It pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));
         }
         if *reward > 0 {
-            d.text.push("In this battle you won gold from the enemy.".into());
+            d.text.push(tr("In this battle you won gold from the enemy.").into());
         }
         if *mana > 0 {
-            d.text.push("Grateful for your mercy, the surrendered troops pray for you.".into());
+            d.text.push(tr("Grateful for your mercy, the surrendered troops pray for you.").into());
         }
         if *lost > 0 {
-            d.text.push(format!("{lost} of your units fell. Their bodies can be raised in a town or church within a week."));
+            d.text.push(trf!("{lost} of your units fell. Their bodies can be raised in a town or church within a week.", lost));
         }
         for &(i, level) in level_ups {
-            d.text.push(format!("{} reaches level {level}.", game.squad[i].name(&game.content)));
+            d.text.push(trf!("{name} reaches level {level}.", name = game.squad[i].name(&game.content), level));
         }
         if d.text.is_empty() {
-            d.text.push("The enemy is beaten.".into());
+            d.text.push(tr("The enemy is beaten.").into());
         }
-        d.resources.push((Resource::Gold, format!("Gold + {reward}")));
+        d.resources.push((Resource::Gold, trf!("Gold + {reward}", reward)));
         if *mana > 0 {
-            d.resources.push((Resource::Mana, format!("Mana + {mana}")));
+            d.resources.push((Resource::Mana, trf!("Mana + {mana}", mana)));
         }
         if captured.is_some() {
-            d.resources.push((Resource::Income, format!("Income + {}", game.daily_income())));
+            d.resources.push((Resource::Income, trf!("Income + {n}", n = game.daily_income())));
         }
         d.items = loot.clone();
         if *left_behind > 0 {
-            d.notice = Some(format!("{left_behind} items were left behind: the pack is full."));
+            d.notice = Some(trf!("{left_behind} items were left behind: the pack is full.", left_behind));
         }
         Some(d)
     }
@@ -281,14 +283,16 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
         cy += res_h;
     }
     if !d.items.is_empty() {
-        text("Items found:", x + 30.0, cy + 30.0, 18.0, INK);
+        let label = tr("Items found:");
+        text(label, x + 30.0, cy + 30.0, 18.0, INK);
+        let lx = (x + 40.0 + measure(label, 18.0).width).max(x + 150.0);
         for (k, &item) in d.items.iter().enumerate().take(8) {
-            assets.draw_item(item, x + 150.0 + k as f32 * 54.0, cy + 4.0, 48.0);
+            assets.draw_item(item, lx + k as f32 * 54.0, cy + 4.0, 48.0);
         }
         cy += items_h;
     }
-    cy += unit_row(assets, "Joined the army:", &d.joined, x, cy);
-    cy += unit_row(assets, "Left the army:", &d.left, x, cy);
+    cy += unit_row(assets, tr("Joined the army:"), &d.joined, x, cy);
+    cy += unit_row(assets, tr("Left the army:"), &d.left, x, cy);
     if let Some(n) = &d.notice {
         chrome::shadow_centered(n, x + w / 2.0, cy + 18.0, 18.0, Color::new(0.3, 0.72, 1.0, 1.0));
     }
@@ -296,8 +300,8 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     // The silver line over the buttons.
     draw_line(x + 2.0, by - 10.0, x + w - 2.0, by - 10.0, 1.5, chrome::SILVER);
     if d.question {
-        let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, "Yes", true) || key(KeyCode::Enter) || key(KeyCode::Y);
-        let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, "No", true) || key(KeyCode::Escape) || key(KeyCode::N);
+        let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, tr("Yes"), true) || key(KeyCode::Enter) || key(KeyCode::Y);
+        let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, tr("No"), true) || key(KeyCode::Escape) || key(KeyCode::N);
         return if yes {
             Some(Close::Yes)
         } else if no {

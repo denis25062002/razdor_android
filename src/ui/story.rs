@@ -7,7 +7,9 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
+use razdor::i18n::{n_, tr};
 use razdor::rules::content::{ItemId, UnitId};
+use razdor::trf;
 use razdor::rules::events::{extension, EventId, EventOutcome, Extension, PICTURE_DEFEAT, PICTURE_VICTORY};
 use razdor::rules::game::Game;
 use razdor::rules::journal::Tab;
@@ -17,8 +19,8 @@ use super::widgets::*;
 use super::world_view;
 use super::Screen;
 
-pub const QUEST_ADDED: &str = "Quest added to the journal";
-pub const QUEST_COMPLETED: &str = "Quest completed";
+pub const QUEST_ADDED: &str = n_("Quest added to the journal");
+pub const QUEST_COMPLETED: &str = n_("Quest completed");
 
 /// An event's title as shown: without its flag script, escapes filled in.
 pub fn event_title(game: &Game, id: EventId) -> String {
@@ -72,13 +74,13 @@ pub fn event_dialog(game: &Game, id: EventId, asking: bool) -> Dialog {
     }
     let signed = |v: i16| if v < 0 { format!("- {}", -(v as i32)) } else { format!("+ {v}") };
     if r.gold != 0 {
-        d.resources.push((Resource::Gold, format!("Gold {}", signed(r.gold))));
+        d.resources.push((Resource::Gold, trf!("Gold {n}", n = signed(r.gold))));
     }
     if r.mana != 0 {
-        d.resources.push((Resource::Mana, format!("Mana {}", signed(r.mana))));
+        d.resources.push((Resource::Mana, trf!("Mana {n}", n = signed(r.mana))));
     }
     if r.experience != 0 {
-        d.resources.push((Resource::Experience, format!("Experience {}", signed(r.experience))));
+        d.resources.push((Resource::Experience, trf!("Experience {n}", n = signed(r.experience))));
     }
     d.items = r.artifacts_add.iter().filter(|&&a| a != 0).map(|&a| ItemId(a as u32)).filter(|&i| game.content.try_item(i).is_some()).collect();
     let known = |u: u8| game.content.try_unit(UnitId(u as u32)).map(|_| UnitId(u as u32));
@@ -93,8 +95,8 @@ pub fn show(game: &Game, o: &EventOutcome, message: &mut Option<String>, dialogs
     match *o {
         EventOutcome::Fired { event, message: true } => dialogs.push_back(event_dialog(game, event, false)),
         EventOutcome::Question(id) => dialogs.push_back(event_dialog(game, id, true)),
-        EventOutcome::QuestAdded(id) => notice(QUEST_ADDED, Some(id), message, dialogs),
-        EventOutcome::QuestCompleted(_) => notice(QUEST_COMPLETED, None, message, dialogs),
+        EventOutcome::QuestAdded(id) => notice(tr(QUEST_ADDED), Some(id), message, dialogs),
+        EventOutcome::QuestCompleted(_) => notice(tr(QUEST_COMPLETED), None, message, dialogs),
         EventOutcome::LoopGuard => eprintln!("scenario events: loop guard reached"),
         EventOutcome::Fired { .. } | EventOutcome::Declined(_) | EventOutcome::Victory(_) | EventOutcome::Defeat(_) => {}
     }
@@ -128,10 +130,10 @@ impl Default for JournalView {
 /// What an empty tab says.
 fn empty_note(tab: Tab) -> &'static str {
     match tab {
-        Tab::Active => "No quests under way.",
-        Tab::Completed => "No quest completed yet.",
-        Tab::Rumours => "No rumours heard yet.",
-        Tab::Messages => "No messages yet.",
+        Tab::Active => tr("No quests under way."),
+        Tab::Completed => tr("No quest completed yet."),
+        Tab::Rumours => tr("No rumours heard yet."),
+        Tab::Messages => tr("No messages yet."),
     }
 }
 
@@ -145,7 +147,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
     let bar = super::chrome::bar_height();
     let (w, h) = (1000.0f32.min(sw - 20.0), 640.0f32.min(sh - bar - 8.0));
     let (x, y) = ((sw - w) / 2.0, ((sh - bar - h) / 2.0).max(4.0));
-    super::chrome::window(Rect::new(x, y, w, h), "The hero's journal", super::chrome::Skin::Marble, false);
+    super::chrome::window(Rect::new(x, y, w, h), tr("The hero's journal"), super::chrome::Skin::Marble, false);
 
     // The tabs, with their counts.
     let mut switch = None;
@@ -186,7 +188,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
     }
     view.scroll = view.scroll.min(rows.len().saturating_sub(fits));
     if rows.is_empty() {
-        text(empty_note(view.tab), lx + 16.0, ly + 30.0, 18.0, ink);
+        text_fit(empty_note(view.tab), lx + 16.0, ly + 30.0, lw - 28.0, 18.0, ink);
     }
     for (k, row) in rows.iter().enumerate().skip(view.scroll).take(fits) {
         let ry = ly + 6.0 + (k - view.scroll) as f32 * rh;
@@ -198,7 +200,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
             title.pop();
         }
         text(&title, lx + 14.0, ry + 18.0, 18.0, ink);
-        let date = row.date.map_or_else(|| "date unknown".to_string(), |d| d.label());
+        let date = row.date.map_or_else(|| tr("date unknown").to_string(), |d| d.label());
         text(&date, lx + 14.0, ry + 35.0, 14.0, Color::new(0.4, 0.36, 0.3, 1.0));
         if mouse_in(lx, ry, lw, rh - 2.0) && clicked() && view.selected != k {
             view.selected = k;
@@ -206,7 +208,7 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
         }
     }
     if rows.len() > fits {
-        let line = format!("{}–{} of {}", view.scroll + 1, (view.scroll + fits).min(rows.len()), rows.len());
+        let line = trf!("{first}–{last} of {total}", first = view.scroll + 1, last = (view.scroll + fits).min(rows.len()), total = rows.len());
         text(&line, lx + 8.0, ly + lh + 18.0, 15.0, DIM);
     }
 
@@ -217,9 +219,9 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
     match rows.get(view.selected) {
         Some(row) => {
             text_centered(&row.title, tx + tw / 2.0, ly + 32.0, 21.0, box_ink);
-            let mut sub = row.date.map_or_else(|| "Date unknown".to_string(), |d| d.label());
+            let mut sub = row.date.map_or_else(|| tr("Date unknown").to_string(), |d| d.label());
             if view.tab == Tab::Completed {
-                sub = format!("{QUEST_COMPLETED}: {sub}");
+                sub = format!("{}: {sub}", tr(QUEST_COMPLETED));
             }
             text_centered(&sub, tx + tw / 2.0, ly + 56.0, 16.0, super::dialog::MANA);
             let lines: Vec<String> = row
@@ -254,14 +256,14 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
                 text(line, tx + 20.0, top + i as f32 * 22.0, 18.0, box_ink);
             }
             if lines.len() > shown {
-                let more = format!("{}–{} of {} lines (wheel, PgUp / PgDn)", view.text_scroll + 1, (view.text_scroll + shown).min(lines.len()), lines.len());
+                let more = trf!("{first}–{last} of {total} lines (wheel, PgUp / PgDn)", first = view.text_scroll + 1, last = (view.text_scroll + shown).min(lines.len()), total = lines.len());
                 text(&more, tx + 8.0, ly + lh + 18.0, 15.0, DIM);
             }
         }
-        None => text_centered("What the hero learns is written here.", tx + tw / 2.0, ly + lh / 2.0, 19.0, box_ink),
+        None => text_centered(tr("What the hero learns is written here."), tx + tw / 2.0, ly + lh / 2.0, 19.0, box_ink),
     }
 
-    let back = button(x + w / 2.0 - 70.0, y + h - 50.0, 140.0, 38.0, "Back", true);
+    let back = button(x + w / 2.0 - 70.0, y + h - 50.0, 140.0, 38.0, tr("Back"), true);
     if back || key(KeyCode::Escape) || key(KeyCode::J) {
         return Some(Screen::WorldMap);
     }

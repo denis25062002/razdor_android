@@ -233,7 +233,7 @@ pub const XP_COLOR: Color = Color::new(0.35, 0.95, 0.95, 1.0);
 
 /// "Lv 3 · XP 45/118".
 pub fn level_label(level: i32, xp: i32, need: i32) -> String {
-    format!("Lv {level} · XP {xp}/{need}")
+    razdor::trf!("Lv {level} · XP {xp}/{need}", level, xp, need)
 }
 
 /// A thin progress bar towards the next level.
@@ -600,7 +600,7 @@ pub fn draw_popup() {
         draw_rectangle(r.x + 4.0, r.y + 4.0, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.4));
         draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.1, 0.09, 0.08, 0.98));
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, ACCENT);
-        let hint = if pop.filter.is_empty() { "type to filter".to_string() } else { format!("filter: {}", pop.filter) };
+        let hint = if pop.filter.is_empty() { razdor::i18n::tr("type to filter").to_string() } else { razdor::trf!("filter: {filter}", filter = pop.filter) };
         text(&hint, r.x + 8.0, r.y + 19.0, 15.0, DIM);
         for (i, (v, label)) in shown.iter().skip(pop.scroll).take(POPUP_ROWS).enumerate() {
             let ry = r.y + 26.0 + i as f32 * POPUP_ROW_H;

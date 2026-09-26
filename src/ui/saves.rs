@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use macroquad::prelude::*;
 
+use razdor::i18n::tr;
 use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, SaveEntry, SaveKind};
 
@@ -96,8 +97,8 @@ fn battle_name(game: &Game) -> String {
         None => None,
     };
     match who.filter(|w| !w.trim().is_empty()) {
-        Some(w) => format!("Battle - {}", w.trim()),
-        None => "Battle".to_string(),
+        Some(w) => razdor::trf!("Battle - {foe}", foe = w.trim()),
+        None => tr("Battle").to_string(),
     }
 }
 
@@ -145,17 +146,17 @@ fn window(title: &str) -> (f32, f32, f32, f32) {
 /// "Saves: <folder>", shortened from the left to fit `width`.
 fn folder_line(dir: &std::path::Path, x: f32, y: f32, width: f32) {
     let mut s = dir.display().to_string();
-    while measure(&format!("Saves: ...{s}"), 14.0).width > width && s.chars().count() > 10 {
+    while measure(&razdor::trf!("Saves: {dir}", dir = format!("...{s}")), 14.0).width > width && s.chars().count() > 10 {
         s.remove(0);
     }
     let full = dir.display().to_string();
-    let shown = if s == full { format!("Saves: {s}") } else { format!("Saves: ...{s}") };
+    let shown = razdor::trf!("Saves: {dir}", dir = if s == full { s } else { format!("...{s}") });
     text(&shown, x, y, 14.0, DIM);
 }
 
 /// The list of saves; returns the row clicked (index into `entries`).
 fn save_list(entries: &[SaveEntry], selected: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32) -> Option<usize> {
-    let cols = [(0.0, "Name"), (0.38, "Scenario"), (0.62, "Hero"), (0.76, "In the game")];
+    let cols = [(0.0, tr("Name")), (0.38, tr("Scenario")), (0.62, tr("Hero")), (0.76, tr("In the game"))];
     for (f, label) in cols {
         text(label, x + 14.0 + f * w, y + 16.0, 17.0, ACCENT);
     }
@@ -187,8 +188,9 @@ fn save_list(entries: &[SaveEntry], selected: Option<usize>, scroll: &mut usize,
             }
             s
         };
-        text(&fit(&m.name, 0.37 * w - 20.0), x + 14.0, ry + 16.0, 17.0, INK);
-        text(&format!("saved {} UTC", real_time(m.saved_at)), x + 14.0, ry + 31.0, 13.0, DIM);
+        let name = if m.name == save::QUICK_SAVE { tr(save::QUICK_SAVE) } else { &m.name };
+        text(&fit(name, 0.37 * w - 20.0), x + 14.0, ry + 16.0, 17.0, INK);
+        text(&razdor::trf!("saved {time} UTC", time = real_time(m.saved_at)), x + 14.0, ry + 31.0, 13.0, DIM);
         text(&fit(&m.title, 0.23 * w), x + 14.0 + 0.38 * w, ry + 22.0, 17.0, INK);
         text(&fit(&m.hero, 0.13 * w), x + 14.0 + 0.62 * w, ry + 22.0, 17.0, INK);
         text(&fit(&m.date, 0.23 * w), x + 14.0 + 0.76 * w, ry + 22.0, 16.0, DIM);
@@ -197,8 +199,8 @@ fn save_list(entries: &[SaveEntry], selected: Option<usize>, scroll: &mut usize,
         }
     }
     if entries.len() > ROWS {
-        let line = format!("{}–{} of {} (wheel to scroll)", *scroll + 1, (*scroll + ROWS).min(entries.len()), entries.len());
-        text(&line, x + w - 260.0, top + rh * ROWS as f32 + 14.0, 15.0, DIM);
+        let line = razdor::trf!("{first}–{last} of {total} (wheel to scroll)", first = *scroll + 1, last = (*scroll + ROWS).min(entries.len()), total = entries.len());
+        text(&line, x + w - 20.0 - measure(&line, 15.0).width, top + rh * ROWS as f32 + 14.0, 15.0, DIM);
     }
     picked
 }
@@ -206,7 +208,7 @@ fn save_list(entries: &[SaveEntry], selected: Option<usize>, scroll: &mut usize,
 /// The save window: a name (type to edit; a click on a save takes its name, to replace it).
 pub fn save_screen(game: &Game, assets: &Assets, view: &mut SaveView, message: &mut Option<String>) -> Option<Screen> {
     world_view::backdrop(game, assets);
-    let (x, y, w, h) = window("Save the game");
+    let (x, y, w, h) = window(tr("Save the game"));
     while let Some(c) = get_char_pressed() {
         if !c.is_control() && view.name.chars().count() < 60 {
             view.name.push(c);
@@ -215,7 +217,7 @@ pub fn save_screen(game: &Game, assets: &Assets, view: &mut SaveView, message: &
     if is_key_pressed(KeyCode::Backspace) {
         view.name.pop();
     }
-    text("Name:", x + 20.0, y + 64.0, 20.0, INK);
+    text_fit(tr("Name:"), x + 20.0, y + 64.0, 66.0, 20.0, INK);
     draw_rectangle(x + 90.0, y + 42.0, w - 110.0, 32.0, ROW);
     draw_rectangle_lines(x + 90.0, y + 42.0, w - 110.0, 32.0, 2.0, ACCENT);
     let caret = if (get_time() * 2.0) as i64 % 2 == 0 { "|" } else { "" };
@@ -227,21 +229,21 @@ pub fn save_screen(game: &Game, assets: &Assets, view: &mut SaveView, message: &
     }
     let dir = save::default_dir();
     if dir.is_none() {
-        text("No data folder for saves: set RAZDOR_SAVE_DIR.", x + 20.0, y + h - 30.0, 18.0, RED);
+        text(tr("No data folder for saves: set RAZDOR_SAVE_DIR."), x + 20.0, y + h - 30.0, 18.0, RED);
     } else if let Some(d) = &dir {
         folder_line(d, x + 20.0, y + h - 22.0, w - 320.0);
     }
-    let label = if same.is_some() { "Replace" } else { "Save" };
+    let label = if same.is_some() { tr("Replace") } else { tr("Save") };
     let ok = !view.name.trim().is_empty() && dir.is_some();
     if button(x + w - 280.0, y + h - 60.0, 120.0, 40.0, label, ok) || (ok && key(KeyCode::Enter)) {
         let dir = dir.expect("checked");
         *message = Some(match save::write(&dir, SaveKind::Manual, view.name.trim(), game) {
-            Ok(_) => format!("Saved: {}", view.name.trim()),
-            Err(e) => format!("Not saved: {e}"),
+            Ok(_) => razdor::trf!("Saved: {name}", name = view.name.trim()),
+            Err(e) => razdor::trf!("Not saved: {e}.", e),
         });
         return Some(Screen::WorldMap);
     }
-    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) {
+    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, tr("Cancel"), true) {
         return Some(view.back.screen());
     }
     if key(KeyCode::Escape) {
@@ -257,8 +259,8 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
         Some(g) if view.back != Back::Title => world_view::backdrop(g, assets),
         _ => clear_background(Color::from_rgba(24, 22, 20, 255)),
     }
-    let (x, y, w, h) = window("Load a game");
-    for (k, (tab, label)) in [(SaveKind::Manual, "Saved"), (SaveKind::Auto, "Autosaves")].into_iter().enumerate() {
+    let (x, y, w, h) = window(tr("Load a game"));
+    for (k, (tab, label)) in [(SaveKind::Manual, tr("Saved")), (SaveKind::Auto, tr("Autosaves"))].into_iter().enumerate() {
         let bx = x + 20.0 + k as f32 * 170.0;
         if button(bx, y + 40.0, 160.0, 36.0, label, true) && view.tab != tab {
             view.tab = tab;
@@ -269,7 +271,7 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
         }
     }
     if view.entries.is_empty() {
-        text_centered("No saves here yet.", x + w / 2.0, y + 200.0, 20.0, DIM);
+        text_centered(tr("No saves here yet."), x + w / 2.0, y + 200.0, 20.0, DIM);
     }
     if let Some(k) = save_list(&view.entries, Some(view.selected), &mut view.scroll, x + 20.0, y + 90.0, w - 40.0) {
         view.selected = k;
@@ -282,10 +284,10 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
         folder_line(&d, x + 20.0, y + h - 22.0, w - 320.0);
     }
     let chosen = view.entries.get(view.selected);
-    if (button(x + w - 280.0, y + h - 60.0, 120.0, 40.0, "Load", chosen.is_some()) || key(KeyCode::Enter)) && chosen.is_some() {
+    if (button(x + w - 280.0, y + h - 60.0, 120.0, 40.0, tr("Load"), chosen.is_some()) || key(KeyCode::Enter)) && chosen.is_some() {
         *pending = chosen.map(|e| e.path.clone());
     }
-    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, "Cancel", true) {
+    if button(x + w - 150.0, y + h - 60.0, 130.0, 40.0, tr("Cancel"), true) {
         return Some(view.back.screen());
     }
     if key(KeyCode::Escape) {
@@ -297,7 +299,7 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
 /// The Esc menu over the map: resume, save, load, the main menu.
 /// One volume row of the menu: label, value, `-` / `+` and a mute toggle.
 fn volume_row(label: &str, volume: f32, muted: bool, x: f32, y: f32, w: f32) -> (i32, bool) {
-    let value = if muted { "off".to_string() } else { format!("{:.0}%", volume * 100.0) };
+    let value = if muted { tr("off").to_string() } else { format!("{:.0}%", volume * 100.0) };
     text(&format!("{label} {value}"), x, y + 26.0, 20.0, if muted { DIM } else { INK });
     let bx = x + w - 170.0;
     let mut steps = 0;
@@ -307,7 +309,7 @@ fn volume_row(label: &str, volume: f32, muted: bool, x: f32, y: f32, w: f32) -> 
     if button(bx + 46.0, y, 40.0, 38.0, "+", !muted && volume < 1.0) {
         steps += 1;
     }
-    let toggle = button(bx + 92.0, y, 78.0, 38.0, if muted { "On" } else { "Off" }, true);
+    let toggle = button(bx + 92.0, y, 78.0, 38.0, if muted { tr("On") } else { tr("Off") }, true);
     (steps, toggle)
 }
 
@@ -318,29 +320,29 @@ pub fn menu(game: &Game, assets: &Assets, audio: &mut Settings) -> Option<Screen
     let (sw, sh) = (screen_width(), screen_height());
     let (w, h) = (380.0, 490.0);
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0 - 30.0);
-    super::chrome::window(Rect::new(x, y, w, h), "Game menu", super::chrome::Skin::Marble, false);
+    super::chrome::window(Rect::new(x, y, w, h), tr("Game menu"), super::chrome::Skin::Marble, false);
     let bx = x + 40.0;
     let bw = w - 80.0;
-    if button(bx, y + 60.0, bw, 44.0, "Back to the game", true) || key(KeyCode::Escape) {
+    if button(bx, y + 60.0, bw, 44.0, tr("Back to the game"), true) || key(KeyCode::Escape) {
         return Some(Screen::WorldMap);
     }
-    if button(bx, y + 120.0, bw, 44.0, "Save the game", game.foe.is_none()) {
+    if button(bx, y + 120.0, bw, 44.0, tr("Save the game"), game.foe.is_none()) {
         return Some(Screen::Save(SaveView::new(game, Back::Menu)));
     }
-    if button(bx, y + 180.0, bw, 44.0, "Load a game", true) {
+    if button(bx, y + 180.0, bw, 44.0, tr("Load a game"), true) {
         return Some(Screen::Load(LoadView::new(Back::Menu)));
     }
-    if button(bx, y + 250.0, bw, 44.0, "Main menu", true) {
+    if button(bx, y + 250.0, bw, 44.0, tr("Main menu"), true) {
         return Some(Screen::ScenarioSelect);
     }
-    let (steps, toggle) = volume_row("Music", audio.music_volume, audio.music_muted, bx, y + 320.0, bw);
+    let (steps, toggle) = volume_row(tr("Music"), audio.music_volume, audio.music_muted, bx, y + 320.0, bw);
     let keys = [KeyCode::Equal, KeyCode::KpAdd].iter().any(|&k| key(k)) as i32
         - [KeyCode::Minus, KeyCode::KpSubtract].iter().any(|&k| key(k)) as i32;
     if !audio.music_muted {
         audio.step_music(steps + keys);
     }
     audio.music_muted ^= toggle;
-    let (steps, toggle) = volume_row("Sounds", audio.sfx_volume, audio.sfx_muted, bx, y + 370.0, bw);
+    let (steps, toggle) = volume_row(tr("Sounds"), audio.sfx_volume, audio.sfx_muted, bx, y + 370.0, bw);
     audio.step_sfx(steps);
     audio.sfx_muted ^= toggle;
     super::language::switch_button(bx + (bw - 140.0) / 2.0, y + 425.0, 140.0, 36.0);

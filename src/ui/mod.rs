@@ -28,6 +28,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use razdor::dt::dtm::Scenario;
+use razdor::i18n::tr;
 use razdor::rules::content::Content;
 use razdor::rules::events::EventOutcome;
 use razdor::rules::game::Game;
@@ -187,7 +188,7 @@ impl App {
                 let mut game = Game::from_scenario(content, &scenario, class, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64));
                 game.set_hero_name("");
                 self.dialogs.clear();
-                self.message = Some("Test play: Esc > Main menu returns to the editor.".into());
+                self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());
                 self.map_view.reset();
                 self.last_gold = None;
                 self.game = Some(game);
@@ -218,7 +219,7 @@ impl App {
                 };
                 self.game = Some(game);
             }
-            Err(e) => self.load_error = Some(format!("Cannot load: {e}.")),
+            Err(e) => self.load_error = Some(razdor::trf!("Cannot load: {e}.", e)),
         }
     }
 
@@ -312,10 +313,10 @@ impl App {
     fn quick_save(&mut self) {
         let Some(game) = &self.game else { return };
         self.message = Some(match save::default_dir() {
-            None => "No data folder for saves: set RAZDOR_SAVE_DIR.".to_string(),
+            None => tr("No data folder for saves: set RAZDOR_SAVE_DIR.").to_string(),
             Some(dir) => match save::quick_save(&dir, game) {
-                Ok(_) => "Quick save written (F9 loads it).".to_string(),
-                Err(e) => format!("Not saved: {e}."),
+                Ok(_) => tr("Quick save written (F9 loads it).").to_string(),
+                Err(e) => razdor::trf!("Not saved: {e}.", e),
             },
         });
     }
@@ -325,9 +326,9 @@ impl App {
         match save::default_dir().and_then(|d| save::quick_save_path(&d)) {
             Some(path) => {
                 self.load(&path);
-                self.message = Some(self.load_error.take().unwrap_or_else(|| "Quick save loaded.".to_string()));
+                self.message = Some(self.load_error.take().unwrap_or_else(|| tr("Quick save loaded.").to_string()));
             }
-            None => self.message = Some("No quick save yet: F5 writes one.".to_string()),
+            None => self.message = Some(tr("No quick save yet: F5 writes one.").to_string()),
         }
     }
 

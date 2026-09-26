@@ -7,6 +7,8 @@
 
 use macroquad::prelude::*;
 
+use razdor::i18n::{n_, tr};
+
 use super::chrome::{self, Skin};
 use super::widgets::*;
 
@@ -101,79 +103,79 @@ pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
 /// The keys of `place` for the F1 overlay: (key, what it does).
 pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
     match place {
-        Place::Title => vec![("Click", "pick a scenario"), ("F9", "load the quick save")],
-        Place::ClassSelect => vec![("Type", "the hero's name"), ("Backspace", "delete a letter")],
+        Place::Title => vec![(n_("Click"), n_("pick a scenario")), ("F9", n_("load the quick save"))],
+        Place::ClassSelect => vec![(n_("Type"), n_("the hero's name")), ("Backspace", n_("delete a letter"))],
         Place::WorldMap => vec![
-            ("Click", "walk there (a building: enter; an army: meet it)"),
-            ("Right click / Space", "stop"),
-            ("Wheel, + / -", "zoom"),
-            ("1 / 4", "wait 1 or 4 hours"),
-            ("M", "minimap"),
-            ("Tab", "centre the camera on the hero"),
-            ("J", "journal"),
-            ("B", "spell book"),
-            ("A", "hero and army"),
-            ("F5 / F9", "quick save / quick load"),
-            ("Esc", "close the minimap, else the game menu"),
+            (n_("Click"), n_("walk there (a building: enter; an army: meet it)")),
+            (n_("Right click / Space"), n_("stop")),
+            (n_("Wheel, + / -"), n_("zoom")),
+            ("1 / 4", n_("wait 1 or 4 hours")),
+            ("M", n_("minimap")),
+            ("Tab", n_("centre the camera on the hero")),
+            ("J", n_("journal")),
+            ("B", n_("spell book")),
+            ("A", n_("hero and army")),
+            ("F5 / F9", n_("quick save / quick load")),
+            ("Esc", n_("close the minimap, else the game menu")),
         ],
-        Place::Building => vec![("Click", "tabs and buttons"), ("F5", "quick save"), ("Esc", "back to the map")],
-        Place::Army => vec![("Click", "a unit, an item"), ("F5", "quick save"), ("A / Esc", "close")],
+        Place::Building => vec![(n_("Click"), n_("tabs and buttons")), ("F5", n_("quick save")), ("Esc", n_("back to the map"))],
+        Place::Army => vec![(n_("Click"), n_("a unit, an item")), ("F5", n_("quick save")), ("A / Esc", n_("close"))],
         Place::Battle { deploying: true } => vec![
-            ("Click a card, then a cell", "move it"),
-            ("Fight!", "start the battle"),
-            ("Q / Enter", "quick battle: played out at once"),
+            (n_("Click a card, then a cell"), n_("move it")),
+            (n_("Fight!"), n_("start the battle")),
+            ("Q / Enter", n_("quick battle: played out at once")),
         ],
         Place::Battle { deploying: false } => vec![
-            ("Click a framed card", "attack or cast"),
-            ("Click a lit cell", "step there"),
-            ("Click your own card", "pass one action"),
-            ("Space", "end the unit's turn"),
-            ("Q", "finish the battle automatically"),
-            ("Enter", "OK on the result"),
+            (n_("Click a framed card"), n_("attack or cast")),
+            (n_("Click a lit cell"), n_("step there")),
+            (n_("Click your own card"), n_("pass one action")),
+            (n_("Space"), n_("end the unit's turn")),
+            ("Q", n_("finish the battle automatically")),
+            ("Enter", n_("OK on the result")),
         ],
         Place::Journal => vec![
-            ("Left / Right", "change the tab"),
-            ("Up / Down, click", "pick an entry"),
-            ("Wheel, PgUp / PgDn", "scroll"),
-            ("F5", "quick save"),
-            ("J / Esc", "close"),
+            (n_("Left / Right"), n_("change the tab")),
+            (n_("Up / Down, click"), n_("pick an entry")),
+            (n_("Wheel, PgUp / PgDn"), n_("scroll")),
+            ("F5", n_("quick save")),
+            ("J / Esc", n_("close")),
         ],
-        Place::Spellbook => vec![("Click", "pick a spell"), ("Enter", "cast on your army"), ("F5", "quick save"), ("B / Esc", "close")],
-        Place::Menu => vec![("+ / -", "music volume"), ("F5", "quick save"), ("Esc", "back to the game")],
-        Place::Save => vec![("Type", "the save's name"), ("Enter", "save"), ("Esc", "cancel")],
-        Place::Load => vec![("Click", "pick a save"), ("Enter", "load it"), ("Esc", "cancel")],
-        Place::End => vec![("Click", "the buttons"), ("F9", "load the quick save")],
+        Place::Spellbook => vec![(n_("Click"), n_("pick a spell")), ("Enter", n_("cast on your army")), ("F5", n_("quick save")), ("B / Esc", n_("close"))],
+        Place::Menu => vec![("+ / -", n_("music volume")), ("F5", n_("quick save")), ("Esc", n_("back to the game"))],
+        Place::Save => vec![(n_("Type"), n_("the save's name")), ("Enter", n_("save")), ("Esc", n_("cancel"))],
+        Place::Load => vec![(n_("Click"), n_("pick a save")), ("Enter", n_("load it")), ("Esc", n_("cancel"))],
+        Place::End => vec![(n_("Click"), n_("the buttons")), ("F9", n_("load the quick save"))],
         Place::Editor => vec![],
     }
 }
 
 /// Keys that work on every screen of a game, and in the dialogs.
 pub const EVERYWHERE: [(&str, &str); 6] = [
-    ("F1", "this list (F1 or Esc closes it)"),
-    ("F2", "interface language: English / Russian"),
-    ("F9", "load the quick save"),
-    ("N", "music off / on"),
-    ("Y / Enter", "\"Yes\" in a question (Enter: OK)"),
-    ("N / Esc", "\"No\" in a question"),
+    ("F1", n_("this list (F1 or Esc closes it)")),
+    ("F2", n_("interface language: English / Russian")),
+    ("F9", n_("load the quick save")),
+    ("N", n_("music off / on")),
+    ("Y / Enter", n_("\"Yes\" in a question (Enter: OK)")),
+    ("N / Esc", n_("\"No\" in a question")),
 ];
 
 /// A screen's title in the overlay.
 fn place_name(place: Place) -> &'static str {
     match place {
-        Place::Title => "Title screen",
-        Place::ClassSelect => "Hero choice",
-        Place::WorldMap => "World map",
-        Place::Building => "Building",
-        Place::Army => "Hero and army",
-        Place::Battle { deploying: true } => "Battle: deployment",
-        Place::Battle { deploying: false } => "Battle",
-        Place::Journal => "Journal",
-        Place::Spellbook => "Spell book",
-        Place::Menu => "Game menu",
-        Place::Save => "Save",
-        Place::Load => "Load",
-        Place::End => "End of the game",
-        Place::Editor => "Map editor",
+        Place::Title => tr("Title screen"),
+        Place::ClassSelect => tr("Hero choice"),
+        Place::WorldMap => tr("World map"),
+        Place::Building => tr("Building"),
+        Place::Army => tr("Hero and army"),
+        Place::Battle { deploying: true } => tr("Battle: deployment"),
+        Place::Battle { deploying: false } => tr("Battle"),
+        Place::Journal => tr("Journal"),
+        Place::Spellbook => tr("Spell book"),
+        Place::Menu => tr("Game menu"),
+        Place::Save => tr("Save"),
+        Place::Load => tr("Load"),
+        Place::End => tr("End of the game"),
+        Place::Editor => tr("Map editor"),
     }
 }
 
@@ -185,7 +187,7 @@ pub fn help_overlay(place: Place) -> bool {
     let lines = own.len() + EVERYWHERE.len() + 3;
     let (w, h) = (640.0f32.min(sw - 20.0), (90.0 + lines as f32 * 24.0).min(sh - 20.0));
     let (x, y) = ((sw - w) / 2.0, (sh - h) / 2.0);
-    chrome::window(Rect::new(x, y, w, h), "Keys", Skin::Marble, false);
+    chrome::window(Rect::new(x, y, w, h), tr("Keys"), Skin::Marble, false);
     let kx = x + 24.0;
     let dx = x + w * 0.42;
     let mut ly = y + 58.0;
@@ -196,8 +198,8 @@ pub fn help_overlay(place: Place) -> bool {
             if *ly > y + h - 34.0 {
                 break;
             }
-            text(k, kx + 10.0, *ly, 17.0, INK);
-            text(what, dx, *ly, 17.0, DIM);
+            text_fit(tr(k), kx + 10.0, *ly, dx - kx - 16.0, 17.0, INK);
+            text_fit(tr(what), dx, *ly, x + w - dx - 16.0, 17.0, DIM);
             *ly += 24.0;
         }
         *ly += 6.0;
@@ -205,8 +207,8 @@ pub fn help_overlay(place: Place) -> bool {
     if !own.is_empty() {
         section(place_name(place), &own, &mut ly);
     }
-    section("Everywhere", &EVERYWHERE, &mut ly);
-    text_centered("F1, Esc or a click closes this list", x + w / 2.0, y + h - 14.0, 15.0, DIM);
+    section(tr("Everywhere"), &EVERYWHERE, &mut ly);
+    text_centered(tr("F1, Esc or a click closes this list"), x + w / 2.0, y + h - 14.0, 15.0, DIM);
     is_key_pressed(KeyCode::F1) || is_key_pressed(KeyCode::Escape) || is_mouse_button_pressed(MouseButton::Left)
 }
 

@@ -1,2 +1,260 @@
 # Razdor interface in Russian: our own translation. "English = Russian", one per line;
 # \n is a line break, {name} a value filled in by the game. See src/i18n.rs.
+
+# Title screen and hero choice
+Choose a scenario = Выберите сценарий
+Built-in demo: the bandit kingdom = Встроенное демо: разбойничье королевство
+Our own small map and units. Clear both bandit camps. = Небольшая карта и воины Раздора. Разгоните оба разбойничьих лагеря.
+Load a game = Загрузить игру
+Map editor = Редактор карт
+Discord Times not found: put the game in ~/Games, or start once with RAZDOR_DT_DIR set. = «Времена раздора» не найдены: положите игру в ~/Games или запустите один раз с RAZDOR_DT_DIR.
+A time of discord = Смутное время
+Choose who you are. = Кем вы будете?
+A later campaign map: the original carries gold and army over from the previous one. = Одна из поздних карт кампании: в оригинале золото и армия переходят сюда с прошлой карты.
+Hero's name (type it; empty: the class's name): = Имя героя (наберите; если пусто — по классу):
+(the class's name) = (имя по классу)
+Gold: {gold} = Золото: {gold}
+alone = в одиночку
+attack {n} = удар {n}
+shot {n} = выстрел {n}
+Life magic {n} = магия Жизни {n}
+Elemental magic {n} = магия Стихий {n}
+Death magic {n} = магия Смерти {n}
+magic {n} = магия {n}
+no attack = не атакует
+Hits {hp}   Defence {blow}/{shot} = Жизнь {hp}   Защита {blow}/{shot}
+Initiative {ini}   Actions {act} = Инициатива {ini}   Действия {act}
+Back = Назад
+
+# The squad panel
+Squad {n}/{max} = Отряд {n}/{max}
+{name} (dead) = {name} (погиб)
+{name} unpaid! = {name}: жалованье не уплачено!
+{name} {level}  {hp}/{max} HP  {wage}g/day = {name} {level}  {hp}/{max} жизни  {wage} з./день
+front / back / reserve = передний / задний / резерв
+front row / back row = передний ряд / задний ряд
+
+# End of the game
+New game = Новая игра
+Defeat = Поражение
+{title}. You lasted {days} days. = {title}. Продержались дней: {days}.
+Your hero has fallen = Ваш герой пал
+The discord goes on. You lasted {days} days. = Смута продолжается. Продержались дней: {days}.
+Victory! = Победа!
+{title}, after {days} days. = {title}. Прошло дней: {days}.
+The bandits are broken = Разбойники разбиты
+Peace returns to the land after {days} days. = В край возвращается мир. Прошло дней: {days}.
+Next map: {title} = Следующая карта: {title}
+
+# Quick save, loading and test play
+Test play: Esc > Main menu returns to the editor. = Пробная игра: Esc > «Главное меню» вернёт в редактор.
+Cannot load: {e}. = Загрузить не удалось: {e}.
+No data folder for saves: set RAZDOR_SAVE_DIR. = Нет папки для сохранений: задайте RAZDOR_SAVE_DIR.
+Quick save written (F9 loads it). = Быстрое сохранение записано (F9 — загрузить).
+Not saved: {e}. = Не сохранено: {e}.
+Quick save loaded. = Быстрое сохранение загружено.
+No quick save yet: F5 writes one. = Быстрого сохранения ещё нет: F5 — записать.
+Quick save = Быстрое сохранение
+
+# Save and load windows
+Battle - {foe} = Битва - {foe}
+Battle = Бой
+Saves: {dir} = Сохранения: {dir}
+Name = Название
+Scenario = Сценарий
+Hero = Герой
+In the game = В игре
+saved {time} UTC = сохранено {time} UTC
+{first}–{last} of {total} (wheel to scroll) = {first}–{last} из {total} (листать колесом)
+Save the game = Сохранить игру
+Name: = Имя:
+Replace = Заменить
+Save = Сохранить
+Saved: {name} = Сохранено: {name}
+Cancel = Отмена
+Saved = Сохранённые
+Autosaves = Автосохранения
+No saves here yet. = Сохранений пока нет.
+Load = Загрузить
+
+# Game menu
+Game menu = Меню игры
+Back to the game = Вернуться в игру
+Main menu = Главное меню
+Music = Музыка
+Sounds = Звуки
+off = выкл.
+On = Вкл.
+Off = Выкл.
+
+# Keys (F1)
+Keys = Клавиши
+Everywhere = Везде
+F1, Esc or a click closes this list = F1, Esc или щелчок закрывают этот список
+Title screen = Титульный экран
+Hero choice = Выбор героя
+World map = Карта мира
+Building = Здание
+Hero and army = Герой и армия
+Battle: deployment = Бой: расстановка
+Journal = Журнал
+Spell book = Книга заклинаний
+End of the game = Конец игры
+Click = Щелчок
+Type = Набор
+Right click / Space = Правый щелчок / Пробел
+Wheel, + / - = Колесо, + / -
+Click a card, then a cell = Щелчок по карточке, затем по клетке
+Fight! = В бой!
+Click a framed card = Щелчок по карточке в рамке
+Click a lit cell = Щелчок по светлой клетке
+Click your own card = Щелчок по своей карточке
+Space = Пробел
+Left / Right = Влево / Вправо
+Up / Down, click = Вверх / Вниз, щелчок
+Wheel, PgUp / PgDn = Колесо, PgUp / PgDn
+pick a scenario = выбрать сценарий
+load the quick save = загрузить быстрое сохранение
+the hero's name = имя героя
+delete a letter = стереть букву
+walk there (a building: enter; an army: meet it) = идти туда (в здание — войти, к армии — встретиться)
+stop = остановиться
+zoom = масштаб
+wait 1 or 4 hours = ждать 1 или 4 часа
+minimap = мини-карта
+centre the camera on the hero = навести взгляд на героя
+journal = журнал
+spell book = книга заклинаний
+hero and army = герой и армия
+quick save / quick load = быстрое сохранение / загрузка
+close the minimap, else the game menu = закрыть мини-карту, иначе меню игры
+tabs and buttons = вкладки и кнопки
+quick save = быстрое сохранение
+back to the map = назад на карту
+a unit, an item = воин, предмет
+close = закрыть
+move it = переставить
+start the battle = начать бой
+quick battle: played out at once = быстрый бой: разыграть сразу
+attack or cast = атаковать или колдовать
+step there = шагнуть туда
+pass one action = пропустить одно действие
+end the unit's turn = закончить ход воина
+finish the battle automatically = доиграть бой автоматически
+OK on the result = «Готово» в итогах
+change the tab = сменить вкладку
+pick an entry = выбрать запись
+scroll = прокрутка
+pick a spell = выбрать заклинание
+cast on your army = применить к своей армии
+music volume = громкость музыки
+back to the game = вернуться в игру
+the save's name = название сохранения
+save = сохранить
+cancel = отмена
+pick a save = выбрать сохранение
+load it = загрузить его
+the buttons = кнопки
+this list (F1 or Esc closes it) = этот список (F1 или Esc закрывают)
+interface language: English / Russian = язык интерфейса: английский / русский
+music off / on = музыка выкл. / вкл.
+"Yes" in a question (Enter: OK) = «Да» в вопросе (Enter: «Готово»)
+"No" in a question = «Нет» в вопросе
+
+# Dialogs: the noon report, captures, victories, events
+Report on resources, income and expenses = Отчёт о казне, доходах и расходах
+The report shows your gold, the daily income of your castles and the wages paid to your army. = В отчёте ваше золото, дневной доход ваших замков и жалованье, уплаченное армии.
+Gold = Золото
+Mana = Мана
+Income + {n} = Доход + {n}
+Wages - {n} = Жалованье - {n}
+Mana today: + {got} from your lands, - {paid} paid to elementals. = Мана за день: + {got} с ваших земель, - {paid} уплачено элементалям.
+{n} unpaid units refuse to fight until they are paid. = Воинов без жалованья: {n}. Они не будут сражаться, пока им не заплатят.
+Left the army unpaid: {names}. = Ушли из армии, не получив жалованья: {names}.
+A new stronghold = Новая твердыня
+Nobody defends {place}. You take it: it pays you {gold} gold a day from now on. = {place} никем не защищён. Вы занимаете его: отныне он приносит вам золота в день: {gold}.
+Victory over the enemy! = Победа над врагом!
+You have taken {place}. It pays you {gold} gold a day from now on. = Вы взяли {place}. Отныне он приносит вам золота в день: {gold}.
+In this battle you won gold from the enemy. = В этом бою вы добыли у врага золото.
+Grateful for your mercy, the surrendered troops pray for you. = Благодарные за милость, сдавшиеся воины молятся за вас.
+{lost} of your units fell. Their bodies can be raised in a town or church within a week. = Ваших воинов пало: {lost}. Их тела можно воскресить в городе или храме в течение недели.
+{name} reaches level {level}. = {name} достигает уровня {level}.
+The enemy is beaten. = Враг разбит.
+Gold + {reward} = Золото + {reward}
+Mana + {mana} = Мана + {mana}
+{left_behind} items were left behind: the pack is full. = Брошено предметов: {left_behind}, рюкзак полон.
+Items found: = Найдены предметы:
+Joined the army: = Вступили в армию:
+Left the army: = Покинули армию:
+Yes = Да
+No = Нет
+Gold {n} = Золото {n}
+Mana {n} = Мана {n}
+Experience {n} = Опыт {n}
+
+# Journal
+Quest added to the journal = Задание записано в журнал
+Quest completed = Задание выполнено
+Active quests = Текущие задания
+Completed = Выполненные
+Rumours = Слухи
+Messages = Послания
+Event = Событие
+No quests under way. = Текущих заданий нет.
+No quest completed yet. = Выполненных заданий пока нет.
+No rumours heard yet. = Слухов пока не слышно.
+No messages yet. = Посланий пока нет.
+The hero's journal = Журнал героя
+date unknown = дата неизвестна
+Date unknown = Дата неизвестна
+{first}–{last} of {total} = {first}–{last} из {total}
+{first}–{last} of {total} lines (wheel, PgUp / PgDn) = Строки {first}–{last} из {total} (колесо, PgUp / PgDn)
+What the hero learns is written here. = Здесь записано всё, что узнаёт герой.
+
+# The bar under the map
+Main menu (Esc) = Главное меню (Esc)
+Sound settings = Настройки звука
+Save the game (F5: quick save) = Сохранить игру (F5 — быстрое сохранение)
+Load a saved game (F9: quick load) = Загрузить игру (F9 — быстрая загрузка)
+The hero's journal (J) = Журнал героя (J)
+The hero and his army (A) = Герой и его армия (A)
+The spell book (B) = Книга заклинаний (B)
+Map of the scenario (M) = Карта сценария (M)
+mana = мана
+gold = золото
+income = доход
+wages = жалованье
+Opt = Опц.
+Quests = Задания
+Army = Армия
+Book = Книга
+Map = Карта
+Time: {date} = Время: {date}
+Path left: {left} = До цели: {left}
+waiting… = ожидание…
+Time: = Время:
+
+# Levels, lists, dates
+Lv {level} · XP {xp}/{need} = Ур. {level} · Опыт {xp}/{need}
+type to filter = наберите для отбора
+filter: {filter} = отбор: {filter}
+{year}, month {month}, day {day}, {hour} h = {year} г., месяц {month}, день {day}, {hour} ч
+less than an hour = меньше часа
+{h} h = {h} ч
+{d} d = {d} дн.
+{d} d {h} h = {d} дн. {h} ч
+
+# Save errors
+cannot read or write the save: {e} = не удаётся прочитать или записать сохранение: {e}
+the save is damaged: {e} = сохранение повреждено: {e}
+the save is from another version (format {v}, this one reads {current}) = сохранение от другой версии (формат {v}, эта читает {current})
+this game's scenario is unknown, it cannot be saved = сценарий этой игры неизвестен, её нельзя сохранить
+this save needs your Discord Times install: set RAZDOR_DT_DIR = для этого сохранения нужны ваши «Времена раздора»: задайте RAZDOR_DT_DIR
+the map "{m}" is not in your install any more = карты «{m}» в вашей игре больше нет
+the map "{m}" has changed since the game was saved = карта «{m}» изменилась после сохранения
+the save does not fit the map or the data: {e} = сохранение не подходит к карте или данным: {e}
+the map's size differs = размер карты другой
+events saved for the demo = события сохранены для демо
+unknown unit {id} = неизвестный воин {id}
+unknown item {id} = неизвестный предмет {id}
+no hero = нет героя

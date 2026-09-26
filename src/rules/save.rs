@@ -20,6 +20,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::dt::dtm::Scenario;
+use crate::i18n::tr;
+use crate::trf;
 
 use super::clock::Clock;
 use super::content::{Content, ItemId, UnitId};
@@ -98,14 +100,14 @@ pub enum SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SaveError::Io(e) => write!(f, "cannot read or write the save: {e}"),
-            SaveError::Corrupt(e) => write!(f, "the save is damaged: {e}"),
-            SaveError::Version(v) => write!(f, "the save is from another version (format {v}, this one reads {FORMAT_VERSION})"),
-            SaveError::NoScenario => write!(f, "this game's scenario is unknown, it cannot be saved"),
-            SaveError::NoInstall => write!(f, "this save needs your Discord Times install: set RAZDOR_DT_DIR"),
-            SaveError::MapMissing(m) => write!(f, "the map \"{m}\" is not in your install any more"),
-            SaveError::MapChanged(m) => write!(f, "the map \"{m}\" has changed since the game was saved"),
-            SaveError::Mismatch(e) => write!(f, "the save does not fit the map or the data: {e}"),
+            SaveError::Io(e) => f.write_str(&trf!("cannot read or write the save: {e}", e)),
+            SaveError::Corrupt(e) => f.write_str(&trf!("the save is damaged: {e}", e)),
+            SaveError::Version(v) => f.write_str(&trf!("the save is from another version (format {v}, this one reads {current})", v, current = FORMAT_VERSION)),
+            SaveError::NoScenario => f.write_str(tr("this game's scenario is unknown, it cannot be saved")),
+            SaveError::NoInstall => f.write_str(tr("this save needs your Discord Times install: set RAZDOR_DT_DIR")),
+            SaveError::MapMissing(m) => f.write_str(&trf!("the map \"{m}\" is not in your install any more", m)),
+            SaveError::MapChanged(m) => f.write_str(&trf!("the map \"{m}\" has changed since the game was saved", m)),
+            SaveError::Mismatch(e) => f.write_str(&trf!("the save does not fit the map or the data: {e}", e)),
         }
     }
 }
@@ -261,7 +263,7 @@ pub fn write(dir: &Path, kind: SaveKind, name: &str, game: &Game) -> Result<Path
 }
 
 /// The name of the quick save (F5): a manual save that each quick save replaces.
-pub const QUICK_SAVE: &str = "Quick save";
+pub const QUICK_SAVE: &str = crate::i18n::n_("Quick save");
 
 /// Writes the quick save (F5), replacing the last one.
 pub fn quick_save(dir: &Path, game: &Game) -> Result<PathBuf, SaveError> {
@@ -346,13 +348,13 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
         }
     };
     if (game.fog.w, game.fog.h) != (fresh.map.w, fresh.map.h) {
-        return Err(SaveError::Mismatch("the map's size differs".into()));
+        return Err(SaveError::Mismatch(tr("the map's size differs").into()));
     }
     game.world.restore_statics(fresh).map_err(SaveError::Mismatch)?;
     match (game.script.as_deref_mut(), engine) {
         (Some(e), Some(fresh)) => e.restore_statics(fresh).map_err(SaveError::Mismatch)?,
         (None, _) => {}
-        (Some(_), None) => return Err(SaveError::Mismatch("events saved for the demo".into())),
+        (Some(_), None) => return Err(SaveError::Mismatch(tr("events saved for the demo").into())),
     }
     game.content = content;
     game.origin = Some(meta.scenario.clone());
@@ -368,8 +370,8 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
 /// Every unit, item and spell the game refers to exists in its content.
 fn check_content(g: &Game) -> Result<(), String> {
     let c = &g.content;
-    let unit = |id: UnitId| c.try_unit(id).map(|_| ()).ok_or(format!("unknown unit {}", id.0));
-    let item = |id: ItemId| c.try_item(id).map(|_| ()).ok_or(format!("unknown item {}", id.0));
+    let unit = |id: UnitId| c.try_unit(id).map(|_| ()).ok_or_else(|| trf!("unknown unit {id}", id = id.0));
+    let item = |id: ItemId| c.try_item(id).map(|_| ()).ok_or_else(|| trf!("unknown item {id}", id = id.0));
     let w = &g.world;
     let stationed = w.locations.iter().flat_map(|l| l.stationed.iter().map(|s| &s.unit));
     for u in g.squad.iter().chain(stationed) {
@@ -391,7 +393,7 @@ fn check_content(g: &Game) -> Result<(), String> {
     }
     armies.flat_map(|a| a.items.iter()).try_for_each(|&i| item(i))?;
     if g.squad.is_empty() {
-        return Err("no hero".into());
+        return Err(tr("no hero").into());
     }
     Ok(())
 }

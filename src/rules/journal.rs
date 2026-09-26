@@ -16,6 +16,7 @@ use super::clock::Clock;
 use super::events::{EventId, EventOutcome};
 use super::game::Game;
 use crate::dt::dtm::EventKind;
+use crate::i18n::tr;
 
 /// What a journal entry records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,10 +101,10 @@ impl Tab {
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Active => "Active quests",
-            Tab::Completed => "Completed",
-            Tab::Rumours => "Rumours",
-            Tab::Messages => "Messages",
+            Tab::Active => tr("Active quests"),
+            Tab::Completed => tr("Completed"),
+            Tab::Rumours => tr("Rumours"),
+            Tab::Messages => tr("Messages"),
         }
     }
 }
@@ -123,7 +124,7 @@ impl Game {
     pub fn event_title(&self, id: EventId) -> String {
         let raw = self.script().and_then(|s| s.event(id)).map_or("", |e| e.title_text().trim());
         if raw.is_empty() {
-            "Event".to_string()
+            tr("Event").to_string()
         } else {
             self.fill_text(raw)
         }
@@ -189,7 +190,7 @@ impl Game {
 
     fn fill_title(&self, raw: &str) -> String {
         if raw.trim().is_empty() {
-            "Event".to_string()
+            tr("Event").to_string()
         } else {
             self.fill_text(raw.trim())
         }
