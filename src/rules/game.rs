@@ -1297,6 +1297,19 @@ impl Game {
         self.pack.push(item);
         Ok(())
     }
+
+    /// Hands the item in slot `slot` of squad member `from` straight to squad member `to`
+    /// (dragged from one unit onto another on the army screen).
+    pub fn give(&mut self, from: usize, slot: usize, to: usize) -> Result<(), EquipError> {
+        let item = self.squad.get(from).and_then(|u| u.items.get(slot).copied().flatten()).ok_or(EquipError::NoSuchItem)?;
+        let target = self.squad.get(to).ok_or(EquipError::NoSuchItem)?;
+        let free = items::slot_for(&self.content, target, item)?;
+        let u = &mut self.squad[from];
+        u.items[slot] = None;
+        u.hp = u.hp.min(u.max_hp(&self.content));
+        self.squad[to].items[free] = Some(item);
+        Ok(())
+    }
 }
 
 
@@ -1849,6 +1862,28 @@ mod tests {
         assert_eq!(g.unequip(0, shield_slot), Err(EquipError::NoSuchItem));
         g.pack = vec![axe; PACK_SIZE];
         assert_eq!(g.unequip(0, 0), Err(EquipError::PackFull));
+    }
+
+    #[test]
+    fn a_worn_item_is_handed_to_another_unit() {
+        let mut g = quiet_game(HeroClass::Knight);
+        let (shield, sword) = (item(&g, "oak_shield"), item(&g, "short_sword"));
+        let taken: Vec<_> = g.squad.iter().map(|u| u.slot).collect();
+        let slot = g.content.formation.free_slot(&taken, crate::rules::formation::Row::Front).unwrap();
+        g.squad.push(Unit::new(&g.content, unit(&g, "spearman"), slot));
+        g.pack = vec![shield, sword];
+        g.equip(0, 0).unwrap();
+        g.equip(1, 0).unwrap();
+        let at = g.hero().items.iter().position(|i| *i == Some(shield)).unwrap();
+        g.give(0, at, 1).unwrap();
+        assert!(!g.hero().items.contains(&Some(shield)));
+        assert!(g.squad[1].items.contains(&Some(shield)));
+        let back = g.squad[1].items.iter().position(|i| *i == Some(shield)).unwrap();
+        g.pack = vec![item(&g, "oak_shield")];
+        g.equip(0, 0).unwrap();
+        assert_eq!(g.give(1, back, 0), Err(EquipError::SameType), "the hero has a shield again");
+        assert!(g.squad[1].items.contains(&Some(shield)), "a refused hand-over keeps the item");
+        assert_eq!(g.give(0, 3, 1), Err(EquipError::NoSuchItem));
     }
 
     #[test]

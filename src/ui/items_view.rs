@@ -97,6 +97,53 @@ fn equip_error(e: EquipError) -> String {
 /// Backpack grid: 5 columns as in the original, scrolling.
 const PACK_COLS: usize = 5;
 
+/// Where a held item was picked up.
+#[derive(Clone, Copy)]
+enum From {
+    Pack(usize),
+    /// Squad member, item slot.
+    Worn(usize, usize),
+}
+
+/// An item under the pressed mouse button. Let go where it was picked up, it is a click
+/// (wear or drink it on the selected unit, or take it off); moved, it is dragged, as in the
+/// original, onto a unit's card to hand it over.
+#[derive(Clone, Copy)]
+struct Held {
+    from: From,
+    item: ItemId,
+    at: Vec2,
+    moved: bool,
+}
+
+/// Pixels the mouse must move before a press becomes a drag.
+const DRAG_START: f32 = 5.0;
+
+thread_local! {
+    static HELD: std::cell::Cell<Option<Held>> = const { std::cell::Cell::new(None) };
+}
+
+/// Squad member `unit` wears or drinks the pack item at `i`; the message to show, if any.
+fn use_pack_item(game: &mut Game, unit: usize, i: usize) -> Option<String> {
+    let c = game.content.clone();
+    let item = *game.pack.get(i)?;
+    let kind = c.item(item).kind;
+    let name = game.squad.get(unit)?.name(&c).to_string();
+    if kind == ArtefactType::Potion {
+        Some(match game.drink(unit, i) {
+            Ok(healed) if healed > 0 => cued(Cue::Item(kind), razdor::trf!("{name} drinks it: +{healed} hits.", name, healed)),
+            Ok(_) => cued(Cue::Item(kind), razdor::trf!("{name} drinks it. The effect lasts until the next battle ends.", name)),
+            Err(e) => equip_error(e),
+        })
+    } else {
+        let done = game.equip(unit, i);
+        if done.is_ok() {
+            cue(Cue::Item(kind));
+        }
+        done.err().map(equip_error)
+    }
+}
+
 /// The promotion tree of squad member `sel` in `r`, as the original's: the current class at
 /// the bottom, arrows up to its options (portraits; the ones open now glow and promote on a
 /// click, free of charge).
@@ -156,7 +203,7 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
 }
 
 /// The backpack: 5 columns of the original's inventory squares, scrolling. Returns the
-/// pack index clicked.
+/// pack index pressed.
 fn pack_view(game: &Game, assets: &Assets, r: Rect, scroll: &mut usize, hover: &mut Option<ItemId>) -> Option<usize> {
     let k = chrome::k();
     let cell = ((r.w - 18.0 * k) / PACK_COLS as f32).floor();
@@ -212,8 +259,9 @@ fn pack_view(game: &Game, assets: &Assets, r: Rect, scroll: &mut usize, hover: &
 /// The hero and army screen, as the original's (refs 11 and 12): the selected unit's panel
 /// with its four item slots on the left; the backpack (or the upgrade tree) and the item
 /// description at the top; the army's 2×6 cards below. Click a card to select it, a pack
-/// item to wear or drink it, a worn item to take it off. `back` is the building window to
-/// return to, if it was opened from one.
+/// item to wear or drink it, a worn item to take it off; drag a pack or worn item onto a
+/// card to give it to that unit, or a worn one onto the pack to take it off. `back` is the
+/// building window to return to, if it was opened from one.
 pub fn squad(
     game: &mut Game,
     assets: &Assets,
@@ -235,6 +283,7 @@ pub fn squad(
     let mut hover = None;
     let sel = *selected;
     let u = game.squad[sel].clone();
+    let mut held = HELD.with(|h| h.get());
 
     // The unit's panel; a click on a worn item takes it off.
     let stats = u.stats(&c);
@@ -267,9 +316,10 @@ pub fn squad(
         status,
         battle: false,
     };
-    if let Some(slot) = unit_sheet::draw(assets, &c, at(2.0, 27.0, 244.0, 570.0), &sheet, true, &mut hover) {
-        if u.items[slot].is_some() {
-            *message = game.unequip(sel, slot).err().map(equip_error);
+    let sheet_rect = at(2.0, 27.0, 244.0, 570.0);
+    if let Some(slot) = unit_sheet::draw(assets, &c, sheet_rect, &sheet, true, &mut hover) {
+        if let Some(item) = u.items[slot] {
+            held = Some(Held { from: From::Worn(sel, slot), item, at: pointer().into(), moved: false });
         }
     }
     draw_line(win.x + 247.0 * k, win.y + 27.0 * k, win.x + 247.0 * k, win.y + wh - 2.0, 1.5 * k, chrome::SILVER);
@@ -289,21 +339,13 @@ pub fn squad(
     if show_tree {
         tree_view(game, assets, sel, &u, content, message);
     } else if let Some(i) = pack_view(game, assets, content, scroll, &mut hover) {
-        let item = game.pack[i];
-        let kind = c.item(item).kind;
-        *message = if kind == ArtefactType::Potion {
-            Some(match game.drink(sel, i) {
-                Ok(healed) if healed > 0 => cued(Cue::Item(kind), razdor::trf!("{name} drinks it: +{healed} hits.", name = u.name(&c), healed)),
-                Ok(_) => cued(Cue::Item(kind), razdor::trf!("{name} drinks it. The effect lasts until the next battle ends.", name = u.name(&c))),
-                Err(e) => equip_error(e),
-            })
-        } else {
-            let done = game.equip(sel, i);
-            if done.is_ok() {
-                cue(Cue::Item(kind));
-            }
-            done.err().map(equip_error)
-        };
+        held = Some(Held { from: From::Pack(i), item: game.pack[i], at: pointer().into(), moved: false });
+    }
+    if let Some(h) = held.as_mut() {
+        h.moved |= Vec2::from(pointer()).distance(h.at) > DRAG_START;
+        if h.moved {
+            hover = Some(h.item);
+        }
     }
 
     // Top right: the item under the mouse; under it, for a unit other than the hero, its
@@ -342,7 +384,8 @@ pub fn squad(
     let strip = at(248.0, 302.0, 586.0, 20.0);
     let (hint, hc) = match message {
         Some(m) => (m.clone(), chrome::GOLD),
-        None => (tr("Click a unit to select it; Esc returns").to_string(), Color::new(1.0, 0.55, 0.25, 1.0)),
+        None if show_tree => (tr("Click a unit to select it; Esc returns").to_string(), Color::new(1.0, 0.55, 0.25, 1.0)),
+        None => (tr("Drag an item onto a unit to give it; Esc returns").to_string(), Color::new(1.0, 0.55, 0.25, 1.0)),
     };
     chrome::hint_strip(strip, &hint, hc);
 
@@ -364,6 +407,7 @@ pub fn squad(
         let p = cell_at(slot);
         chrome::empty_cell(Rect::new(p.x, p.y, card.x, card.y), chrome::CellIcon::of(f, slot), true);
     }
+    let mut card_under = None;
     for (i, v) in game.squad.iter().enumerate() {
         let p = cell_at(v.slot);
         let sq = Rect::new(p.x, p.y, card.x, card.x);
@@ -387,6 +431,9 @@ pub fn squad(
             chrome::badge("SI_Helm", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, chrome::GOLD);
         }
         let over = mouse_in(p.x, p.y, card.x, card.y);
+        if over {
+            card_under = Some(i);
+        }
         if i == sel {
             chrome::glow_frame(sq, Color::new(0.35, 1.0, 0.35, 1.0), true);
         } else if over {
@@ -398,7 +445,44 @@ pub fn squad(
         }
     }
 
+    // The held item follows the mouse; let go, it goes to the card or the pack under it.
+    if let Some(h) = held {
+        let (mx, my) = pointer();
+        if h.moved {
+            let s = 48.0 * k;
+            assets.draw_item(h.item, mx - s / 2.0, my - s / 2.0, s);
+        }
+        if is_mouse_button_down(MouseButton::Left) {
+            HELD.with(|c| c.set(Some(h)));
+        } else {
+            HELD.with(|c| c.set(None));
+            let over_pack = !show_tree && content.contains(vec2(mx, my));
+            let target = if h.moved { card_under.or_else(|| sheet_rect.contains(vec2(mx, my)).then_some(sel)) } else { None };
+            match (h.from, h.moved) {
+                (From::Pack(i), false) => *message = use_pack_item(game, sel, i),
+                (From::Worn(unit, slot), false) => *message = game.unequip(unit, slot).err().map(equip_error),
+                (From::Pack(i), true) => {
+                    if let Some(t) = target {
+                        *message = use_pack_item(game, t, i);
+                    }
+                }
+                (From::Worn(unit, slot), true) => match target {
+                    Some(t) if t != unit => {
+                        let done = game.give(unit, slot, t);
+                        if done.is_ok() {
+                            cue(Cue::Item(c.item(h.item).kind));
+                        }
+                        *message = done.err().map(equip_error);
+                    }
+                    None if over_pack => *message = game.unequip(unit, slot).err().map(equip_error),
+                    _ => {}
+                },
+            }
+        }
+    }
+
     if close || key(KeyCode::Escape) || key(KeyCode::A) {
+        HELD.with(|c| c.set(None));
         *message = None;
         return Some(match back {
             Some(v) => Screen::Building(v.clone()),
@@ -406,11 +490,15 @@ pub fn squad(
         });
     }
     // The bar's army button closes the screen too (back to the building it came from).
-    match bar {
+    let next = match bar {
         Some(Screen::WorldMap) => {
             *message = None;
             Some(back.clone().map_or(Screen::WorldMap, Screen::Building))
         }
         other => other,
+    };
+    if next.is_some() {
+        HELD.with(|c| c.set(None));
     }
+    next
 }

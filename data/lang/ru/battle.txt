@@ -208,6 +208,7 @@ Bury = Похоронить
 {name} leaves your army. = {name} покидает вашу армию.
 {name} is laid to rest. = Павший предан земле: {name}.
 Click a unit to select it; Esc returns = Щёлкните воина, чтобы выбрать его; Esc — назад
+Drag an item onto a unit to give it; Esc returns = Перетащите предмет на воина, чтобы отдать его; Esc — назад
 
 # Item types and stats in descriptions
 melee weapon = оружие ближнего боя

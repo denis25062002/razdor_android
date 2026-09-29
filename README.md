@@ -56,7 +56,10 @@ cargo test          # game rules
   markets (new random goods every 7 days, sell for a quarter of the price), loot them from
   camps and gangs, or get them as village tribute. Manage gear from the hero and army screen (4
   slots per unit, a scrolling backpack of 40); potions are drunk there (healing at once,
-  other effects last until the end of the next battle). Units can be dismissed there.
+  other effects last until the end of the next battle). As in the original, drag an item
+  from the backpack onto a unit's card to give it to that unit (a potion: it drinks it),
+  from one unit's slots onto another's card to hand it over, or onto the backpack to take it
+  off. Units can be dismissed there.
 - Units and items of the demo are our own content in `data/units.ini` and `data/items.ini`,
   written in the same format the engine reads from a Discord Times install.
 - Clear both bandit camps to win. If your whole army falls, it's over.
