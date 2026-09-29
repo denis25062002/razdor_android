@@ -2,6 +2,8 @@
 name = "razdor"
 version = "0.1.0"
 edition = "2021"
+authors = ["@indicozy"]
+license = "MIT"
 
 [dependencies]
 bzip2 = "0.6.1"

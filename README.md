@@ -8,6 +8,30 @@ cargo run --release
 cargo test          # game rules
 ```
 
+## Disclaimer
+- Razdor is an independent, non-commercial fan project, made by @indicozy. It is not
+  affiliated with, endorsed or sponsored by Aterdux or any other holder of rights to
+  *Discord Times*. The game's name and trademarks belong to their owners and are used only to
+  say which game the engine works with.
+- Razdor contains no code, data, text, art, sounds, music or maps of the original game. To
+  play the original's scenarios you need your own legally obtained copy of it. Do not
+  distribute the game's files together with Razdor.
+- Razdor is provided **"as is", without warranty of any kind**, express or implied,
+  including the warranties of merchantability, fitness for a particular purpose and
+  non-infringement. You use it entirely at your own risk.
+- By downloading, building or running Razdor you accept sole responsibility for how you use
+  it, and for making sure that doing so is lawful where you live and allowed by the licence
+  of your copy of the game. To the fullest extent permitted by law, the authors and
+  contributors are not liable for any claim, damages or other liability, whether direct,
+  indirect, incidental or consequential, including the loss of data, saves or game files,
+  arising from or in connection with Razdor or its use. Any such damages are yours to bear.
+- If you hold rights to *Discord Times* and have a concern about this project, contact the
+  author (@indicozy) and it will be addressed.
+
+## License
+Razdor's code is under the [MIT License](LICENSE). The fonts in `data/fonts/` keep their own
+licence, the SIL Open Font License 1.1 (the `*-OFL.txt` files next to them).
+
 ## How to play
 - Pick a hero: Knight (melee; his army takes 10% less physical damage), Archmage
   (Elemental magic: slows or burns the enemy), Ranger (long bow; the army heals 20% a day).

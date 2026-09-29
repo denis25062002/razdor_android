@@ -105,11 +105,16 @@ pub fn init() {
     }
 }
 
+/// The author's credit, from Cargo.toml's `authors`. The start of the log prints it, so it
+/// stays in every build of the program as one string (`strings Razdor.exe` finds it).
+pub const CREDIT: &str = concat!("made by ", env!("CARGO_PKG_AUTHORS"));
+
 fn summary(path: Option<&std::path::Path>) {
     let mut s = format!(
-        "Razdor {} ({}), {} {}",
+        "Razdor {} ({}), {}, {} {}",
         env!("CARGO_PKG_VERSION"),
         option_env!("RAZDOR_GIT").unwrap_or("unknown commit"),
+        CREDIT,
         std::env::consts::OS,
         std::env::consts::ARCH
     );
