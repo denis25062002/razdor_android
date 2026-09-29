@@ -128,6 +128,11 @@ pub struct BattleView {
     /// The battle was just played out by a quick battle: the result box waits a frame, so
     /// the key that started it does not also close it.
     quick_played: bool,
+    /// Esc opened "Варианты выхода из битвы" (and its restart question is open).
+    exiting: bool,
+    exit_asking: bool,
+    /// What that window chose, for the app to carry out.
+    pub exit: Option<super::saves::ExitChoice>,
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -206,13 +211,18 @@ fn battle_title(game: &Game) -> String {
     }
     .filter(|n| !n.trim().is_empty())
     .unwrap_or_else(|| tr("the enemy").to_string());
-    razdor::trf!("Battle: the army of hero {hero} against {enemy}!", hero = game.hero_name(), enemy = enemy.trim())
+    // The install's own words in Russian: "Сражаются: армия героя #HERONAME и #ARMYNAME!".
+    let own = (razdor::i18n::lang() == razdor::i18n::Lang::Ru).then(|| chrome::ui_text("Battle", "Title")).flatten();
+    match own {
+        Some(t) => t.replace("#HERONAME", &game.hero_name()).replace("#ARMYNAME", enemy.trim()),
+        None => razdor::trf!("Battle: the army of hero {hero} against {enemy}!", hero = game.hero_name(), enemy = enemy.trim()),
+    }
 }
 
 impl BattleView {
 
     pub fn new(battle: Battle) -> Self {
-        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false, news: None, quick_played: false }
+        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
     }
 
     /// Still on the deploy screen.
@@ -268,7 +278,14 @@ impl BattleView {
         }
 
         self.quick_played = false;
-        if self.battle.is_deploying() {
+        if !self.exiting && self.battle.outcome() == Outcome::Ongoing && self.fx.is_none() && key(KeyCode::Escape) {
+            self.exiting = true;
+        }
+        let exiting = self.exiting;
+        if exiting {
+            // The battle stands still under the window.
+            set_input_blocked(true);
+        } else if self.battle.is_deploying() {
             self.deploy_input(&l);
         } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Q) {
             self.quick_battle();
@@ -335,6 +352,17 @@ impl BattleView {
                 }
             }
             return self.result_overlay(&l, game, message, dialogs, outcome);
+        }
+        if exiting {
+            set_input_blocked(false);
+            match super::saves::battle_exit_dialog(&mut self.exit_asking) {
+                (Some(choice), _) => {
+                    self.exiting = false;
+                    self.exit = Some(choice);
+                }
+                (None, true) => self.exiting = false,
+                (None, false) => {}
+            }
         }
         None
     }
@@ -516,8 +544,13 @@ impl BattleView {
             }
         }
         if player_turn {
+            // The original's line while the player's unit waits; the hover box says what a
+            // click does. With nothing in reach, what is left to do.
             let hint = match (targets.is_empty(), moves.is_empty()) {
-                (false, _) => tr("Click a framed card to act, your own to pass one action; SPACE ends the turn"),
+                (false, _) => {
+                    let own = (razdor::i18n::lang() == razdor::i18n::Lang::Ru).then(|| chrome::ui_text("Battle", "ExitHint")).flatten();
+                    return (own.unwrap_or_else(|| tr("To leave the battle, press ESC").to_string()), GOLD);
+                }
                 (true, false) => tr("Nothing in reach: step to a lit cell, or press SPACE"),
                 (true, true) => tr("Nothing to do: press SPACE to end the turn"),
             };
@@ -555,6 +588,7 @@ impl BattleView {
         draw_rectangle(p.x + 4.0 * k, p.y + 4.0 * k, w, h, Color::new(0.0, 0.0, 0.0, 0.45));
         let sq = l.portrait(p);
         assets.draw_portrait(f.unit, f.team, sq);
+        chrome::wounds(sq, f.hp, f.max_hp());
         if aimed {
             let tint = if f.team == Team::Player { Color::new(0.3, 0.5, 1.0, 0.22) } else { Color::new(1.0, 0.1, 0.05, 0.25) };
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, tint);
@@ -654,7 +688,7 @@ impl BattleView {
         let lh = 16.0 * k;
         let w = measure(&head, size).width.max(effect.as_ref().map_or(0.0, |e| measure(e, size).width)) + 14.0 * k;
         let h = lh * if effect.is_some() { 2.0 } else { 1.0 } + 8.0 * k;
-        let (mx, my) = mouse_position();
+        let (mx, my) = crate::ui::widgets::pointer();
         let x = (mx - w * 0.4).clamp(2.0, screen_width() - w - 2.0);
         let y = (my - h - 6.0 * k).max(2.0);
         draw_rectangle(x, y, w, h, Color::new(0.93, 0.89, 0.72, 0.95));
@@ -703,6 +737,7 @@ impl BattleView {
             in_building: b.building_defence(f.team) > 0,
             hero,
             status,
+            battle: true,
         };
         let mut hover = None;
         unit_sheet::draw(assets, b.content(), l.panel, &sheet, false, &mut hover);

@@ -29,7 +29,6 @@ XP +{xp} = Опыт +{xp}
 Level up! = Новый уровень!
 Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle = Расставьте армию: щёлкните воина, затем клетку; «В бой!» начинает битву, Q / Enter — быстрый бой
 The battle is over = Битва окончена
-Click a framed card to act, your own to pass one action; SPACE ends the turn = Щёлкните воина в рамке, чтобы действовать, своего — чтобы пропустить действие; Пробел завершает ход
 Nothing in reach: step to a lit cell, or press SPACE = Никого не достать: шагните на светлую клетку или нажмите Пробел
 Nothing to do: press SPACE to end the turn = Делать нечего: нажмите Пробел, чтобы завершить ход
 The enemy moves... = Ход противника...
@@ -146,15 +145,16 @@ Daily wage = Жалованье в день
 Level {level} = Уровень {level}
 XP {xp} / {need} = Опыт {xp} / {need}
 
-# Card strip under a portrait
-A: {v} = Ат: {v}
-S: {v} = Выс: {v}
-Pwr: {power} = Сила: {power}
-D: {blow}/{shot} = Защ: {blow}/{shot}
-Mnvr: {mn} = Дей: {mn}
-Ini: {ini} = Ин: {ini}
-Hits: {hp}/{max} = Жизнь: {hp}/{max}
-Hits: {max} = Жизнь: {max}
+# Card strip under a portrait: the Russian original keeps these Latin labels (the video
+# shows "A: 45  D: 35/40", "Mnvr: 1  Ini: 12", "Hits: 70", "Pwr: 58").
+A: {v} = A: {v}
+S: {v} = S: {v}
+Pwr: {power} = Pwr: {power}
+D: {blow}/{shot} = D: {blow}/{shot}
+Mnvr: {mn} = Mnvr: {mn}
+Ini: {ini} = Ini: {ini}
+Hits: {hp}/{max} = Hits: {hp}/{max}
+Hits: {max} = Hits: {max}
 
 # Hero and army screen
 hits = жизнь
@@ -199,17 +199,14 @@ The hero's characteristics and army = Характеристики героя и
 Until the next battle: {names} = До следующего боя: {names}
 Dead = Мёртв
 Unpaid: refuses to fight = Без жалованья: отказывается сражаться
-Backpack {n}/{max} = Рюкзак {n}/{max}
 Upgrade tree = Древо развития
 {name} drinks it: +{healed} hits. = {name} выпивает зелье: +{healed} жизни.
 {name} drinks it. The effect lasts until the next battle ends. = {name} выпивает зелье. Действие продлится до конца следующего боя.
 Item description = Описание предмета
-Hover an item to read about it. Click a pack item to wear or drink it, a worn one to take it off. = Наведите на предмет, чтобы прочесть о нём. Щелчок по предмету в рюкзаке надевает или выпивает его, по надетому — снимает.
 Dismiss = Распустить
 Bury = Похоронить
 {name} leaves your army. = {name} покидает вашу армию.
 {name} is laid to rest. = Павший предан земле: {name}.
-The hero leads the army. = Герой ведёт армию.
 Click a unit to select it; Esc returns = Щёлкните воина, чтобы выбрать его; Esc — назад
 
 # Item types and stats in descriptions
@@ -292,3 +289,8 @@ Assault = Штурм
 Lasting gift = Долгий дар
 Gift of fate = Дар судьбы
 Concentration = Сосредоточение
+
+Attention!\n\nYou cannot go back to the map without finishing the battle!\nTo stop the game under way, leave to the main menu (the game is not saved) or start the scenario again (restart). = Внимание!\n\nНельзя вернуться на карту, не закончив битву!\nЧтобы прервать игру, выйдите в главное меню (игра не сохранится) или начните сценарий заново (рестарт).
+To leave the battle, press ESC = Чтобы выйти из битвы, нажмите ESC
+Ways out of the battle = Выход из битвы
+ways out of the battle = выход из битвы

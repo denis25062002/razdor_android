@@ -103,6 +103,16 @@ fn to_texture(img: &Image) -> Option<Texture2D> {
     Some(t)
 }
 
+/// The decoded first frame of `Graphics/<rel>`, without an install `None`.
+pub fn image(rel: &str) -> Option<Image> {
+    let dir = CHROME.with(|c| c.borrow().as_ref().map(|c| c.dir.clone()))?;
+    find_path(&dir, &format!("Graphics/{rel}"))
+        .and_then(|p| gfx::decode_file(&p))
+        .map_err(|e| eprintln!("Discord Times art: {rel}: {e}"))
+        .ok()
+        .and_then(|mut frames| (!frames.is_empty()).then(|| frames.swap_remove(0)))
+}
+
 /// Picture `rel` under `Graphics/` (e.g. `"Windows/Win-red.lit"`), first frame, with `fx`.
 /// `None` without an install or when the file is missing (logged once).
 pub fn art(rel: &str, fx: Fx) -> Option<Texture2D> {
@@ -148,6 +158,11 @@ pub fn win_fx(name: &str, fx: Fx) -> Option<Texture2D> {
     art(&format!("Windows/{name}.lit"), fx)
 }
 
+/// A still of `Graphics/Windows/<name>.ugs` (the logo, the menu buttons, the minimap symbols).
+pub fn win_ugs(name: &str) -> Option<Texture2D> {
+    art(&format!("Windows/{name}.ugs"), Fx::Plain)
+}
+
 /// Every frame of an animation (`Graphics/<rel>`); additive ones are made to glow.
 pub fn animation(rel: &str) -> Option<Vec<Texture2D>> {
     CHROME.with(|c| {
@@ -190,6 +205,18 @@ pub fn ui_text(section: &str, key: &str) -> Option<String> {
     })
 }
 
+/// A raw value of the install's `[Options]` (`Rus_DiscordTimes.ini`), e.g. the minimap colours.
+pub fn options_value(key: &str) -> Option<String> {
+    CHROME.with(|c| {
+        let mut c = c.borrow_mut();
+        let c = c.as_mut()?;
+        if c.texts.is_none() {
+            c.texts = Some(read_texts(&c.dir));
+        }
+        c.texts.as_ref()?.as_ref()?.section("Options")?.get_nonempty(key).map(str::to_string)
+    })
+}
+
 fn read_texts(dir: &std::path::Path) -> Option<Ini> {
     find_path(dir, SETTINGS_FILE).ok().and_then(|p| std::fs::read(p).ok()).map(|b| Ini::from_cp1251(&b))
 }
@@ -202,6 +229,141 @@ fn text_of(ini: &Ini, section: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 fn ui_text_from(dir: &std::path::Path, section: &str, key: &str) -> Option<String> {
     text_of(&read_texts(dir)?, section, key)
+}
+
+// ------------------------------------------------------------------------------------------
+// Additive drawing (fire, glows)
+// ------------------------------------------------------------------------------------------
+
+const ADD_VERTEX: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying lowp vec2 uv;
+varying lowp vec4 color;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    color = color0 / 255.0;
+    uv = texcoord;
+}"#;
+
+const ADD_FRAGMENT: &str = r#"#version 100
+varying lowp vec4 color;
+varying lowp vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    gl_FragColor = color * texture2D(Texture, uv);
+}"#;
+
+thread_local! {
+    static ADDITIVE: std::cell::OnceCell<Option<Material>> = const { std::cell::OnceCell::new() };
+    static MULTIPLY: std::cell::OnceCell<Option<Material>> = const { std::cell::OnceCell::new() };
+}
+
+fn blend_material(blend: macroquad::miniquad::BlendState, what: &str) -> Option<Material> {
+    let pipeline_params = macroquad::miniquad::PipelineParams { color_blend: Some(blend), ..Default::default() };
+    load_material(ShaderSource::Glsl { vertex: ADD_VERTEX, fragment: ADD_FRAGMENT }, MaterialParams { pipeline_params, ..Default::default() })
+        .map_err(|e| eprintln!("{what} material: {e}"))
+        .ok()
+}
+
+/// Runs `draw` with additive blending (light is added to what is below, as the original's
+/// fire and glows), or with normal blending if the material cannot be made.
+pub fn additive(draw: impl FnOnce()) {
+    use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
+    let material = ADDITIVE.with(|m| {
+        m.get_or_init(|| blend_material(BlendState::new(Equation::Add, BlendFactor::Value(BlendValue::SourceAlpha), BlendFactor::One), "additive"))
+            .clone()
+    });
+    with_material(material, draw);
+}
+
+/// Runs `draw` with multiplying blending: what is below is multiplied by the colour drawn
+/// (darkening and tinting parchment), or with normal blending if the material cannot be made.
+pub fn multiply(draw: impl FnOnce()) {
+    use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
+    let material = MULTIPLY.with(|m| {
+        m.get_or_init(|| blend_material(BlendState::new(Equation::Add, BlendFactor::Zero, BlendFactor::Value(BlendValue::SourceColor)), "multiply"))
+            .clone()
+    });
+    with_material(material, draw);
+}
+
+fn with_material(material: Option<Material>, draw: impl FnOnce()) {
+    match material {
+        Some(m) => {
+            gl_use_material(&m);
+            draw();
+            gl_use_default_material();
+        }
+        None => draw(),
+    }
+}
+
+const GREY_VERTEX: &str = r#"#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+varying lowp vec2 uv_screen;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    vec4 res = Projection * Model * vec4(position, 1);
+    uv_screen = res.xy / 2.0 + vec2(0.5, 0.5);
+    gl_Position = res;
+}"#;
+
+const GREY_FRAGMENT: &str = r#"#version 100
+precision lowp float;
+varying vec2 uv_screen;
+uniform sampler2D _ScreenTexture;
+void main() {
+    vec3 c = texture2D(_ScreenTexture, uv_screen).rgb;
+    float l = dot(c, vec3(0.30, 0.59, 0.11));
+    gl_FragColor = vec4(vec3(l) * 0.85, 1.0);
+}"#;
+
+thread_local! {
+    static GREY: std::cell::OnceCell<Option<Material>> = const { std::cell::OnceCell::new() };
+    /// The largest window drawn this frame (what a message greys out).
+    static BIGGEST: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+}
+
+/// A new frame: no window drawn yet.
+pub fn begin_frame() {
+    BIGGEST.with(|b| b.set(None));
+}
+
+/// Under a message window, as in the original (the video: the town window goes black and
+/// white under "Слухи в таверне" while the map around it keeps its colours): the window
+/// below turns grey; on the map with no window, a dark veil *(guess)*.
+pub fn under_message() {
+    match BIGGEST.with(|b| b.get()) {
+        Some(r) => grey_out(r),
+        None => draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.35)),
+    }
+}
+
+/// Turns what is drawn so far in `r` grey and a little darker. Without the shader, a dark
+/// veil.
+pub fn grey_out(r: Rect) {
+    let material = GREY.with(|m| {
+        m.get_or_init(|| {
+            load_material(ShaderSource::Glsl { vertex: GREY_VERTEX, fragment: GREY_FRAGMENT }, MaterialParams::default())
+                .map_err(|e| eprintln!("grey material: {e}"))
+                .ok()
+        })
+        .clone()
+    });
+    match material {
+        Some(m) => {
+            gl_use_material(&m);
+            draw_rectangle(r.x, r.y, r.w, r.h, WHITE);
+            gl_use_default_material();
+        }
+        None => draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.35)),
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -277,10 +439,6 @@ pub fn strong_centered(s: &str, cx: f32, y: f32, size: f32, color: Color) {
     strong_text(s, cx - w / 2.0, y, size, color);
 }
 
-pub fn strong_right(s: &str, rx: f32, y: f32, size: f32, color: Color) {
-    let w = measure(s, size).width;
-    strong_text(s, rx - w, y, size, color);
-}
 
 pub fn shadow_centered(s: &str, cx: f32, y: f32, size: f32, color: Color) {
     let w = measure(s, size).width;
@@ -327,8 +485,8 @@ impl Skin {
             Skin::Marble => win("Win-marble").map(|t| (t, WHITE)),
             Skin::Red => win("Win-red").map(|t| (t, WHITE)),
             Skin::Paper => paper(WHITE),
-            Skin::Brown => paper(Color::new(0.50, 0.25, 0.14, 1.0)),
-            Skin::Strip => paper(Color::new(0.58, 0.40, 0.18, 1.0)),
+            Skin::Brown => paper(Color::new(0.33, 0.21, 0.02, 1.0)),
+            Skin::Strip => paper(Color::new(0.37, 0.265, 0.02, 1.0)),
         }
     }
 
@@ -396,13 +554,18 @@ fn noise_texture() -> Texture2D {
 /// Fills `r` with `skin`: the original's texture, or our cloudy placeholder in the skin's
 /// colour.
 pub fn surface(r: Rect, skin: Skin) {
+    surface_alpha(r, skin, 1.0);
+}
+
+/// A skin at opacity `alpha` (the map's tooltips let the ground show through).
+pub fn surface_alpha(r: Rect, skin: Skin, alpha: f32) {
     if let Some((t, c)) = skin.texture() {
-        tile(&t, r, k().min(1.4), c);
+        tile(&t, r, k().min(1.4), Color::new(c.r, c.g, c.b, alpha));
         return;
     }
     let base = skin.color();
     let lift = |v: f32| (v * 1.25).min(1.0);
-    tile(&noise_texture(), r, 2.0, Color::new(lift(base.r), lift(base.g), lift(base.b), 1.0));
+    tile(&noise_texture(), r, 2.0, Color::new(lift(base.r), lift(base.g), lift(base.b), alpha));
 }
 
 /// The silver edge of windows and panels (outer light line, inner dark line).
@@ -433,15 +596,22 @@ pub fn close_button(x: f32, y: f32, s: f32, red: bool) -> bool {
     hover && super::widgets::clicked()
 }
 
-/// Title bar of a window: the window's own skin with ornaments at the ends, the title
-/// centred. Returns true when its close box (if any) was clicked.
-pub fn title_bar(r: Rect, title: &str, skin: Skin, closable: bool) -> bool {
+/// Title bar of a window: the window's own skin, the title centred; `ornate` puts the
+/// corner ornaments and the Benguiat font on a wide one (the town window's title is plain).
+/// Returns true when its close box (if any) was clicked.
+fn title_bar_styled(r: Rect, title: &str, skin: Skin, closable: bool, ornate: bool) -> bool {
     let k = k();
     surface(r, skin);
     draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.15));
-    // Orange ornaments at both ends of the battle's title.
-    if let Some(t) = win_fx("Corner-Left", Fx::KeyBlack).filter(|_| skin == Skin::Red && r.w > 400.0) {
-        let tint = Color::new(1.0, 0.45, 0.1, 0.9);
+    // Ornaments at both ends of a wide title: orange on the battle's red, silver-green on
+    // marble (the load window, the army screen).
+    // They give way to a title that would not fit between them.
+    let face = if ornate { super::dt_font::Face::Title } else { super::dt_font::Face::Body };
+    let size = (16.0 * k).round();
+    let title_w = super::dt_font::with_face(face, || measure(title, size).width);
+    let ornate = ornate && matches!(skin, Skin::Red | Skin::Marble) && r.w > 400.0 && title_w < r.w - 300.0 * k;
+    if let Some(t) = win_fx("Corner-Left", Fx::KeyBlack).filter(|_| ornate) {
+        let tint = if skin == Skin::Red { Color::new(1.0, 0.45, 0.1, 0.9) } else { Color::new(0.55, 0.8, 0.7, 0.8) };
         let h = r.h * 0.8;
         let w = t.width() * h / t.height();
         tex(&t, Rect::new(r.x + 4.0 * k, r.y + (r.h - h) / 2.0, w, h), tint);
@@ -451,14 +621,16 @@ pub fn title_bar(r: Rect, title: &str, skin: Skin, closable: bool) -> bool {
         }
     }
     draw_line(r.x, r.y + r.h, r.x + r.w, r.y + r.h, 1.0 * k, SILVER);
-    let size = (16.0 * k).round();
     let color = if skin == Skin::Red { GOLD } else { CREAM };
-    let mut t = title.to_string();
-    let room = if skin == Skin::Red && r.w > 400.0 { r.w - 300.0 * k } else { r.w - 2.0 * r.h - 8.0 * k };
-    while measure(&t, size).width > room && t.chars().count() > 4 {
-        t.pop();
-    }
-    shadow_centered(&t, r.x + r.w / 2.0, r.y + r.h * 0.5 + size * 0.36, size, color);
+    let room = if ornate { r.w - 300.0 * k } else { r.w - 2.0 * r.h - 8.0 * k };
+    // Titles are in the original's Benguiat, a plain one in its body font.
+    super::dt_font::with_face(face, || {
+        let mut t = title.to_string();
+        while measure(&t, size).width > room && t.chars().count() > 4 {
+            t.pop();
+        }
+        shadow_centered(&t, r.x + r.w / 2.0, r.y + r.h * 0.5 + size * 0.36, size, color);
+    });
     if closable {
         let s = r.h - 6.0 * k;
         return close_button(r.x + r.w - s - 4.0 * k, r.y + 3.0 * k, s, skin == Skin::Red);
@@ -469,11 +641,25 @@ pub fn title_bar(r: Rect, title: &str, skin: Skin, closable: bool) -> bool {
 /// A modal window: background, silver frame, title bar. Returns the area below the title
 /// bar and whether the close box was clicked.
 pub fn window(r: Rect, title: &str, skin: Skin, closable: bool) -> (Rect, bool) {
+    window_styled(r, title, skin, closable, true)
+}
+
+/// A window with a plain title: no ornaments, the body font (the town window).
+pub fn window_plain(r: Rect, title: &str, skin: Skin, closable: bool) -> (Rect, bool) {
+    window_styled(r, title, skin, closable, false)
+}
+
+fn window_styled(r: Rect, title: &str, skin: Skin, closable: bool, ornate: bool) -> (Rect, bool) {
     let k = k();
+    BIGGEST.with(|b| {
+        if b.get().is_none_or(|o| o.w * o.h < r.w * r.h) {
+            b.set(Some(Rect::new(r.x, r.y, r.w + 6.0 * k, r.h + 6.0 * k)));
+        }
+    });
     draw_rectangle(r.x + 6.0 * k, r.y + 6.0 * k, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.35));
     surface(r, skin);
     let tb = (26.0 * k).round();
-    let closed = title_bar(Rect::new(r.x, r.y, r.w, tb), title, skin, closable);
+    let closed = title_bar_styled(Rect::new(r.x, r.y, r.w, tb), title, skin, closable, ornate);
     silver_frame(r, (1.5 * k).max(1.0));
     (Rect::new(r.x + 2.0 * k, r.y + tb + 1.0, r.w - 4.0 * k, r.h - tb - 3.0 * k), closed)
 }
@@ -498,17 +684,19 @@ pub fn hint_strip(r: Rect, hint: &str, color: Color) {
 /// The hint of a strip, in the middle of `r` over a dark band.
 pub fn hint_text(r: Rect, hint: &str, color: Color) {
     draw_rectangle(r.x + r.h, r.y + r.h * 0.22, r.w - 2.0 * r.h, r.h * 0.56, Color::new(0.08, 0.03, 0.02, 0.55));
-    let size = (r.h * 0.62).round().max(11.0);
-    let mut s = hint.to_string();
-    while measure(&s, size).width > r.w - 3.0 * r.h && s.chars().count() > 4 {
-        s.pop();
-    }
+    let room = r.w - 3.0 * r.h;
+    // Smaller if it must be, then shortened with "…".
+    let size = super::widgets::fit_size(hint, room, (r.h * 0.62).round().max(11.0));
+    let s = super::widgets::ellipsize(hint, room, size);
     shadow_centered(&s, r.x + r.w / 2.0, r.y + r.h * 0.5 + size * 0.36, size, color);
 }
 
 /// Corner ornaments of a text box.
 fn corners(r: Rect) {
     let s = (26.0 * k()).min(r.h / 2.0).min(r.w / 2.0);
+    if s <= 0.0 {
+        return;
+    }
     for (name, x, y) in [
         ("Corner_Frame-LU", r.x, r.y),
         ("Corner_Frame-RU", r.x + r.w - s, r.y),
@@ -568,7 +756,7 @@ pub fn marble_button(r: Rect, label: &str, enabled: bool, hover: bool) {
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, if enabled { SILVER } else { SILVER_DARK });
         draw_rectangle_lines(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0, 1.0, Color::new(0.0, 0.0, 0.0, 0.5));
     }
-    let mut size: f32 = (r.h * 0.56).clamp(12.0, 22.0).round();
+    let mut size: f32 = (r.h * 0.56).clamp(12.0, 22.0 * k()).round();
     while size > 11.0 && measure(label, size).width > r.w - 10.0 {
         size -= 1.0;
     }
@@ -611,7 +799,7 @@ pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, if hover { GOLD } else { SILVER });
         }
     }
-    let size = super::widgets::fit_size(label, r.w - 8.0, (r.h * 0.62).round().clamp(11.0, 18.0));
+    let size = super::widgets::fit_size(label, r.w - 8.0, (r.h * 0.62).round().clamp(11.0, 18.0 * k()));
     let d = measure(label, size);
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, if enabled { WHITE } else { Color::new(0.8, 0.8, 0.8, 1.0) });
     let pressed = hover && super::widgets::clicked();
@@ -731,6 +919,25 @@ pub fn empty_cell(r: Rect, icon: CellIcon, ornament: bool) {
     cell_icon(icon, sq);
 }
 
+/// A wounded unit's portrait, as the original shows it: dark red rises from the bottom to
+/// the share of hits lost (the video, 19:52: the barracks' cards). Nothing at full health.
+pub fn wounds(sq: Rect, hp: i32, max: i32) {
+    let lost = wound_share(hp, max);
+    if lost <= 0.0 {
+        return;
+    }
+    let h = sq.h * lost;
+    multiply(|| draw_rectangle(sq.x, sq.y + sq.h - h, sq.w, h, Color::new(0.66, 0.13, 0.08, 1.0)));
+}
+
+/// The share (0..1) of the portrait [`wounds`] fills.
+pub fn wound_share(hp: i32, max: i32) -> f32 {
+    if max <= 0 {
+        return 0.0;
+    }
+    (1.0 - hp.max(0) as f32 / max as f32).clamp(0.0, 1.0)
+}
+
 /// Just the icon of an empty cell, filling `sq`.
 pub fn cell_icon(icon: CellIcon, sq: Rect) {
     if let Some(t) = win(icon.art()) {
@@ -793,6 +1000,16 @@ pub fn effect(rel: &str, c: Vec2, size: f32, t: f32, color: Color) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wounds_fill_the_share_of_hits_lost() {
+        assert_eq!(wound_share(80, 80), 0.0);
+        assert_eq!(wound_share(40, 80), 0.5);
+        assert_eq!(wound_share(0, 80), 1.0);
+        assert_eq!(wound_share(-5, 80), 1.0, "a corpse is all red");
+        assert_eq!(wound_share(90, 80), 0.0, "blessed above the maximum");
+        assert_eq!(wound_share(10, 0), 0.0);
+    }
 
     fn img(px: &[[u8; 4]]) -> Image {
         Image { width: px.len() as u32, height: 1, rgba: px.iter().flatten().copied().collect() }

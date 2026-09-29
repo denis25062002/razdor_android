@@ -49,7 +49,23 @@ impl BarButton {
         matches!(self, BarButton::Menu | BarButton::Settings | BarButton::Spells | BarButton::Map)
     }
 
-    fn hint(self) -> &'static str {
+    /// The hint: the install's own (`[GameMenu]`) in Russian, else ours.
+    fn hint(self) -> String {
+        let key = match self {
+            BarButton::Menu => "cExit",
+            BarButton::Settings => "cOptions",
+            BarButton::Save => "cSave",
+            BarButton::Load => "cLoad",
+            BarButton::Journal => "cHero",
+            BarButton::Squad => "cArmy",
+            BarButton::Spells => "cMagic",
+            BarButton::Map => "cMap",
+        };
+        let own = (razdor::i18n::lang() == razdor::i18n::Lang::Ru).then(|| chrome::ui_text("GameMenu", key)).flatten();
+        own.unwrap_or_else(|| self.our_hint().to_string())
+    }
+
+    fn our_hint(self) -> &'static str {
         match self {
             BarButton::Menu => tr("Main menu (Esc)"),
             BarButton::Settings => tr("Sound settings"),
@@ -90,13 +106,13 @@ fn resources(game: &Game, y: f32, h: f32) {
         (tr("wages"), "Res-Payment", wages, Color::new(1.0, 0.62, 0.25, 1.0)),
     ];
     let label_size = (11.0 * k).round();
-    let value_size = (16.0 * k).round();
+    let value_size = (19.0 * k).round();
     for (i, (label, art, value, color)) in items.iter().enumerate() {
         let cx = w * (0.125 + 0.25 * i as f32);
         let lw = measure(label, label_size).width;
         let base = y + h * 0.5 + value_size * 0.36;
         shadow_text(label, cx - lw - 16.0 * k, base, label_size, Color::new(0.75, 0.75, 0.75, 1.0));
-        let icon = 20.0 * k;
+        let icon = 24.0 * k;
         match chrome::win(art) {
             Some(t) => {
                 let iw = t.width() * icon / t.height();
@@ -109,7 +125,7 @@ fn resources(game: &Game, y: f32, h: f32) {
                 icon,
             ),
         }
-        shadow_text(value, cx + 14.0 * k, base, value_size, *color);
+        super::dt_font::with_face(super::dt_font::Face::Title, || shadow_text(value, cx + 16.0 * k, base, value_size, *color));
     }
 }
 
@@ -121,8 +137,9 @@ fn oval(b: BarButton, r: Rect, look: Look) -> bool {
     let state = if hover && is_mouse_button_down(MouseButton::Left) { "Down" } else { "Up" };
     let name = format!("{side}Btn{size}{state}");
     let (fx, tint) = match look {
-        Look::Normal if hover => (Fx::Plain, Color::new(1.15, 1.15, 1.25, 1.0)),
-        Look::Normal => (Fx::Plain, WHITE),
+        // The video's buttons are a deeper blue than the art alone.
+        Look::Normal if hover => (Fx::Plain, Color::new(0.8, 0.98, 1.0, 1.0)),
+        Look::Normal => (Fx::Plain, Color::new(0.6, 0.82, 0.86, 1.0)),
         Look::Grey => (Fx::Grey, WHITE),
         Look::Lit => (Fx::Grey, Color::new(0.45, 1.0, 0.45, 1.0)),
         Look::Glow => (Fx::Grey, Color::new(1.0, 0.55, 0.2, 1.0)),
@@ -143,13 +160,14 @@ fn oval(b: BarButton, r: Rect, look: Look) -> bool {
     }
     // The glyph: white-on-black art made to glow, tinted by the button's state.
     let glyph = match look {
-        Look::Normal => Color::new(0.7, 0.95, 1.0, 1.0),
+        // The video's cyan glyphs: (92, 216, 207).
+        Look::Normal => Color::new(0.36, 0.85, 0.81, 1.0),
         Look::Grey => Color::new(0.85, 0.85, 0.85, 0.9),
         Look::Lit => Color::new(0.75, 1.0, 0.75, 1.0),
         Look::Glow => Color::new(1.0, 0.85, 0.5, 1.0),
     };
     if let Some(t) = chrome::win_fx(&format!("button-icon-{}", b.icon()), Fx::Glow) {
-        let k = r.h / 54.0 * if b.small() { 1.15 } else { 1.0 };
+        let k = r.h / 54.0 * if b.small() { 1.25 } else { 1.2 };
         let (w, h) = (t.width() * k, t.height() * k);
         tex(&t, Rect::new(r.x + (r.w - w) / 2.0, r.y + (r.h - h) / 2.0, w, h), glyph);
     } else {
@@ -212,7 +230,7 @@ pub fn draw(game: &Game, look: impl Fn(BarButton) -> Look) -> Option<BarButton> 
         let ow = t.width() * sh / t.height();
         let mut x = w * 0.25 - ow / 2.0;
         while x < w {
-            tex(&t, Rect::new(x, sy, ow, sh), Color::new(1.0, 1.0, 1.0, 0.5));
+            tex(&t, Rect::new(x, sy, ow, sh), Color::new(1.0, 1.0, 1.0, 0.85));
             x += w * 0.25;
         }
     }
@@ -222,22 +240,23 @@ pub fn draw(game: &Game, look: impl Fn(BarButton) -> Look) -> Option<BarButton> 
     let ew = 370.0 * row / 64.0;
     let cx = w / 2.0;
     let size = (13.0 * k).round();
-    let (line1, line2) = if game.moving() {
-        (trf!("Time: {date}", date = game.clock.label()), Some(trf!("Path left: {left}", left = duration_label(game.minutes_left() as f64))))
+    // "Время:", the date, and while walking "До конца пути: 4 час" (the video's bar).
+    let mut lines = vec![(tr("Time:").to_string(), Color::new(1.0, 0.93, 0.55, 1.0)), (game.clock.label(), WHITE)];
+    if game.moving() {
+        lines.push((trf!("Path left: {left}", left = duration_label(game.minutes_left() as f64)), GOLD));
     } else if game.waiting() {
-        (trf!("Time: {date}", date = game.clock.label()), Some(tr("waiting…").to_string()))
-    } else {
-        (tr("Time:").to_string(), Some(game.clock.label()))
-    };
+        lines.push((tr("waiting…").to_string(), GOLD));
+    }
     // Russian dates run longer: the lines shrink to the ribbon's middle.
     let room = (w - 2.0 * ew - 16.0 * k).max(100.0);
-    let size = fit_size(&line1, room, size).min(line2.as_deref().map_or(size, |l| fit_size(l, room, size)));
-    let top = y + row * 0.5 - size * 0.25;
-    shadow_centered(&line1, cx, top, size, if game.moving() || game.waiting() { CREAM } else { GOLD });
-    if let Some(l2) = line2 {
-        shadow_centered(&l2, cx, top + size * 1.35, size, if game.moving() || game.waiting() { GOLD } else { CREAM });
-    }
-    let _ = ew;
+    let size = lines.iter().map(|(l, _)| fit_size(l, room, size)).fold(size, f32::min);
+    let lh = size * 1.25;
+    let top = y + row / 2.0 - lh * (lines.len() as f32 - 1.0) / 2.0 + size * 0.36;
+    super::dt_font::with_face(super::dt_font::Face::Bold, || {
+        for (i, (l, c)) in lines.iter().enumerate() {
+            shadow_centered(l, cx, top + i as f32 * lh, size, *c);
+        }
+    });
 
     // The buttons.
     let mut pressed = None;
@@ -261,4 +280,11 @@ pub fn draw(game: &Game, look: impl Fn(BarButton) -> Look) -> Option<BarButton> 
         x += 4.0 * k;
     }
     pressed
+}
+
+/// The time panel in the middle of the bar (it takes the wait clicks on the map).
+pub fn time_panel() -> Rect {
+    let row = (60.0 * chrome::k()).round();
+    let ew = 370.0 * row / 64.0;
+    Rect::new(ew, screen_height() - chrome::bar_height(), screen_width() - 2.0 * ew, row)
 }

@@ -105,6 +105,27 @@ pub fn decode_ugs(d: &[u8]) -> Result<Vec<Image>, DtError> {
     Ok(frames)
 }
 
+/// The single-frame stills of `Graphics/Windows` (`MB2`, `MM_Icons`, `Stnd-1/2`, `Title_RUS`)
+/// are not scrambled: each pixel is one grey byte and one alpha byte. The game tints them
+/// (the menu buttons, the minimap symbols by owner).
+pub const UGS_GREY_STILLS: [&str; 5] = ["mb2.ugs", "mm_icons.ugs", "stnd-1.ugs", "stnd-2.ugs", "title_rus.ugs"];
+
+/// A grey + alpha still (see [`UGS_GREY_STILLS`]): `[u16 w][u16 h]` then `w*h` pairs of
+/// (grey, alpha) bytes; alpha counts from the background's.
+pub fn decode_ugs_grey(d: &[u8]) -> Result<Image, DtError> {
+    let (Some(w), Some(h)) = (u16_at(d, 0), u16_at(d, 2)) else {
+        return Err(DtError::Truncated { what: "UGS still header", offset: 0 });
+    };
+    let n = w as usize * h as usize;
+    let px = d.get(4..4 + n * 2).ok_or(DtError::Truncated { what: "UGS still pixels", offset: 4 })?;
+    // `Title_RUS` fills its background with alpha 15, which the game does not show: the
+    // corner pixel's alpha is taken as the floor.
+    let floor = px.get(1).copied().unwrap_or(0).min(254) as u32;
+    let alpha = |a: u8| ((a as u32).saturating_sub(floor) * 255 / (255 - floor)) as u8;
+    let rgba = px.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], alpha(p[1])]).collect();
+    Ok(Image { width: w as u32, height: h as u32, rgba })
+}
+
 /// One sprite of `Objects/Objects.ugs`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObjectSprite {
@@ -380,6 +401,7 @@ pub fn decode_file(path: &Path) -> Result<Vec<Image>, DtError> {
         "spi" => Ok(vec![decode_spi(&d)?]),
         "bmp" => Ok(vec![decode_bmp(&d)?]),
         "ugs" if name == "objects.ugs" => Ok(decode_objects_ugs(&d)?.into_iter().map(|s| s.image).collect()),
+        "ugs" if UGS_GREY_STILLS.contains(&name.as_str()) => Ok(vec![decode_ugs_grey(&d)?]),
         "ugs" => decode_ugs(&d),
         _ => Err(DtError::BadMagic { what: "known graphics file (.ugs/.lit/.spi/.bmp)" }),
     }
@@ -845,7 +867,8 @@ mod tests {
     ("Graphics/Spells/S-Fire.ugs", 50, (128, 128), 812918529, 134966689, [12665, 3944, 0, 0]),
     ("Graphics/Battle/--UPGRADE.ugs", 50, (220, 110), 44991272259, 47005134402, [262004, 232577, 285447, 145197]),
     ("Graphics/Battle/--RAYS.ugs", 25, (220, 110), 22109095204, 16476064624, [217566, 217566, 217566, 0]),
-    ("Graphics/Windows/Title_RUS.ugs", 1, (896, 128), 2176297028505, 2176297028505, [11618480, 17888012, 17888012, 18972952]),
+    // Grey + alpha (not in the Python decoder, which read it as a scrambled ARGB4444 frame).
+    ("Graphics/Windows/Title_RUS.ugs", 1, (896, 128), 2728719528234, 2728719528234, [24779047, 24779047, 24779047, 8587170]),
     ("Graphics/Windows/Way_Arrows.ugs", 8, (32, 22), 124856534, 128991002, [23749, 23749, 23749, 40970]),
     ("Graphics/Textures/land.lit", 1, (256, 242), 801383493766, 801383493766, [3309536, 5833903, 654297, 15797760]),
     ("Graphics/Textures/plain.lit", 1, (256, 242), 904841733257, 904841733257, [6542862, 5654681, 920542, 15797760]),

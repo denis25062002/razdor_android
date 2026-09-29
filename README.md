@@ -78,12 +78,13 @@ What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 rules use. Without the variable everything still works, and the tests that need the
 real files are skipped.
 
-With the variable set, the first screen lists every map of your `Maps_Rus` with its title
-and description (read from your files at runtime), after the built-in demo. Pick one, then
-a hero class from the map's three presets. The world map uses the original's terrain
+With the variable set, the game opens on the original's main menu; "Новая игра" lists the
+single scenarios and the first map of each campaign of your `Maps_Rus` with the map, its
+status, size and description (read from your files at runtime). Pick one, then one of the
+map's three heroes. The world map uses the original's terrain
 textures, objects, buildings and map figures; hover an army or a building for its tooltip
-(formation, leader, owner, tribute), hover the ground for the route and its travel time,
-mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, friendly ones
+(formation, leader, owner, "tribute already collected"); while you walk white arrows mark
+the route and the bar shows the time left; mouse wheel or +/- to zoom. Hostile armies chase you and fight on contact, friendly ones
 greet you; hostile castles, forts and ruins with a garrison fight when you step into their
 gate, and a won castle or fort is yours with its income (an empty hostile one is taken by
 walking in). Towns, castles, forts, churches, villages, markets and taverns open their
@@ -122,23 +123,32 @@ Enter is "Yes" and **N** / Esc "No").
 | Everywhere | N | music off / on |
 | World map | click / right click, Space | walk / stop |
 | World map | wheel, + / − | zoom |
-| World map | 1 / 4 | wait 1 or 4 hours |
+| World map | 1 / 4, or left / right click on the time panel | wait 1 or 4 hours |
 | World map | M | minimap |
 | World map | Tab | centre the camera on the hero |
 | World map | J / B / A | journal / spell book / hero and army |
 | World map and its windows | F5 | quick save: a manual save named "Quick save" that replaces the last one |
-| World map | Esc | closes the minimap, else opens the game menu |
+| World map | Esc | closes the minimap, else opens "Выход из игры" (quit, main menu, restart) |
 | Any window (building, army, journal, spell book, menu, save, load) | Esc | back to the map (the army screen opened from a building: back to the building) |
 | Journal | Left / Right, Up / Down, wheel, PgUp / PgDn, J | tabs, entries, scrolling, close |
-| Spell book | Enter / B | cast on your army / close |
+| Spell book | click / B | cast the spell (an enemy spell: pick the army) / close |
 | Army | A | close |
 | Battle, deployment | Q / Enter | quick battle |
 | Battle | Space / Q / Enter | end the unit's turn / finish automatically / OK on the result |
+| Battle | Esc | ways out of the battle (quit, main menu, restart) |
+
+## Fonts
+Razdor draws its text with three free fonts that ship with it (`data/fonts/`, SIL Open Font
+License 1.1, the licences next to the files) and are built into the program: **PT Sans** and
+**PT Sans Bold** (ParaType) for text, **Kurale** for titles and names. They stay sharp at any
+window size, where the original's small bitmap fonts would blur. `RAZDOR_FONT`,
+`RAZDOR_FONT_BOLD` and `RAZDOR_FONT_TITLE` point to other font files, e.g. a bought
+Benguiat Cyrillic (`docs/superpowers/specs/2026-09-28-interface-fonts.md`).
 
 ## Language
 Razdor's own interface (buttons, windows, hints, messages, the battle log, the map editor, the
 built-in demo's names and texts) is in **Russian** or **English**. Switch with the **EN / RU**
-button on the title screen and in the game menu (Esc), or **F2** on any screen. The choice is
+link in the main menu's corner and in the settings window, or **F2** on any screen. The choice is
 kept in `settings.json` in the save folder (next to `audio.json`); when nothing is saved the
 game starts in Russian (in English if no font with Cyrillic was found). Scenario texts and the
 names of units, items and spells from your install are the original's and stay as they are.
@@ -174,8 +184,8 @@ The screens follow the original's layout (the 960×720 gameplay video, scaled to
 `docs/reference/video-notes.md`). The **bottom bar** has the original's oval buttons: menu,
 settings, save, load on the left, journal, hero and army, spell book and map on the right
 (blue; grey while a window is open, green for the open screen, orange while the minimap
-shows), the time panel in the middle and mana, gold, income and wages under them. Wait 1 h /
-4 h are in the side panel. The **battle** is a window over the map titled with both armies:
+shows), the time panel in the middle and mana, gold, income and wages under them. The map
+fills the screen above the bar, as in the original. The **battle** is a window over the map titled with both armies:
 the acting (or hovered) unit's full-body figure, stat list and traits on the left; the
 enemy's formation on top, a hint strip, and yours below, each card the portrait with the
 stat strip (`A: 45 D: 35/40`, `Mnvr: 1 Ini: 12`, `Hits: 70`; `Pwr` for casters); empty

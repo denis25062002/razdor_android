@@ -385,7 +385,7 @@ impl EditorScreen {
         self.canvas_input(view, panel_rect);
         let cam = self.cam.expect("set above");
         canvas::draw_map(&self.doc, art, &cam, overview.as_ref());
-        let hover = (!modal_open && view.contains(Vec2::from(mouse_position()))).then(|| cam.cell_at(Vec2::from(mouse_position())));
+        let hover = (!modal_open && view.contains(Vec2::from(crate::ui::widgets::pointer()))).then(|| cam.cell_at(Vec2::from(crate::ui::widgets::pointer())));
         canvas::draw_overlays(&self.doc, &self.tools, &self.palette, art, &cam, hover, &self.overlays);
 
         // Right column: minimap and tools.
@@ -520,7 +520,7 @@ impl EditorScreen {
     /// Mouse on the map: tools with the left button, panning with the right or middle one,
     /// zoom with the wheel.
     fn canvas_input(&mut self, view: Rect, panel: Option<Rect>) {
-        let m = Vec2::from(mouse_position());
+        let m = Vec2::from(crate::ui::widgets::pointer());
         let over = view.contains(m) && !panel.is_some_and(|p| p.contains(m)) && !input_blocked();
         let (w, h) = (self.doc.scenario.width(), self.doc.scenario.height());
         let Some(cam) = self.cam.as_mut() else { return };

@@ -432,6 +432,11 @@ impl TileMap {
         self.index(t).map_or(Surface::DeepSea as u8, |i| self.surface[i])
     }
 
+    /// Every cell's surface code, row by row.
+    pub fn surface_codes(&self) -> &[u8] {
+        &self.surface
+    }
+
     pub fn surface(&self, t: Tile) -> Surface {
         Surface::from_code(self.surface_code(t)).unwrap_or(Surface::DeepSea)
     }

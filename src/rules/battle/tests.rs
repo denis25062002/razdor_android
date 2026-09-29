@@ -1523,3 +1523,29 @@ mod quick_battle {
         assert!(bt.player_xp().is_empty(), "no experience without a victory");
     }
 }
+
+/// The gameplay video's fort battle ("Форт в Трясине", РК3, 09:49): the garrison's starting
+/// strength gives a pool of 75, a share of 25 for a unit that attacked all battle, and the
+/// cuirassier, the sorceress and the hero gained "+25", "+24" and "+26". Razdor pays shares
+/// at that rate (`PLAYER_XP_MODIFICATOR`), not the Community Update's halved one.
+#[test]
+fn real_fort_battle_pays_the_videos_xp() {
+    let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
+    let dt = crate::dt::install::DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
+    let c = Arc::new(Content::from_dt(&dt));
+    assert_eq!(c.options.hero_experience_modificator, 100);
+    let map = dt.maps.iter().find(|m| m.name.starts_with("РК3")).expect("РК3").load().expect("loads");
+    let mut g = crate::rules::game::Game::from_scenario(c.clone(), &map, crate::rules::content::HeroClass::Archmage, 1);
+    let l = g.world.locations.iter().position(|l| l.name == "Форт в Трясине").expect("the fort");
+    g.foe = Some(crate::rules::game::Foe::Garrison(l));
+    let mut b = g.start_battle();
+    b.begin();
+    let e0 = b.strength_now(Team::Enemy);
+    let pool = crate::rules::experience::battle_pool(e0, 1, 0);
+    assert_eq!((e0, pool), (1516, 75));
+    // Three units in the video's army; one that attacked with every action.
+    let share = crate::rules::experience::share(pool, 3, Front, 1, 1, 0);
+    assert_eq!(share, 25);
+    // With a garrison's correction of 100 and "impossible difficulty" (F 100): the video's +25.
+    assert_eq!(crate::rules::experience::player_gain(share, c.options.hero_experience_modificator, 100, 100), 25);
+}

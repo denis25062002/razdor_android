@@ -125,9 +125,10 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// The original's autosave name for a moment: "1204.06.03, 12 h".
+/// The original's autosave name for a moment: "1204.06.03, 12 h" ("…, 12 час" in Russian).
 pub fn date_name(clock: &Clock) -> String {
-    format!("{}.{:02}.{:02}, {} h", clock.year(), clock.month(), clock.day(), clock.hour())
+    let date = format!("{}.{:02}.{:02}", clock.year(), clock.month(), clock.day());
+    crate::trf!("{date}, {hour} h", date, hour = clock.hour())
 }
 
 /// The save folder: `RAZDOR_SAVE_DIR`, else `razdor/saves` in the platform data folder.

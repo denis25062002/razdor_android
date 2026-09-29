@@ -103,6 +103,15 @@ building enters it (`0x68dc74`). The step time charged is the cost of the cell b
   budget (cap 200 min); an AI army takes a step when the budget covers its own next step
   (`cost(next cell) × speed × 100 × weight/2`). AI armies only move while the hero walks,
   waits or casts.
+- **How AI steps are played** (0x4a39d0–0x4a3e60, runs every frame with the elapsed time):
+  at the start of each hero step or wait tick an army's bank gets the tick's time (+0xe124,
+  cap 20000 centi-min) and the window is set to that time (+0xe128). An army ready to move
+  takes **one** step when the bank covers it; the step's play time (+0xc058) is its cost
+  scaled by `tick / bank` if the bank also covers the step after it, otherwise the whole
+  rest of the window; never more than what is left of the window. The frame's time counts
+  it down; when it runs out the army reaches the cell and may take the next step. So several
+  steps in one hero step share the window evenly by cost, and every army walks at the same
+  time as the hero (Razdor: `world::Walk`, `Game::army_display_pos`).
 
 ## 3. Sight and fog — H (shape), M (exact edge)
 

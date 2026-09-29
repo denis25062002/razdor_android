@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
-use razdor::i18n::tr;
+use razdor::i18n::{n_, tr};
 use razdor::rules::battle::Team;
 use razdor::trf;
 use razdor::rules::clock::duration_label;
@@ -26,14 +26,12 @@ use super::dt_art::DtArt;
 use super::game_bar::{self, BarButton, Look};
 use super::minimap;
 use super::saves::{self, Back, LoadView, SaveView};
-use super::screens::squad_panel;
 use super::story;
 use super::widgets::*;
 use super::Screen;
 
 /// Screen pixels per world unit (one cell width) at zoom 1: the original's 32 px cells.
 const PX: f32 = 32.0;
-const PANEL_W: f32 = 270.0;
 /// Sail colour of the hero's own ship.
 const HERO_SAIL: Color = Color::new(0.35, 0.8, 0.45, 1.0);
 fn bar_h() -> f32 {
@@ -44,8 +42,6 @@ use super::dialog::MANA;
 /// World-map view state kept between frames.
 pub struct MapView {
     pub zoom: f32,
-    /// Hovered target cell, its path from the party and the travel time (minutes).
-    preview: Option<(Tile, Tile, Vec<Tile>, f32)>,
     /// The minimap window is open.
     pub minimap: bool,
     /// Where the camera looks when moved by the minimap (world units); `None` follows the hero.
@@ -54,13 +50,12 @@ pub struct MapView {
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, preview: None, minimap: false, look: None }
+        MapView { zoom: 1.0, minimap: false, look: None }
     }
 }
 
 impl MapView {
     pub fn reset(&mut self) {
-        self.preview = None;
         self.look = None;
     }
 }
@@ -115,7 +110,7 @@ impl Camera {
     /// Centred on world position `at` (clamped to the map), in the map view left of the
     /// side panel.
     fn looking_at(game: &Game, zoom: f32, at: (f32, f32)) -> Camera {
-        Camera::looking_in(game, zoom, at, Rect::new(0.0, 0.0, screen_width() - PANEL_W, screen_height() - bar_h()))
+        Camera::looking_in(game, zoom, at, Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h()))
     }
 
     fn looking_in(game: &Game, zoom: f32, at: (f32, f32), view: Rect) -> Camera {
@@ -161,7 +156,7 @@ impl Camera {
     }
 
     fn tile_under_mouse(&self) -> Option<Tile> {
-        let m = Vec2::from(mouse_position());
+        let m = Vec2::from(crate::ui::widgets::pointer());
         if !self.view.contains(m) {
             return None;
         }
@@ -217,6 +212,19 @@ pub(super) fn draw_wrapped(tex: &Texture2D, dest: Rect, src: Vec2, src_size: Vec
 
 fn draw_terrain(game: &Game, art: Option<&DtArt>, cam: &Camera) {
     let map = &game.world.map;
+    if let Some(layer) = art.and_then(|a| a.terrain_layer()).filter(|_| cam.grid == Grid::Square8) {
+        // The map area in view, in world units (cells span ±½ around their centres).
+        let rh = cam.grid.row_height();
+        let (map_tl, map_br) = (vec2(-0.5, -0.5 * rh), vec2(map.w as f32 - 0.5, (map.h as f32 - 0.5) * rh));
+        let w = cam.world_rect();
+        let (tl, br) = (map_tl.max(w.point()), map_br.min(w.point() + w.size()));
+        if tl.x < br.x && tl.y < br.y {
+            let (a, b) = (cam.to_screen(tl.into()), cam.to_screen(br.into()));
+            let view = vec4(tl.x, tl.y / rh, br.x, br.y / rh);
+            layer.draw(map.surface_codes(), (map.w as u32, map.h as u32), Rect::new(a.x, a.y, b.x - a.x, b.y - a.y), view, vec2(PX, PX * rh));
+        }
+        return;
+    }
     let ((c0, c1), (r0, r1)) = cam.visible(map);
     let size = cam.cell_size();
     let unscaled = vec2(PX, PX * cam.grid.row_height());
@@ -435,6 +443,11 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
 fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     let art = assets.dt.as_ref();
     draw_terrain(game, art, cam);
+    // The route being walked lies on the ground, under the figures (the original shows no
+    // preview before the click).
+    if game.moving() {
+        draw_route(game, &game.path, cam);
+    }
     let map = &game.world.map;
     let ((c0, c1), (r0, r1)) = cam.visible(map);
     let rh = cam.grid.row_height();
@@ -485,21 +498,38 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
 }
 
 /// Route dots and, at the end, the travel time.
-fn draw_route(game: &Game, path: &[Tile], minutes: f32, cam: &Camera, color: Color) {
-    for (k, &t) in path.iter().enumerate() {
+/// The route being walked, as the original draws it: a white arrow on every cell ahead
+/// (`Windows/Way_Arrows.ugs`, 32×22, one frame per direction in the exe's order: up-left,
+/// up, up-right, right, down-right, down, down-left, left). The time left is in the bar.
+fn draw_route(game: &Game, path: &[Tile], cam: &Camera) {
+    let arrows = super::chrome::animation("Windows/Way_Arrows.ugs").filter(|a| a.len() == 8);
+    let zoom = cam.scale / PX;
+    let mut from = game.tile();
+    for &t in path {
         let c = cam.cell_centre(t);
-        let r = if k + 1 == path.len() { 5.0 } else { 2.5 };
-        draw_circle(c.x, c.y, r + 1.0, Color::new(0.0, 0.0, 0.0, 0.5));
-        draw_circle(c.x, c.y, r, color);
+        let (dx, dy) = ((t.0 - from.0).signum(), (t.1 - from.1).signum());
+        from = t;
+        let dir = match (dx, dy) {
+            (-1, -1) => 0,
+            (0, -1) => 1,
+            (1, -1) => 2,
+            (1, 0) => 3,
+            (1, 1) => 4,
+            (0, 1) => 5,
+            (-1, 1) => 6,
+            _ => 7,
+        };
+        match &arrows {
+            Some(a) => {
+                let (w, h) = (a[dir].width() * zoom, a[dir].height() * zoom);
+                draw_texture_ex(&a[dir], c.x - w / 2.0, c.y - h / 2.0, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), ..Default::default() });
+            }
+            None => {
+                draw_circle(c.x, c.y, 3.5, Color::new(0.0, 0.0, 0.0, 0.5));
+                draw_circle(c.x, c.y, 2.5, WHITE);
+            }
+        }
     }
-    if let Some(&last) = path.last() {
-        let c = cam.cell_centre(last);
-        let label = duration_label(minutes as f64);
-        let w = measure(&label, 18.0).width + 12.0;
-        draw_rectangle(c.x + 8.0, c.y - 26.0, w, 22.0, PANEL);
-        text(&label, c.x + 14.0, c.y - 10.0, 18.0, ACCENT);
-    }
-    let _ = game;
 }
 
 /// A 2×6 (or 3×4) mini formation of portraits, the front row at the bottom as the enemy's
@@ -520,6 +550,9 @@ fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x:
             }
             if let Some(t) = troop {
                 assets.draw_portrait(t.unit, team, sq);
+                // Wounds left by world spells.
+                let max = razdor::rules::units::Stats::of_level(&game.content, t.unit, t.level).max_hp();
+                super::chrome::wounds(sq, max - t.hurt, max);
                 draw_rectangle_lines(cx, cy, cell, cell, 1.0, Color::new(0.8, 0.8, 0.8, 0.9));
                 // The troop's level in the corner.
                 let lv = t.level.to_string();
@@ -540,16 +573,29 @@ struct Tooltip {
     footer: Vec<(String, Color)>,
 }
 
+/// A text of the install (`[Info] <key>`) in Russian, else ours.
+fn info(key: &str, ours: &'static str) -> String {
+    let t = (razdor::i18n::lang() == razdor::i18n::Lang::Ru).then(|| super::chrome::ui_text("Info", key)).flatten();
+    t.unwrap_or_else(|| tr(ours).to_string())
+}
+
+/// The name colour of the original's tooltips (the leader, the owner).
+const TIP_NAME: Color = Color::new(0.45, 1.0, 0.5, 1.0);
+/// Its orange notes ("(дань уже собрана)").
+const TIP_NOTE: Color = Color::new(1.0, 0.62, 0.25, 1.0);
+
+/// The original's army tooltip: its name, its 2×6 cards, "Предводитель" and the leader's
+/// name, the description; world spells on it and their wounds (Razdor's) under that.
 fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
-    let title = if a.name.is_empty() { tr("Army").to_string() } else { a.name.clone() };
+    let title = if a.name.is_empty() { info("NoNameArmy", n_("Unknown army")) } else { a.name.clone() };
     let mut footer = Vec::new();
     if !a.leader_name.is_empty() {
-        footer.push((tr("Leader").to_string(), DIM));
-        footer.push((a.leader_name.clone(), GREEN));
+        footer.push((info("Commander", n_("Leader")), DIM));
+        footer.push((a.leader_name.clone(), TIP_NAME));
     }
-    let stance = if a.hostile() { (tr("Hostile: attacks on sight"), RED) } else { (tr("Not hostile"), DIM) };
-    footer.push((stance.0.to_string(), stance.1));
-    // World spells on it, and wounds they left.
+    for line in wrap(&a.description, 320.0 * super::chrome::k(), 12.0 * super::chrome::k()) {
+        footer.push((line, INK));
+    }
     let now = game.clock.total_minutes() as u64;
     let spells: Vec<&str> = a.effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| game.spell(e.spell)).map(|s| s.name.as_str()).collect();
     if !spells.is_empty() {
@@ -559,91 +605,94 @@ fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
     if hurt > 0 {
         footer.push((trf!("Wounded by magic: -{hurt} hits", hurt), MANA));
     }
-    for line in wrap(&a.description, 330.0, 16.0).into_iter().take(4) {
-        footer.push((line, INK));
-    }
-    let mut lines = Vec::new();
-    if let (Some(lo), Some(hi)) = (a.troops.iter().map(|t| t.level).min(), a.troops.iter().map(|t| t.level).max()) {
-        let span = if lo == hi { trf!("level {lo}", lo) } else { trf!("levels {lo}-{hi}", lo, hi) };
-        lines.push((trf!("{n} units, {span}", n = a.troops.len(), span), XP_COLOR));
-    }
-    Tooltip { title, lines, troops: a.troops.clone(), team: if a.hostile() { Team::Enemy } else { Team::Player }, footer }
+    Tooltip { title, lines: Vec::new(), troops: a.troops.clone(), team: if a.hostile() { Team::Enemy } else { Team::Player }, footer }
 }
 
+/// The original's building tooltip: its name, "Владелец" and the owner's name, the
+/// description, "(дань уже собрана)" for a village already emptied; a garrison under
+/// "Состав гарнизона защитников:".
 fn location_tooltip(game: &Game, l: &Location) -> Tooltip {
-    let title = if l.name.is_empty() { l.kind.label().to_string() } else { l.name.clone() };
-    let mut lines = vec![(l.kind.label().to_string(), DIM)];
-    if l.owned() {
-        lines.push((tr("Owner: you").to_string(), GREEN));
-    } else if !l.owner_name.is_empty() {
-        lines.push((trf!("Owner: {owner}", owner = l.owner_name), INK));
+    let title = if l.name.is_empty() { info("NoNameBuilding", n_("Unknown building")) } else { l.name.clone() };
+    let mut lines = Vec::new();
+    let owner = if l.owned() { game.hero_name.clone().unwrap_or_else(|| tr("you").to_string()) } else { l.owner_name.clone() };
+    if !owner.trim().is_empty() {
+        lines.push((info("Owner", n_("Owner")), DIM));
+        lines.push((owner, TIP_NAME));
     }
-    if l.hostile() {
-        lines.push((tr("Hostile").to_string(), RED));
+    for line in wrap(&l.description, 320.0 * super::chrome::k(), 12.0 * super::chrome::k()) {
+        lines.push((line, INK));
     }
-    match l.kind {
-        LocationKind::Village if l.tribute_gold > 0 || l.tribute_mana > 0 => {
-            lines.push((trf!("Tribute waiting: {gold} gold, {mana} mana", gold = l.tribute_gold, mana = l.tribute_mana), ACCENT))
-        }
-        LocationKind::Village => lines.push((tr("(tribute already collected)").to_string(), rgb(240, 150, 60))),
-        _ if l.gold_income > 0 || l.mana_income > 0 => {
-            lines.push((trf!("Income {gold} gold, {mana} mana a day", gold = l.gold_income, mana = l.mana_income), ACCENT))
-        }
-        _ => {}
-    }
-    let mut footer = Vec::new();
-    for line in wrap(&l.description, 330.0, 16.0).into_iter().take(5) {
-        footer.push((line, INK));
+    if l.kind == LocationKind::Village && l.tribute_gold <= 0 && l.tribute_mana <= 0 {
+        lines.push((info("VillageEmptyGold", n_("(tribute already collected)")), TIP_NOTE));
     }
     let troops = if l.defended() { l.garrison.clone() } else { Vec::new() };
-    let _ = game;
-    Tooltip { title, lines, troops, team: Team::Enemy, footer }
+    if !troops.is_empty() {
+        lines.push((info("Defenders", n_("The garrison's defenders:")), DIM));
+    }
+    Tooltip { title, lines, troops, team: Team::Enemy, footer: Vec::new() }
 }
 
 fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
     use super::chrome::{shadow_centered, CREAM};
-    let cell = 40.0;
+    use super::dt_font::{with_face, Face};
+    let k = super::chrome::k();
+    let cell = (46.0 * k).round();
     let f = game.content.formation;
+    // `formation_grid` spaces its cells 3 px apart.
     let grid_w = f.cols as f32 * (cell + 3.0) - 3.0;
-    let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 };
-    // A name in green (the leader) is drawn larger, as the original's.
-    let size = |c: Color| if c == GREEN { 20.0 } else { 16.0 };
-    let shown = |c: Color| match c {
-        c if c == INK => CREAM,
-        c if c == GREEN => Color::new(0.45, 1.0, 0.5, 1.0),
-        c => c,
-    };
-    let w = [measure(&t.title, 20.0).width + 40.0, grid_w + 24.0, 250.0]
+    let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 * k };
+    // Names in Benguiat, larger; the rest small.
+    let big = |c: Color| c == TIP_NAME || c == TIP_NOTE;
+    let size = |c: Color| if big(c) { 16.0 * k } else { 12.0 * k };
+    let face = |c: Color| if big(c) { Face::Title } else { Face::Body };
+    let shown = |c: Color| if c == INK { CREAM } else { c };
+    let width = |s: &str, c: Color| with_face(face(c), || measure(s, size(c)).width);
+    let title_size = 16.0 * k;
+    let w = [with_face(Face::Title, || measure(&t.title, title_size).width) + 90.0 * k, grid_w + 24.0 * k, 250.0 * k]
         .into_iter()
-        .chain(t.lines.iter().chain(&t.footer).map(|(s, c)| measure(s, size(*c)).width + 24.0))
+        .chain(t.lines.iter().chain(&t.footer).map(|(s, c)| width(s, *c) + 24.0 * k))
         .fold(0.0, f32::max)
-        .min(400.0);
-    let lines_h: f32 = t.lines.iter().chain(&t.footer).map(|(_, c)| size(*c) + 3.0).sum();
-    let h = 36.0 + lines_h + grid_h + 10.0;
-    let (mx, my) = mouse_position();
+        .min(420.0 * k);
+    let lh = |c: Color| size(c) + 3.0 * k;
+    let lines_h: f32 = t.lines.iter().chain(&t.footer).map(|(_, c)| lh(*c)).sum();
+    let bar = 24.0 * k;
+    let h = bar + 8.0 * k + lines_h + grid_h + 8.0 * k;
+    let (mx, my) = crate::ui::widgets::pointer();
     let x = (mx + 18.0).min(screen_width() - w - 4.0);
     let y = (my + 18.0).min(screen_height() - bar_h() - h - 4.0).max(2.0);
     tooltip_panel(Rect::new(x, y, w, h));
-    draw_rectangle(x + 2.0, y + 2.0, w - 4.0, 26.0, Color::new(0.0, 0.0, 0.0, 0.3));
-    draw_line(x + 2.0, y + 28.0, x + w - 2.0, y + 28.0, 1.0, super::chrome::SILVER);
-    shadow_centered(&t.title, x + w / 2.0, y + 21.0, 18.0, CREAM);
-    let mut ly = y + 34.0;
+    // The title strip with the ornaments at its ends.
+    draw_rectangle(x + 2.0, y + 2.0, w - 4.0, bar - 2.0, Color::new(0.0, 0.0, 0.0, 0.25));
+    if let Some(orn) = super::chrome::win_fx("Corner-Left", super::chrome::Fx::KeyBlack) {
+        let oh = bar * 0.8;
+        let ow = orn.width() * oh / orn.height();
+        let tint = Color::new(0.55, 0.8, 0.7, 0.8);
+        super::chrome::tex(&orn, Rect::new(x + 4.0 * k, y + (bar - oh) / 2.0, ow, oh), tint);
+        if let Some(r) = super::chrome::win_fx("Corner-Right", super::chrome::Fx::KeyBlack) {
+            super::chrome::tex(&r, Rect::new(x + w - ow - 4.0 * k, y + (bar - oh) / 2.0, ow, oh), tint);
+        }
+    }
+    draw_line(x + 2.0, y + bar, x + w - 2.0, y + bar, 1.0, super::chrome::SILVER);
+    with_face(Face::Title, || shadow_centered(&t.title, x + w / 2.0, y + bar * 0.5 + title_size * 0.36, title_size, CREAM));
+    let mut ly = y + bar + 6.0 * k;
+    let line = |s: &str, c: Color, ly: &mut f32| {
+        with_face(face(c), || shadow_centered(s, x + w / 2.0, *ly + size(c), size(c), shown(c)));
+        *ly += lh(c);
+    };
     for (s, c) in &t.lines {
-        shadow_centered(s, x + w / 2.0, ly + size(*c) - 2.0, size(*c), shown(*c));
-        ly += size(*c) + 3.0;
+        line(s, *c, &mut ly);
     }
     if !t.troops.is_empty() {
-        ly += formation_grid(game, assets, &t.troops, t.team, x + (w - grid_w) / 2.0, ly + 4.0, cell) + 8.0;
+        ly += formation_grid(game, assets, &t.troops, t.team, x + (w - grid_w) / 2.0, ly + 4.0 * k, cell) + 8.0 * k;
     }
     for (s, c) in &t.footer {
-        shadow_centered(s, x + w / 2.0, ly + size(*c) - 2.0, size(*c), shown(*c));
-        ly += size(*c) + 3.0;
+        line(s, *c, &mut ly);
     }
 }
 
 /// What the mouse is over: an army, else a building.
 fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
-    let m = Vec2::from(mouse_position());
+    let m = Vec2::from(crate::ui::widgets::pointer());
     if !cam.view.contains(m) {
         return None;
     }
@@ -657,53 +706,24 @@ fn hover_tooltip(game: &Game, cam: &Camera) -> Option<Tooltip> {
     Some(location_tooltip(game, &game.world.locations[l]))
 }
 
-/// The window of the building the party stands in, when `t` is one of its cells: what the
-/// side panel's "Enter" opens. Nothing for a garrison still to beat (attacking stays a button)
-/// or a burnt camp.
-fn reopen_here(game: &Game, t: Tile) -> Option<Screen> {
+/// A click on the building the party stands in (`t` one of its cells): its window again, or
+/// the battle with a garrison still to beat. Nothing for a burnt camp.
+fn reopen_here(game: &mut Game, t: Tile) -> Option<Screen> {
     let l = game.location?;
     if game.world.location_covering(t).or_else(|| game.world.location_at(t)) != Some(l) {
         return None;
     }
     let loc = &game.world.locations[l];
-    if loc.defended() || (loc.kind == LocationKind::Camp && loc.cleared) {
+    if loc.kind == LocationKind::Camp && loc.cleared {
         return None;
+    }
+    if loc.defended() {
+        game.foe = Some(Foe::Garrison(l));
+        return Some(saves::battle(game));
     }
     first_tab(loc).map(|first| Screen::Building(BuildingView::new(first)))
 }
 
-/// The location the party stands on: enter it, or attack its garrison.
-fn location_panel(game: &mut Game, x: f32, mut y: f32) -> Option<Screen> {
-    let Some(l) = game.location else {
-        text(if game.aboard() { tr("At sea.") } else { tr("On the road.") }, x, y + 20.0, 20.0, DIM);
-        return None;
-    };
-    let loc = &game.world.locations[l];
-    let name = if loc.name.is_empty() { loc.kind.label().to_string() } else { loc.name.clone() };
-    for line in wrap(&name, PANEL_W - 30.0, 22.0).iter().take(2) {
-        text(line, x, y + 20.0, 22.0, INK);
-        y += 24.0;
-    }
-    text(loc.kind.label(), x, y + 14.0, 16.0, DIM);
-    y += 26.0;
-    if loc.kind == LocationKind::Camp && loc.cleared {
-        text(tr("Only ashes remain."), x, y + 14.0, 17.0, DIM);
-    } else if loc.defended() {
-        if button(x, y, 240.0, 44.0, tr("Attack the garrison"), true) {
-            game.foe = Some(Foe::Garrison(l));
-            return Some(saves::battle(game));
-        }
-    } else if let Some(first) = first_tab(loc) {
-        if button(x, y, 240.0, 44.0, tr("Enter"), true) {
-            return Some(Screen::Building(BuildingView::new(first)));
-        }
-        if loc.kind == LocationKind::Village {
-            let status = if game.tribute_available().is_some() { tr("Tribute is waiting.") } else { tr("Tribute already collected.") };
-            text(status, x, y + 64.0, 16.0, DIM);
-        }
-    }
-    None
-}
 
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
@@ -775,6 +795,37 @@ pub fn backdrop(game: &Game, assets: &Assets) {
     backdrop_lit(game, assets, None);
 }
 
+/// The map under a window the bar stays live for (army, spell book, journal, a building),
+/// as in the original: its buttons are blue, the window's own one green; one pressed gives
+/// the screen it opens (the lit one, or the map button, closes the window).
+pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> Option<Screen> {
+    clear_background(rgb(10, 12, 10));
+    let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
+    let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
+    draw_world(game, assets, &cam);
+    cam.draw_fog(game);
+    draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.2));
+    let idle = game.foe.is_none();
+    let modal = input_blocked();
+    let pressed = game_bar::draw(game, |b| match b {
+        _ if modal => Look::Grey,
+        _ if Some(b) == lit => Look::Lit,
+        BarButton::Save | BarButton::Spells if !idle => Look::Grey,
+        _ => Look::Normal,
+    })?;
+    Some(match pressed {
+        b if Some(b) == lit => Screen::WorldMap,
+        BarButton::Menu => Screen::Menu(false),
+        BarButton::Settings => Screen::Settings,
+        BarButton::Save => Screen::Save(SaveView::new(game, Back::Map)),
+        BarButton::Load => Screen::Load(LoadView::new(Back::Map)),
+        BarButton::Journal => Screen::Journal(Default::default()),
+        BarButton::Squad => Screen::Squad { selected: 0, scroll: 0, back: None },
+        BarButton::Spells => Screen::Spellbook { selected: 0 },
+        BarButton::Map => Screen::WorldMap,
+    })
+}
+
 /// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
 /// minimap was toggled.
 fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
@@ -802,7 +853,8 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
         };
     }
     let next = match pressed {
-        Some(BarButton::Menu | BarButton::Settings) => Some(Screen::Menu),
+        Some(BarButton::Menu) => Some(Screen::Menu(false)),
+        Some(BarButton::Settings) => Some(Screen::Settings),
         Some(BarButton::Save) => Some(Screen::Save(SaveView::new(game, Back::Map))),
         Some(BarButton::Load) => Some(Screen::Load(LoadView::new(Back::Map))),
         Some(BarButton::Journal) => Some(Screen::Journal(Default::default())),
@@ -846,7 +898,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.look = None;
     }
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
-    let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(mouse_position()));
+    let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     let mut reopened = None;
     if clicked() && !on_minimap {
@@ -864,7 +916,6 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             if target != game.tile() && !game.set_destination(target) {
                 *message = Some(tr("No way through.").into());
             }
-            view.preview = None;
             view.look = None;
         }
     }
@@ -883,40 +934,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     draw_world(game, assets, &cam);
     cam.draw_fog(game);
 
-    // Route: the one being walked, or a preview of where a click would lead.
-    if game.moving() {
-        draw_route(game, &game.path, game.minutes_left(), &cam, Color::new(1.0, 0.95, 0.6, 0.9));
-    } else if let Some(t) = cam.tile_under_mouse().filter(|_| !on_minimap) {
-        let target = game
-            .world
-            .location_covering(t)
-            .map(|l| &game.world.locations[l])
-            .filter(|l| !l.kind.is_bridge())
-            .map_or(t, |l| l.tile);
-        let from = game.tile();
-        if view.preview.as_ref().is_none_or(|p| p.0 != target || p.1 != from) {
-            let path = game.plan(target);
-            let minutes = game.travel_minutes(&path);
-            view.preview = Some((target, from, path, minutes));
-        }
-        if let Some((_, _, path, minutes)) = &view.preview {
-            draw_route(game, path, *minutes, &cam, Color::new(1.0, 1.0, 1.0, 0.75));
-        }
-    }
-
-    // Side panel.
-    let x = screen_width() - PANEL_W;
-    let panel_h = screen_height() - bar_h();
-    super::chrome::surface(Rect::new(x, 0.0, PANEL_W, panel_h), super::chrome::Skin::Marble);
-    draw_rectangle(x, 0.0, PANEL_W, panel_h, Color::new(0.0, 0.0, 0.0, 0.25));
-    draw_line(x + 1.0, 0.0, x + 1.0, panel_h, 2.0, super::chrome::SILVER);
-    let y = 12.0 + squad_panel(game, assets, x + 15.0, 12.0) + 12.0;
-    if next.is_none() {
-        next = location_panel(game, x + 15.0, y);
-    }
-    // Lasting world spells on the army.
+    // The original has no side panel: the map fills the screen above the bar. Lasting
+    // world spells and ship hints stand small in the top left corner.
     let now = game.clock.total_minutes() as u64;
-    let spells: Vec<String> = game
+    let mut notes: Vec<(String, Color)> = game
         .active_spells()
         .iter()
         .filter_map(|e| {
@@ -926,27 +947,26 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
                 None => name.clone(),
             })
         })
+        .map(|l| (l, MANA))
         .collect();
-    for (i, line) in spells.iter().take(3).enumerate() {
-        text(line, x + 15.0, panel_h - 150.0 + i as f32 * 18.0, 16.0, MANA);
-    }
     if game.aboard() {
-        text_fit(tr("At sea: click the shore to land."), x + 15.0, panel_h - 100.0, PANEL_W - 25.0, 15.0, ACCENT);
+        notes.push((tr("At sea: click the shore to land.").into(), ACCENT));
     } else if game.ship.is_some() {
-        text_fit(tr("Your ship waits; walk onto it to sail."), x + 15.0, panel_h - 100.0, PANEL_W - 25.0, 15.0, ACCENT);
+        notes.push((tr("Your ship waits; walk onto it to sail.").into(), ACCENT));
     }
-    // Waits play in real time, a 30-minute tick every 150 ms (`Game::tick`).
+    for (i, (line, color)) in notes.iter().enumerate() {
+        super::chrome::shadow_text(line, 10.0, 22.0 + i as f32 * 18.0, 16.0, *color);
+    }
+    // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
+    // time, a 30-minute tick every 150 ms (`Game::tick`).
     let can_wait = game.foe.is_none() && !game.waiting();
-    let wy = panel_h - 150.0 - 44.0;
-    if button(x + 15.0, wy, 115.0, 34.0, tr("Wait 1 h"), can_wait) || (can_wait && key(KeyCode::Key1)) {
+    let clock = game_bar::time_panel();
+    let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
+    if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {
         game.begin_wait(1);
     }
-    if button(x + 140.0, wy, 115.0, 34.0, tr("Wait 4 h"), can_wait) || (can_wait && key(KeyCode::Key4)) {
+    if can_wait && (key(KeyCode::Key4) || (on_clock && right_clicked())) {
         game.begin_wait(4);
-    }
-    let help = tr("Click the map to travel; time passes only while you move or wait. Right click / Space: stop. Wheel or +/-: zoom. 1 / 4: wait.");
-    for (i, line) in wrap(help, PANEL_W - 25.0, 14.0).iter().take(5).enumerate() {
-        text(line, x + 15.0, panel_h - 82.0 + i as f32 * 16.0, 14.0, DIM);
     }
 
     let (bar, toggle_map) = bottom_bar(game, message, view.minimap);
@@ -955,16 +975,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.minimap = !view.minimap;
     }
     if view.minimap {
-        if let Some(at) = minimap::window(game, cam.view, cam.world_rect(), surface_color) {
+        if let Some(at) = minimap::window(game, assets.dt.as_ref(), cam.view, cam.world_rect(), surface_color) {
             view.look = Some(at);
         }
     }
     if let Some(t) = hover_tooltip(game, &cam).filter(|_| !on_minimap) {
         draw_tooltip(game, assets, &t);
     }
+    if on_clock && can_wait {
+        let hint = |key: &str, ours: &'static str| super::chrome::ui_text("GameMenu", key).filter(|_| razdor::i18n::lang() == razdor::i18n::Lang::Ru).unwrap_or_else(|| tr(ours).to_string());
+        let left = hint("cp_Wait1Hour", n_("Wait 1 hour (the hero stands still)"));
+        let right = hint("cp_Wait4Hour", n_("Wait 4 hours (the hero stands still)"));
+        tooltip(&[(trf!("Left click: {left}", left), INK), (trf!("Right click: {right}", right), INK)]);
+    }
     if let Some(m) = message {
         let w = measure(m, 22.0).width + 40.0;
-        let (cx, y) = ((screen_width() - PANEL_W) / 2.0, screen_height() - bar_h() - 50.0);
+        let (cx, y) = (screen_width() / 2.0, screen_height() - bar_h() - 50.0);
         draw_rectangle(cx - w / 2.0, y, w, 36.0, PANEL);
         text_centered(m, cx, y + 25.0, 22.0, ACCENT);
     }

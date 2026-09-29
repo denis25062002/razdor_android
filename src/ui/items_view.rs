@@ -1,7 +1,7 @@
 //! The hero and army screen: gear, backpack, promotion.
 use macroquad::prelude::*;
 
-use razdor::i18n::tr;
+use razdor::i18n::{n_, tr};
 use razdor::rules::battle::Team;
 use razdor::rules::content::{ArtefactType, Content, ItemId, Stat, UnitId};
 use razdor::rules::experience::is_percent_stat;
@@ -97,11 +97,6 @@ fn equip_error(e: EquipError) -> String {
 /// Backpack grid: 5 columns as in the original, scrolling.
 const PACK_COLS: usize = 5;
 
-thread_local! {
-    /// The army screen shows the upgrade tree instead of the backpack.
-    static SHOW_TREE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// The promotion tree of squad member `sel` in `r`, as the original's: the current class at
 /// the bottom, arrows up to its options (portraits; the ones open now glow and promote on a
 /// click, free of charge).
@@ -144,6 +139,7 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
     }
     draw_rectangle(cur.x - 2.0, cur.y - 2.0, cur.w + 4.0, cur.h + 4.0, Color::new(0.0, 0.0, 0.0, 0.6));
     assets.draw_portrait(u.def, Team::Player, cur);
+    chrome::wounds(cur, u.hp, u.max_hp(&c));
     draw_rectangle_lines(cur.x, cur.y, cur.w, cur.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
     let note = if sel == 0 {
         tr("The hero rises by levels only.")
@@ -226,14 +222,15 @@ pub fn squad(
     back: &Option<BuildingView>,
     message: &mut Option<String>,
 ) -> Option<Screen> {
-    super::world_view::backdrop_lit(game, assets, Some(super::game_bar::BarButton::Squad));
+    let bar = super::world_view::window_backdrop(game, assets, Some(super::game_bar::BarButton::Squad));
     *selected = (*selected).min(game.squad.len() - 1);
     let c = game.content.clone();
     let k = chrome::k();
     let (sw, sh) = (screen_width(), screen_height());
     let (ww, wh) = ((836.0 * k).round(), (600.0 * k).round());
     let win = Rect::new(((sw - ww) / 2.0).round(), ((sh - chrome::bar_height() - wh) / 2.0).max(2.0).round(), ww, wh);
-    let (_, close) = chrome::window(win, tr("The hero's characteristics and army"), chrome::Skin::Marble, true);
+    let title = chrome::ui_text("Army", "Title").filter(|_| razdor::i18n::lang() == razdor::i18n::Lang::Ru).unwrap_or_else(|| tr("The hero's characteristics and army").to_string());
+    let (_, close) = chrome::window(win, &title, chrome::Skin::Marble, true);
     let at = |x: f32, y: f32, w: f32, h: f32| Rect::new(win.x + x * k, win.y + y * k, w * k, h * k);
     let mut hover = None;
     let sel = *selected;
@@ -268,6 +265,7 @@ pub fn squad(
         in_building: false,
         hero,
         status,
+        battle: false,
     };
     if let Some(slot) = unit_sheet::draw(assets, &c, at(2.0, 27.0, 244.0, 570.0), &sheet, true, &mut hover) {
         if u.items[slot].is_some() {
@@ -276,21 +274,16 @@ pub fn squad(
     }
     draw_line(win.x + 247.0 * k, win.y + 27.0 * k, win.x + 247.0 * k, win.y + wh - 2.0, 1.5 * k, chrome::SILVER);
 
-    // Top middle: the backpack or the upgrade tree.
-    let show_tree = SHOW_TREE.with(|t| t.get());
+    // Top middle, as the original switches it: the hero's backpack, or the selected unit's
+    // upgrade tree under its title.
+    let show_tree = sel > 0;
     let head = (13.0 * k).round();
-    for (i, (label, tree)) in [(razdor::trf!("Backpack {n}/{max}", n = game.pack.len(), max = PACK_SIZE), false), (tr("Upgrade tree").to_string(), true)].iter().enumerate() {
-        let r = at(258.0 + i as f32 * 150.0, 30.0, 146.0, 20.0);
-        let on = show_tree == *tree;
-        let over = mouse_in(r.x, r.y, r.w, r.h);
-        if on {
-            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.35));
-            draw_line(r.x, r.y + r.h, r.x + r.w, r.y + r.h, 1.5, chrome::GOLD);
-        }
-        chrome::shadow_centered(&ellipsize(label, r.w - 4.0, head), r.x + r.w / 2.0, r.y + r.h * 0.5 + head * 0.36, head, if on || over { chrome::GOLD } else { chrome::CREAM });
-        if over && clicked() {
-            SHOW_TREE.with(|t| t.set(*tree));
-        }
+    let own = |key: &str, ours: &'static str| chrome::ui_text("Army", key).filter(|_| razdor::i18n::lang() == razdor::i18n::Lang::Ru).unwrap_or_else(|| tr(ours).to_string());
+    if show_tree {
+        let title = own("UpgradeTree", n_("Upgrade tree"));
+        super::dt_font::with_face(super::dt_font::Face::Title, || {
+            chrome::shadow_centered(&title, win.x + 408.0 * k, win.y + 40.0 * k + head * 0.36, 15.0 * k, chrome::CREAM);
+        });
     }
     let content = at(258.0, 54.0, 300.0, 242.0);
     if show_tree {
@@ -313,26 +306,26 @@ pub fn squad(
         };
     }
 
-    // Top right: the item under the mouse, and sending the unit away.
-    chrome::shadow_centered(tr("Item description"), win.x + 697.0 * k, win.y + 30.0 * k + 10.0 * k + head * 0.36, head, chrome::GOLD);
-    let desc = at(570.0, 54.0, 256.0, 172.0);
+    // Top right: the item under the mouse; under it, for a unit other than the hero, its
+    // face and the button that sends it away.
+    let item_title = own("ItemDescript", n_("Item description"));
+    super::dt_font::with_face(super::dt_font::Face::Title, || {
+        chrome::shadow_centered(&item_title, win.x + 697.0 * k, win.y + 40.0 * k + head * 0.36, 15.0 * k, chrome::CREAM);
+    });
+    let desc = if sel > 0 { at(570.0, 54.0, 256.0, 172.0) } else { at(570.0, 54.0, 256.0, 242.0) };
     match hover {
         Some(item) => super::building_view::item_description(game, assets, item, desc.x, desc.y, desc.w, desc.h),
-        None => {
-            chrome::text_box(desc);
-            let hint = tr("Hover an item to read about it. Click a pack item to wear or drink it, a worn one to take it off.");
-            for (i, line) in wrap(hint, desc.w - 30.0, 14.0).iter().enumerate() {
-                chrome::shadow_centered(line, desc.x + desc.w / 2.0, desc.y + desc.h / 2.0 - 16.0 + i as f32 * 17.0, 14.0, Color::new(1.0, 0.9, 0.66, 1.0));
-            }
-        }
+        None => chrome::text_box(desc),
     }
     let row = at(570.0, 234.0, 256.0, 62.0);
-    draw_rectangle(row.x, row.y, row.w, row.h, Color::new(0.25, 0.04, 0.02, 0.55));
-    chrome::silver_frame(row, 1.0);
-    let face = Rect::new(row.x + 4.0 * k, row.y + 4.0 * k, row.h - 8.0 * k, row.h - 8.0 * k);
-    assets.draw_portrait(u.def, Team::Player, face);
     if sel > 0 {
-        let label = if u.alive() { tr("Dismiss") } else { tr("Bury") };
+        draw_rectangle(row.x, row.y, row.w, row.h, Color::new(0.25, 0.04, 0.02, 0.55));
+        chrome::silver_frame(row, 1.0);
+        let face = Rect::new(row.x + 4.0 * k, row.y + 4.0 * k, row.h - 8.0 * k, row.h - 8.0 * k);
+        assets.draw_portrait(u.def, Team::Player, face);
+        chrome::wounds(face, u.hp, u.max_hp(&c));
+        let label = if u.alive() { own("Dismiss", n_("Dismiss")) } else { own("Bury", n_("Bury")) };
+        let label = label.as_str();
         let b = Rect::new(face.x + face.w + 12.0 * k, row.y + 14.0 * k, row.w - face.w - 24.0 * k, row.h - 28.0 * k);
         if button(b.x, b.y, b.w, b.h, label, true) {
             let name = u.name(&c).to_string();
@@ -343,8 +336,6 @@ pub fn squad(
             });
             *selected = sel - 1;
         }
-    } else {
-        chrome::shadow_text(tr("The hero leads the army."), face.x + face.w + 12.0 * k, row.y + row.h / 2.0 + 5.0, 14.0, chrome::CREAM);
     }
 
     // The strip: the last message, or what to do.
@@ -378,6 +369,7 @@ pub fn squad(
         let sq = Rect::new(p.x, p.y, card.x, card.x);
         draw_rectangle(p.x + 4.0 * k, p.y + 4.0 * k, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.45));
         assets.draw_portrait(v.def, Team::Player, sq);
+        chrome::wounds(sq, v.hp, v.max_hp(&c));
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let vs = v.stats(&c);
         unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[Stat::MagicPower], v.hp, i == sel);
@@ -413,5 +405,12 @@ pub fn squad(
             None => Screen::WorldMap,
         });
     }
-    None
+    // The bar's army button closes the screen too (back to the building it came from).
+    match bar {
+        Some(Screen::WorldMap) => {
+            *message = None;
+            Some(back.clone().map_or(Screen::WorldMap, Screen::Building))
+        }
+        other => other,
+    }
 }

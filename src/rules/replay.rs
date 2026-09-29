@@ -309,11 +309,17 @@ impl Driver {
             }
             self.g.stop();
             if !self.g.set_destination(t) {
-                // Stand next to it instead.
+                // Stand next to it instead; with no way there now (it stands where no path
+                // leads, e.g. behind a guard), wait an hour for it to move on, as a player would.
                 let map = &self.g.world.map;
-                let Some(n) = map.grid.neighbours(t).find(|&n| map.passable(n)) else { return false };
-                if !self.g.set_destination(n) {
-                    return false;
+                let next = map.grid.neighbours(t).find(|&n| map.passable(n));
+                if !next.is_some_and(|n| self.g.set_destination(n)) {
+                    let ev = self.g.wait(1);
+                    self.settle(ev);
+                    if self.ended.is_some() {
+                        return false;
+                    }
+                    continue;
                 }
             }
             for _ in 0..5 {

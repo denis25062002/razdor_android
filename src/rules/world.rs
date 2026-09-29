@@ -400,6 +400,43 @@ impl Location {
     }
 }
 
+/// The steps an army took while the hero made one step or wait tick (drawing only). The
+/// original plays them within that step's real time (world.md §2, 0x4a39d0): a step it could
+/// follow with another lasts its share `minutes / banked` of the window, the last one fills
+/// the rest, so every army walks at the same time as the hero.
+#[derive(Clone, Debug, Default)]
+pub struct Walk {
+    /// Where it stood when the stretch began, then each cell it reached.
+    pub points: Vec<(f32, f32)>,
+    /// Minutes each step cost.
+    pub minutes: Vec<f32>,
+    /// Minutes banked for the stretch (its budget plus the stretch's time, capped).
+    pub banked: f32,
+}
+
+impl Walk {
+    /// Where the army is `k` (0..1) of the way through the window, if it walked.
+    pub fn at(&self, k: f32) -> Option<(f32, f32)> {
+        let n = self.minutes.len();
+        if n == 0 || self.points.len() != n + 1 {
+            return None;
+        }
+        let k = k.clamp(0.0, 1.0);
+        let mut start = 0.0;
+        for i in 0..n {
+            let share = if i + 1 == n { 1.0 - start } else { self.minutes[i] / self.banked.max(1e-3) };
+            let end = (start + share).min(1.0);
+            if k < end || i + 1 == n {
+                let t = if end > start { ((k - start) / (end - start)).clamp(0.0, 1.0) } else { 1.0 };
+                let (a, b) = (self.points[i], self.points[i + 1]);
+                return Some((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t));
+            }
+            start = end;
+        }
+        None
+    }
+}
+
 /// An army on the map (an AI lord, a gang, peasants) or, in the demo, a bandit gang.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Army {
@@ -440,9 +477,9 @@ pub struct Army {
     /// feed it, up to [`AI_BUDGET_CAP`]).
     #[serde(default)]
     pub budget: f32,
-    /// Where it stood before its last steps (drawing only).
+    /// The steps it took in the last stretch of time, for drawing ([`Walk`]).
     #[serde(skip)]
-    pub shown_from: Option<(f32, f32)>,
+    pub walk: Walk,
     pub path: Vec<Tile>,
     pub chasing: bool,
     /// Game minute until which it leaves the player alone (after a stalemate).
@@ -803,7 +840,7 @@ impl World {
                 items: artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)),
                 speed: Army::speed_for(a.speed_correction, a.leader_unit as u32),
                 budget: 0.0,
-                shown_from: None,
+                walk: Walk::default(),
                 path: Vec::new(),
                 chasing: false,
                 ignore_until: 0.0,
@@ -1076,7 +1113,7 @@ impl World {
             items: Vec::new(),
             speed: GANG_SPEED,
             budget: 0.0,
-            shown_from: None,
+            walk: Walk::default(),
             path: Vec::new(),
             chasing: false,
             ignore_until: 0.0,

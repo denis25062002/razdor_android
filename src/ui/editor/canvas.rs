@@ -137,11 +137,24 @@ pub struct Overlays {
 
 fn draw_terrain(s: &Scenario, art: Option<&DtArt>, cam: &Cam, vis: CellRect, overview: Option<&Texture2D>) {
     let cells = (vis.width() * vis.height()) as usize;
-    let textured = art.is_some() && cam.zoom >= 0.3 && cells < 9000;
+    let layer = art.and_then(|a| a.terrain_layer());
+    // The blended layer costs the same at any size; square cells cost a draw call each.
+    let textured = art.is_some() && cam.zoom >= 0.3 && (layer.is_some() || cells < 9000);
     if !textured {
         if let Some(tex) = overview {
             let r = cam.rect(CellRect { x0: 0, y0: 0, x1: s.width() as i32 - 1, y1: s.height() as i32 - 1 });
             draw_texture_ex(tex, r.x, r.y, WHITE, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
+        }
+        return;
+    }
+    if let Some(layer) = layer {
+        // The map area in view, in cell units; the shader counts from cell centres.
+        let (tl, br) = (cam.to_cells(cam.view.point()), cam.to_cells(cam.view.point() + cam.view.size()));
+        let (tl, br) = (tl.max(Vec2::ZERO), br.min(vec2(s.width() as f32, s.height() as f32)));
+        if tl.x < br.x && tl.y < br.y {
+            let (a, b) = (cam.to_screen(tl), cam.to_screen(br));
+            let view = vec4(tl.x - 0.5, tl.y - 0.5, br.x - 0.5, br.y - 0.5);
+            layer.draw(&s.terrain, (s.width(), s.height()), Rect::new(a.x, a.y, b.x - a.x, b.y - a.y), view, vec2(CW, CH));
         }
         return;
     }
@@ -464,7 +477,7 @@ pub fn minimap(doc: &EditorDoc, overview: Option<&Texture2D>, cam: &Cam, area: R
     let (vx1, vy1) = (r.x + b.x.min(w) * k.x, r.y + b.y.min(h) * k.y);
     draw_rectangle_lines(vx0, vy0, (vx1 - vx0).max(2.0), (vy1 - vy0).max(2.0), 1.5, WHITE);
     draw_rectangle_lines(area.x, area.y, area.w, area.h, 1.0, DIM);
-    let m = Vec2::from(mouse_position());
+    let m = Vec2::from(crate::ui::widgets::pointer());
     if r.contains(m) && !input_blocked() && is_mouse_button_down(MouseButton::Left) {
         return Some(vec2((m.x - r.x) / k.x, (m.y - r.y) / k.y));
     }

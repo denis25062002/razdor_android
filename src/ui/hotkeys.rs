@@ -103,13 +103,15 @@ pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
 /// The keys of `place` for the F1 overlay: (key, what it does).
 pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
     match place {
-        Place::Title => vec![(n_("Click"), n_("pick a scenario")), ("F9", n_("load the quick save"))],
+        Place::Title => vec![(n_("Click"), n_("the menu's buttons; a scenario twice: go on")), ("F9", n_("load the quick save"))],
         Place::ClassSelect => vec![(n_("Type"), n_("the hero's name")), ("Backspace", n_("delete a letter"))],
         Place::WorldMap => vec![
             (n_("Click"), n_("walk there (a building: enter; an army: meet it)")),
             (n_("Right click / Space"), n_("stop")),
             (n_("Wheel, + / -"), n_("zoom")),
             ("1 / 4", n_("wait 1 or 4 hours")),
+            (n_("Time panel"), n_("left click: wait 1 hour, right click: 4 hours")),
+            (n_("Click where you stand"), n_("the building again, or its garrison's battle")),
             ("M", n_("minimap")),
             ("Tab", n_("centre the camera on the hero")),
             ("J", n_("journal")),
@@ -131,6 +133,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             (n_("Click your own card"), n_("pass one action")),
             (n_("Space"), n_("end the unit's turn")),
             ("Q", n_("finish the battle automatically")),
+            ("Esc", n_("ways out of the battle")),
             ("Enter", n_("OK on the result")),
         ],
         Place::Journal => vec![
@@ -141,7 +144,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             ("J / Esc", n_("close")),
         ],
         Place::Spellbook => vec![(n_("Click"), n_("pick a spell")), ("Enter", n_("cast on your army")), ("F5", n_("quick save")), ("B / Esc", n_("close"))],
-        Place::Menu => vec![("+ / -", n_("music volume")), ("F5", n_("quick save")), ("Esc", n_("back to the game"))],
+        Place::Menu => vec![("F5", n_("quick save")), ("Esc", n_("back to the game"))],
         Place::Save => vec![(n_("Type"), n_("the save's name")), ("Enter", n_("save")), ("Esc", n_("cancel"))],
         Place::Load => vec![(n_("Click"), n_("pick a save")), ("Enter", n_("load it")), ("Esc", n_("cancel"))],
         Place::End => vec![(n_("Click"), n_("the buttons")), ("F9", n_("load the quick save"))],

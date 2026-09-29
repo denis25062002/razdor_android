@@ -6,17 +6,22 @@ pub mod building_view;
 pub mod chrome;
 pub mod dialog;
 pub mod dt_art;
+pub mod dt_font;
 pub mod editor;
 pub mod game_bar;
 pub mod hotkeys;
 pub mod items_view;
 pub mod jukebox;
 pub mod language;
+pub mod main_menu;
 pub mod minimap;
+pub mod new_game;
 pub mod saves;
 pub mod screens;
+pub mod snapshot;
 pub mod spellbook;
 pub mod story;
+pub mod terrain;
 pub mod unit_sheet;
 pub mod widgets;
 pub mod world_view;
@@ -43,6 +48,12 @@ use dialog::{Close, Dialog};
 use world_view::MapView;
 
 pub enum Screen {
+    /// The original's main menu (the first screen).
+    MainMenu,
+    /// The authors' window over the main menu, opened at this time (`get_time`).
+    Authors(f64),
+    /// The settings window over the main menu.
+    Options,
     /// The built-in demo or a map of the install.
     ScenarioSelect,
     /// Hero class for the demo (`None`) or for `scenarios[i]`.
@@ -58,8 +69,11 @@ pub enum Screen {
     Journal(story::JournalView),
     /// The spell book, with the selected cell.
     Spellbook { selected: usize },
-    /// The Esc menu, and the save and load windows.
-    Menu,
+    /// "Выход из игры" over the map (the bar's X, Esc); `true` while the restart question
+    /// is open.
+    Menu(bool),
+    /// The settings window over the map (the bar's gears).
+    Settings,
     Save(saves::SaveView),
     Load(saves::LoadView),
     GameOver,
@@ -108,6 +122,8 @@ pub struct App {
     help: bool,
     /// The interface language the demo content was built in.
     lang: razdor::i18n::Lang,
+    /// "Выход" was picked in the main menu: the process ends after this frame.
+    pub quit: bool,
 }
 
 impl App {
@@ -132,7 +148,7 @@ impl App {
             dt_content,
             scenarios,
             game: None,
-            screen: Screen::ScenarioSelect,
+            screen: Screen::MainMenu,
             message: None,
             dialogs: VecDeque::new(),
             map_view: MapView::default(),
@@ -145,6 +161,7 @@ impl App {
             test_play: false,
             help: false,
             lang: razdor::i18n::lang(),
+            quit: false,
         }
     }
 
@@ -182,7 +199,7 @@ impl App {
             editor::EditorAction::None => {}
             editor::EditorAction::Exit => {
                 self.editor = None;
-                self.screen = Screen::ScenarioSelect;
+                self.screen = Screen::MainMenu;
             }
             editor::EditorAction::TestPlay { scenario, content, class } => {
                 let mut game = Game::from_scenario(content, &scenario, class, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64));
@@ -223,6 +240,31 @@ impl App {
         }
     }
 
+    /// "Рестарт": the scenario under way from its beginning, with the same hero class and
+    /// name (the map is found again by its file name).
+    fn restart(&mut self) {
+        let Some(old) = self.game.as_ref() else { return };
+        let hero = old.hero_class().unwrap_or(razdor::rules::content::HeroClass::Knight);
+        let name = old.hero_name.clone().unwrap_or_default();
+        let game = match &old.origin {
+            Some(save::ScenarioRef::Map { file, .. }) => {
+                let (Some(e), Some(c)) = (self.scenarios.iter().find(|e| &e.file == file), self.dt_content.clone()) else {
+                    self.message = Some(tr("The map of this game is not in the install.").into());
+                    self.screen = Screen::WorldMap;
+                    return;
+                };
+                screens::start_game(&self.demo, Some((e, &c)), hero, &name)
+            }
+            _ => screens::start_game(&self.demo, None, hero, &name),
+        };
+        self.game = Some(game);
+        self.dialogs.clear();
+        self.message = None;
+        self.map_view.reset();
+        self.last_gold = None;
+        self.screen = Screen::WorldMap;
+    }
+
     /// Before the process ends: the music stops and the settings are written.
     pub fn shutdown(&mut self) {
         self.audio.shutdown();
@@ -231,7 +273,7 @@ impl App {
     /// The music the current screen wants.
     fn mood(&self) -> Mood {
         match &self.screen {
-            Screen::ScenarioSelect | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
+            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
             Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
             Screen::Battle(_) => Mood::Battle,
             Screen::GameOver => Mood::Lost,
@@ -252,7 +294,8 @@ impl App {
                 | Screen::Squad { .. }
                 | Screen::Journal(_)
                 | Screen::Spellbook { .. }
-                | Screen::Menu
+                | Screen::Menu(_)
+                | Screen::Settings
                 | Screen::Save(_)
                 | Screen::Load(_) => audio::cue(Cue::Panel),
                 _ => {}
@@ -283,7 +326,7 @@ impl App {
     fn place(&self) -> hotkeys::Place {
         use hotkeys::Place;
         match &self.screen {
-            Screen::ScenarioSelect => Place::Title,
+            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect => Place::Title,
             Screen::ClassSelect { .. } => Place::ClassSelect,
             Screen::WorldMap => Place::WorldMap,
             Screen::Building(_) => Place::Building,
@@ -291,7 +334,7 @@ impl App {
             Screen::Battle(v) => Place::Battle { deploying: v.deploying() },
             Screen::Journal(_) => Place::Journal,
             Screen::Spellbook { .. } => Place::Spellbook,
-            Screen::Menu => Place::Menu,
+            Screen::Menu(_) | Screen::Settings => Place::Menu,
             Screen::Save(_) => Place::Save,
             Screen::Load(_) => Place::Load,
             Screen::GameOver | Screen::Victory => Place::End,
@@ -335,6 +378,9 @@ impl App {
     /// The current screen's name, for the frame timer (`RAZDOR_PROFILE`).
     pub fn screen_name(&self) -> &'static str {
         match self.screen {
+            Screen::MainMenu => "main menu",
+            Screen::Authors(_) => "authors",
+            Screen::Options => "options",
             Screen::ScenarioSelect => "scenario select",
             Screen::ClassSelect { .. } => "class select",
             Screen::WorldMap => "world map",
@@ -343,7 +389,8 @@ impl App {
             Screen::Battle(_) => "battle",
             Screen::Journal(_) => "journal",
             Screen::Spellbook { .. } => "spell book",
-            Screen::Menu => "menu",
+            Screen::Menu(_) => "menu",
+            Screen::Settings => "settings",
             Screen::Save(_) => "save",
             Screen::Load(_) => "load",
             Screen::GameOver => "game over",
@@ -353,6 +400,7 @@ impl App {
     }
 
     pub fn frame(&mut self) {
+        chrome::begin_frame();
         self.follow_language();
         self.sounds();
         if matches!(self.screen, Screen::Editor) {
@@ -363,11 +411,26 @@ impl App {
         let place = self.place();
         let guard = self.guard();
         widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
+        let mut restart = false;
         let mut next = match (&mut self.screen, &mut self.game) {
-            (Screen::ScenarioSelect, _) => screens::scenario_select(&self.scenarios, self.dt_content.is_some()),
+            (Screen::MainMenu, _) => match main_menu::frame() {
+                Some(main_menu::Pick::NewGame) => Some(Screen::ScenarioSelect),
+                Some(main_menu::Pick::Load) => Some(Screen::Load(saves::LoadView::new(saves::Back::Title))),
+                Some(main_menu::Pick::Editor) => Some(Screen::Editor),
+                Some(main_menu::Pick::Exit) => {
+                    self.quit = true;
+                    None
+                }
+                Some(main_menu::Pick::Options) => Some(Screen::Options),
+                Some(main_menu::Pick::Authors) => Some(Screen::Authors(macroquad::prelude::get_time())),
+                None => None,
+            },
+            (Screen::Authors(started), _) => main_menu::authors(*started).then_some(Screen::MainMenu),
+            (Screen::Options, _) => main_menu::options(&mut self.audio.settings).then_some(Screen::MainMenu),
+            (Screen::ScenarioSelect, _) => new_game::scenario_select(&self.scenarios, self.dt_content.is_some()),
             (Screen::ClassSelect { scenario }, game) => {
                 let pick = scenario.and_then(|i| Some((self.scenarios.get(i)?, self.dt_content.clone()?)));
-                screens::class_select(game, &self.demo, pick, &self.assets)
+                new_game::class_select(game, &self.demo, pick, &self.assets)
             }
             (Screen::WorldMap, Some(game)) => {
                 world_view::frame(game, &self.assets, &mut self.map_view, &mut self.message, &mut self.dialogs)
@@ -383,15 +446,43 @@ impl App {
             (Screen::Spellbook { selected }, Some(game)) => {
                 spellbook::frame(game, &self.assets, selected, &mut self.message, &mut self.dialogs)
             }
-            (Screen::Menu, Some(game)) => saves::menu(game, &self.assets, &mut self.audio.settings),
+            (Screen::Menu(asking), Some(game)) => match saves::exit_window(game, &self.assets, asking) {
+                (Some(saves::ExitChoice::Quit), _) => {
+                    self.quit = true;
+                    None
+                }
+                (Some(saves::ExitChoice::MainMenu), _) => Some(Screen::MainMenu),
+                (Some(saves::ExitChoice::Restart), _) => {
+                    restart = true;
+                    None
+                }
+                (None, next) => next,
+            },
+            (Screen::Settings, Some(game)) => {
+                world_view::backdrop_lit(game, &self.assets, Some(game_bar::BarButton::Settings));
+                main_menu::options_window(&mut self.audio.settings).then_some(Screen::WorldMap)
+            }
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
             (Screen::GameOver, game) => screens::game_over(game),
             (Screen::Victory, game) => screens::victory(game, &self.scenarios, self.dt_content.clone()),
             (Screen::Editor, _) => None,
-            (_, None) => Some(Screen::ScenarioSelect),
+            (_, None) => Some(Screen::MainMenu),
         };
         widgets::set_input_blocked(false);
+        // "Варианты выхода из битвы" chose.
+        if let Screen::Battle(v) = &mut self.screen {
+            match v.exit.take() {
+                Some(saves::ExitChoice::Quit) => self.quit = true,
+                Some(saves::ExitChoice::MainMenu) => next = Some(Screen::MainMenu),
+                Some(saves::ExitChoice::Restart) => restart = true,
+                None => {}
+            }
+        }
+        if restart {
+            self.restart();
+            return;
+        }
         // F1: the key list; F5 / F9: quick save and load (when the screen did not move on).
         let pressed = |k: hotkeys::Global| next.is_none() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
         if self.help {
@@ -439,7 +530,7 @@ impl App {
             return;
         }
         // Leaving a test play (main menu, or "new game" on an end screen) returns to the editor.
-        if self.test_play && matches!(next, Some(Screen::ScenarioSelect)) {
+        if self.test_play && matches!(next, Some(Screen::MainMenu | Screen::ScenarioSelect)) {
             self.test_play = false;
             self.game = None;
             self.dialogs.clear();
@@ -451,7 +542,7 @@ impl App {
             if matches!(next, Screen::Load(_)) {
                 self.load_error = None;
             }
-            if matches!(next, Screen::ScenarioSelect) {
+            if matches!(next, Screen::MainMenu | Screen::ScenarioSelect) {
                 self.dialogs.clear();
             }
             if matches!(next, Screen::WorldMap) && !matches!(self.screen, Screen::WorldMap) {

@@ -13,6 +13,9 @@ use razdor::dt::gfx::{self, Image, ObjectSprite, ObjectSprites};
 use razdor::dt::install::DtInstall;
 use razdor::dt::DtError;
 
+use super::terrain::TerrainLayer;
+use super::world_view::surface_color;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
     Portrait(u32),
@@ -54,6 +57,9 @@ pub struct DtArt {
     items: OnceCell<Vec<Image>>,
     objects: OnceCell<ObjectSprites>,
     atlas: OnceCell<Option<Atlas>>,
+    terrain_layer: OnceCell<Option<TerrainLayer>>,
+    /// The terrain textures, for the minimap's colours.
+    terrain_images: OnceCell<Vec<Option<Image>>>,
     textures: RefCell<HashMap<Key, Option<Texture2D>>>,
     /// Map figures (`Graphics/Units/*.ugs`) as 8×8 sheets of 64×64 frames, by file stem.
     figures_sheets: RefCell<HashMap<String, Option<Texture2D>>>,
@@ -82,6 +88,8 @@ impl DtArt {
             items: OnceCell::new(),
             objects: OnceCell::new(),
             atlas: OnceCell::new(),
+            terrain_layer: OnceCell::new(),
+            terrain_images: OnceCell::new(),
             textures: RefCell::new(HashMap::new()),
             figures_sheets: RefCell::new(HashMap::new()),
         }
@@ -108,11 +116,14 @@ impl DtArt {
         t
     }
 
-    /// Colour bust (92×92) of a unit, by `GlobalIndex`.
+    /// Colour bust (92×92) of a unit, by `GlobalIndex`, with its painted sky: the picture's
+    /// alpha only masks the figure, the original draws the whole square.
     pub fn unit_portrait(&self, unit_id: u32) -> Option<Texture2D> {
         self.cached(Key::Portrait(unit_id), || {
             let sheet = self.portraits.get_or_init(|| or_log("unit portraits", self.install.unit_portraits()));
-            texture(sheet.get(gfx::portrait_frame(unit_id)?)?)
+            let mut img = sheet.get(gfx::portrait_frame(unit_id)?)?.clone();
+            img.rgba.chunks_exact_mut(4).for_each(|p| p[3] = 255);
+            texture(&img)
         })
     }
 
@@ -137,6 +148,43 @@ impl DtArt {
         self.cached(Key::Terrain(code), || {
             texture(&or_log("terrain texture", self.install.terrain_texture(code).map(Some))?)
         })
+    }
+
+    /// The blended terrain renderer over all terrain textures (`None` if none loads or the
+    /// shader fails).
+    pub fn terrain_layer(&self) -> Option<&TerrainLayer> {
+        self.terrain_layer
+            .get_or_init(|| {
+                let textures = std::array::from_fn(|code| self.install.terrain_texture(code as u8).ok());
+                let fill = std::array::from_fn(|code| surface_color(code as u8).into());
+                TerrainLayer::new(&textures, &fill)
+            })
+            .as_ref()
+    }
+
+    /// Minimap colour of cell `(x, y)` with terrain `code`: the terrain texture's own pixel
+    /// there (so the minimap has the grain of the ground, as the original's), `None` without
+    /// the texture.
+    pub fn minimap_ground(&self, code: u8, x: i32, y: i32) -> Option<[u8; 3]> {
+        let images = self.terrain_images.get_or_init(|| (0..16u8).map(|c| self.install.terrain_texture(c).ok()).collect());
+        let img = images.get(code as usize)?.as_ref()?;
+        // Average a 4×4 patch where the cell's middle falls in the texture.
+        let (cx, cy) = ((x * 32 + 16).rem_euclid(img.width as i32) as u32, (y * 22 + 11).rem_euclid(img.height as i32) as u32);
+        let mut sum = [0u32; 3];
+        for j in 0..4 {
+            for i in 0..4 {
+                let p = img.pixel((cx + i * 3) % img.width, (cy + j * 3) % img.height);
+                (0..3).for_each(|c| sum[c] += p[c] as u32);
+            }
+        }
+        Some(sum.map(|v| (v / 16) as u8))
+    }
+
+    /// Minimap colour of a map object (hills, trees, rocks): the average colour stored with
+    /// its sprite (`Objects.ugs` section A, B-G-R).
+    pub fn minimap_object(&self, class: u8, sprite: u8) -> Option<[u8; 3]> {
+        let e = &self.objects().decoration(class, sprite)?.extra;
+        (e.len() >= 3).then(|| [e[2], e[1], e[0]])
     }
 
     /// The decoded `Objects.ugs` (the editor's palette).

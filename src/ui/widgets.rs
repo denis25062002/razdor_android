@@ -11,35 +11,40 @@ thread_local! {
     /// A TrueType font with Cyrillic, for text the built-in pixel font cannot draw (the
     /// original's names and descriptions).
     static FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
+    /// Sharp stand-ins for the original's bitmap faces: text, bold, titles.
+    static FACE_FONTS: RefCell<[Option<Font>; 3]> = const { RefCell::new([None, None, None]) };
 }
 
-/// Font files tried for non-ASCII text: `RAZDOR_FONT`, then common system fonts. Nothing is
-/// bundled; without one, non-ASCII text is transliterated.
-const SYSTEM_FONTS: &[&str] = &[
-    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans.ttf",
-    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-    "/Library/Fonts/Arial Unicode.ttf",
-    "/System/Library/Fonts/Supplemental/Arial.ttf",
-    "C:\\Windows\\Fonts\\arial.ttf",
+/// The fonts that ship with Razdor (`data/fonts`, SIL Open Font License; see
+/// `docs/superpowers/specs/2026-09-28-interface-fonts.md`): PT Sans for text and bold, Kurale
+/// for titles and names, in place of the original's small bitmap faces. `RAZDOR_FONT`,
+/// `RAZDOR_FONT_BOLD` and `RAZDOR_FONT_TITLE` name other files (e.g. a bought Benguiat).
+const FACE_FILES: [(&str, &[u8]); 3] = [
+    ("RAZDOR_FONT", include_bytes!("../../data/fonts/PT_Sans-Regular.ttf")),
+    ("RAZDOR_FONT_BOLD", include_bytes!("../../data/fonts/PT_Sans-Bold.ttf")),
+    ("RAZDOR_FONT_TITLE", include_bytes!("../../data/fonts/Kurale-Regular.ttf")),
 ];
 
 pub async fn load_font() {
-    let candidates = std::env::var("RAZDOR_FONT").into_iter().chain(SYSTEM_FONTS.iter().map(|s| s.to_string()));
-    for path in candidates {
-        if !std::path::Path::new(&path).exists() {
-            continue;
-        }
-        if let Ok(font) = load_ttf_font(&path).await {
-            FONT.with(|f| *f.borrow_mut() = Some(font));
-            return;
-        }
+    for (i, (var, bundled)) in FACE_FILES.iter().enumerate() {
+        let own = match std::env::var(var) {
+            Ok(path) => load_ttf_font(&path).await.map_err(|e| eprintln!("{var}={path}: {e}")).ok(),
+            Err(_) => None,
+        };
+        let font = own.or_else(|| load_ttf_font_from_bytes(bundled).map_err(|e| eprintln!("bundled font {i}: {e}")).ok());
+        FACE_FONTS.with(|f| f.borrow_mut()[i] = font);
     }
-    eprintln!("no TrueType font with Cyrillic found (set RAZDOR_FONT); transliterating");
+    // The text face doubles as the font for everything else.
+    let text = FACE_FONTS.with(|f| f.borrow()[0].clone());
+    if text.is_none() {
+        eprintln!("no TrueType font could be loaded; transliterating");
+    }
+    FONT.with(|f| *f.borrow_mut() = text);
+}
+
+/// The sharp stand-in for bitmap face `i` (0 text, 1 bold, 2 titles), if installed.
+pub fn face_font(i: usize) -> Option<Font> {
+    FACE_FONTS.with(|f| f.borrow().get(i).cloned().flatten())
 }
 
 /// Whether a TrueType font (with Cyrillic) was found.
@@ -78,6 +83,9 @@ fn transliterate(s: &str) -> String {
 /// The TrueType font draws everything when there is one, as the original uses one smooth
 /// font for all its texts.
 fn with_font<R>(s: &str, f: impl FnOnce(Option<&Font>, &str) -> R) -> R {
+    if let Some(font) = super::dt_font::current_ttf() {
+        return f(Some(&font), s);
+    }
     FONT.with(|font| match font.borrow().as_ref() {
         Some(font) => f(Some(font), s),
         None if s.is_ascii() => f(None, s),
@@ -85,13 +93,45 @@ fn with_font<R>(s: &str, f: impl FnOnce(Option<&Font>, &str) -> R) -> R {
     })
 }
 
-pub fn measure(s: &str, size: f32) -> TextDimensions {
+fn measure_ttf(s: &str, size: f32) -> TextDimensions {
     with_font(s, |font, s| measure_text(s, font, size as u16, 1.0))
+}
+
+fn text_ttf(s: &str, x: f32, y: f32, size: f32, color: Color) {
+    with_font(s, |font, s| {
+        draw_text_ex(s, x, y, TextParams { font, font_size: size as u16, color, ..Default::default() });
+    });
+}
+
+/// Size of `s`: in the original's font of the current face when the install has it
+/// (`ui::dt_font`), else in the TrueType font.
+pub fn measure(s: &str, size: f32) -> TextDimensions {
+    let bitmap = super::dt_font::with_current(|f| {
+        let width = f.width(s, size, &|c| measure_ttf(c.encode_utf8(&mut [0; 4]), size).width);
+        let cap = f.cap_height(size);
+        TextDimensions { width, height: size, offset_y: cap }
+    });
+    bitmap.unwrap_or_else(|| measure_ttf(s, size))
 }
 
 thread_local! {
     /// A modal dialog is open: the screen below draws but takes no input.
     static BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
+    /// Debug snapshots: where the pointer is said to be (`RAZDOR_MOUSE=x,y`, `ui::snapshot`).
+    static POINTER: std::cell::Cell<Option<(f32, f32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// The pointer's position: the mouse's, or the snapshot's stand-in.
+pub fn pointer() -> (f32, f32) {
+    POINTER.with(|p| p.get()).unwrap_or_else(mouse_position)
+}
+
+/// Puts the pointer at `at` for good (debug snapshots only).
+pub fn set_pointer(at: Option<(f32, f32)>) {
+    POINTER.with(|p| p.set(at));
 }
 
 pub fn set_input_blocked(blocked: bool) {
@@ -103,7 +143,7 @@ pub fn input_blocked() -> bool {
 }
 
 pub fn mouse_in(x: f32, y: f32, w: f32, h: f32) -> bool {
-    let (mx, my) = mouse_position();
+    let (mx, my) = pointer();
     !input_blocked() && mx >= x && mx < x + w && my >= y && my < y + h
 }
 
@@ -135,7 +175,7 @@ pub fn tooltip(lines: &[(String, Color)]) {
     }
     let w = lines.iter().map(|(s, _)| measure(s, 17.0).width).fold(0.0, f32::max) + 24.0;
     let h = lines.len() as f32 * 21.0 + 14.0;
-    let (mx, my) = mouse_position();
+    let (mx, my) = pointer();
     let x = (mx + 18.0).min(screen_width() - w - 4.0);
     let y = (my + 18.0).min(screen_height() - h - 4.0);
     tooltip_panel(Rect::new(x, y, w, h));
@@ -146,8 +186,9 @@ pub fn tooltip(lines: &[(String, Color)]) {
 
 /// The translucent green-marble panel of hover tooltips, with a silver edge.
 pub fn tooltip_panel(r: Rect) {
-    super::chrome::surface(r, super::chrome::Skin::Marble);
-    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.05, 0.03, 0.25));
+    // Translucent marble: the ground shows through, as in the original's map tooltips.
+    super::chrome::surface_alpha(r, super::chrome::Skin::Marble, 0.72);
+    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.05, 0.03, 0.2));
     super::chrome::silver_frame(r, 1.5);
 }
 
@@ -162,10 +203,18 @@ pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> boo
     pressed
 }
 
+/// Draws `s` with its baseline at `y` (see [`measure`] for the font).
 pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
-    with_font(s, |font, s| {
-        draw_text_ex(s, x, y, TextParams { font, font_size: size as u16, color, ..Default::default() });
+    let drawn = super::dt_font::with_current(|f| {
+        f.draw(s, x, y, size, color, &|c, px, py| {
+            let ch = c.encode_utf8(&mut [0; 4]).to_string();
+            text_ttf(&ch, px, py, size, color);
+            measure_ttf(&ch, size).width
+        })
     });
+    if drawn.is_none() {
+        text_ttf(s, x, y, size, color);
+    }
 }
 
 /// The font size, at most `size` and not below 70% of it, at which `s` fits in `width`
@@ -221,26 +270,12 @@ pub fn wrap(s: &str, width: f32, size: f32) -> Vec<String> {
     lines
 }
 
-pub fn hp_bar(x: f32, y: f32, w: f32, hp: i32, max: i32) {
-    let frac = (hp.max(0) as f32 / max as f32).clamp(0.0, 1.0);
-    draw_rectangle(x, y, w, 5.0, Color::new(0.25, 0.05, 0.05, 1.0));
-    let c = if frac > 0.5 { GREEN } else if frac > 0.25 { YELLOW } else { RED };
-    draw_rectangle(x, y, w * frac, 5.0, c);
-}
-
 /// Colour of experience: bars, badges, level labels.
 pub const XP_COLOR: Color = Color::new(0.35, 0.95, 0.95, 1.0);
 
 /// "Lv 3 · XP 45/118".
 pub fn level_label(level: i32, xp: i32, need: i32) -> String {
     razdor::trf!("Lv {level} · XP {xp}/{need}", level, xp, need)
-}
-
-/// A thin progress bar towards the next level.
-pub fn xp_bar(x: f32, y: f32, w: f32, h: f32, xp: i32, need: i32) {
-    let frac = (xp.max(0) as f32 / need.max(1) as f32).clamp(0.0, 1.0);
-    draw_rectangle(x, y, w, h, Color::new(0.05, 0.15, 0.18, 1.0));
-    draw_rectangle(x, y, w * frac, h, XP_COLOR);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -593,7 +628,7 @@ pub fn draw_popup() {
         let needle = pop.filter.to_lowercase();
         let shown: Vec<&(i64, String)> = pop.options.iter().filter(|o| needle.is_empty() || o.1.to_lowercase().contains(&needle) || o.0.to_string() == needle).collect();
         let max_scroll = shown.len().saturating_sub(POPUP_ROWS);
-        if r.contains(Vec2::from(mouse_position())) {
+        if r.contains(Vec2::from(pointer())) {
             let wh = mouse_wheel().1;
             if wh > 0.0 {
                 pop.scroll = pop.scroll.saturating_sub(3);
@@ -609,7 +644,7 @@ pub fn draw_popup() {
         text(&hint, r.x + 8.0, r.y + 19.0, 15.0, DIM);
         for (i, (v, label)) in shown.iter().skip(pop.scroll).take(POPUP_ROWS).enumerate() {
             let ry = r.y + 26.0 + i as f32 * POPUP_ROW_H;
-            let hover = Rect::new(r.x, ry, r.w, POPUP_ROW_H).contains(Vec2::from(mouse_position()));
+            let hover = Rect::new(r.x, ry, r.w, POPUP_ROW_H).contains(Vec2::from(pointer()));
             if hover {
                 draw_rectangle(r.x + 2.0, ry, r.w - 4.0, POPUP_ROW_H, Color::new(0.4, 0.3, 0.15, 1.0));
             }
@@ -628,7 +663,7 @@ pub fn draw_popup() {
             let track = r.h - 30.0;
             draw_rectangle(r.x + r.w - 5.0, r.y + 26.0 + frac * (track - 20.0), 3.0, 20.0, DIM);
         }
-        let outside = is_mouse_button_pressed(MouseButton::Left) && !r.contains(Vec2::from(mouse_position()));
+        let outside = is_mouse_button_pressed(MouseButton::Left) && !r.contains(Vec2::from(pointer()));
         if outside || is_key_pressed(KeyCode::Escape) {
             close = true;
         }

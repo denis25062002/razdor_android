@@ -4,7 +4,7 @@
 
 use macroquad::prelude::*;
 
-use razdor::i18n::tr;
+use razdor::i18n::{n_, tr};
 use razdor::rules::battle::{bless_effect, curse_effect, Buff};
 use razdor::rules::content::{Bonus, Content, HeroClass, ItemId, MagicDirection, MagicSchool, Stat, UnitId};
 use razdor::rules::units::Stats;
@@ -34,6 +34,9 @@ pub struct Sheet<'a> {
     pub hero: Option<HeroClass>,
     /// Status lines under the name (actions left, poison, this turn's modifiers).
     pub status: Vec<(String, Color)>,
+    /// The battle's panel: the name and stats run over the figure's lower part. Otherwise
+    /// (the army screen) they stand under the full figure.
+    pub battle: bool,
 }
 
 /// One-based number of a bonus in the original's list (`Bonus<N>.lit`, `[Army] Bonus<N>`).
@@ -90,6 +93,12 @@ fn hero_trait(h: HeroClass) -> (String, String) {
 /// A stat line: label, value, colour.
 type Line = (String, String, Color);
 
+/// A stat's name: the install's own (`[Skills] <key>`) in Russian, else ours.
+fn label(key: &str, english: &str) -> String {
+    let own = (razdor::i18n::lang() == razdor::i18n::Lang::Ru).then(|| chrome::ui_text("Skills", key)).flatten();
+    own.unwrap_or_else(|| tr(english).to_string())
+}
+
 fn signed(v: i32) -> String {
     if v > 0 {
         format!("+{v}")
@@ -109,18 +118,18 @@ fn cmp_color(now: i32, start: i32) -> Color {
 
 fn buff_lines(lines: &mut Vec<Line>, b: Buff, raise: bool) {
     let (ad, ini, act) = if raise {
-        (tr("Adds to attack/defence"), tr("Adds to initiative"), tr("Hastens (+ actions)"))
+        (label("Bless_Atk_Def", n_("Adds to attack/defence")), label("BlessIni", n_("Adds to initiative")), label("BlessMov", n_("Hastens (+ actions)")))
     } else {
-        (tr("Lowers attack/defence"), tr("Lowers initiative"), tr("Slows (- actions)"))
+        (label("Curse_Atk_Def", n_("Lowers attack/defence")), label("CurseIni", n_("Lowers initiative")), label("CurseMov", n_("Slows (- actions)")))
     };
     if b.attack != 0 || b.defence != 0 {
-        lines.push((ad.into(), format!("{}/{}", signed(b.attack), signed(b.defence)), CREAM));
+        lines.push((ad.clone(), format!("{}/{}", signed(b.attack), signed(b.defence)), CREAM));
     }
     if b.initiative != 0 {
-        lines.push((ini.into(), signed(b.initiative), CREAM));
+        lines.push((ini.clone(), signed(b.initiative), CREAM));
     }
     if b.actions != 0 {
-        lines.push((act.into(), signed(b.actions), CREAM));
+        lines.push((act, signed(b.actions), CREAM));
     }
 }
 
@@ -131,7 +140,7 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let max = now.max_hp();
     let hits = if s.hp < max { format!("{} / {max}", s.hp.max(0)) } else { max.to_string() };
-    lines.push((tr("Hits").into(), hits, if s.hp < max { RED_TEXT } else { cmp_color(max, start.max_hp()) }));
+    lines.push((label("SHit", n_("Hits")), hits, if s.hp < max { RED_TEXT } else { cmp_color(max, start.max_hp()) }));
     // "base + bonus" for what items and traits add, as the original writes it.
     let split = |st: Stat| -> (String, Color) {
         let (n, b) = (naked[st], start[st] - naked[st]);
@@ -140,16 +149,16 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
     };
     if start[Stat::AttackBlow] > 0 || now[Stat::AttackBlow] > 0 {
         let (v, c) = split(Stat::AttackBlow);
-        lines.push((tr("Melee attack").into(), v, c));
+        lines.push((label("SAttackBlow", n_("Melee attack")), v, c));
     }
     if start[Stat::AttackShot] > 0 || now[Stat::AttackShot] > 0 {
         let (v, c) = split(Stat::AttackShot);
-        lines.push((tr("Ranged attack").into(), v, c));
+        lines.push((label("SAttackShot", n_("Ranged attack")), v, c));
     }
     let (v, c) = split(Stat::DefenceBlow);
-    lines.push((tr("Melee defence").into(), v, c));
+    lines.push((label("SDefenceBlow", n_("Melee defence")), v, c));
     let (v, c) = split(Stat::DefenceShot);
-    lines.push((tr("Ranged defence").into(), v, c));
+    lines.push((label("SDefenceShot", n_("Ranged defence")), v, c));
     if now.is_mage() || start.is_mage() {
         let school = now.magic.unwrap_or(MagicSchool::Elemental);
         let p = s.power;
@@ -157,7 +166,7 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
         let pc = cmp_color(p, start[Stat::MagicPower]);
         let dir = now.magic_direction();
         if matches!(dir, MagicDirection::ToEnemy | MagicDirection::ToAll) {
-            lines.push((tr("Magic strike (- hits)").into(), format!("-{p}"), pc));
+            lines.push((label("StrikeHit", n_("Magic strike (- hits)")), format!("-{p}"), pc));
             buff_lines(&mut lines, curse_effect(o, school, p), false);
         }
         if matches!(dir, MagicDirection::ToAlly | MagicDirection::ToAll) {
@@ -167,26 +176,26 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
                 MagicSchool::Death => 0,
             };
             if heal > 0 {
-                lines.push((tr("Heals (+ hits)").into(), format!("+{heal}"), pc));
+                lines.push((label("CureHit", n_("Heals (+ hits)")), format!("+{heal}"), pc));
             }
             buff_lines(&mut lines, bless_effect(o, school, p), true);
         }
     }
     for (label, st) in [
-        (tr("Life magic protection"), Stat::ProtectLife),
-        (tr("Elemental magic protection"), Stat::ProtectElemental),
-        (tr("Death magic protection"), Stat::ProtectDeath),
-        (tr("Regeneration"), Stat::Regen),
-        (tr("Vampirism"), Stat::Vampirizm),
+        (label("SProtectLife", n_("Life magic protection")), Stat::ProtectLife),
+        (label("SProtectElemental", n_("Elemental magic protection")), Stat::ProtectElemental),
+        (label("SProtectDeath", n_("Death magic protection")), Stat::ProtectDeath),
+        (label("SRegen", n_("Regeneration")), Stat::Regen),
+        (label("SVampirizm", n_("Vampirism")), Stat::Vampirizm),
     ] {
         if now[st] != 0 || start[st] != 0 {
-            lines.push((label.into(), format!("{}%", now[st]), cmp_color(now[st], start[st])));
+            lines.push((label, format!("{}%", now[st]), cmp_color(now[st], start[st])));
         }
     }
-    lines.push((tr("Initiative").into(), now[Stat::Initiative].to_string(), cmp_color(now[Stat::Initiative], start[Stat::Initiative])));
-    lines.push((tr("Actions").into(), now[Stat::Manevres].to_string(), cmp_color(now[Stat::Manevres], start[Stat::Manevres])));
+    lines.push((label("SInitiative", n_("Initiative")), now[Stat::Initiative].to_string(), cmp_color(now[Stat::Initiative], start[Stat::Initiative])));
+    lines.push((label("SManevres", n_("Actions")), now[Stat::Manevres].to_string(), cmp_color(now[Stat::Manevres], start[Stat::Manevres])));
     if s.wage > 0 {
-        lines.push((tr("Daily wage").into(), s.wage.to_string(), ORANGE_TEXT));
+        lines.push((label("DailyPayment", n_("Daily wage")), s.wage.to_string(), ORANGE_TEXT));
     }
     lines
 }
@@ -274,16 +283,39 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
     let k = k();
     chrome::parchment(r, true);
     // The figure, behind the text.
-    let fig_h = r.h * 0.66;
-    match assets.figure(s.kind) {
+    let fig_h = r.h * if s.battle { 0.66 } else { 0.6 };
+    let top = r.y + 10.0 * k;
+    let fig_bottom = match assets.figure(s.kind) {
         Some(t) => {
             let h = (t.height() * 0.9375 * k).min(fig_h);
             let w = t.width() * h / t.height();
-            let top = r.y + 10.0 * k;
             chrome::tex(&t, Rect::new(r.x + (r.w - w) / 2.0, top, w, h), Color::new(1.0, 1.0, 1.0, 0.92));
+            top + h
         }
-        None => silhouette(Rect::new(r.x + r.w * 0.2, r.y + 12.0 * k, r.w * 0.6, fig_h * 0.95)),
-    }
+        None => {
+            silhouette(Rect::new(r.x + r.w * 0.2, r.y + 12.0 * k, r.w * 0.6, fig_h * 0.95));
+            top + fig_h * 0.95
+        }
+    };
+    // Below the figure's shoulders the parchment turns dark brown (the video's panel: light
+    // gold down to about a quarter, then (115, 62, 0)); the figure's lower part shows through.
+    // In battle the name and the stats run over the figure's lower part; on the army screen
+    // they stand under the figure.
+    let name_y = if s.battle { r.y + r.h * 0.375 } else { fig_bottom + 6.0 * k };
+    // From 50 px above the name the parchment turns dark brown (both screens of the video:
+    // light gold, then (115, 62, 0)); the figure shows through.
+    let (fade0, fade1) = (name_y - 50.0 * k, name_y - 15.0 * k);
+    // Multiplying (230, 178, 115) parchment by this gives the video's (115, 62, 0).
+    let dark = |t: f32| Color::new(1.0 - 0.5 * t, 1.0 - 0.65 * t, 1.0 - t, 1.0);
+    chrome::multiply(|| {
+        let steps = 12;
+        for i in 0..steps {
+            let t = (i as f32 + 0.5) / steps as f32;
+            let y0 = fade0 + (fade1 - fade0) * i as f32 / steps as f32;
+            draw_rectangle(r.x, y0, r.w, (fade1 - fade0) / steps as f32 + 0.5, dark(t));
+        }
+        draw_rectangle(r.x, fade1, r.w, r.y + r.h - fade1, dark(1.0));
+    });
     // Items worn.
     let mut clicked = None;
     for (i, sr) in slot_rects(r).iter().enumerate() {
@@ -310,31 +342,31 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
     let x0 = r.x + 24.0 * k;
     let x1 = r.x + r.w - 16.0 * k;
     let name_size = (17.0 * k).round();
-    // The name and the stats run over the figure's lower part, as in the original.
-    let mut y = r.y + r.h * 0.375;
-    chrome::strong_centered(s.name, r.x + r.w / 2.0, y, name_size, CREAM);
+    let mut y = name_y;
+    super::dt_font::with_face(super::dt_font::Face::Title, || shadow_centered(s.name, r.x + r.w / 2.0, y, name_size, CREAM));
     y += 17.0 * k;
     let size = (12.0 * k).round();
     let lh = 13.6 * k;
     // Level and experience on one line.
-    chrome::strong_text(&razdor::trf!("Level {level}", level = s.level), x0, y, size, CREAM);
-    chrome::strong_right(&razdor::trf!("XP {xp} / {need}", xp = s.xp, need = s.need), x1, y, size, CREAM);
+    shadow_text(&razdor::trf!("Level {level}", level = s.level), x0, y, size, CREAM);
+    shadow_right(&razdor::trf!("XP {xp} / {need}", xp = s.xp, need = s.need), x1, y, size, CREAM);
     y += lh;
     for (label, value, color) in stat_lines(content, s) {
         let c = if color == CREAM { CREAM } else { color };
         let room = x1 - x0 - measure(&value, size).width - 6.0 * k;
-        chrome::strong_text(&label, x0, y, super::widgets::fit_size(&label, room, size), c);
-        chrome::strong_right(&value, x1, y, size, c);
+        shadow_text(&label, x0, y, super::widgets::fit_size(&label, room, size), c);
+        shadow_right(&value, x1, y, size, c);
         y += lh;
     }
     for (line, color) in &s.status {
-        chrome::strong_text(line, x0, y, super::widgets::fit_size(line, x1 - x0, size), *color);
+        shadow_text(line, x0, y, super::widgets::fit_size(line, x1 - x0, size), *color);
         y += lh;
     }
     // The description, then the traits with their icons.
     y += 6.0 * k;
     let bottom = r.y + r.h - 6.0 * k;
-    let desc = &content.unit(s.kind).description;
+    // The battle's panel shows the unit's description; the army screen only its traits.
+    let desc = if s.battle { content.unit(s.kind).description.as_str() } else { "" };
     let small = (12.0 * k).round();
     let slh = 13.2 * k;
     for line in wrap(desc, r.w - 44.0 * k, small) {

@@ -7,7 +7,6 @@ use razdor::i18n::tr;
 use razdor::rules::battle::Team;
 use razdor::trf;
 use razdor::rules::content::{Content, HeroClass, Stat, UnitId};
-use razdor::rules::formation::Row;
 use razdor::rules::game::Game;
 use razdor::rules::save::ScenarioRef;
 use razdor::rules::script::ScriptEnd;
@@ -23,12 +22,12 @@ const NAME_MAX: usize = 24;
 
 thread_local! {
     /// The hero's name typed on the class screen (kept between frames and games).
-    static HERO_NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    pub(super) static HERO_NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
 /// Applies this frame's typing to `name`: printable characters are added (up to
 /// [`NAME_MAX`]), Backspace removes the last one.
-fn edit_name(name: &mut String) {
+pub(super) fn edit_name(name: &mut String) {
     while let Some(c) = get_char_pressed() {
         if !c.is_control() && name.chars().count() < NAME_MAX {
             name.push(c);
@@ -52,7 +51,7 @@ fn name_field(name: &str, x: f32, y: f32, w: f32) {
     }
 }
 
-fn seed() -> u64 {
+pub(super) fn seed() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -148,6 +147,24 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     None
 }
 
+/// A new game as `hero` named `name`: of the demo on `demo`, or of the install's map.
+pub(super) fn start_game(demo: &Arc<Content>, scenario: Option<(&ScenarioEntry, &Arc<Content>)>, hero: HeroClass, name: &str) -> Game {
+    let mut g = match scenario {
+        Some((e, c)) => {
+            let mut g = Game::from_scenario(c.clone(), &e.scenario, hero, seed());
+            // Saves name the map file and a hash of its bytes.
+            match ScenarioRef::of_map(&e.path, &e.file) {
+                Ok(origin) => g.set_origin(origin),
+                Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
+            }
+            g
+        }
+        None => Game::new(demo.clone(), hero, seed()),
+    };
+    g.set_hero_name(name);
+    g
+}
+
 /// Hero class: for the demo its own classes, for a scenario the map's three presets.
 pub fn class_select(
     game: &mut Option<Game>,
@@ -206,21 +223,7 @@ pub fn class_select(
         }
         if hover && clicked() {
             cue(Cue::MenuPress);
-            *game = Some(match &scenario {
-                Some((e, c)) => {
-                    let mut g = Game::from_scenario(c.clone(), &e.scenario, hero, seed());
-                    // Saves name the map file and a hash of its bytes.
-                    match ScenarioRef::of_map(&e.path, &e.file) {
-                        Ok(origin) => g.set_origin(origin),
-                        Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
-                    }
-                    g
-                }
-                None => Game::new(content.clone(), hero, seed()),
-            });
-            if let Some(g) = game.as_mut() {
-                g.set_hero_name(&name);
-            }
+            *game = Some(start_game(&content, scenario.as_ref().map(|(e, c)| (*e, c)), hero, &name));
             return Some(Screen::WorldMap);
         }
     }
@@ -230,55 +233,6 @@ pub fn class_select(
     None
 }
 
-/// Squad shown as its battle formation (front row on top). Returns the panel height.
-pub(super) fn squad_panel(game: &Game, assets: &Assets, x: f32, y: f32) -> f32 {
-    const CELL: f32 = 36.0;
-    let formation = game.content.formation;
-    let lines = formation.display_lines();
-    let h = 40.0 + lines as f32 * (CELL + 14.0) + 30.0;
-    draw_rectangle(x, y, 240.0, h, Color::new(0.0, 0.0, 0.0, 0.3));
-    super::chrome::silver_frame(Rect::new(x, y, 240.0, h), 1.0);
-    super::chrome::shadow_text(&trf!("Squad {n}/{max}", n = game.squad.len(), max = game.max_squad()), x + 12.0, y + 28.0, 22.0, super::chrome::CREAM);
-    let mut hovered = None;
-    let cell = (228.0 / formation.cols as f32 - 1.0).min(CELL);
-    for r in 0..lines {
-        for col in 0..formation.cols {
-            let Some(slot) = formation.at_display(r, col) else { continue };
-            let (cx, cy) = (x + 6.0 + col as f32 * (cell + 1.0), y + 40.0 + r as f32 * (CELL + 14.0));
-            let sq = Rect::new(cx, cy, cell, CELL);
-            draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.4));
-            draw_rectangle_lines(cx, cy, cell, CELL, 1.0, if slot.row == Row::Reserve { Color::new(0.3, 0.3, 0.3, 1.0) } else { DIM });
-            let Some(i) = game.squad.iter().position(|u| u.slot == slot) else {
-                super::chrome::cell_icon(super::chrome::CellIcon::of(formation, slot), sq);
-                continue;
-            };
-            let u = &game.squad[i];
-            assets.draw_portrait(u.def, Team::Player, sq);
-            if !u.alive() {
-                draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
-                text_centered("+", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 26.0, RED);
-            } else if u.unpaid {
-                draw_rectangle(cx, cy, cell, CELL, Color::new(0.0, 0.0, 0.0, 0.6));
-                text_centered("$", cx + cell / 2.0, cy + CELL / 2.0 + 7.0, 22.0, RED);
-            }
-            hp_bar(cx + 2.0, cy + CELL + 3.0, cell - 4.0, u.hp, u.max_hp(&game.content));
-            xp_bar(cx + 2.0, cy + CELL + 9.0, cell - 4.0, 2.0, u.xp, u.xp_to_next(&game.content));
-            if mouse_in(cx, cy, cell, CELL) {
-                hovered = Some(i);
-            }
-        }
-    }
-    let c = &game.content;
-    let info = match hovered.map(|i| (i, &game.squad[i])) {
-        Some((_, u)) if !u.alive() => trf!("{name} (dead)", name = u.name(c)),
-        Some((_, u)) if u.unpaid => trf!("{name} unpaid!", name = u.name(c)),
-        Some((i, u)) => trf!("{name} {level}  {hp}/{max} HP  {wage}g/day", name = u.name(c), level = level_label(u.level, u.xp, u.xp_to_next(c)), hp = u.hp, max = u.max_hp(c), wage = game.wage(i)),
-        None if formation.reserve => tr("front / back / reserve").to_string(),
-        None => tr("front row / back row").to_string(),
-    };
-    text_fit(&info, x + 12.0, y + h - 10.0, 222.0, 18.0, DIM);
-    h
-}
 
 fn end_screen(title: &str, subtitle: &str, color: Color, game: &mut Option<Game>) -> Option<Screen> {
     clear_background(Color::from_rgba(20, 18, 16, 255));
@@ -286,7 +240,7 @@ fn end_screen(title: &str, subtitle: &str, color: Color, game: &mut Option<Game>
     text_centered(subtitle, screen_width() / 2.0, 310.0, 26.0, DIM);
     if button(screen_width() / 2.0 - 110.0, 380.0, 220.0, 50.0, tr("New game"), true) {
         *game = None;
-        return Some(Screen::ScenarioSelect);
+        return Some(Screen::MainMenu);
     }
     None
 }

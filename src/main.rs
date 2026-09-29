@@ -33,10 +33,11 @@ fn single_instance() {}
 
 fn conf() -> Conf {
     single_instance();
+    let (window_width, window_height) = ui::snapshot::size().unwrap_or((1280, 800));
     Conf {
         window_title: "Razdor".to_owned(),
-        window_width: 1280,
-        window_height: 800,
+        window_width,
+        window_height,
         high_dpi: true,
         ..Default::default()
     }
@@ -76,6 +77,9 @@ async fn main() {
     if std::env::args().skip(1).any(|a| a == "--editor") {
         app.open_editor();
     }
+    ui::snapshot::stage(&mut app);
+    let snapshot = ui::snapshot::target();
+    let quiet = ui::snapshot::quiet();
     let quit_after = quit_after();
     let mut frames = 0u64;
     // RAZDOR_PROFILE=1: frames whose work takes over 40 ms are logged with their screen.
@@ -84,9 +88,18 @@ async fn main() {
         let started = std::time::Instant::now();
         let before = app.screen_name();
         app.frame();
+        if quiet {
+            app.dialogs.clear();
+        }
         let work = started.elapsed();
         frames += 1;
-        if is_quit_requested() || quit_after.is_some_and(|n| frames >= n) {
+        if let Some((path, n)) = &snapshot {
+            if frames >= *n {
+                get_screen_data().export_png(path);
+                exit_now(&mut app);
+            }
+        }
+        if is_quit_requested() || app.quit || quit_after.is_some_and(|n| frames >= n) {
             exit_now(&mut app);
         }
         next_frame().await;

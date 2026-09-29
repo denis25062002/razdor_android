@@ -40,27 +40,11 @@ An army = Армия
 # World map: tooltips
 Army = Армия
 Leader = Предводитель
-Hostile: attacks on sight = Враждебна: нападает сразу
-Not hostile = Не враждебна
 Under spells: {spells} = Под заклинаниями: {spells}
 Wounded by magic: -{hurt} hits = Раны от магии: жизнь -{hurt}
-level {lo} = уровень {lo}
-levels {lo}-{hi} = уровни {lo}–{hi}
-{n} units, {span} = Воинов: {n}, {span}
-Owner: you = Владелец: вы
-Owner: {owner} = Владелец: {owner}
-Hostile = Враждебно
-Tribute waiting: {gold} gold, {mana} mana = Ждёт дань: золото {gold}, мана {mana}
 (tribute already collected) = (дань уже собрана)
-Income {gold} gold, {mana} mana a day = Доход в день: золото {gold}, мана {mana}
 
 # World map: side panel and notices
-At sea. = В море.
-On the road. = В пути.
-Only ashes remain. = Остались лишь пепелища.
-Attack the garrison = Атаковать гарнизон
-Enter = Войти
-Tribute is waiting. = Дань ждёт.
 Tribute already collected. = Дань уже собрана.
 The village pays its tribute: {g} gold and {mana} mana. = Деревня платит дань: золото {g}, мана {mana}.
 The village pays with a {item} and {mana} mana. = Деревня платит предметом «{item}» и маной: {mana}.
@@ -72,9 +56,6 @@ A meeting on the road: {who} lets you pass. = Встреча в пути: {who} 
 No way through. = Пути нет.
 At sea: click the shore to land. = В море: щёлкните по берегу, чтобы высадиться.
 Your ship waits; walk onto it to sail. = Корабль ждёт: взойдите на него, чтобы отплыть.
-Wait 1 h = Ждать 1 ч
-Wait 4 h = Ждать 4 ч
-Click the map to travel; time passes only while you move or wait. Right click / Space: stop. Wheel or +/-: zoom. 1 / 4: wait. = Щёлкните по карте, чтобы идти; время идёт, лишь пока вы в пути или ждёте. Правый щелчок / Пробел: стоп. Колесо или +/-: масштаб. 1 / 4: ждать.
 
 # Spell book
 heals {h} hits = лечит: жизнь +{h}
@@ -100,23 +81,15 @@ That spell does not work on that target. = Это заклинание не де
 The enemy is out of reach. = Враг слишком далеко.
 Not now: a battle is coming. = Не сейчас: близится бой.
 The hero's spell book = Книга заклинаний героя
-{mana} mana, {time} = Мана {mana}, {time}
-Your book is empty. Learn spells at a sanctuary. = Книга пуста. Заклинаниям учат в святилище.
 No enemy army in sight within {range} cells. = В пределах {range} клеток не видно вражеских армий.
 an army = армия
 Cast on {name} ({d} cells) = Применить: {name} (клеток: {d})
-Cast on your army = Применить на свою армию
 : {hits} hits = : жизнь {hits}
 , {killed} fell = , павших: {killed}
 . The army is no more. = . Армия уничтожена.
 An enemy fell on you while you were casting: the spell is lost. = Враг напал, пока вы творили заклинание: оно потеряно.
 The target got away before the spell was ready. = Цель ушла прежде, чем заклинание было готово.
 Not enough mana left when the spell was ready. = К концу сотворения не хватило маны.
-On your army: = На вашей армии:
-{name}: for good = {name}: навсегда
-{name}: {time} left = {name}: осталось {time}
-no spells = заклинаний нет
-Book {n}/{max}. Casting takes game time: armies move meanwhile. = Книга: {n}/{max}. Сотворение занимает игровое время: армии тем временем движутся.
 Close = Закрыть
 
 # Building window: tabs and messages
@@ -166,7 +139,6 @@ Per level: {gains} = За уровень: {gains}
 Daily wage {wage} = Жалованье в день: {wage}
 Hire = Нанять
 {name} joins your army. = {name}: теперь в вашей армии.
-Price: {price} = Цена: {price}
 {n} of {max} left = Осталось {n} из {max}
 always = всегда
 Heal = Лечить
@@ -174,16 +146,11 @@ Raise = Воскресить
 to be buried = к погребению
 {name} rises again. = {name}: воскрешён.
 {name} is healed. = {name}: исцелён.
-Healing and raising the dead are paid at once. = Лечение и воскрешение оплачиваются сразу.
-Healing is paid at once. The dead are raised in towns and churches. = Лечение оплачивается сразу. Мёртвых воскрешают в городах и храмах.
-No healing here. = Здесь не лечат.
 
 # Building window: garrison
-Garrison: click a unit to take it back. = Гарнизон: щёлкните по воину, чтобы забрать его.
 paid until the next noon = оплачен до следующего полудня
 no wage while on guard = на страже без жалованья
 {hp}/{max} HP, {paid} = Жизнь {hp}/{max}, {paid}
-Your army: click a unit to leave it here. = Ваша армия: щёлкните по воину, чтобы оставить его здесь.
 {hp}/{max} HP, wage {wage} = Жизнь {hp}/{max}, жалованье {wage}
 Back in your army. = Снова в вашей армии.
 {name} stays on guard. = {name}: остаётся на страже.
@@ -244,3 +211,29 @@ There is no water to sail from here. = Отсюда некуда плыть.
 The shipwright will not deal with you. = Корабел не желает иметь с вами дела.
 With a ship, click the water to sail; click the shore to land. = С кораблём щёлкните по воде, чтобы плыть, и по берегу, чтобы высадиться.
 The ship waits where you land; walk back onto it to sail again. = Корабль ждёт там, где вы сошли; взойдите на него, чтобы плыть дальше.
+
+Left click: {left} = Левый щелчок: {left}
+Right click: {right} = Правый щелчок: {right}
+Wait 1 hour (the hero stands still) = Ждать 1 час на месте
+Wait 4 hours (the hero stands still) = Ждать 4 часа на месте
+Time panel = Панель времени
+left click: wait 1 hour, right click: 4 hours = левый щелчок: ждать 1 час, правый: 4 часа
+Click where you stand = Щелчок по месту героя
+the building again, or its garrison's battle = снова окно постройки или бой с её гарнизоном
+
+Instant effect = Мгновенное действие
+Lasts: = Время действия:
+Mana: = Мана:
+No\nspells\nlearnt = Нет\nизученных\nзаклинаний
+Not enough mana\nto cast this spell! = Недостаточно маны\nдля этого заклинания!
+Reading: = Чтение:
+h = час
+hours = часов
+
+Owner = Владелец
+The garrison's defenders: = Состав гарнизона защитников:
+Unknown army = Неизвестная армия
+you = вы
+
+Money = Деньги
+Price {price} = Цена = {price}

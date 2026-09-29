@@ -139,6 +139,10 @@ impl Default for Content {
     }
 }
 
+/// `HeroExpirienceModificator` Razdor plays with: the rate of the gameplay video (the
+/// Community Update's `_Global.ini` has 50).
+pub const PLAYER_XP_MODIFICATOR: i32 = 100;
+
 impl Content {
     pub fn new(
         units: Vec<UnitDef>,
@@ -154,8 +158,14 @@ impl Content {
 
     /// Content read from a Discord Times install. The formation is the Community wide row
     /// (2 × 6), as in the player's install.
+    ///
+    /// Battle XP is paid at the rate of the gameplay video (experience.md §3): its fort
+    /// battle gave "+24 / +25 / +26" for shares of 25, i.e. `HeroExpirienceModificator` 100.
+    /// The Community Update ships 50, which halves every gain; Razdor keeps the video's rate
+    /// whatever the install says (the player's choice, 2026-09-29).
     pub fn from_dt(dt: &DtInstall) -> Content {
-        Content::new(dt.units.clone(), dt.artefacts.clone(), dt.spells.clone(), dt.options.clone(), Formation::WIDE)
+        let options = GlobalOptions { hero_experience_modificator: PLAYER_XP_MODIFICATOR, ..dt.options.clone() };
+        Content::new(dt.units.clone(), dt.artefacts.clone(), dt.spells.clone(), options, Formation::WIDE)
     }
 
     /// The built-in demo: `data/units.ini`, `data/items.ini` and `data/spells.ini` (our own

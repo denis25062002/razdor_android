@@ -3,3 +3,27 @@
 
 # Words used on many screens, and the language switch
 Interface language (F2) = Язык интерфейса (F2)
+
+# The main menu
+Options = Настройки
+Authors = Авторы
+
+# New game: the scenario and the hero
+Scenario for a new game = Сценарий для Новой Игры
+Name: = Название:
+Status: = Статус:
+Single scenario = Одиночный сценарий
+Map size = Размер карты
+Description: = Описание:
+Next = Далее
+The hero's starting characteristics = Стартовые характеристики Героя
+(no name) = (нет имени)
+Start = Старт
+A veteran of many cruel battles, the Knight has superb experience of war. Under the Church's protection he can withstand hostile spells. = Рыцарь прошёл через множество сражений и знает военное дело как никто. Церковь хранит его от вражеской магии.
+The Archmage can call on the mighty forces of the world that ordinary people cannot command. In battle he binds the enemy. = Архимагу подвластны великие силы мира, недоступные простым смертным. В бою он сковывает врагов.
+The Ranger is a fast and accurate shot who finds his way anywhere. Watching nature, he has learnt the secrets of healing wounds fast. = Следопыт — быстрый и точный стрелок, который найдёт дорогу где угодно. Жизнь среди природы научила его быстро залечивать раны.
+About the authors = Об авторах игры
+Background music volume = Громкость музыки
+Sound effects volume = Громкость звуков
+OK = Ок
+Sound, graphics and gameplay settings = Настройки звука, графики и игры

@@ -161,6 +161,16 @@ path (4c50ec; the other result screen 4c57bc has none). **code**
 `HeroExpirienceModificator` applies to **every** unit of the player, not just the hero.
 With the shipped values (50, F 100) a share of 48 shows as "Опыт +24". **code** / **data**
 
+**The video's rate (2026-09-29).** The gameplay video's fort battle ("Форт в Трясине", РК3,
+09:49) checks the formula end to end: the garrison's starting strength is 1516, the pool 75,
+and a unit that attacked with every action gets a share of 25; the cuirassier, the sorceress
+and the hero show "+25", "+24", "+26". So that game paid shares at ×1.0
+(`HeroExpirienceModificator × F × C / 10⁶ = 1`, e.g. modificator 100 with "impossible
+difficulty"), while the Community Update's `_Global.ini` has 50 and pays half. **Razdor
+plays with 100 whatever the install says** (`content::PLAYER_XP_MODIFICATOR`, the player's
+choice); the rest of the formula is unchanged. Test: `real_fort_battle_pays_the_videos_xp`.
+**data**
+
 **AI armies** gain XP only in battles between AI armies (4a4c68): each side whose strength is
 still above 0 at the end gets `award × AIExpiriencePercent div 100` for each survivor
 (4a4a7c), with no difficulty factor, no army correction and no cap. An AI army that beats the

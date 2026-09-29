@@ -234,7 +234,7 @@ fn unit_row(assets: &Assets, label: &str, units: &[UnitId], x: f32, y: f32) -> f
 /// a question Yes (Enter) or No (Escape).
 pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     let (sw, sh) = (screen_width(), screen_height());
-    draw_rectangle(0.0, 0.0, sw, sh, Color::new(0.0, 0.0, 0.0, 0.35));
+    chrome::under_message();
     // A long story text widens the window rather than running off the screen.
     let fit = |w: f32| -> (f32, Vec<String>) { (w, d.text.iter().flat_map(|t| wrap(t, w - 80.0, 19.0)).collect()) };
     let (mut w, mut lines) = fit(620.0f32.min(sw - 20.0));

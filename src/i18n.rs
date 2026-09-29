@@ -444,10 +444,15 @@ mod tests {
         assert!(problems.is_empty(), "untranslated interface texts:\n{}", problems.join("\n"));
     }
 
+    /// Labels the Russian original itself shows in Latin (the battle cards' stat strip).
+    const ORIGINAL_LATIN: &[&str] =
+        &["A: {v}", "S: {v}", "Pwr: {power}", "D: {blow}/{shot}", "Mnvr: {mn}", "Ini: {ini}", "Hits: {hp}/{max}", "Hits: {max}"];
+
     #[test]
     fn the_catalog_is_russian() {
         let latin_only: BTreeSet<String> = ru_entries()
             .into_iter()
+            .filter(|e| !(ORIGINAL_LATIN.contains(&e.key.as_str()) && e.value == e.key))
             .filter(|e| !e.value.chars().any(|c| ('а'..='я').contains(&c.to_lowercase().next().unwrap_or(c))))
             .map(|e| format!("{}:{}: {:?}", e.file, e.line, e.value))
             .collect();

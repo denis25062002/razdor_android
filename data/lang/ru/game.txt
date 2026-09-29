@@ -27,12 +27,6 @@ Initiative {ini}   Actions {act} = Инициатива {ini}   Действия
 Back = Назад
 
 # The squad panel
-Squad {n}/{max} = Отряд {n}/{max}
-{name} (dead) = {name} (погиб)
-{name} unpaid! = {name}: жалованье не уплачено!
-{name} {level}  {hp}/{max} HP  {wage}g/day = {name} {level}  {hp}/{max} жизни  {wage} з./день
-front / back / reserve = передний / задний / резерв
-front row / back row = передний ряд / задний ряд
 
 # End of the game
 New game = Новая игра
@@ -59,33 +53,19 @@ Quick save = Быстрое сохранение
 # Save and load windows
 Battle - {foe} = Битва - {foe}
 Battle = Бой
-Saves: {dir} = Сохранения: {dir}
 Name = Название
 Scenario = Сценарий
 Hero = Герой
-In the game = В игре
-saved {time} UTC = сохранено {time} UTC
-{first}–{last} of {total} (wheel to scroll) = {first}–{last} из {total} (листать колесом)
 Save the game = Сохранить игру
-Name: = Имя:
-Replace = Заменить
 Save = Сохранить
 Saved: {name} = Сохранено: {name}
 Cancel = Отмена
-Saved = Сохранённые
 Autosaves = Автосохранения
 No saves here yet. = Сохранений пока нет.
 Load = Загрузить
 
 # Game menu
 Game menu = Меню игры
-Back to the game = Вернуться в игру
-Main menu = Главное меню
-Music = Музыка
-Sounds = Звуки
-off = выкл.
-On = Вкл.
-Off = Выкл.
 
 # Keys (F1)
 Keys = Клавиши
@@ -113,7 +93,6 @@ Space = Пробел
 Left / Right = Влево / Вправо
 Up / Down, click = Вверх / Вниз, щелчок
 Wheel, PgUp / PgDn = Колесо, PgUp / PgDn
-pick a scenario = выбрать сценарий
 load the quick save = загрузить быстрое сохранение
 the hero's name = имя героя
 delete a letter = стереть букву
@@ -147,7 +126,6 @@ pick an entry = выбрать запись
 scroll = прокрутка
 pick a spell = выбрать заклинание
 cast on your army = применить к своей армии
-music volume = громкость музыки
 back to the game = вернуться в игру
 the save's name = название сохранения
 save = сохранить
@@ -220,17 +198,16 @@ The hero's journal (J) = Журнал героя (J)
 The hero and his army (A) = Герой и его армия (A)
 The spell book (B) = Книга заклинаний (B)
 Map of the scenario (M) = Карта сценария (M)
-mana = мана
-gold = золото
+mana = магия
+gold = деньги
 income = доход
-wages = жалованье
+wages = выплата
 Opt = Опц.
 Quests = Задания
 Army = Армия
 Book = Книга
 Map = Карта
-Time: {date} = Время: {date}
-Path left: {left} = До цели: {left}
+Path left: {left} = До конца пути: {left}
 waiting… = ожидание…
 Time: = Время:
 
@@ -238,9 +215,9 @@ Time: = Время:
 Lv {level} · XP {xp}/{need} = Ур. {level} · Опыт {xp}/{need}
 type to filter = наберите для отбора
 filter: {filter} = отбор: {filter}
-{year}, month {month}, day {day}, {hour} h = {year} г., месяц {month}, день {day}, {hour} ч
+{year}, month {month}, day {day}, {hour} h = {year} год, {month} месяц, {day} день, {hour} час
 less than an hour = меньше часа
-{h} h = {h} ч
+{h} h = {h} час
 {d} d = {d} дн.
 {d} d {h} h = {d} дн. {h} ч
 
@@ -258,3 +235,26 @@ events saved for the demo = события сохранены для демо
 unknown unit {id} = неизвестный воин {id}
 unknown item {id} = неизвестный предмет {id}
 no hero = нет героя
+
+Time: {date} = Время: {date}
+{year} y, {month} m, {day} d, {clock} = {year} год, {month} месяц, {day} день, {clock}
+Do you really want to delete the saved game "{name}"? = Удалить сохранение «{name}»?
+(save anew) = (сохранить заново)
+Delete the save = Удаление сохранения
+Delete the saved game = Удалить сохраненную игру
+Load a saved game = Загрузка сохраненной игры
+Name of the saved game = Имя сохраненной игры
+Name of the scenario = Название сценария
+Private = Личные
+{date}, {hour} h = {date}, {hour} час
+
+Attention!\n\nThe game under way will end.\nTo go on with it another time, save it from the map's bar first. = Внимание!\n\nТекущая игра будет прервана.\nЧтобы продолжить её позже, сначала сохраните игру с панели карты.
+Do you really want to start the scenario under way again from the beginning? = Начать текущий сценарий заново?
+Leave the game = Выход из игры
+Quit the game = Выйти из игры
+Restart = Рестарт
+Restart the game = Рестарт игры
+The map of this game is not in the install. = Карты этой игры нет в установленной игре.
+To the menu = Выйти в меню
+
+the menu's buttons; a scenario twice: go on = кнопки меню; сценарий дважды — дальше

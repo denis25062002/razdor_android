@@ -37,11 +37,18 @@ Frame counts come from the file size.
 | `Spells/*.ugs` (P-*, S-*) | 128×128 | 50 | spell animations (additive) |
 | `Battle/--*.ugs` | 220×110 | 25 (UPGRADE 50) | battle effects (`_Global.ini [BattleEffects]`) |
 | `Windows/Ask, Clock, House, Swords.ugs` | 40–48 sq. | 50 | animated UI icons |
-| `Windows/MB2, MM_Icons, Stnd-1/2, Title_RUS` | – | 1 | UI stills (MM_Icons = minimap symbol atlas) |
+| `Windows/MB2, MM_Icons, Stnd-1/2, Title_RUS` | – | 1 | UI stills, **not scrambled: grey + alpha bytes** (below) |
 | `Windows/Way_Arrows.ugs` | 32×22 | 8 | path arrows, 8 directions |
 
 Unit sprite layout (M): the 64 frames form 8 rows of 8. Each row is one facing direction and holds an
 8-frame walk cycle. I have **not** checked the direction order; row 0 looks like facing away/north.
+
+**Grey stills (H):** the five single-frame files of `Windows` above hold `[u16 w][u16 h]` then one grey byte
+and one alpha byte per pixel, unscrambled (read as ARGB4444 they give colour noise). The game tints them:
+`MB2` (228×251) = the main menu's two oval button frames (round, and pointed for "Выход") around a
+translucent marble middle; `Title_RUS` = the silver "Времена Раздора" logo; `MM_Icons` = white minimap
+symbols (houses, towers, castles, churches, skull, anchor) in three sizes; `Stnd-1/2` = standards (skull, towers).
+The animated `Windows/Ask, Clock, House, Swords` are ordinary scrambled frames.
 
 **b) `Objects/Persones.ugs` (H):** 102 records of `[u16 w][u16 h][u16 w][u16 h][pixels]`. Frame sizes vary
 (about 115–162 × 340–420). These are the full-body sepia portraits in the hire/army screen. Frame order
@@ -109,7 +116,11 @@ LIT files, used as a mask for the matching colour file (M).
   the hex terrain in world space, not per hex (M). The exe has a string table in this order (index = likely
   terrain code, M): 0 Shallow, 1 Water, 2 DeepWater, 3 FlameLand, 4 Road, 5 LowLand, 6 Land, 7 Plain,
   8 Swamp, 9 DeepSwamp, 10 Desert, 11 Badground, 12 Rock, 13 Dust, 14 Snow, 15 Ice.
-  The video shows Land = green grass and Plain = yellow field. `detail.lit` is a greyscale detail overlay.
+  The video shows Land = green grass and Plain = yellow field. `detail.lit` is a greyscale detail overlay
+  (its use on the map is unknown; Razdor does not draw it yet).
+  **Transitions (M):** the video shows no cell edges: neighbouring surfaces fade into each other over about one
+  cell (fields into grass, roads as soft bands, sand along rivers). Razdor draws this by mixing, per pixel, the
+  textures of the four nearest cell centres with bilinear weights (`src/ui/terrain.rs`).
   `Textures/Water/TEXTURE000–031.BMP` are standard 64×64 24-bit BMPs: a 32-frame animated water
   overlay (exe string `Graphics\Textures\water\texture0%d`).
 - `Spells/*.lit` (100×100): spell book icons. `Windows/*.lit`: every UI window, frame, button, cursor,

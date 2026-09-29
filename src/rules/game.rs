@@ -277,7 +277,6 @@ pub struct Game {
 /// speed`, ×1.5 diagonally (world.md §2); `cost` gives the cost units of a cell, `None`
 /// where it cannot go (the route is dropped). Remembers where it stood for drawing.
 fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>) {
-    let start = a.pos;
     while let Some(&next) = a.path.first() {
         let Some(c) = cost(next) else {
             a.path.clear();
@@ -290,8 +289,9 @@ fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>) {
         a.budget -= need;
         a.pos = map.center(next);
         a.path.remove(0);
+        a.walk.points.push(a.pos);
+        a.walk.minutes.push(need);
     }
-    a.shown_from = (a.pos != start).then_some(start);
 }
 
 impl Game {
@@ -647,15 +647,14 @@ impl Game {
         }
     }
 
-    /// Where to draw army `a`: from where it stood towards its cell over one step's time.
+    /// Where to draw army `a`: along the steps it took in the last step or wait tick, played
+    /// over that window's real time as the original does ([`Walk`]).
     pub fn army_display_pos(&self, a: &Army) -> (f32, f32) {
-        match a.shown_from {
-            Some(p) if self.since_step < STEP_SECONDS => {
-                let k = self.since_step / STEP_SECONDS;
-                (p.0 + (a.pos.0 - p.0) * k, p.1 + (a.pos.1 - p.1) * k)
-            }
-            _ => a.pos,
+        // Moved otherwise since (a battle, a respawn, an event): drawn where it is.
+        if a.walk.points.last() != Some(&a.pos) {
+            return a.pos;
         }
+        a.walk.at(self.since_step / STEP_SECONDS).unwrap_or(a.pos)
     }
 
     /// Advance the world by `real_dt` seconds (world.md §2): each hero step and each wait
@@ -824,6 +823,13 @@ impl Game {
     /// scenario's events run.
     pub(crate) fn pass_time(&mut self, minutes: f32, events: &mut Vec<Event>) {
         let mut left = minutes.max(0.0);
+        // A new stretch for drawing: the steps of this time play in the next window.
+        for a in &mut self.world.armies {
+            a.walk.points.clear();
+            a.walk.points.push(a.pos);
+            a.walk.minutes.clear();
+            a.walk.banked = (a.budget + left).min(AI_BUDGET_CAP);
+        }
         loop {
             let slice = left.min(WAIT_TICK_MINUTES);
             left -= slice;
@@ -2314,6 +2320,48 @@ mod tests {
         g.world.armies[0].mind.think_at = f64::MAX;
         g.pass_time(24.0 * 60.0, &mut events);
         assert_eq!(g.world.armies[0].budget, 200.0);
+    }
+
+    #[test]
+    fn armies_walk_their_steps_within_the_heros_step() {
+        let mut s = strip();
+        let mut lord = army(1, 12, 2, 1, &[troop(4, 0, 1)]);
+        lord.patrols = 1;
+        lord.patrol_radius = 8;
+        s.armies = vec![lord];
+        let mut g = start(&s);
+        let a = &mut g.world.armies[0];
+        let (x0, y0) = a.pos;
+        a.mind.goal = crate::rules::ai::Goal::Wander((15, 2));
+        a.mind.think_at = f64::MAX;
+        a.path = vec![(13, 2), (14, 2), (15, 2)];
+        // 50 banked + 25 minutes: two grass steps (25 each) and a third left unpaid.
+        a.budget = 50.0;
+        let mut events = Vec::new();
+        g.pass_time(25.0, &mut events);
+        g.since_step = 0.0;
+        let a = &g.world.armies[0];
+        assert_eq!(a.pos, (x0 + 3.0, y0), "the bank pays all three steps");
+        let at = |g: &mut Game, k: f32| {
+            g.since_step = k * STEP_SECONDS;
+            g.army_display_pos(&g.world.armies[0])
+        };
+        // 75 minutes banked: the first two steps take a third of the window each, the last
+        // the rest; the figure moves steadily from cell to cell, never jumping.
+        assert_eq!(at(&mut g, 0.0), (x0, y0));
+        assert!((at(&mut g, 1.0 / 6.0).0 - (x0 + 0.5)).abs() < 1e-4);
+        assert!((at(&mut g, 1.0 / 3.0).0 - (x0 + 1.0)).abs() < 1e-4);
+        assert!((at(&mut g, 0.5).0 - (x0 + 1.5)).abs() < 1e-4);
+        assert_eq!(at(&mut g, 1.0), (x0 + 3.0, y0));
+        let mut last = x0;
+        for i in 1..=30 {
+            let x = at(&mut g, i as f32 / 30.0).0;
+            assert!(x >= last && x - last < 0.2, "step {i}: {last} -> {x}");
+            last = x;
+        }
+        // Moved by other means since: drawn where it is.
+        g.world.armies[0].pos = (1.0, 1.0);
+        assert_eq!(at(&mut g, 0.5), (1.0, 1.0));
     }
 
     #[test]

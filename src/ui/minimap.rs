@@ -18,14 +18,11 @@ use macroquad::prelude::*;
 
 use razdor::rules::fog::{location_side, Fog, Side};
 use razdor::rules::game::Game;
-use razdor::rules::map::{surface_minutes, TileMap};
+use razdor::rules::map::TileMap;
 use razdor::rules::world::LocationKind;
 
 use super::widgets::*;
 
-/// Largest side of the minimap picture, in screen pixels.
-const MINIMAP_MAX: f32 = 360.0;
-const FRAME: f32 = 8.0;
 /// Explored cells within this many cells of the dark are shaded (the feathered edge).
 const FEATHER: i32 = 2;
 
@@ -97,30 +94,104 @@ pub fn draw_fog(fog: &Fog, tl: Vec2, br: Vec2) {
     draw_texture_ex(&tex, tl.x, tl.y, WHITE, DrawTextureParams { dest_size: Some(br - tl), ..Default::default() });
 }
 
-/// Minimap colour of a side (see [`Side::rgb`]).
-pub fn side_color(side: Side) -> Color {
-    let [r, g, b] = side.rgb();
-    Color::from_rgba(r, g, b, 255)
+
+/// The minimap window's side in pixels of the 960×720 video (`MiniMap_Frame_400x400.lit` is
+/// 430 px at the original's 1024×768), and its frame's border.
+const WINDOW: f32 = 403.0;
+const BORDER: f32 = 13.0 * 403.0 / 430.0;
+
+/// Screen rectangle of the minimap picture (inside its frame): a square in the top-right
+/// corner of the map view `view`, the whole map in it, one cell per texel (the original's
+/// minimap is square for its square maps).
+pub fn rect(map: &TileMap, view: Rect) -> Rect {
+    rect_at(map, view, super::chrome::k())
 }
 
-/// Screen rectangle of the minimap picture (inside its frame), in the top-right corner of
-/// the map view `view`.
-pub fn rect(map: &TileMap, view: Rect) -> Rect {
-    let (w, h) = (map.w.max(1) as f32, map.h.max(1) as f32 * map.grid.row_height());
-    let k = MINIMAP_MAX / w.max(h);
-    let (pw, ph) = (w * k, h * k);
-    Rect::new(view.x + view.w - pw - FRAME - 10.0, view.y + FRAME + 10.0, pw, ph)
+/// [`rect`] at interface scale `k`.
+fn rect_at(map: &TileMap, view: Rect, k: f32) -> Rect {
+    let o = outer_at(view, k);
+    let b = BORDER * k;
+    let inner = Rect::new(o.x + b, o.y + b, o.w - 2.0 * b, o.h - 2.0 * b);
+    let (w, h) = (map.w.max(1) as f32, map.h.max(1) as f32);
+    let s = (inner.w / w).min(inner.h / h);
+    let (pw, ph) = (w * s, h * s);
+    Rect::new(inner.x + (inner.w - pw) / 2.0, inner.y + (inner.h - ph) / 2.0, pw, ph)
 }
 
 /// Frame included.
-pub fn outer(map: &TileMap, view: Rect) -> Rect {
-    let r = rect(map, view);
-    Rect::new(r.x - FRAME, r.y - FRAME, r.w + 2.0 * FRAME, r.h + 2.0 * FRAME)
+pub fn outer(_map: &TileMap, view: Rect) -> Rect {
+    outer_at(view, super::chrome::k())
+}
+
+fn outer_at(view: Rect, k: f32) -> Rect {
+    let side = (WINDOW * k).min(view.w - 4.0).min(view.h - 4.0);
+    Rect::new(view.x + view.w - side - 10.0 * k, view.y + 2.0 * k, side, side)
+}
+
+/// The original's colours (`Rus_DiscordTimes.ini [Options]`, 0xRRGGBB), else ours.
+fn option_color(key: &str, ours: [u8; 3]) -> Color {
+    let v = super::chrome::options_value(key).and_then(|v| v.trim().parse::<u32>().ok());
+    let [r, g, b] = v.map_or(ours, |v| [(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+    Color::from_rgba(r, g, b, 255)
+}
+
+/// A minimap symbol of `MM_Icons.ugs`: column and row in its size's grid.
+#[derive(Clone, Copy)]
+enum Symbol {
+    Grid(u32, u32),
+    Castle,
+}
+
+/// Where a symbol sits in `MM_Icons.ugs` for icons of `size` (0 small 12 px, 1 medium 18,
+/// 2 large 24): five rows of two symbols per size, the castles down the left in three sizes.
+fn symbol_rect(sym: Symbol, size: usize) -> Rect {
+    match sym {
+        Symbol::Grid(c, r) => {
+            let (x0, cell) = [(0.0, 12.0), (24.0, 18.0), (60.0, 24.0)][size];
+            Rect::new(x0 + c as f32 * cell, r as f32 * cell, cell, cell)
+        }
+        Symbol::Castle => [Rect::new(0.0, 72.0, 26.0, 12.0), Rect::new(0.0, 84.0, 26.0, 20.0), Rect::new(0.0, 104.0, 26.0, 24.0)][size],
+    }
+}
+
+/// The symbol of a location kind on the minimap, if it has one.
+fn symbol(kind: LocationKind) -> Option<Symbol> {
+    use LocationKind as K;
+    Some(match kind {
+        K::Castle | K::Palace | K::Town => Symbol::Castle,
+        K::Village => Symbol::Grid(0, 2),
+        K::Fort => Symbol::Grid(0, 3),
+        K::Ruins => Symbol::Grid(1, 3),
+        K::Church => Symbol::Grid(1, 4),
+        K::Tavern | K::Market | K::Smithy => Symbol::Grid(0, 4),
+        K::Shipyard => Symbol::Grid(1, 1),
+        K::Entrance => Symbol::Grid(1, 2),
+        K::Altar | K::Obelisk => Symbol::Grid(1, 0),
+        K::Camp => Symbol::Grid(0, 1),
+        K::StoneBridge | K::WoodenBridge => return None,
+    })
+}
+
+/// The colour of a location on the minimap, as the original's options give them: villages
+/// yellow (orange once their tribute is taken), buildings by owner, ruins grey, harbours blue.
+fn location_color(l: &razdor::rules::world::Location) -> Color {
+    match l.kind {
+        LocationKind::Village if l.tribute_gold <= 0 && l.tribute_mana <= 0 => option_color("ColorVillageEmpty", [255, 160, 0]),
+        LocationKind::Village => option_color("ColorVillageFull", [255, 255, 0]),
+        LocationKind::Ruins => option_color("ColorRuin", [195, 195, 195]),
+        LocationKind::Shipyard => option_color("ColorHarbor", [40, 160, 255]),
+        _ => match location_side(l) {
+            Side::Player => option_color("ColorBuildingPlayer", [64, 223, 64]),
+            Side::Ally => option_color("ColorBuildingAlly", [0, 160, 255]),
+            Side::Enemy | Side::Neighbour => option_color("ColorBuildingEnemy", [255, 66, 0]),
+            Side::Neutral => option_color("ColorNeutral", [255, 255, 255]),
+        },
+    }
 }
 
 /// Draws the minimap window. `view_world` is the part of the world the map view shows (world
 /// units). Returns the world position clicked, if any.
-pub fn window(game: &Game, view: Rect, view_world: Rect, surface_color: fn(u8) -> Color) -> Option<(f32, f32)> {
+pub fn window(game: &Game, art: Option<&super::dt_art::DtArt>, view: Rect, view_world: Rect, surface_color: fn(u8) -> Color) -> Option<(f32, f32)> {
     let map = &game.world.map;
     let fog = &game.fog;
     let r = rect(map, view);
@@ -128,93 +199,111 @@ pub fn window(game: &Game, view: Rect, view_world: Rect, surface_color: fn(u8) -
     // The window: black behind the map, the original's silver frame over it (or a stone-grey
     // one).
     let frame_art = super::chrome::win_fx("MiniMap_Frame_400x400", super::chrome::Fx::KeyBlack);
-    if frame_art.is_some() {
-        draw_rectangle(o.x, o.y, o.w, o.h, BLACK);
-    } else {
-        draw_rectangle(o.x, o.y, o.w, o.h, Color::new(0.30, 0.31, 0.30, 1.0));
+    draw_rectangle(o.x, o.y, o.w, o.h, BLACK);
+    if frame_art.is_none() {
         draw_rectangle_lines(o.x + 1.0, o.y + 1.0, o.w - 2.0, o.h - 2.0, 2.0, Color::new(0.62, 0.64, 0.62, 1.0));
-        draw_rectangle_lines(r.x - 2.0, r.y - 2.0, r.w + 4.0, r.h + 4.0, 2.0, Color::new(0.12, 0.12, 0.12, 1.0));
     }
-    let tex = cached(&MINI_TEX, fog.fingerprint() ^ (map.w as u64) << 20 ^ map.h as u64, FilterMode::Linear, || {
-        let mut rgba = Vec::with_capacity((map.w * map.h * 4) as usize);
+    let tex = cached(&MINI_TEX, fog.fingerprint() ^ (map.w as u64) << 20 ^ map.h as u64 ^ art.is_some() as u64, FilterMode::Linear, || {
+        // The ground: the terrain texture's own colours; the map objects on it in their
+        // sprites' colours; building footprints (bridges, roads through towns) light.
+        let (w, h) = (map.w as usize, map.h as usize);
+        let mut rgb = vec![[0u8; 3]; w * h];
         for y in 0..map.h {
             for x in 0..map.w {
-                if !fog.explored((x, y)) {
-                    rgba.extend([0, 0, 0, 255]);
-                    continue;
-                }
-                let mut c = surface_color(map.surface_code((x, y)));
-                if !map.passable((x, y)) && surface_minutes(map.surface((x, y))).is_some() {
-                    // Mountains, rocks and thickets: darker, so the passes show.
-                    c = Color::new(c.r * 0.62, c.g * 0.62, c.b * 0.62, 1.0);
-                }
-                let [r, g, b, _] = c.into();
-                rgba.extend([r, g, b, 255]);
+                let code = map.surface_code((x, y));
+                rgb[y as usize * w + x as usize] = art.and_then(|a| a.minimap_ground(code, x, y)).unwrap_or_else(|| {
+                    let [r, g, b, _]: [u8; 4] = surface_color(code).into();
+                    [r, g, b]
+                });
             }
+        }
+        // Objects tint the ground a third of the way to their colour: specks of trees,
+        // lighter hills, grey mountains (as the original's minimap shows them).
+        for o in map.objects_in_rows(0, map.h) {
+            let Some(c) = art.and_then(|a| a.minimap_object(o.class, o.sprite)) else { continue };
+            for t in razdor::rules::map::object_cells(o) {
+                if t.0 >= 0 && t.1 >= 0 && (t.0 as usize) < w && (t.1 as usize) < h {
+                    let p = &mut rgb[t.1 as usize * w + t.0 as usize];
+                    *p = [0, 1, 2].map(|i| ((2 * p[i] as u32 + c[i] as u32) / 3) as u8);
+                }
+            }
+        }
+        // A little darker than the ground's textures (the video: grass (42, 82, 13)
+        // against the texture's (53, 94, 11)).
+        if art.is_some() {
+            rgb.iter_mut().for_each(|p| *p = p.map(|v| (v as u32 * 85 / 100) as u8));
+        }
+        for l in game.world.locations.iter().filter(|l| l.kind.is_bridge()) {
+            for t in l.cells() {
+                if t.0 >= 0 && t.1 >= 0 && (t.0 as usize) < w && (t.1 as usize) < h {
+                    rgb[t.1 as usize * w + t.0 as usize] = [230, 230, 230];
+                }
+            }
+        }
+        // The dark with the map's soft edge.
+        let dark = darkness(fog);
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for (i, c) in rgb.iter().enumerate() {
+            let lit = 255 - dark.get(i).copied().unwrap_or(255) as u32;
+            rgba.extend([c[0], c[1], c[2]].map(|v| (v as u32 * lit / 255) as u8));
+            rgba.push(255);
         }
         (map.w as u16, map.h as u16, rgba)
     });
     draw_texture_ex(&tex, r.x, r.y, WHITE, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
 
-    // World units → minimap pixels.
-    let world_h = map.h as f32 * map.grid.row_height();
-    let k = vec2(r.w / map.w as f32, r.h / world_h);
+    // Cells → minimap pixels (world units: rows are `row_height` apart).
     let rh = map.grid.row_height();
-    let to_mini = |p: (f32, f32)| vec2(r.x + (p.0 + 0.5) * k.x, r.y + (p.1 + 0.5 * rh) * k.y);
+    let k = vec2(r.w / map.w as f32, r.h / map.h as f32);
+    let to_mini = |p: (f32, f32)| vec2(r.x + (p.0 + 0.5) * k.x, r.y + (p.1 / rh + 0.5) * k.y);
 
+    // The symbols, in the size that suits the map (small ones for the big maps).
+    let icons = super::chrome::win_ugs("MM_Icons");
+    let size = if map.w >= 150 { 0 } else if map.w >= 75 { 1 } else { 2 };
+    let zoom = super::chrome::k() * 0.9375;
     for l in game.world.locations.iter().filter(|l| !l.kind.is_bridge()) {
         if !l.cells().any(|t| fog.explored(t)) && !fog.explored(l.tile) {
             continue;
         }
         let (ax, ay) = map.center(l.anchor);
         let c = to_mini((ax - (l.size.0 - 1) as f32 / 2.0, ay - (l.size.1 - 1) as f32 * rh / 2.0));
-        let col = side_color(location_side(l));
-        let dark = Color::new(0.0, 0.0, 0.0, 0.85);
-        match l.kind {
-            LocationKind::Castle | LocationKind::Palace | LocationKind::Fort | LocationKind::Town => {
-                let s = if l.kind == LocationKind::Fort { 7.0 } else { 9.0 };
-                draw_rectangle(c.x - s / 2.0 - 1.0, c.y - s / 2.0 - 1.0, s + 2.0, s + 2.0, dark);
-                draw_rectangle(c.x - s / 2.0, c.y - s / 2.0, s, s, col);
-                // Battlements.
-                draw_rectangle(c.x - s / 2.0, c.y - s / 2.0 - 2.0, 2.0, 2.0, col);
-                draw_rectangle(c.x + s / 2.0 - 2.0, c.y - s / 2.0 - 2.0, 2.0, 2.0, col);
-            }
-            LocationKind::Village => {
-                draw_triangle(vec2(c.x, c.y - 5.0), vec2(c.x - 4.5, c.y - 0.5), vec2(c.x + 4.5, c.y - 0.5), dark);
-                draw_rectangle(c.x - 4.0, c.y - 1.0, 8.0, 5.0, dark);
-                draw_triangle(vec2(c.x, c.y - 4.0), vec2(c.x - 3.5, c.y - 0.5), vec2(c.x + 3.5, c.y - 0.5), col);
-                draw_rectangle(c.x - 3.0, c.y - 0.5, 6.0, 3.5, col);
+        let col = location_color(l);
+        match (&icons, symbol(l.kind)) {
+            (Some(t), Some(sym)) => {
+                let src = symbol_rect(sym, size);
+                let (w, h) = (src.w * zoom, src.h * zoom);
+                super::chrome::tex_src(t, src, Rect::new(c.x - w / 2.0, c.y - h / 2.0, w, h), col);
             }
             _ => {
-                draw_circle(c.x, c.y, 3.5, dark);
+                draw_circle(c.x, c.y, 3.5, Color::new(0.0, 0.0, 0.0, 0.85));
                 draw_circle(c.x, c.y, 2.5, col);
             }
         }
     }
 
-    // The hero: a blinking white marker.
+    // The hero: a blinking mark in the player's colour.
     let h = to_mini(game.display_pos());
     let pulse = 0.6 + 0.4 * (get_time() as f32 * 5.0).sin().abs();
-    draw_circle(h.x, h.y, 4.5, BLACK);
-    draw_circle(h.x, h.y, 3.5, Color::new(1.0, 1.0, 1.0, pulse));
+    let mark = option_color("ColorMarkPlayer", [255, 255, 255]);
+    draw_circle(h.x, h.y, 3.5 * zoom.max(1.0), BLACK);
+    draw_circle(h.x, h.y, 2.5 * zoom.max(1.0), Color::new(mark.r, mark.g, mark.b, pulse));
 
-    // The view: a light rectangle, clipped to the picture.
+    // The view: a light grey box, as the original's.
     let a = to_mini((view_world.x, view_world.y));
     let b = to_mini((view_world.x + view_world.w, view_world.y + view_world.h));
     let (x0, y0) = (a.x.max(r.x), a.y.max(r.y));
     let (x1, y1) = (b.x.min(r.x + r.w), b.y.min(r.y + r.h));
     if x1 > x0 && y1 > y0 {
-        draw_rectangle(x0, y0, x1 - x0, y1 - y0, Color::new(1.0, 1.0, 1.0, 0.14));
-        draw_rectangle_lines(x0, y0, x1 - x0, y1 - y0, 1.5, Color::new(1.0, 1.0, 0.9, 0.8));
+        draw_rectangle(x0, y0, x1 - x0, y1 - y0, Color::new(1.0, 1.0, 1.0, 0.18));
+        draw_rectangle_lines(x0, y0, x1 - x0, y1 - y0, 1.0, Color::new(0.85, 0.85, 0.85, 0.6));
     }
 
     if let Some(t) = frame_art {
-        let pad = 3.0;
-        super::chrome::tex(&t, Rect::new(o.x - pad, o.y - pad, o.w + 2.0 * pad, o.h + 2.0 * pad), WHITE);
+        super::chrome::tex(&t, o, WHITE);
     }
 
-    let m = Vec2::from(mouse_position());
-    (clicked() && r.contains(m)).then(|| ((m.x - r.x) / k.x - 0.5, (m.y - r.y) / k.y - 0.5 * rh))
+    let m = Vec2::from(crate::ui::widgets::pointer());
+    (clicked() && r.contains(m)).then(|| ((m.x - r.x) / k.x - 0.5, ((m.y - r.y) / k.y - 0.5) * rh))
 }
 
 #[cfg(test)]
@@ -243,19 +332,27 @@ mod tests {
     }
 
     #[test]
-    fn side_colours_follow_the_editor() {
-        assert_eq!(side_color(Side::Player), Color::from_rgba(70, 200, 90, 255));
-        assert_eq!(side_color(Side::Enemy), Color::from_rgba(220, 60, 50, 255));
-        assert_eq!(side_color(Side::Ally), Color::from_rgba(70, 130, 230, 255));
+    fn minimap_is_square_for_square_maps_and_keeps_other_aspects() {
+        let codes = vec![0u8; 200 * 100];
+        let map = TileMap::from_codes(Grid::Square8, 200, 100, &codes, vec![]);
+        let view = Rect::new(0.0, 0.0, 1000.0, 700.0);
+        let r = rect_at(&map, view, 1.0);
+        assert!((r.w / r.h - 2.0).abs() < 1e-3, "one cell per texel: {r:?}");
+        let o = outer_at(view, 1.0);
+        assert!(o.contains(r.point()) && r.x + r.w <= o.x + o.w && o.x + o.w <= 1000.0 && o.y >= 0.0);
+        assert!((o.w - o.h).abs() < 1e-3, "the frame is square");
+        let square = TileMap::from_codes(Grid::Square8, 50, 50, &vec![0u8; 2500], vec![]);
+        let r = rect_at(&square, view, 1.0);
+        assert!((r.w - r.h).abs() < 1e-3);
     }
 
     #[test]
-    fn minimap_keeps_the_map_aspect() {
-        let codes = vec![0u8; 200 * 100];
-        let map = TileMap::from_codes(Grid::Square8, 200, 100, &codes, vec![]);
-        let r = rect(&map, Rect::new(0.0, 0.0, 1000.0, 700.0));
-        assert!((r.w - MINIMAP_MAX).abs() < 1e-3);
-        assert!((r.h / r.w - 100.0 * Grid::Square8.row_height() / 200.0).abs() < 1e-4);
-        assert!(r.x + r.w < 1000.0 && r.y > 0.0);
+    fn minimap_symbols_lie_inside_the_atlas() {
+        for size in 0..3 {
+            for sym in [Symbol::Castle, Symbol::Grid(0, 0), Symbol::Grid(1, 4)] {
+                let r = symbol_rect(sym, size);
+                assert!(r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= 108.0 && r.y + r.h <= 128.0, "{size} {r:?}");
+            }
+        }
     }
 }
