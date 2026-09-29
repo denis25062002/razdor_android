@@ -118,7 +118,8 @@ fn take_cues() -> Vec<Cue> {
     cues
 }
 
-/// Volumes (0..1) and mutes, saved in `audio.json` in the save folder.
+/// Volumes (0..1) and mutes, and whether the frame rate shows in the corner, saved in
+/// `audio.json` in the save folder.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -126,11 +127,12 @@ pub struct Settings {
     pub sfx_volume: f32,
     pub music_muted: bool,
     pub sfx_muted: bool,
+    pub show_fps: bool,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false }
+        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false }
     }
 }
 
@@ -463,6 +465,7 @@ mod tests {
         s.step_sfx(-20);
         assert_eq!(s.sfx_volume, 0.0);
         s.music_muted = true;
+        s.show_fps = true;
         assert_eq!(s.music_gain(), 0.0);
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);

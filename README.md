@@ -307,6 +307,8 @@ equipped or drunk (by type) and gold coming in.
   music) and **Off** / **On** for each. They are kept in `audio.json` in the save folder.
 - The `.raw` files do not store their sample rate; Razdor plays them at 22050 Hz. If the
   music sounds too low or slow, try `RAZDOR_MUSIC_RATE=44100`.
+- The settings window (gears on the bottom bar, or **Settings** on the title screen) also has
+  **FPS**: the frame rate in the top right corner, off by default and kept in `audio.json`.
 - `RAZDOR_NO_AUDIO=1` turns sound off; `RAZDOR_AUDIO_LOG=1` prints each sound as it plays.
   The demo (no install) is silent.
 - On Linux the sound goes through ALSA (`libasound.so.2`, present on any desktop; PipeWire

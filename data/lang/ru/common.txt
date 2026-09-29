@@ -27,3 +27,5 @@ Background music volume = Громкость музыки
 Sound effects volume = Громкость звуков
 OK = Ок
 Sound, graphics and gameplay settings = Настройки звука, графики и игры
+FPS shown = FPS: показ
+FPS hidden = FPS: скрыт

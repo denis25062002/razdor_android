@@ -375,6 +375,31 @@ impl App {
         }
     }
 
+    /// The frame rate in the top right corner, when the settings ask for it: frames counted
+    /// over each half second, so the number stays readable.
+    pub fn draw_fps(&self) {
+        thread_local! {
+            /// (frames so far, when counting began, the last rate shown)
+            static COUNT: std::cell::Cell<(u32, f64, u32)> = const { std::cell::Cell::new((0, 0.0, 0)) };
+        }
+        let now = macroquad::prelude::get_time();
+        let (mut n, mut since, mut shown) = COUNT.with(|c| c.get());
+        n += 1;
+        if now - since >= 0.5 {
+            shown = (n as f64 / (now - since)).round() as u32;
+            (n, since) = (0, now);
+        }
+        COUNT.with(|c| c.set((n, since, shown)));
+        if !self.audio.settings.show_fps {
+            return;
+        }
+        let k = chrome::k();
+        let label = format!("FPS {shown}");
+        let size = (14.0 * k).round();
+        let w = widgets::measure(&label, size).width;
+        chrome::shadow_text(&label, macroquad::prelude::screen_width() - w - 8.0 * k, 8.0 * k + size, size, chrome::GOLD);
+    }
+
     /// The current screen's name, for the frame timer (`RAZDOR_PROFILE`).
     pub fn screen_name(&self) -> &'static str {
         match self.screen {

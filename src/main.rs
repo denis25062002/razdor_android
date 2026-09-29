@@ -110,6 +110,7 @@ async fn main() {
         let started = std::time::Instant::now();
         let before = app.screen_name();
         app.frame();
+        app.draw_fps();
         if quiet {
             app.dialogs.clear();
         }

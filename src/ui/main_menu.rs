@@ -330,6 +330,14 @@ pub fn options_window(audio: &mut super::audio::Settings) -> bool {
         cue(Cue::Button);
         super::language::toggle();
     }
+    let fr = Rect::new(lr.x + lr.w + 16.0 * k, lr.y, 150.0 * k, lr.h);
+    let fps_label = if audio.show_fps { tr("FPS shown") } else { tr("FPS hidden") };
+    let over_fps = fr.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
+    chrome::marble_button(fr, fps_label, true, over_fps);
+    if over_fps && clicked() {
+        cue(Cue::Button);
+        audio.show_fps = !audio.show_fps;
+    }
     let ok = Rect::new(inner.x + inner.w - 120.0 * k, inner.y + inner.h - 44.0 * k, 96.0 * k, 28.0 * k);
     let over_ok = ok.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
     let ok_label = own("Buttons", "Ok", n_("OK"));
