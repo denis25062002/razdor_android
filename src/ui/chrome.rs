@@ -756,7 +756,7 @@ pub fn marble_button(r: Rect, label: &str, enabled: bool, hover: bool) {
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, if enabled { SILVER } else { SILVER_DARK });
         draw_rectangle_lines(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0, 1.0, Color::new(0.0, 0.0, 0.0, 0.5));
     }
-    let mut size: f32 = (r.h * 0.56).clamp(12.0, 22.0 * k()).round();
+    let mut size: f32 = (r.h * 0.56).clamp(12.0, (22.0 * k()).max(12.0)).round();
     while size > 11.0 && measure(label, size).width > r.w - 10.0 {
         size -= 1.0;
     }
@@ -799,7 +799,7 @@ pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.5, if hover { GOLD } else { SILVER });
         }
     }
-    let size = super::widgets::fit_size(label, r.w - 8.0, (r.h * 0.62).round().clamp(11.0, 18.0 * k()));
+    let size = super::widgets::fit_size(label, r.w - 8.0, (r.h * 0.62).round().clamp(11.0, (18.0 * k()).max(11.0)));
     let d = measure(label, size);
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, if enabled { WHITE } else { Color::new(0.8, 0.8, 0.8, 1.0) });
     let pressed = hover && super::widgets::clicked();

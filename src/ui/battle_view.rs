@@ -689,7 +689,7 @@ impl BattleView {
         let w = measure(&head, size).width.max(effect.as_ref().map_or(0.0, |e| measure(e, size).width)) + 14.0 * k;
         let h = lh * if effect.is_some() { 2.0 } else { 1.0 } + 8.0 * k;
         let (mx, my) = crate::ui::widgets::pointer();
-        let x = (mx - w * 0.4).clamp(2.0, screen_width() - w - 2.0);
+        let x = (mx - w * 0.4).clamp(2.0, (screen_width() - w - 2.0).max(2.0));
         let y = (my - h - 6.0 * k).max(2.0);
         draw_rectangle(x, y, w, h, Color::new(0.93, 0.89, 0.72, 0.95));
         draw_rectangle_lines(x, y, w, h, 1.0, Color::new(0.2, 0.15, 0.1, 1.0));
