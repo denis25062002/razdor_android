@@ -1,3 +1,5 @@
 /target
 /assets-local
 .claude/
+/.env
+/dist

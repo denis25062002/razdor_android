@@ -1,3 +1,6 @@
+// Release builds for Windows open no console window next to the game's.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod ui;
 
 use std::sync::Arc;
@@ -32,6 +35,8 @@ fn single_instance() {
 fn single_instance() {}
 
 fn conf() -> Conf {
+    // `RAZDOR_DT_DIR` and the other settings may come from a `.env` file.
+    razdor::dt::install::load_dotenv();
     single_instance();
     let (window_width, window_height) = ui::snapshot::size().unwrap_or((1280, 800));
     Conf {
@@ -61,7 +66,12 @@ fn exit_now(app: &mut App) -> ! {
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     // SAFETY: `_exit` only ends the process; no Rust state is used after it.
-    unsafe { libc::_exit(0) }
+    #[cfg(unix)]
+    unsafe {
+        libc::_exit(0)
+    }
+    #[cfg(not(unix))]
+    std::process::exit(0)
 }
 
 #[macroquad::main(conf)]
