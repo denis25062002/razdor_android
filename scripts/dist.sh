@@ -2,6 +2,8 @@
 # Builds the release programs into dist/: `razdor` for Linux (x86_64) and `Razdor.exe` for
 # Windows (x86_64). Either one, put into a Discord Times folder (next to DiscordTimes.exe),
 # plays that install; elsewhere it uses RAZDOR_DT_DIR (also read from a .env file).
+# dist/SHA256SUMS lists their SHA-256: publish it with the files, and check a download with
+# `sha256sum -c SHA256SUMS` (Linux) or `Get-FileHash Razdor.exe` (Windows PowerShell).
 #
 # The Windows build needs the target (`rustup target add x86_64-pc-windows-gnullvm`) and an
 # llvm-mingw toolchain (https://github.com/mstorsjo/llvm-mingw, the ucrt build): set
@@ -28,4 +30,6 @@ AR_x86_64_pc_windows_gnullvm=llvm-ar \
     cargo build --release --target x86_64-pc-windows-gnullvm
 cp target/x86_64-pc-windows-gnullvm/release/razdor.exe dist/Razdor.exe
 
+(cd dist && sha256sum razdor Razdor.exe > SHA256SUMS)
 ls -l dist
+cat dist/SHA256SUMS

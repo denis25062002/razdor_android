@@ -79,7 +79,7 @@ the home folder. Made for the Community Update 1.2 (game 1.8.1).
 
 `scripts/dist.sh` builds both programs into `dist/`: `razdor` for Linux and `Razdor.exe` for
 Windows (x86_64, one file with no DLLs of its own; cross-built with
-[llvm-mingw](https://github.com/mstorsjo/llvm-mingw), see the script).
+[llvm-mingw](https://github.com/mstorsjo/llvm-mingw), see the script), with their SHA-256 in `dist/SHA256SUMS`.
 
 What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 `Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
