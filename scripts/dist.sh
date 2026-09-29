@@ -24,9 +24,10 @@ if ! command -v x86_64-w64-mingw32-clang >/dev/null; then
     echo "x86_64-w64-mingw32-clang not found: set LLVM_MINGW to the llvm-mingw folder" >&2
     exit 1
 fi
-# crt-static links libunwind in, so the exe needs no DLL of its own.
+# crt-static links libunwind in, so the exe needs no DLL of its own. The linker would stamp
+# the build time into the exe's header; without it the same commit always gives the same SHA.
 CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=x86_64-w64-mingw32-clang \
-CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-C target-feature=+crt-static $REMAP" \
+CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,--no-insert-timestamp $REMAP" \
 CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang \
 AR_x86_64_pc_windows_gnullvm=llvm-ar \
     cargo build --release --target x86_64-pc-windows-gnullvm
