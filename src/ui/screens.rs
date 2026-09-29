@@ -155,7 +155,7 @@ pub(super) fn start_game(demo: &Arc<Content>, scenario: Option<(&ScenarioEntry, 
             // Saves name the map file and a hash of its bytes.
             match ScenarioRef::of_map(&e.path, &e.file) {
                 Ok(origin) => g.set_origin(origin),
-                Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
+                Err(err) => razdor::diag!("{}: {err}; this game cannot be saved", e.file),
             }
             g
         }
@@ -290,7 +290,7 @@ pub fn victory(game: &mut Option<Game>, scenarios: &[ScenarioEntry], content: Op
             let mut g = Game::from_campaign(c, &e.scenario, &prev, seed());
             match ScenarioRef::of_map(&e.path, &e.file) {
                 Ok(origin) => g.set_origin(origin),
-                Err(err) => eprintln!("{}: {err}; this game cannot be saved", e.file),
+                Err(err) => razdor::diag!("{}: {err}; this game cannot be saved", e.file),
             }
             *game = Some(g);
             return Some(Screen::WorldMap);

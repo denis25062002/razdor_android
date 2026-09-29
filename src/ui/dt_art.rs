@@ -67,7 +67,7 @@ pub struct DtArt {
 
 fn or_log<T: Default>(what: &str, r: Result<T, DtError>) -> T {
     r.unwrap_or_else(|e| {
-        eprintln!("Discord Times art: {what}: {e}");
+        razdor::diag!("Discord Times art: {what}: {e}");
         T::default()
     })
 }
@@ -101,7 +101,7 @@ impl DtArt {
         match DtInstall::from_env() {
             Ok(install) => Some(DtArt::load(install)),
             Err(e) => {
-                eprintln!("Discord Times install not usable, using placeholders: {e}");
+                razdor::diag!("Discord Times install not usable, using placeholders: {e}");
                 None
             }
         }
@@ -204,7 +204,7 @@ impl DtArt {
                 let sprites = &self.objects().sprites;
                 let images: Vec<&Image> = sprites.iter().map(|s| &s.image).collect();
                 let Some((image, pos)) = gfx::pack_atlas(&images, ATLAS_WIDTH) else {
-                    eprintln!("Discord Times art: map objects do not fit an atlas");
+                    razdor::diag!("Discord Times art: map objects do not fit an atlas");
                     return None;
                 };
                 let texture = texture(&image)?;

@@ -72,7 +72,7 @@ async fn load_png(path: &str) -> Option<Texture2D> {
             Some(tex)
         }
         Err(e) => {
-            eprintln!("could not load {path}: {e}");
+            razdor::diag!("could not load {path}: {e}");
             None
         }
     }

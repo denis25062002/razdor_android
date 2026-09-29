@@ -1,5 +1,5 @@
-//! Build script: lets the audio backend link on Linux systems without ALSA's development
-//! package.
+//! Build script: records the commit for the log, and lets the audio backend link on Linux
+//! systems without ALSA's development package.
 //!
 //! quad-snd links `-lasound`, which needs the development symlink `libasound.so`. Many
 //! desktops only have the runtime library `libasound.so.2`; then a symlink to it is made in
@@ -20,6 +20,16 @@ const LIB_DIRS: &[&str] = &[
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // The commit, for the log (`razdor::diag`).
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
+    let git = |args: &[&str]| {
+        std::process::Command::new("git").args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    if let Some(hash) = git(&["rev-parse", "--short", "HEAD"]) {
+        let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+        println!("cargo:rustc-env=RAZDOR_GIT={hash}{}", if dirty { "-dirty" } else { "" });
+    }
     let audio = std::env::var_os("CARGO_FEATURE_AUDIO").is_some();
     let linux = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux");
     if !audio || !linux {

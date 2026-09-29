@@ -52,7 +52,7 @@ pub fn stage(app: &mut App) {
     super::widgets::set_pointer(pointer());
     let Ok(scene) = std::env::var("RAZDOR_SCENE") else { return };
     if let Err(e) = try_stage(app, &scene) {
-        eprintln!("RAZDOR_SCENE={scene}: {e}");
+        razdor::diag!("RAZDOR_SCENE={scene}: {e}");
     }
 }
 

@@ -108,7 +108,7 @@ pub fn image(rel: &str) -> Option<Image> {
     let dir = CHROME.with(|c| c.borrow().as_ref().map(|c| c.dir.clone()))?;
     find_path(&dir, &format!("Graphics/{rel}"))
         .and_then(|p| gfx::decode_file(&p))
-        .map_err(|e| eprintln!("Discord Times art: {rel}: {e}"))
+        .map_err(|e| razdor::diag!("Discord Times art: {rel}: {e}"))
         .ok()
         .and_then(|mut frames| (!frames.is_empty()).then(|| frames.swap_remove(0)))
 }
@@ -124,7 +124,7 @@ pub fn art(rel: &str, fx: Fx) -> Option<Texture2D> {
         }
         let t = find_path(&c.dir, &format!("Graphics/{rel}"))
             .and_then(|p| gfx::decode_file(&p))
-            .map_err(|e| eprintln!("Discord Times art: {rel}: {e}"))
+            .map_err(|e| razdor::diag!("Discord Times art: {rel}: {e}"))
             .ok()
             .and_then(|mut frames| {
                 let img = frames.get_mut(0)?;
@@ -173,7 +173,7 @@ pub fn animation(rel: &str) -> Option<Vec<Texture2D>> {
         }
         let t = find_path(&c.dir, &format!("Graphics/{rel}"))
             .and_then(|p| gfx::decode_file(&p))
-            .map_err(|e| eprintln!("Discord Times art: {rel}: {e}"))
+            .map_err(|e| razdor::diag!("Discord Times art: {rel}: {e}"))
             .ok()
             .map(|mut frames| {
                 let additive = gfx::is_additive(&frames);
@@ -265,7 +265,7 @@ thread_local! {
 fn blend_material(blend: macroquad::miniquad::BlendState, what: &str) -> Option<Material> {
     let pipeline_params = macroquad::miniquad::PipelineParams { color_blend: Some(blend), ..Default::default() };
     load_material(ShaderSource::Glsl { vertex: ADD_VERTEX, fragment: ADD_FRAGMENT }, MaterialParams { pipeline_params, ..Default::default() })
-        .map_err(|e| eprintln!("{what} material: {e}"))
+        .map_err(|e| razdor::diag!("{what} material: {e}"))
         .ok()
 }
 
@@ -351,7 +351,7 @@ pub fn grey_out(r: Rect) {
     let material = GREY.with(|m| {
         m.get_or_init(|| {
             load_material(ShaderSource::Glsl { vertex: GREY_VERTEX, fragment: GREY_FRAGMENT }, MaterialParams::default())
-                .map_err(|e| eprintln!("grey material: {e}"))
+                .map_err(|e| razdor::diag!("grey material: {e}"))
                 .ok()
         })
         .clone()

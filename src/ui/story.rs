@@ -97,7 +97,7 @@ pub fn show(game: &Game, o: &EventOutcome, message: &mut Option<String>, dialogs
         EventOutcome::Question(id) => dialogs.push_back(event_dialog(game, id, true)),
         EventOutcome::QuestAdded(id) => notice(tr(QUEST_ADDED), Some(id), message, dialogs),
         EventOutcome::QuestCompleted(_) => notice(tr(QUEST_COMPLETED), None, message, dialogs),
-        EventOutcome::LoopGuard => eprintln!("scenario events: loop guard reached"),
+        EventOutcome::LoopGuard => razdor::diag!("scenario events: loop guard reached"),
         EventOutcome::Fired { .. } | EventOutcome::Declined(_) | EventOutcome::Victory(_) | EventOutcome::Defeat(_) => {}
     }
 }

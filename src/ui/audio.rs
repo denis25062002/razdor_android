@@ -163,7 +163,7 @@ impl Settings {
             std::fs::write(&path, serde_json::to_vec_pretty(self).unwrap_or_default())
         });
         if let Err(e) = written {
-            eprintln!("{}: {e}", path.display());
+            razdor::diag!("{}: {e}", path.display());
         }
     }
 
@@ -196,7 +196,7 @@ fn load_now(wav: &[u8]) -> Option<Sound> {
             Poll::Pending => None,
         }
     });
-    std::panic::catch_unwind(run).ok().flatten()
+    razdor::diag::quiet(|| std::panic::catch_unwind(run)).ok().flatten()
 }
 
 /// Whether a playback device opens (the audio thread of quad-snd panics without one, and
@@ -281,19 +281,19 @@ impl Audio {
                 (t0, Ok(b)) => {
                     if audio.log {
                         let (fx, tracks, ms) = (b.sfx.len(), b.table.backgrounds.len(), t0.elapsed().as_millis());
-                        eprintln!("audio: {fx} effects loaded in {ms} ms, {tracks} music tracks, raw music at {} Hz", b.raw_rate);
+                        razdor::diag!("audio: {fx} effects loaded in {ms} ms, {tracks} music tracks, raw music at {} Hz", b.raw_rate);
                     }
                     audio.backend = Some(b);
                     return audio;
                 }
                 (_, Err(e)) => {
-                    eprintln!("{}: {e}; playing without sound", sound::SOUNDS_INI);
+                    razdor::diag!("{}: {e}; playing without sound", sound::SOUNDS_INI);
                     "no sound table"
                 }
             },
         };
         if audio.log || why == "no sound device" {
-            eprintln!("audio: silent ({why})");
+            razdor::diag!("audio: silent ({why})");
         }
         audio
     }
@@ -308,7 +308,7 @@ impl Audio {
             self.saved = self.settings;
         }
         if self.log {
-            eprintln!("audio: shut down");
+            razdor::diag!("audio: shut down");
         }
     }
 
@@ -323,7 +323,7 @@ impl Audio {
         let Some(b) = self.backend.as_mut() else {
             if self.log {
                 for c in cues {
-                    eprintln!("audio (silent): {}", c.key(0));
+                    razdor::diag!("audio (silent): {}", c.key(0));
                 }
             }
             return;
@@ -359,9 +359,9 @@ impl Backend {
                     Some(s) => {
                         sfx.insert(key.to_ascii_lowercase(), s);
                     }
-                    None => eprintln!("{file}: cannot be played"),
+                    None => razdor::diag!("{file}: cannot be played"),
                 },
-                Err(e) => eprintln!("{key}={file}: {e}"),
+                Err(e) => razdor::diag!("{key}={file}: {e}"),
             }
         }
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
@@ -379,11 +379,11 @@ impl Backend {
             Some(s) if gain > 0.0 => {
                 play_sound(s, PlaySoundParams { looped: false, volume: gain });
                 if log {
-                    eprintln!("audio: sfx {key} ({}) at {gain:.1}", self.table.effect(&key).unwrap_or("?"));
+                    razdor::diag!("audio: sfx {key} ({}) at {gain:.1}", self.table.effect(&key).unwrap_or("?"));
                 }
             }
-            Some(_) if log => eprintln!("audio: sfx {key} muted"),
-            None if log => eprintln!("audio: sfx {key} has no sound"),
+            Some(_) if log => razdor::diag!("audio: sfx {key} muted"),
+            None if log => razdor::diag!("audio: sfx {key} has no sound"),
             _ => {}
         }
     }
@@ -400,7 +400,7 @@ impl Backend {
             Some(Change::Stop) => {
                 self.stop_music();
                 if log {
-                    eprintln!("audio: music stops");
+                    razdor::diag!("audio: music stops");
                 }
             }
             Some(Change::Play(track)) => {
@@ -418,11 +418,11 @@ impl Backend {
                         self.music = Some(s);
                         self.jukebox.started(track, macroquad::time::get_time(), secs);
                         if log {
-                            eprintln!("audio: music {track} ({file}, {secs:.1} s, decoded in {} ms) at {gain:.1}", t0.elapsed().as_millis());
+                            razdor::diag!("audio: music {track} ({file}, {secs:.1} s, decoded in {} ms) at {gain:.1}", t0.elapsed().as_millis());
                         }
                     }
                     Err(e) => {
-                        eprintln!("{track}={file}: {e}");
+                        razdor::diag!("{track}={file}: {e}");
                         self.jukebox.failed(track);
                     }
                 }

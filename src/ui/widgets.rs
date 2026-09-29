@@ -28,16 +28,16 @@ const FACE_FILES: [(&str, &[u8]); 3] = [
 pub async fn load_font() {
     for (i, (var, bundled)) in FACE_FILES.iter().enumerate() {
         let own = match std::env::var(var) {
-            Ok(path) => load_ttf_font(&path).await.map_err(|e| eprintln!("{var}={path}: {e}")).ok(),
+            Ok(path) => load_ttf_font(&path).await.map_err(|e| razdor::diag!("{var}={path}: {e}")).ok(),
             Err(_) => None,
         };
-        let font = own.or_else(|| load_ttf_font_from_bytes(bundled).map_err(|e| eprintln!("bundled font {i}: {e}")).ok());
+        let font = own.or_else(|| load_ttf_font_from_bytes(bundled).map_err(|e| razdor::diag!("bundled font {i}: {e}")).ok());
         FACE_FONTS.with(|f| f.borrow_mut()[i] = font);
     }
     // The text face doubles as the font for everything else.
     let text = FACE_FONTS.with(|f| f.borrow()[0].clone());
     if text.is_none() {
-        eprintln!("no TrueType font could be loaded; transliterating");
+        razdor::diag!("no TrueType font could be loaded; transliterating");
     }
     FONT.with(|f| *f.borrow_mut() = text);
 }

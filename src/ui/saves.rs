@@ -103,7 +103,7 @@ fn battle_name(game: &Game) -> String {
 pub fn autosave(game: &Game, name: &str) {
     let Some(dir) = save::default_dir() else { return };
     if let Err(e) = save::write(&dir, SaveKind::Auto, name, game) {
-        eprintln!("autosave: {e}");
+        razdor::diag!("autosave: {e}");
     }
 }
 
@@ -402,7 +402,7 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
             Some(true) => {
                 if let Some(e) = view.entries.get(k) {
                     if let Err(err) = std::fs::remove_file(&e.path) {
-                        eprintln!("{}: {err}", e.path.display());
+                        razdor::diag!("{}: {err}", e.path.display());
                     }
                 }
                 view.confirm_delete = None;

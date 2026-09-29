@@ -120,7 +120,12 @@ impl DtInstall {
     /// Load the install named by `RAZDOR_DT_DIR`.
     pub fn from_env() -> Result<DtInstall, DtError> {
         let dir = locate().ok_or(DtError::NoInstallDir)?;
-        DtInstall::load(&dir)
+        let loaded = DtInstall::load(&dir);
+        match &loaded {
+            Ok(dt) => crate::diag!("install loaded: {} units, {} items, {} spells, {} maps", dt.units.len(), dt.artefacts.len(), dt.spells.len(), dt.maps.len()),
+            Err(e) => crate::diag!("install failed to load: {e}"),
+        }
+        loaded
     }
 
     /// Unit type by `GlobalIndex`.
@@ -147,6 +152,21 @@ impl DtInstall {
 /// A Discord Times install: a folder holding the maps folder and the unit list.
 pub fn is_install(dir: &Path) -> bool {
     dir.join(MAPS_DIR).is_dir() && dir.join(UNITS_FILE).is_file()
+}
+
+/// What an install needs and `dir` lacks, for the log.
+pub fn why_not_install(dir: &Path) -> String {
+    if !dir.is_dir() {
+        return "no such folder".into();
+    }
+    let mut missing = Vec::new();
+    if !dir.join(MAPS_DIR).is_dir() {
+        missing.push(format!("{MAPS_DIR}/"));
+    }
+    if !dir.join(UNITS_FILE).is_file() {
+        missing.push(UNITS_FILE.to_string());
+    }
+    format!("missing {}", missing.join(", "))
 }
 
 /// Where Razdor remembers the install folder: `$RAZDOR_CONFIG_DIR`, else the platform's
@@ -190,16 +210,22 @@ pub fn locate_with(
             let _ = std::fs::write(c, dir.to_string_lossy().as_bytes());
         }
     };
-    if let Some(dir) = env.map(PathBuf::from).filter(|d| is_install(d)) {
-        remember(&dir);
-        return Some(dir);
+    if let Some(dir) = env.map(PathBuf::from) {
+        if is_install(&dir) {
+            remember(&dir);
+            return Some(dir);
+        }
+        crate::diag!("install: {ENV_VAR}={} is not an install ({})", dir.display(), why_not_install(&dir));
     }
     if let Some(dir) = exe {
         return Some(dir);
     }
     let saved = config.and_then(|c| std::fs::read_to_string(c).ok()).map(|t| PathBuf::from(t.trim()));
-    if let Some(dir) = saved.filter(|d| is_install(d)) {
-        return Some(dir);
+    if let Some(dir) = saved {
+        if is_install(&dir) {
+            return Some(dir);
+        }
+        crate::diag!("install: the remembered {} is not an install ({})", dir.display(), why_not_install(&dir));
     }
     fn search(dir: &Path, depth: u32) -> Option<PathBuf> {
         if is_install(dir) {
@@ -225,7 +251,18 @@ pub fn locate_with(
 
 /// [`locate_with`] with the real environment, config file and search folders.
 pub fn locate() -> Option<PathBuf> {
-    locate_with(std::env::var_os(ENV_VAR), exe_dir(), config_file().as_deref(), &search_roots())
+    let exe = exe_dir();
+    if exe.is_none() {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            crate::diag!("install: the program's folder {} is not an install ({})", dir.display(), why_not_install(&dir));
+        }
+    }
+    let found = locate_with(std::env::var_os(ENV_VAR), exe, config_file().as_deref(), &search_roots());
+    match &found {
+        Some(dir) => crate::diag!("install: {}", dir.display()),
+        None => crate::diag!("install: none found (set {ENV_VAR}, or put Razdor into the game folder)"),
+    }
+    found
 }
 
 /// Sets the variables of a `.env` file (`KEY=value` lines, `#` comments, optional quotes,
@@ -238,9 +275,13 @@ pub fn load_dotenv() {
     }
     for file in files {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        crate::diag!(".env: {}", file.canonicalize().unwrap_or(file.clone()).display());
         for (key, value) in parse_dotenv(&text) {
             if std::env::var_os(&key).is_none() {
+                crate::diag!("  {key}={value:?}");
                 std::env::set_var(key, value);
+            } else {
+                crate::diag!("  {key} already set, the file's value is not used");
             }
         }
     }

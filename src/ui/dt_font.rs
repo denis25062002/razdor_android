@@ -102,7 +102,7 @@ impl BitmapFont {
         let boxes = glyph_boxes(&img);
         let chars: Vec<char> = ORDER.chars().collect();
         if boxes.len() != chars.len() {
-            eprintln!("Discord Times font: {} glyph boxes, expected {}", boxes.len(), chars.len());
+            razdor::diag!("Discord Times font: {} glyph boxes, expected {}", boxes.len(), chars.len());
             return None;
         }
         let glyphs: HashMap<char, Glyph> = chars.into_iter().zip(boxes).collect();

@@ -136,7 +136,7 @@ impl App {
             .filter_map(|m| match m.load() {
                 Ok(scenario) => Some(ScenarioEntry { file: m.name.clone(), path: m.path.clone(), scenario }),
                 Err(e) => {
-                    eprintln!("{}: {e}", m.name);
+                    razdor::diag!("{}: {e}", m.name);
                     None
                 }
             })

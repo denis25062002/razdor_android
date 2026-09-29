@@ -131,7 +131,7 @@ impl TerrainLayer {
                 ..Default::default()
             },
         )
-        .map_err(|e| eprintln!("terrain shader: {e}"))
+        .map_err(|e| razdor::diag!("terrain shader: {e}"))
         .ok()?;
         let atlas = Texture2D::from_rgba8(image.width as u16, image.height as u16, &image.rgba);
         atlas.set_filter(FilterMode::Linear);

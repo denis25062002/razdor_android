@@ -81,6 +81,16 @@ the home folder. Made for the Community Update 1.2 (game 1.8.1).
 Windows (x86_64, one file with no DLLs of its own; cross-built with
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), see the script), with their SHA-256 in `dist/SHA256SUMS`.
 
+**When it fails to start or play**: every start writes `razdor.log` (`%APPDATA%\razdor\` on
+Windows, `~/.local/share/razdor/` on Linux; the one before is `razdor.previous.log`): the
+version and commit, the system, the program and working folders, the `RAZDOR_*` variables and
+`.env` files, how the install was found or why a folder is not one, the OpenGL version, then
+each step of the start, so the last line shows where it stopped. A panic (with its backtrace)
+or a crash is written there too and, on Windows, shown in a message box. Started without a
+terminal, everything the program and its libraries print goes into the log; from `cmd` or a
+terminal it is printed there as well. `RAZDOR_LOG=<file>` moves the log;
+`RAZDOR_CRASH_TEST=panic` or `crash` fails on purpose to try the report.
+
 What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 `Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
 `src/dt/` (`dt::install::DtInstall::from_env()`); the formats are described in

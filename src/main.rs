@@ -25,7 +25,7 @@ fn single_instance() {
     };
     // SAFETY: flock on a descriptor we own; it only takes an advisory lock.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        eprintln!("Razdor is already running ({}).", path.display());
+        razdor::diag!("Razdor is already running ({}).", path.display());
         std::process::exit(0);
     }
     let _ = LOCK.set(file);
@@ -35,10 +35,13 @@ fn single_instance() {
 fn single_instance() {}
 
 fn conf() -> Conf {
+    // The log of this start (`razdor.log`, see `razdor::diag`), before anything can fail.
+    razdor::diag::init();
     // `RAZDOR_DT_DIR` and the other settings may come from a `.env` file.
     razdor::dt::install::load_dotenv();
     single_instance();
     let (window_width, window_height) = ui::snapshot::size().unwrap_or((1280, 800));
+    razdor::diag::step(&format!("opening the window ({window_width}x{window_height}, OpenGL)"));
     Conf {
         window_title: "Razdor".to_owned(),
         window_width,
@@ -61,6 +64,7 @@ fn quit_after() -> Option<u64> {
 /// that is no longer mapped. Everything Razdor writes (saves, `audio.json`) is written and
 /// closed synchronously before this, so skipping the handlers loses nothing.
 fn exit_now(app: &mut App) -> ! {
+    razdor::diag::step("quitting");
     app.shutdown();
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -79,10 +83,18 @@ async fn main() {
     // Closing the window sets a flag instead of leaving the loop, so the exit goes through
     // `exit_now`.
     prevent_quit();
+    {
+        let gl = unsafe { get_internal_gl() };
+        let info = gl.quad_context.info();
+        razdor::diag::step(&format!("window open: {:?}, {}", info.backend, info.gl_version_string));
+    }
     ui::widgets::load_font().await;
+    razdor::diag::step("fonts loaded");
     ui::language::init();
     let content = Arc::new(Content::builtin());
+    razdor::diag::step("loading the art and sounds");
     let mut app = App::new(Assets::load(content.clone()).await, content);
+    razdor::diag::step("started");
     // `--editor`: start in the map editor.
     if std::env::args().skip(1).any(|a| a == "--editor") {
         app.open_editor();
@@ -113,13 +125,16 @@ async fn main() {
             exit_now(&mut app);
         }
         next_frame().await;
+        if frames == 1 {
+            razdor::diag::step("first frame shown");
+        }
         if profile {
             // The whole frame: the game's work, then drawing and the GPU (textures and font
             // atlases go up there), vsync included (~16 ms). Over 100 ms is a visible hitch.
             let total = started.elapsed();
             if total.as_millis() > 100 {
                 let (w, r) = (work.as_secs_f32() * 1000.0, (total - work).as_secs_f32() * 1000.0);
-                eprintln!("slow frame: {:.0} ms = work {w:.0} + render {r:.0} ({before} -> {})", w + r, app.screen_name());
+                razdor::diag!("slow frame: {:.0} ms = work {w:.0} + render {r:.0} ({before} -> {})", w + r, app.screen_name());
             }
         }
     }

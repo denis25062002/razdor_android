@@ -44,7 +44,7 @@ impl Settings {
             std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap_or_default())
         });
         if let Err(e) = written {
-            eprintln!("{}: {e}", path.display());
+            razdor::diag!("{}: {e}", path.display());
         }
     }
 }

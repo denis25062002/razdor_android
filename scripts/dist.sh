@@ -12,7 +12,9 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist
 
-cargo build --release
+# Panic messages name source files: without the builder's home and folders.
+REMAP="--remap-path-prefix=$PWD=razdor --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo --remap-path-prefix=$HOME=~"
+RUSTFLAGS="$REMAP" cargo build --release
 cp target/release/razdor dist/razdor
 
 if [ -n "${LLVM_MINGW:-}" ]; then
@@ -24,7 +26,7 @@ if ! command -v x86_64-w64-mingw32-clang >/dev/null; then
 fi
 # crt-static links libunwind in, so the exe needs no DLL of its own.
 CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=x86_64-w64-mingw32-clang \
-CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-C target-feature=+crt-static" \
+CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-C target-feature=+crt-static $REMAP" \
 CC_x86_64_pc_windows_gnullvm=x86_64-w64-mingw32-clang \
 AR_x86_64_pc_windows_gnullvm=llvm-ar \
     cargo build --release --target x86_64-pc-windows-gnullvm
