@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use crate::i18n::tr;
-use super::content::{Bonus, Content, HeroClass, MagicSchool, Nature, SpellDef, Stat, UnitId};
+use super::content::{Bonus, Content, HeroClass, ItemId, MagicSchool, Nature, SpellDef, Stat, UnitId};
 use super::experience::{self, Role, SideUnit};
 use super::formation::{Formation, Row, Slot};
 use super::units::{Stats, Unit};
@@ -230,6 +230,8 @@ pub struct Fighter {
     /// This turn's attack, defence and initiative modifiers (blessings, curses, Stun,
     /// Berserk, Fortify, Flock …). Every turn start sets them to 0.
     pub mods: Buff,
+    /// The items the unit wears (an enemy's too), for the panel.
+    pub items: [Option<ItemId>; crate::rules::items::SLOTS],
     /// Blessed or cursed this turn.
     pub blessed: bool,
     pub cursed: bool,
@@ -287,6 +289,7 @@ impl Fighter {
             at_start: base.clone(),
             base,
             mods: Buff::default(),
+            items: unit.items,
             blessed: false,
             cursed: false,
             actions: 0,
@@ -620,18 +623,23 @@ impl Battle {
         }
     }
 
-    /// The defence bonus `team` has from standing in its own building (0 in the open).
     /// The stats of fighter `i` as the cards and the panel show them: its current stats with
-    /// its side's building defence added to both defences, as the damage formula adds it.
+    /// its side's building defence added to both defences, as the damage formula adds it,
+    /// and, once the fighting has begun, the actions it has left this turn for its
+    /// manoeuvres (more with haste or a first-turn bonus, fewer as it acts or when slowed).
     pub fn shown_stats(&self, i: usize) -> Stats {
         let f = &self.fighters[i];
         let mut s = f.stats.clone();
         let b = self.building_defence[f.team.index()];
         s[Stat::DefenceBlow] += b;
         s[Stat::DefenceShot] += b;
+        if !self.deploying && self.round > 0 && f.alive() {
+            s[Stat::Manevres] = f.actions.max(0);
+        }
         s
     }
 
+    /// The defence bonus `team` has from standing in its own building (0 in the open).
     pub fn building_defence(&self, team: Team) -> i32 {
         self.building_defence[team.index()]
     }
@@ -1274,8 +1282,10 @@ impl Battle {
         if self.has_knight(tf.team) {
             dmg = dmg * KNIGHT_PERCENT / 100;
         }
+        // The invulnerable (and ghosts, immune to weapons) lose 1 hit to any blow or shot,
+        // whatever it pierces or adds: a piercing blow, the Wrath or Anger of God.
         if ts.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
-            dmg = 1;
+            return 1;
         }
         dmg += god_bonus(s);
         if dmg == 0 {

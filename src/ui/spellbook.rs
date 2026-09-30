@@ -3,7 +3,6 @@
 //! it does; cast on the own army or on an enemy army within reach; the spells on the army
 //! now, with the time they have left.
 
-use std::collections::VecDeque;
 
 use macroquad::prelude::*;
 
@@ -17,7 +16,6 @@ use razdor::rules::game::{Game, SPELL_BOOK_SIZE};
 use razdor::rules::magic::{self, CastError, CastOutcome, CastTarget, Duration, CAST_RANGE};
 
 use super::audio::{cue, Cue};
-use super::dialog::Dialog;
 use super::widgets::*;
 use super::world_view;
 use super::Screen;
@@ -81,6 +79,33 @@ pub fn school_label(m: MagicSchool) -> &'static str {
     }
 }
 
+/// The spell `s` read on `t` landed with `outcome`: its sound, and the line telling it.
+pub fn landed(s: &SpellDef, t: CastTarget, outcome: CastOutcome) -> String {
+    if matches!(outcome, CastOutcome::Done { .. }) {
+        cue(if matches!(t, CastTarget::Own) { Cue::SpellGood } else { Cue::SpellEvil });
+    }
+    match outcome {
+        CastOutcome::Done { hits, killed, destroyed } => {
+            let mut m = s.name.clone();
+            if hits != 0 {
+                m += &trf!(": {hits} hits", hits = format!("{hits:+}"));
+            }
+            if killed > 0 {
+                m += &trf!(", {killed} fell", killed);
+            }
+            if destroyed {
+                m += tr(". The army is no more.");
+            } else if magic::is_lasting(s) {
+                m += &format!(" ({})", duration_text(s));
+            }
+            m
+        }
+        CastOutcome::Interrupted => tr("An enemy fell on you while you were casting: the spell is lost.").into(),
+        CastOutcome::TargetLost => tr("The target got away before the spell was ready.").into(),
+        CastOutcome::OutOfMana => tr("Not enough mana left when the spell was ready.").into(),
+    }
+}
+
 fn cast_error(e: CastError) -> &'static str {
     match e {
         CastError::NotInBook | CastError::NoSuchSpell => tr("That spell is not in your book."),
@@ -114,7 +139,6 @@ pub fn frame(
     assets: &super::assets::Assets,
     selected: &mut usize,
     message: &mut Option<String>,
-    dialogs: &mut VecDeque<Dialog>,
 ) -> Option<Screen> {
     use super::chrome::{self, CREAM};
     let bar_pick = world_view::window_backdrop(game, assets, Some(super::game_bar::BarButton::Spells));
@@ -228,33 +252,16 @@ pub fn frame(
         }
     }
     if let Some((s, t)) = target {
-        match game.cast(s.id, t) {
-            Ok(done) => {
+        match game.begin_cast(s.id, t) {
+            Ok(outcome) => {
                 cue(Cue::CastSpell);
-                if matches!(done.outcome, CastOutcome::Done { .. }) {
-                    cue(if matches!(t, CastTarget::Own) { Cue::SpellGood } else { Cue::SpellEvil });
-                }
-                *message = Some(match done.outcome {
-                    CastOutcome::Done { hits, killed, destroyed } => {
-                        let mut m = s.name.clone();
-                        if hits != 0 {
-                            m += &trf!(": {hits} hits", hits = format!("{hits:+}"));
-                        }
-                        if killed > 0 {
-                            m += &trf!(", {killed} fell", killed);
-                        }
-                        if destroyed {
-                            m += tr(". The army is no more.");
-                        } else if magic::is_lasting(&s) {
-                            m += &format!(" ({})", duration_text(&s));
-                        }
-                        m
-                    }
-                    CastOutcome::Interrupted => tr("An enemy fell on you while you were casting: the spell is lost.").into(),
-                    CastOutcome::TargetLost => tr("The target got away before the spell was ready.").into(),
-                    CastOutcome::OutOfMana => tr("Not enough mana left when the spell was ready.").into(),
+                razdor::diag::play(&game.clock.label(), &format!("CAST «{}» on {t:?}: {:.0} min", s.name, game.reading().map_or(0.0, |r| r.1)));
+                // The hero reads on the map; the spell lands when the reading is done.
+                *message = Some(match outcome {
+                    Some(o) => landed(&s, t, o),
+                    None => trf!("Reading «{name}»…", name = s.name),
                 });
-                next = world_view::handle_events(game, done.events, message, dialogs).or(Some(Screen::WorldMap));
+                next = Some(Screen::WorldMap);
             }
             Err(e) => *message = Some(cast_error(e).into()),
         }

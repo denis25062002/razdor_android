@@ -166,6 +166,9 @@ building enters it (`0x68dc74`). The step time charged is the cost of the cell b
   the danger (0x482e4c; 5× wider for stationary guards). Friends: talk seed
   `max(0, 800 − counter) + Talking[model]` when socialising is allowed.
   "Hunts only the player" zeroes other army targets; "ignored by AI" targets are skipped.
+  A friendly army that hunts only the player (the scenarios' messengers) goes to the player
+  to meet him, within its range and whatever its patrol box *(the player observes it; the
+  code path is not traced)*.
 - **Healing** (0x4a2e6e): seed `MinHeal + (MaxHeal − MinHeal) × (1 − missingHP/maxHP)`,
   scaled up by cost/spare-gold when it cannot afford it; resurrection needs a town or church
   (seeded ×3 there). AI healing occupies the army for `HealingTime` minutes (0x4a65b2).
@@ -240,7 +243,7 @@ unless noted. "Before" is what Razdor did until then.
 | Step time | cost of entered cell | cost of the cell left (planner: entered) | done (`Game::step_time`, `TileMap::search`) |
 | Ranger | ×1/1.2 | speed 4 vs 5 (×0.8) | done (`KNIGHT_SPEED`, `RANGER_SPEED`) |
 | Speed correction | ±10%/pt | `max(1, 5−c)/5`; archmage-led AI −1 | done (`Army::speed_for`, also for the event that changes it) |
-| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route | done (`place_buildings`, `Location::bars_hero`, the hero's mask in `Game::plan`); entry cells and gates removed; bridges at sea closed too, and **every** army's cell (not only stationary guards: in play no army can be walked through, as the player observed); an army stepping onto the route makes the hero plan around it |
+| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route | done (`place_buildings`, `Location::bars_hero`, the hero's mask in `Game::plan`); entry cells and gates removed; bridges at sea closed too, and **every** army's cell (not only stationary guards: in play no army can be walked through, as the player observed); an army stepping onto the route makes the hero plan around it. AI armies get the same rule for their side *(Razdor, the player's request; not checked in the original)* (`ai::bars_army`, `ai::army_path`): castles/forts not their own or a friend's (relation > 0), ruins not theirs, other buildings hostile to them; the start and goal buildings stay open |
 | Hero start | building entry / nearest flagged building | preset x/y; flagged buildings become his | done (`World::start_buildings`, `give_to_player`); a preset on water starts him aboard *(guess)* |
 | Sight | 7.5 cell widths on screen | 9/8/10 cells (knight/archmage/ranger), circle in cells | done (`fog::sight_radius`, edge +0.6 M) |
 | Lantern unit | cell widths, guess | cells (×2 half-cells) | done |

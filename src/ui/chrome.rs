@@ -60,6 +60,16 @@ fn lum(p: &[u8]) -> u32 {
     (p[0] as u32 * 30 + p[1] as u32 * 59 + p[2] as u32 * 11) / 100
 }
 
+/// Takes `minus` (r, g, b) off every pixel of `img`, down to black: a spell layer's
+/// `ColorC`.
+pub fn subtract(img: &mut Image, minus: [i32; 3]) {
+    for p in img.rgba.chunks_exact_mut(4) {
+        for (c, m) in p[..3].iter_mut().zip(minus) {
+            *c = (*c as i32 - m).clamp(0, 255) as u8;
+        }
+    }
+}
+
 /// Applies `fx` to `img` in place.
 pub fn transform(img: &mut Image, fx: Fx) {
     for p in img.rgba.chunks_exact_mut(4) {
@@ -137,16 +147,41 @@ pub fn art(rel: &str, fx: Fx) -> Option<Texture2D> {
 }
 
 /// A spell's picture as the original composes it: its `Icon1..3` layers from
-/// `Graphics/Spells`, each tinted by its `ColorC`, the backgrounds (`_` names) first, all
-/// glowing (black adds nothing). Draws nothing without an install.
+/// `Graphics/Spells`, each with its `ColorC` taken away (the ini's "colour correction
+/// (-RGB)": 160,40,100 leaves «Исцеление»'s rays green), the backgrounds (`_` names) first,
+/// all glowing (black adds nothing). Draws nothing without an install.
 pub fn spell_icon(icons: &[razdor::dt::data::SpellIcon], r: Rect) {
     let mut layers: Vec<(&str, Option<[i32; 3]>)> = icons.iter().filter_map(|i| Some((i.image.as_deref()?, i.tint))).collect();
     layers.sort_by_key(|(name, _)| !name.starts_with('_'));
     for (name, tint) in layers {
-        let Some(t) = art(&format!("Spells/{name}.lit"), Fx::Glow) else { continue };
-        let c = tint.map_or(WHITE, |[r, g, b]| Color::from_rgba(r.clamp(0, 255) as u8, g.clamp(0, 255) as u8, b.clamp(0, 255) as u8, 255));
-        draw_texture_ex(&t, r.x, r.y, c, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
+        let Some(t) = spell_layer(name, tint.unwrap_or([0; 3])) else { continue };
+        draw_texture_ex(&t, r.x, r.y, WHITE, DrawTextureParams { dest_size: Some(vec2(r.w, r.h)), ..Default::default() });
     }
+}
+
+/// One layer of a spell's picture with `minus` taken off every pixel, made to glow.
+fn spell_layer(name: &str, minus: [i32; 3]) -> Option<Texture2D> {
+    let rel = format!("Spells/{name}.lit");
+    let key = format!("{rel}#{},{},{}", minus[0], minus[1], minus[2]);
+    CHROME.with(|c| {
+        let mut c = c.borrow_mut();
+        let c = c.as_mut()?;
+        if let Some(t) = c.textures.get(&key).and_then(|v| v[Fx::Glow as usize].as_ref()) {
+            return t.clone();
+        }
+        let t = find_path(&c.dir, &format!("Graphics/{rel}"))
+            .and_then(|p| gfx::decode_file(&p))
+            .map_err(|e| razdor::diag!("Discord Times art: {rel}: {e}"))
+            .ok()
+            .and_then(|mut frames| {
+                let img = frames.get_mut(0)?;
+                subtract(img, minus);
+                transform(img, Fx::Glow);
+                to_texture(img)
+            });
+        c.textures.entry(key).or_default()[Fx::Glow as usize] = Some(t.clone());
+        t
+    })
 }
 
 /// Windows art (`Graphics/Windows/<name>.lit`).
@@ -1025,6 +1060,15 @@ mod tests {
         transform(&mut g, Fx::Glow);
         assert_eq!(g.pixel(0, 0)[3], 0);
         assert_eq!(g.pixel(1, 0), [255, 127, 0, 100]);
+    }
+
+    #[test]
+    fn a_spell_layers_colour_correction_is_taken_away() {
+        // «Исцеление»'s rays: 160,40,100 off white leaves green.
+        let mut a = img(&[[255, 255, 255, 255], [100, 30, 200, 255]]);
+        subtract(&mut a, [160, 40, 100]);
+        assert_eq!(a.pixel(0, 0), [95, 215, 155, 255]);
+        assert_eq!(a.pixel(1, 0), [0, 0, 100, 255], "down to black, not below");
     }
 
     /// Every original picture the interface asks for is in the install and decodes (skipped

@@ -83,6 +83,12 @@ impl Fog {
         }
     }
 
+    /// An explored cell lies within `r` cells of `t` (a square around it): the soft edge of
+    /// the dark reaches that far, so things there show faded through it.
+    pub fn explored_near(&self, t: Tile, r: i32) -> bool {
+        (-r..=r).any(|dy| (-r..=r).any(|dx| self.explored((t.0 + dx, t.1 + dy))))
+    }
+
     /// Marks one cell explored. Returns true if it was dark.
     pub fn mark(&mut self, t: Tile) -> bool {
         let Some(i) = self.index(t) else { return false };
@@ -285,6 +291,14 @@ mod tests {
     use super::*;
     use crate::dt::dtm::{Point, Surface};
     use crate::rules::map::Grid;
+
+    #[test]
+    fn near_explored_reaches_into_the_dark_edge() {
+        let mut fog = Fog::new(10, 10);
+        fog.mark((2, 2));
+        assert!(fog.explored_near((4, 4), 2) && fog.explored_near((0, 3), 2));
+        assert!(!fog.explored_near((5, 2), 2) && !fog.explored((4, 4)));
+    }
 
     fn open_map(w: i32, h: i32) -> TileMap {
         TileMap::from_codes(Grid::Square8, w, h, &vec![Surface::GrassPlain as u8; (w * h) as usize], vec![])

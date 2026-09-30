@@ -192,12 +192,19 @@ fn add_effect(effects: &mut Vec<ActiveSpell>, e: ActiveSpell, minutes: u64, now:
 }
 
 /// Whom to cast on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CastTarget {
     /// The hero's own army.
     Own,
     /// An army on the map, by its [`crate::rules::world::Army::uid`].
     Army(u32),
+}
+
+/// A spell being read on the map ([`Game::begin_cast`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reading {
+    pub spell: u32,
+    pub target: CastTarget,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,7 +221,7 @@ pub enum CastError {
 }
 
 /// How a cast ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CastOutcome {
     /// The spell took effect. `hits`: HP healed (+) or dealt (−) in all; `killed`: units
     /// that fell; `destroyed`: the whole enemy army fell.
@@ -333,6 +340,66 @@ impl Game {
     /// (armies move, events run; an enemy reaching the hero interrupts it), then, if the
     /// target is still there, takes the mana and the spell takes effect.
     pub fn cast(&mut self, spell: u32, target: CastTarget) -> Result<Cast, CastError> {
+        let (def, cost) = self.check_cast(spell, target)?;
+        self.stop();
+        let mut events = Vec::new();
+        let mut left = cost.minutes as f32;
+        while left > 0.0 {
+            let slice = left.min(STEP_MINUTES);
+            left -= slice;
+            self.pass_time(slice, &mut events);
+            if let Some(e) = self.contact() {
+                self.meet(e, &mut events);
+            }
+            if self.foe.is_some() {
+                return Ok(Cast { outcome: CastOutcome::Interrupted, events });
+            }
+        }
+        let outcome = self.land_spell(&def, target, cost);
+        Ok(Cast { outcome, events })
+    }
+
+    /// Starts reading `spell` on the map, as the UI casts: the reading plays in real time,
+    /// half an hour of game time per wait tick like a rest ([`Game::tick`]), and the spell
+    /// lands at its end as an [`Event::SpellCast`]; an enemy catching the hero meanwhile
+    /// loses it, and anything that stops the hero (a walk, a rest, Space) drops it with no
+    /// mana spent. A spell with no reading time lands at once (`Some`).
+    pub fn begin_cast(&mut self, spell: u32, target: CastTarget) -> Result<Option<CastOutcome>, CastError> {
+        let (def, cost) = self.check_cast(spell, target)?;
+        self.stop();
+        let ticks = (cost.minutes as f32 / STEP_MINUTES).ceil() as u32;
+        if ticks == 0 {
+            return Ok(Some(self.land_spell(&def, target, cost)));
+        }
+        self.wait_ticks = ticks;
+        self.reading = Some(Reading { spell, target });
+        Ok(None)
+    }
+
+    /// The spell being read, if any ([`Game::begin_cast`]), and the game minutes left.
+    pub fn reading(&self) -> Option<(u32, f32)> {
+        self.reading.map(|r| (r.spell, self.wait_ticks as f32 * STEP_MINUTES))
+    }
+
+    /// The reading ended (its ticks all played, or an enemy fell on the hero): the spell
+    /// lands, or is lost.
+    pub(crate) fn end_reading(&mut self, events: &mut Vec<Event>) {
+        let Some(r) = self.reading.take() else { return };
+        self.wait_ticks = 0;
+        let outcome = match self.spell(r.spell).cloned() {
+            _ if self.foe.is_some() => CastOutcome::Interrupted,
+            Some(def) => {
+                let cost = self.cast_cost(&def);
+                self.land_spell(&def, r.target, cost)
+            }
+            None => CastOutcome::TargetLost,
+        };
+        events.push(Event::SpellCast { spell: r.spell, target: r.target, outcome });
+    }
+
+    /// A cast may start: the spell is in the book, the target suits it and is in range,
+    /// the mana is there, no battle is pending.
+    fn check_cast(&self, spell: u32, target: CastTarget) -> Result<(SpellDef, CastCost), CastError> {
         if self.foe.is_some() {
             return Err(CastError::Busy);
         }
@@ -352,41 +419,32 @@ impl Game {
         if self.mana < cost.mana {
             return Err(CastError::NotEnoughMana);
         }
-        self.stop();
-        let mut events = Vec::new();
-        let mut left = cost.minutes as f32;
-        while left > 0.0 {
-            let slice = left.min(STEP_MINUTES);
-            left -= slice;
-            self.pass_time(slice, &mut events);
-            if let Some(e) = self.contact() {
-                self.meet(e, &mut events);
-            }
-            if self.foe.is_some() {
-                return Ok(Cast { outcome: CastOutcome::Interrupted, events });
-            }
-        }
+        Ok((def, cost))
+    }
+
+    /// The reading done, the spell takes effect: on the target if it is still in range, if
+    /// the mana is still there (it is spent now).
+    fn land_spell(&mut self, def: &SpellDef, target: CastTarget, cost: CastCost) -> CastOutcome {
         let aim = match target {
             CastTarget::Own => None,
             CastTarget::Army(uid) => match self.spell_targets().into_iter().find(|&i| self.world.armies[i].uid == uid) {
                 Some(i) => Some(i),
-                None => return Ok(Cast { outcome: CastOutcome::TargetLost, events }),
+                None => return CastOutcome::TargetLost,
             },
         };
         if self.mana < cost.mana {
-            return Ok(Cast { outcome: CastOutcome::OutOfMana, events });
+            return CastOutcome::OutOfMana;
         }
         self.mana -= cost.mana;
-        let outcome = match aim {
+        match aim {
             None => {
                 let before = self.squad.iter().filter(|u| u.alive()).count();
-                let hits = self.apply_spell_to_army(&def);
+                let hits = self.apply_spell_to_army(def);
                 let killed = before - self.squad.iter().filter(|u| u.alive()).count();
                 CastOutcome::Done { hits, killed, destroyed: false }
             }
-            Some(i) => self.apply_spell_to_enemy(&def, i),
-        };
-        Ok(Cast { outcome, events })
+            Some(i) => self.apply_spell_to_enemy(def, i),
+        }
     }
 
     /// A spell the hero casts takes effect on his army ([`Game::apply_spell_to_army_ext`]
@@ -689,6 +747,55 @@ mod tests {
         assert_eq!(g.active_spells().len(), 1);
         g.apply_spell(200); // unknown: nothing
         assert_eq!(g.active_spells().len(), 1);
+    }
+
+    /// Plays the game in real time until the reading ends; returns every event.
+    fn read_out(g: &mut Game) -> Vec<Event> {
+        let mut events = Vec::new();
+        for _ in 0..1000 {
+            events.extend(g.tick(0.05));
+            if g.reading().is_none() {
+                break;
+            }
+        }
+        events
+    }
+
+    #[test]
+    fn a_spell_read_on_the_map_lets_the_time_pass_in_real_time() {
+        let mut g = game(HeroClass::Knight);
+        g.squad[1].hp = 5;
+        let start = g.clock.total_minutes();
+        assert_eq!(g.begin_cast(1, CastTarget::Own), Ok(None));
+        assert_eq!(g.reading(), Some((1, 240.0)));
+        assert_eq!((g.mana, g.clock.total_minutes()), (1000, start), "nothing yet");
+        // A few frames in: the clock runs, the spell is not there yet.
+        g.tick(super::super::game::STEP_SECONDS * 2.5);
+        assert!(g.clock.total_minutes() > start && g.reading().is_some() && g.squad[1].hp == 5);
+        let events = read_out(&mut g);
+        let done = CastOutcome::Done { hits: 30, killed: 0, destroyed: false };
+        assert!(events.contains(&Event::SpellCast { spell: 1, target: CastTarget::Own, outcome: done }), "{events:?}");
+        assert_eq!((g.mana, g.clock.total_minutes() - start, g.squad[1].hp), (800, 240.0, 35));
+        assert!(!g.waiting() && g.reading().is_none());
+        // Stopping (a walk, a rest, Space) drops it with no mana spent.
+        g.begin_cast(1, CastTarget::Own).unwrap();
+        g.stop();
+        assert!(read_out(&mut g).is_empty());
+        assert_eq!(g.mana, 800);
+    }
+
+    #[test]
+    fn an_enemy_reaching_the_hero_over_his_book_loses_the_spell() {
+        let mut g = game(HeroClass::Knight);
+        with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
+        g.world.armies.last_mut().unwrap().ai.aggression = 100;
+        let mana = g.mana;
+        assert_eq!(g.begin_cast(2, CastTarget::Own), Ok(None));
+        let events = read_out(&mut g);
+        assert!(events.iter().any(|e| matches!(e, Event::Encounter(_))));
+        assert!(events.iter().any(|e| matches!(e, Event::SpellCast { outcome: CastOutcome::Interrupted, .. })), "{events:?}");
+        assert_eq!(g.mana, mana);
+        assert!(g.active_spells().is_empty() && g.reading().is_none());
     }
 
     #[test]

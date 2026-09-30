@@ -531,7 +531,7 @@ impl BattleView {
         }
         // The left panel: the hovered unit, else the one acting.
         if let Some(id) = self.fighter_under_mouse(l).filter(|&i| b.fighters[i].alive()).or(active).or_else(|| b.fighters.iter().position(|f| f.is_hero)) {
-            self.draw_panel(l, game, assets, id);
+            self.draw_panel(l, assets, id);
         } else {
             chrome::parchment(l.panel, true);
         }
@@ -714,13 +714,11 @@ impl BattleView {
     }
 
     /// The unit panel on the left, as the original's.
-    fn draw_panel(&self, l: &Layout, game: &Game, assets: &Assets, id: usize) {
+    fn draw_panel(&self, l: &Layout, assets: &Assets, id: usize) {
         let b = &self.battle;
         let f = &b.fighters[id];
-        let items: [Option<ItemId>; 4] = match f.squad_index.and_then(|i| game.squad.get(i)) {
-            Some(u) if f.team == Team::Player => u.items,
-            _ => [None; 4],
-        };
+        // What it wears, an enemy's too (an army wears its items, `ai::army_units`).
+        let items: [Option<ItemId>; 4] = f.items;
         let mut status = Vec::new();
         if b.active() == Some(id) && !b.is_deploying() {
             status.push((razdor::trf!("Acting: {left} of {total} actions left", left = b.actions_left(), total = f.stats[Stat::Manevres].max(b.actions_left())), Color::new(0.5, 1.0, 0.5, 1.0)));

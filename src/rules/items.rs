@@ -38,13 +38,12 @@ pub enum EquipError {
 
 /// One `p-` modifier of an item, potion or spell on stat value `x`: `x + x·p/100`, truncated
 /// (economy.md §5). On a percent stat (the three protections, regeneration, vampirism) a
-/// positive `p` closes that share of the gap to 100 instead, as levels do
-/// (experience.md): the player observes «Святое писание» (`p-ProtectDeath=30`) giving a
-/// unit without Death protection 30%, where the plain rule would give 0% of 0 *(guess for
-/// units that already have some: 20% becomes 44%)*.
+/// positive `p` adds its points instead, up to 100: the player observes «Святое писание»
+/// (`p-ProtectDeath=30`) giving a unit without Death protection 30%, and 44% with +20%
+/// giving 64%.
 pub fn percent_mod(st: Stat, x: i32, p: i32) -> i32 {
     if p > 0 && crate::rules::experience::is_percent_stat(st) {
-        x + (100 - x).max(0) * p / 100
+        (x + p).min(100.max(x))
     } else {
         x + x * p / 100
     }
@@ -91,6 +90,16 @@ const HOLY: [u32; 13] = [12, 46, 59, 72, 73, 74, 75, 76, 77, 85, 94, 120, 131];
 /// «Королевская корона», worn only by the hero (or an army's leader) and these unit types.
 const CROWN: u32 = 154;
 const CROWN_WEARERS: [u32; 23] = [1, 2, 3, 11, 13, 15, 36, 42, 45, 46, 48, 49, 53, 56, 58, 69, 70, 72, 73, 77, 89, 97, 99];
+
+/// Puts `item` into item slot `slot` of `unit`: a higher maximum HP comes with as many hit
+/// points more (70/70 wearing +10 is 80/80, not 70/80); lost hit points stay lost.
+pub fn put_on(content: &Content, unit: &mut Unit, slot: usize, item: ItemId) {
+    let before = unit.max_hp(content);
+    unit.items[slot] = Some(item);
+    if unit.alive() {
+        unit.hp += (unit.max_hp(content) - before).max(0);
+    }
+}
 
 /// Slot `item` would go into on `unit`, or why it can't be worn. The original's wear rules
 /// (0x49765c, economy.md §5): a melee weapon or a shield needs melee attack, a ranged
@@ -294,7 +303,8 @@ mod tests {
     fn a_percent_bonus_on_a_protection_closes_the_gap_to_100() {
         // «Святое писание»: p-ProtectDeath=30 on a unit with none.
         assert_eq!(percent_mod(Stat::ProtectDeath, 0, 30), 30);
-        assert_eq!(percent_mod(Stat::ProtectDeath, 20, 30), 44, "20 + 80 × 30%");
+        assert_eq!(percent_mod(Stat::ProtectDeath, 44, 20), 64, "points added, not 44 + 56 × 20%");
+        assert_eq!(percent_mod(Stat::ProtectDeath, 90, 30), 100, "up to 100");
         assert_eq!(percent_mod(Stat::Vampirizm, 0, 25), 25, "«Кровопийца» works from nothing");
         assert_eq!(percent_mod(Stat::ProtectLife, 60, -50), 30, "a curse scales it down");
         assert_eq!(percent_mod(Stat::AttackBlow, 40, 25), 50, "other stats as before");

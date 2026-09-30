@@ -202,6 +202,9 @@ pub enum Goal {
     /// Back to its post.
     Home,
     AttackPlayer,
+    /// Go to the player to meet him: a friendly army that hunts only the player (a
+    /// messenger), whose meeting the scenario's events wait for.
+    MeetPlayer,
     /// An army, by [`Army::uid`].
     AttackArmy(u32),
     /// Take a castle or fort (index into `locations`).
@@ -421,6 +424,34 @@ pub fn welcome_at(a: &Army, l: &Location) -> bool {
     }
 }
 
+/// Army `a` may not walk through building `l`, as the hero may not through his enemies'
+/// ([`Location::bars_hero`]): castles and forts that are not its own or a friend's, ruins
+/// not its own and not cleared, and any other building it is ill-disposed towards.
+pub fn bars_army(a: &Army, l: &Location) -> bool {
+    let own = l.owner == Owner::Army(a.id);
+    let friend = own
+        || match l.owner {
+            Owner::Player => a.attitude > 0,
+            _ => l.faction == a.faction || relation(a, l.faction) > 0,
+        };
+    match l.kind {
+        LocationKind::Castle | LocationKind::Fort => !friend,
+        LocationKind::Ruins => !own && !l.cleared,
+        k if k.is_bridge() => false,
+        _ => hostile_to_location(a, l),
+    }
+}
+
+/// Army `a`'s route from `from` to `to`, around the buildings it may not walk through
+/// ([`bars_army`]); the ones it stands in and heads for stay open.
+pub fn army_path(world: &World, a: &Army, from: Tile, to: Tile, max_nodes: usize) -> Vec<Tile> {
+    let (start, end) = (world.location_covering(from), world.location_covering(to));
+    world.map.path_where(from, to, max_nodes, &|t| match world.location_covering(t) {
+        Some(l) if Some(l) != start && Some(l) != end => !bars_army(a, &world.locations[l]),
+        _ => true,
+    })
+}
+
 /// Kinds that hire for the AI: those that hire for the player, villages and altars
 /// (mechanics.md 5.3).
 pub fn hires_for_ai(kind: LocationKind) -> bool {
@@ -555,10 +586,7 @@ pub fn army_units(c: &Content, a: &Army) -> Vec<Unit> {
     for &item in &a.items {
         for u in units.iter_mut() {
             if let Ok(s) = items::slot_for(c, u, item) {
-                let before = u.max_hp(c);
-                u.items[s] = Some(item);
-                // Hit points lost stay lost; a higher maximum adds to the current HP.
-                u.hp += (u.max_hp(c) - before).max(0);
+                items::put_on(c, u, s, item);
                 break;
             }
         }
@@ -670,6 +698,11 @@ pub fn choose(w: &World, c: &Arc<Content>, i: usize, hero: Option<(Tile, &[Unit]
             if let Some(seed) = battle_seed(s, pr.attack_army, a.attitude, zd, p.aggression) {
                 seeds.offer(seed, Goal::AttackPlayer, vec![h]);
             }
+        }
+        // A friendly army that hunts only the player has nothing else to go for: it comes to
+        // meet him (the scenarios' messengers), wherever its post is.
+        if !a.hostile() && p.player_only && g.octile(here, h) <= range && reach(h) {
+            seeds.offer(pr.talk as i64, Goal::MeetPlayer, vec![h]);
         }
     }
     if p.style != Style::Peasant {
@@ -941,9 +974,14 @@ impl Game {
         let map = &self.world.map;
         let range = target_range(&self.content.options, a.ai.style);
         let sees_hero = hero.is_some_and(|h| map.grid.octile(a.tile(map), h) <= range && in_patrol(a, h));
+        let near_hero = hero.is_some_and(|h| map.grid.octile(a.tile(map), h) <= range);
+        let messenger = !a.hostile() && a.ai.player_only;
         match a.mind.goal {
             // The player went out of range (or a truce began).
             Goal::AttackPlayer => !sees_hero || now < a.ignore_until,
+            Goal::MeetPlayer => !near_hero,
+            // A messenger comes in range of the player.
+            _ if messenger => near_hero,
             // A hostile army spots the player.
             _ => a.hostile() && now >= a.ignore_until && sees_hero,
         }
@@ -1008,7 +1046,7 @@ impl Game {
             Goal::Idle => None,
             Goal::Wander(t) => Some(t),
             Goal::Home => Some(a.post),
-            Goal::AttackPlayer => hero,
+            Goal::AttackPlayer | Goal::MeetPlayer => hero,
             Goal::AttackArmy(u) | Goal::Talk(u) => self.army_by_uid(u).map(|j| self.world.armies[j].tile(&self.world.map)),
             g => g.building().map(|l| self.world.locations[l].tile),
         }
@@ -1019,7 +1057,7 @@ impl Game {
     fn at_goal(&self, i: usize, t: Tile, target: Tile) -> bool {
         let goal = self.world.armies[i].mind.goal;
         let map = &self.world.map;
-        if goal.army().is_some() || goal == Goal::AttackPlayer {
+        if goal.army().is_some() || matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
             map.distance(t, target) <= CONTACT
         } else if let Some(l) = goal.building() {
             self.world.location_at(t) == Some(l)
@@ -1045,7 +1083,7 @@ impl Game {
         if self.at_goal(i, here, target) {
             return;
         }
-        let chases = goal.army().is_some() || goal == Goal::AttackPlayer;
+        let chases = goal.army().is_some() || matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer);
         let fresh = match end {
             Some(e) if chases => self.world.map.distance(e, target) <= 1,
             Some(e) => self.at_goal(i, e, target),
@@ -1054,7 +1092,7 @@ impl Game {
         if fresh {
             return;
         }
-        let nodes = if goal == Goal::AttackPlayer {
+        let nodes = if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
             CHASE_PATH_NODES
         } else if *budget == 0 {
             return;
@@ -1063,7 +1101,7 @@ impl Game {
             GOAL_PATH_NODES
         };
         self.ai_stats.paths += 1;
-        let path = if self.world.same_region(here, target) { self.world.map.path_limited(here, target, nodes) } else { Vec::new() };
+        let path = if self.world.same_region(here, target) { army_path(&self.world, &self.world.armies[i], here, target, nodes) } else { Vec::new() };
         if path.is_empty() {
             self.drop_goal(i, now, true);
         } else {
@@ -1083,7 +1121,7 @@ impl Game {
     /// again at the next slice.
     fn drop_goal(&mut self, i: usize, now: f64, block: bool) {
         let a = &mut self.world.armies[i];
-        if block && a.mind.goal != Goal::AttackPlayer {
+        if block && !matches!(a.mind.goal, Goal::AttackPlayer | Goal::MeetPlayer) {
             let g = a.mind.goal;
             a.mind.blocked.retain(|&(b, until)| b != g && now < until);
             a.mind.blocked.push((g, now + BLOCK_MINUTES));
@@ -1111,7 +1149,7 @@ impl Game {
 
     fn arrive_ai(&mut self, i: usize, hero: Option<Tile>, now: f64, events: &mut Vec<Event>) {
         let goal = self.world.armies[i].mind.goal;
-        if goal == Goal::Idle || goal == Goal::AttackPlayer {
+        if matches!(goal, Goal::Idle | Goal::AttackPlayer | Goal::MeetPlayer) {
             return;
         }
         let Some(target) = self.goal_cell(i, hero) else { return };

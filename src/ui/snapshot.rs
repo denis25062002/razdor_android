@@ -159,12 +159,9 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         "army" => Screen::Squad { selected: 0, scroll: 0, back: None },
         "journal" => Screen::Journal(JournalView::default()),
         "spells" => {
-            // An empty book shows little: the first two world spells of the install, to see.
-            if game.spells.is_empty() {
-                let ids: Vec<u8> = game.content.spells.iter().filter_map(|s| u8::try_from(s.id).ok()).take(2).collect();
-                game.spells = ids;
-                game.mana = 500;
-            }
+            // A book full of the install's spells, to see their pictures.
+            game.spells = game.content.spells.iter().filter_map(|s| u8::try_from(s.id).ok()).take(15).collect();
+            game.mana = 500;
             Screen::Spellbook { selected: 0 }
         }
         "menu" => Screen::Menu(false),

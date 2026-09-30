@@ -6,7 +6,7 @@ use crate::dt::dtm::Scenario;
 use super::ai::{self, AiNews, AiStats, Beaten};
 use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick};
-use super::content::{Bonus, Content, HeroClass, ItemId, Source, UnitId, WageKind};
+use super::content::{Bonus, Content, HeroClass, ItemId, Source, Stat, UnitId, WageKind};
 use super::economy::VillageOffer;
 use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
@@ -180,6 +180,8 @@ pub enum Event {
     /// Entering village `at`, the hero took its tribute (economy.md §3: on entering, all the
     /// gold and mana, no button): what it paid, and the mana.
     Tribute { at: usize, paid: Tribute, mana: i32 },
+    /// A spell read on the map landed, or was lost (`Game::begin_cast`).
+    SpellCast { spell: u32, target: magic::CastTarget, outcome: magic::CastOutcome },
 }
 
 /// Who the next battle is against.
@@ -281,9 +283,12 @@ pub struct Game {
     /// Real seconds into the step (or wait tick) under way ([`STEP_SECONDS`] each).
     #[serde(skip)]
     pub(crate) step_elapsed: f32,
-    /// Wait ticks still to play in real time ([`Game::begin_wait`]).
+    /// Wait ticks still to play in real time ([`Game::begin_wait`], or a reading).
     #[serde(skip)]
     pub(crate) wait_ticks: u32,
+    /// The spell being read while the wait ticks play ([`Game::begin_cast`]).
+    #[serde(skip)]
+    pub(crate) reading: Option<magic::Reading>,
     /// Real seconds since the world last moved, for drawing armies between cells.
     #[serde(skip)]
     pub(crate) since_step: f32,
@@ -361,6 +366,7 @@ impl Game {
             last_offer: None,
             step_elapsed: 0.0,
             wait_ticks: 0,
+            reading: None,
             since_step: 0.0,
             improved_ai: false,
             sims: ai::Sims::default(),
@@ -540,6 +546,47 @@ impl Game {
         }
     }
 
+    /// Squad member `unit` goes to cell `slot` of the formation (the army screen and the
+    /// barracks, by dragging); a unit standing there takes its old cell, as at a battle's
+    /// deployment. False if `slot` is not a cell of the formation.
+    pub fn move_unit(&mut self, unit: usize, slot: Slot) -> bool {
+        if unit >= self.squad.len() || !self.content.formation.slots().any(|s| s == slot) {
+            return false;
+        }
+        let from = self.squad[unit].slot;
+        if let Some(other) = self.squad.iter().position(|u| u.slot == slot) {
+            self.squad[other].slot = from;
+        }
+        self.squad[unit].slot = slot;
+        true
+    }
+
+    /// The pursuit of the army clicked (the original's "automatically pursue the chosen
+    /// army"): while the hero walks to meet it, the route is planned again to where it stands
+    /// now, until they meet (`contact`). An army gone from the map ends the pursuit.
+    fn follow_army(&mut self) {
+        let Some(uid) = self.talk_to else { return };
+        let map = &self.world.map;
+        let Some(at) = self.world.armies.iter().find(|a| a.uid == uid).map(|a| a.tile(map)) else {
+            self.talk_to = None;
+            return;
+        };
+        if self.goal != Some(at) {
+            let path = self.plan(at);
+            if !path.is_empty() {
+                self.path = path;
+                self.goal = Some(at);
+            }
+        }
+    }
+
+    /// The route [`Game::set_destination`] would walk to `to`, without setting off (the map
+    /// shows it on a first click): empty if it can't be reached.
+    pub fn route_to(&self, to: Tile) -> Vec<Tile> {
+        let to = self.world.location_at(to).map_or(to, |l| self.world.locations[l].tile);
+        self.plan(to)
+    }
+
     /// Walk to `to` along the cheapest path. A click on a building means the building: the
     /// walk ends on the first of its cells it reaches. Returns false if it can't be reached.
     pub fn set_destination(&mut self, to: Tile) -> bool {
@@ -555,6 +602,7 @@ impl Game {
         self.goal = Some(to);
         self.location = None;
         self.wait_ticks = 0;
+        self.reading = None;
         true
     }
 
@@ -646,7 +694,9 @@ impl Game {
     pub fn stop(&mut self) {
         self.path.clear();
         self.goal = None;
+        self.talk_to = None;
         self.wait_ticks = 0;
+        self.reading = None;
         self.step_elapsed = 0.0;
     }
 
@@ -658,12 +708,13 @@ impl Game {
         }
         self.path.clear();
         self.goal = None;
+        self.reading = None;
         self.wait_ticks = hours * 2;
     }
 
-    /// A real-time wait is under way.
+    /// A real-time rest is under way (not a reading: [`Game::reading`]).
     pub fn waiting(&self) -> bool {
-        self.wait_ticks > 0
+        self.wait_ticks > 0 && self.reading.is_none()
     }
 
     /// Where to draw the hero: between his cell and the next as the step plays.
@@ -696,7 +747,10 @@ impl Game {
         self.since_step += real_dt;
         if self.foe.is_some() || (!self.moving() && self.wait_ticks == 0) {
             self.step_elapsed = 0.0;
-            self.wait_ticks = if self.foe.is_some() { 0 } else { self.wait_ticks };
+            if self.foe.is_some() {
+                self.end_reading(&mut events);
+                self.wait_ticks = 0;
+            }
             return events;
         }
         self.step_elapsed += real_dt;
@@ -707,12 +761,20 @@ impl Game {
                 self.hero_step(&mut events)
             } else {
                 self.wait_ticks -= 1;
-                self.wait_tick(&mut events)
+                let go = self.wait_tick(&mut events);
+                if self.wait_ticks == 0 || self.foe.is_some() {
+                    // The reading is done, or an enemy fell on the hero over his book.
+                    self.end_reading(&mut events);
+                }
+                go
             };
             if !go || events.iter().any(Event::needs_reading) {
-                // Stop and read: time stands still while a message is open.
+                // Stop and read: time stands still while a message is open. A reading
+                // goes on after it.
                 self.path.clear();
-                self.wait_ticks = 0;
+                if self.reading.is_none() {
+                    self.wait_ticks = 0;
+                }
                 break;
             }
         }
@@ -728,6 +790,7 @@ impl Game {
     /// that has stepped onto his route makes him plan around it, or stop if there is no way.
     /// Returns false when the walk ended.
     fn hero_step(&mut self, events: &mut Vec<Event>) -> bool {
+        self.follow_army();
         let Some(&(mut next)) = self.path.first() else { return false };
         if self.army_cells().any(|t| t == next) && Some(next) != self.goal {
             let Some(goal) = self.goal else {
@@ -840,7 +903,9 @@ impl Game {
         }
         if let Some(e) = &found {
             self.path.clear();
-            self.wait_ticks = 0;
+            if self.reading.is_none() {
+                self.wait_ticks = 0;
+            }
             if let Event::Encounter(i) = e {
                 self.foe = Some(Foe::Army(*i));
             }
@@ -971,16 +1036,16 @@ impl Game {
             // Ships stay on the water: they chase the hero to the water next to him.
             let goal = if sails { Game::sea_chase_goal(world, here, hero_tile) } else { Some(hero_tile) };
             let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS && goal.is_some();
-            let route = |from: Tile, to: Tile| {
+            let route = |a: &Army, from: Tile, to: Tile| {
                 if sails {
                     map.path_by(from, to, AI_PATH_NODES, &|_, y| world.sea_step(y))
                 } else {
-                    map.path_limited(from, to, AI_PATH_NODES)
+                    ai::army_path(world, a, from, to, AI_PATH_NODES)
                 }
             };
             if let (true, Some(goal)) = (near, goal) {
                 if !a.chasing || a.path.last() != Some(&goal) {
-                    a.path = route(here, goal);
+                    a.path = route(a, here, goal);
                     a.chasing = true;
                 }
             } else if a.chasing {
@@ -993,7 +1058,7 @@ impl Game {
                     let t = (a.post.0 + self.rng.range(-r, r), a.post.1 + self.rng.range(-r, r));
                     let fits = if sails { world.is_sea(t) } else { map.passable(t) };
                     if fits && world.location_at(t).is_none() && map.distance(t, a.post) <= r {
-                        a.path = route(here, t);
+                        a.path = route(a, here, t);
                         if !a.path.is_empty() {
                             break;
                         }
@@ -1113,7 +1178,37 @@ impl Game {
         if let Some(own) = here.map(|l| &self.world.locations[l]).filter(|l| (l.owned() || l.attitude > 0) && l.garrison_defence > 0) {
             b.set_building_defence(Team::Player, own.garrison_defence);
         }
+        self.play_battle_start(&b);
         b
+    }
+
+    /// The play log (`diag::play`): both sides of a battle as it starts, every unit with its
+    /// stats, bonuses and worn items.
+    fn play_battle_start(&self, b: &Battle) {
+        let c = &self.content;
+        let foe = match self.foe {
+            Some(Foe::Army(i)) => self.world.armies.get(i).map(|a| format!("army {} «{}» (items {:?})", a.id, a.name, a.items.iter().map(|&i| c.item(i).name.clone()).collect::<Vec<_>>())),
+            Some(Foe::Garrison(l)) => self.world.locations.get(l).map(|l| format!("garrison of building {} «{}»", l.id, l.name)),
+            None => None,
+        };
+        let mut text = format!(
+            "BATTLE starts against {} at {:?}; building defence player {} / enemy {}; AI {}",
+            foe.unwrap_or_else(|| "?".into()),
+            self.tile(),
+            b.building_defence(Team::Player),
+            b.building_defence(Team::Enemy),
+            if self.improved_ai { "expert" } else { "easy" }
+        );
+        for f in &b.fighters {
+            let s = &f.stats;
+            let items: Vec<String> = f.items.iter().flatten().map(|&i| c.item(i).name.clone()).collect();
+            text.push_str(&format!(
+                "\n  {:?} {:?} {} lv{} hp {}/{} AB {} AS {} DB {} DS {} MP {} Ini {} Mnvr {} prot L/E/D {}/{}/{} regen {} vamp {} bonuses {:?} items {:?}",
+                f.team, f.slot, f.name, f.level, f.hp, s.max_hp(), s[Stat::AttackBlow], s[Stat::AttackShot], s[Stat::DefenceBlow], s[Stat::DefenceShot], s[Stat::MagicPower],
+                s[Stat::Initiative], s[Stat::Manevres], s[Stat::ProtectLife], s[Stat::ProtectElemental], s[Stat::ProtectDeath], s[Stat::Regen], s[Stat::Vampirizm], s.bonuses, items
+            ));
+        }
+        crate::diag::play(&self.clock.label(), &text);
     }
 
     /// Mana from the enemies' surrender: when every remaining enemy has `Surrender > 0`
@@ -1133,6 +1228,7 @@ impl Game {
     /// Then the scenario's events run (an army beaten); what they do waits in
     /// [`Game::drain_events`].
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
+        crate::diag::play(&self.clock.label(), &format!("BATTLE log:\n  {}\nBATTLE ends: {:?} after {} turns", battle.log.join("\n  "), battle.outcome(), battle.round));
         let garrison = match self.foe {
             Some(Foe::Garrison(l)) => Some(self.world.locations[l].id),
             _ => None,
@@ -1326,7 +1422,7 @@ impl Game {
         let item = *self.pack.get(pack_index).ok_or(EquipError::NoSuchItem)?;
         let u = self.squad.get(unit).ok_or(EquipError::NoSuchItem)?;
         let slot = items::slot_for(&self.content, u, item)?;
-        self.squad[unit].items[slot] = Some(item);
+        items::put_on(&self.content, &mut self.squad[unit], slot, item);
         self.pack.remove(pack_index);
         Ok(())
     }
@@ -1362,7 +1458,7 @@ impl Game {
         let u = &mut self.squad[from];
         u.items[slot] = None;
         u.hp = u.hp.min(u.max_hp(&self.content));
-        self.squad[to].items[free] = Some(item);
+        items::put_on(&self.content, &mut self.squad[to], free, item);
         Ok(())
     }
 }
@@ -1920,6 +2016,24 @@ mod tests {
     }
 
     #[test]
+    fn an_item_raising_max_hp_brings_its_hit_points() {
+        let mut g = quiet_game(HeroClass::Knight);
+        let shield = item(&g, "oak_shield");
+        let c = g.content.clone();
+        g.squad[0].heal_full(&c);
+        assert_eq!((g.hero().hp, g.hero().max_hp(&c)), (70, 70));
+        g.pack = vec![shield];
+        g.equip(0, 0).unwrap();
+        assert_eq!((g.hero().hp, g.hero().max_hp(&c)), (75, 75), "healed with the new maximum, not 70/75");
+        // Wounded, the lost hit points stay lost.
+        let slot = g.hero().items.iter().position(|i| *i == Some(shield)).unwrap();
+        g.unequip(0, slot).unwrap();
+        g.squad[0].hp = 60;
+        g.equip(0, 0).unwrap();
+        assert_eq!(g.hero().hp, 65);
+    }
+
+    #[test]
     fn a_worn_item_is_handed_to_another_unit() {
         let mut g = quiet_game(HeroClass::Knight);
         let (shield, sword) = (item(&g, "oak_shield"), item(&g, "short_sword"));
@@ -2132,6 +2246,24 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_) | Event::Encounter(_))), "{events:?}");
         assert_eq!(g.tile(), (22, 2));
+    }
+
+    #[test]
+    fn the_hero_follows_the_army_he_clicked_until_they_meet() {
+        let mut s = strip();
+        let mut friend = army(1, 12, 2, 1, &[troop(4, 0, 1)]);
+        friend.patrols = 0;
+        s.armies = vec![friend];
+        let mut g = start(&s);
+        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        let at = g.world.armies[0].tile(&g.world.map);
+        assert!(g.set_destination(at));
+        // It moves on before the hero gets there.
+        g.world.armies[0].pos = g.world.map.center((20, 2));
+        g.world.armies[0].post = (20, 2);
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Met(0)), "met where it went: {events:?}");
+        assert!(g.world.map.distance(g.tile(), (20, 2)) <= 1, "next to it at {:?}", g.tile());
     }
 
     #[test]
@@ -2495,6 +2627,33 @@ mod tests {
     }
 
     #[test]
+    fn a_unit_dragged_onto_another_cell_moves_or_swaps() {
+        use crate::rules::formation::Row;
+        let mut g = quiet_game(HeroClass::Knight);
+        let taken: Vec<_> = g.squad.iter().map(|u| u.slot).collect();
+        let free = g.content.formation.free_slot(&taken, Row::Back).unwrap();
+        g.squad.push(Unit::new(&g.content, unit(&g, "archer"), free));
+        let (hero_at, archer_at) = (g.squad[0].slot, g.squad[1].slot);
+        let empty = g.content.formation.slots().find(|s| *s != hero_at && *s != archer_at).unwrap();
+        assert!(g.move_unit(1, empty));
+        assert_eq!(g.squad[1].slot, empty, "to an empty cell");
+        assert!(g.move_unit(1, hero_at));
+        assert_eq!((g.squad[1].slot, g.squad[0].slot), (hero_at, empty), "onto the hero: they swap");
+        assert!(!g.move_unit(1, crate::rules::formation::Slot::new(Row::Front, 99)), "not a cell");
+    }
+
+    #[test]
+    fn the_shown_route_is_the_one_walked() {
+        let mut g = start(&strip());
+        g.fog = Fog::disabled(24, 6);
+        let shown = g.route_to((20, 2));
+        assert!(!shown.is_empty());
+        assert!(!g.moving(), "showing a route does not set off");
+        assert!(g.set_destination((20, 2)));
+        assert_eq!(g.path, shown);
+    }
+
+    #[test]
     fn no_army_can_be_walked_through() {
         let mut s = strip();
         for y in [0u32, 1, 3, 4, 5] {
@@ -2552,4 +2711,5 @@ mod tests {
         assert_eq!(g.tribute_available(), Some(25), "refilled at midnight");
     }
 }
+
 

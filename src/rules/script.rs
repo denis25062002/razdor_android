@@ -579,10 +579,13 @@ impl EventWorld for Game {
             Holder::Player => {
                 let Some(u) = self.squad.get_mut(unit as usize) else { return };
                 let old: Vec<ItemId> = u.items.iter().flatten().copied().collect();
+                let before = u.max_hp(&c);
                 for (k, slot) in u.items.iter_mut().enumerate() {
                     *slot = items.get(k).copied().and_then(valid);
                 }
-                u.hp = u.hp.min(u.max_hp(&c));
+                // A higher maximum comes with its hit points (`items::put_on`).
+                let max = u.max_hp(&c);
+                u.hp = (u.hp + (max - before).max(0)).min(max);
                 for item in old {
                     if self.pack.len() < PACK_SIZE {
                         self.pack.push(item);
@@ -775,12 +778,13 @@ impl EventWorld for Game {
     fn set_army_target(&mut self, army: ArmyId, x: i32, y: i32) {
         let to = (x, y);
         if let Some(i) = self.army_index(army) {
-            let map = &self.world.map;
+            let w = &self.world;
+            let here = w.armies[i].tile(&w.map);
+            let path = if w.map.passable(to) { super::ai::army_path(w, &w.armies[i], here, to, AI_TARGET_NODES) } else { Vec::new() };
             let a = &mut self.world.armies[i];
-            let here = a.tile(map);
             a.post = to;
             a.chasing = false;
-            a.path = if map.passable(to) { map.path_limited(here, to, AI_TARGET_NODES) } else { Vec::new() };
+            a.path = path;
         } else if let Some(a) = self.army_mut(army) {
             a.post = to;
         }

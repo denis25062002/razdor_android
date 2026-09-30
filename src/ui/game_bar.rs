@@ -244,6 +244,9 @@ pub fn draw(game: &Game, look: impl Fn(BarButton) -> Look) -> Option<BarButton> 
     let mut lines = vec![(tr("Time:").to_string(), Color::new(1.0, 0.93, 0.55, 1.0)), (game.clock.label(), WHITE)];
     if game.moving() {
         lines.push((trf!("Path left: {left}", left = duration_label(game.minutes_left() as f64)), GOLD));
+    } else if let Some((_, left)) = game.reading() {
+        // "Чтение: 2 час", the reading time as the original's book gives it.
+        lines.push((trf!("Reading: {left}", left = duration_label(left as f64)), GOLD));
     } else if game.waiting() {
         lines.push((tr("waiting…").to_string(), GOLD));
     }

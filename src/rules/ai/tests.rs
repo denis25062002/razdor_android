@@ -225,6 +225,22 @@ fn peasants_only_wander_but_hunt_the_player() {
 }
 
 #[test]
+fn a_friendly_army_hunting_only_the_player_comes_to_meet_him() {
+    // A scenario's messenger: friendly, stationary, hunts only the player, no other goals.
+    let mut s = map();
+    let mut m = army(1, (30, 10), 2, ALLY, 2, &[troop(6, 0, 1)]);
+    (m.patrols, m.patrol_radius) = (0, 0);
+    (m.hunts_player_only, m.no_random_targets, m.no_socialising) = (1, 1, 1);
+    s.armies = vec![m];
+    s.header.heroes[0] = hero(38, 10, 100, &[troop(4, 0, 1)]);
+    let mut g = start(&s);
+    assert!(!g.world.armies[0].hostile());
+    assert_eq!(goal(&mut g, 0), Goal::MeetPlayer, "it sets off towards the hero");
+    let events = g.wait(12);
+    assert!(events.iter().any(|e| matches!(e, crate::rules::game::Event::Met(0))), "they meet: {events:?}");
+}
+
+#[test]
 fn passive_armies_heal_first_aggressive_ones_attack() {
     let mut s = map();
     let mut castle = building(BuildingType::Castle, 30, 14, (1, 1));
@@ -703,4 +719,34 @@ fn hostile_armies_still_chase_the_hero() {
     let mut g = start(&s);
     let events = g.wait(4);
     assert!(events.iter().any(|e| matches!(e, Event::Encounter(0))), "{events:?}");
+}
+
+#[test]
+fn armies_walk_around_buildings_that_are_not_theirs_or_friends() {
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 40, 10, (1, 1));
+    fort.faction = 4;
+    let mut ally = building(BuildingType::Fort, 40, 4, (1, 1));
+    ally.faction = 3;
+    s.buildings = vec![fort, ally];
+    s.armies = vec![army(1, (30, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
+    let g = start(&s);
+    let (a, w) = (&g.world.armies[0], &g.world);
+    assert!(bars_army(a, &w.locations[0]), "an enemy fort");
+    assert!(!bars_army(a, &w.locations[1]), "a friend's fort (relation 1)");
+    let covers = |t: Tile, l: usize| w.location_covering(t) == Some(l);
+    let fort_cells: Vec<Tile> = (0..60).flat_map(|x| (0..20).map(move |y| (x, y))).filter(|&t| covers(t, 0)).collect();
+    assert!(!fort_cells.is_empty());
+    let (left, right) = ((fort_cells.iter().map(|t| t.0).min().unwrap() - 2, 10), (fort_cells.iter().map(|t| t.0).max().unwrap() + 2, 10));
+    assert!(w.map.path(left, right).iter().any(|&t| covers(t, 0)), "the straight way crosses it");
+    let across = army_path(w, a, left, right, usize::MAX);
+    assert!(!across.is_empty() && across.iter().all(|&t| !covers(t, 0)), "{across:?}");
+    // The fort it heads for stays open.
+    let into = army_path(w, a, left, fort_cells[0], usize::MAX);
+    assert_eq!(into.last(), Some(&fort_cells[0]));
+    // Its own faction's fort does not stand in its way.
+    let mut s2 = s.clone();
+    s2.buildings[0].faction = 2;
+    let g2 = start(&s2);
+    assert!(!bars_army(&g2.world.armies[0], &g2.world.locations[0]));
 }

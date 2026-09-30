@@ -36,24 +36,27 @@ licence, the SIL Open Font License 1.1 (the `*-OFL.txt` files next to them).
 The repository is private for now. When it is opened, the public copy must contain none of
 the following, **in any commit of its history** (deleting a file in a new commit does not
 remove it from the history, so the public repository starts from a fresh, cleaned copy):
-- **Reverse-engineering notes:** addresses in the original's executable (such as `485908`),
-  record offsets read from its memory (such as `+0xDD`), disassembly, decompiled code or
-  anything else showing how the executable was read. This covers most of
-  `docs/reference/original-mechanics/` and the `[exe]`/**code** evidence in
-  `docs/reference/mechanics.md`: the rules stay, in our own words, without the addresses.
-  The full notes stay in the private repository.
 - **Anything from the game:** maps, ini data, texts, art, sounds, music, decoded or converted
   assets, screenshots or recordings of the original (the content boundary above applies to
   the history too).
 - **Sensitive things:** credentials, tokens, keys, personal data (email addresses, home-folder
-  paths, names), logs (`razdor.log`), saves, settings files, and anything else local to a
-  machine.
+  paths, names), logs (`razdor.log`, `razdor-play.log`), saves, settings files, and anything
+  else local to a machine.
+
+The reverse-engineering notes may stay: executable addresses, memory offsets, disassembly and
+how the executable was read (`docs/reference/original-mechanics/`, the `[exe]`/**code**
+evidence in `docs/reference/mechanics.md`). The game's licence (`License.txt` in the install,
+clause 5) allows using, copying, emulating, decompiling, disassembling and studying its code
+by any means. It still keeps distributing the game to its authors (clause 3) and forbids
+renting, leasing or selling it (clause 6), so the notes describe the original in our own
+words and don't quote its texts or data at length (that falls under the game's content
+above).
 
 ## How to play
 - Pick a hero: Knight (melee; his army takes 10% less physical damage), Archmage
   (Elemental magic: slows or burns the enemy), Ranger (long bow; the army heals 20% a day).
 - The demo kingdom is a hex map (`data/kingdom.txt`, one character per hex,
-  odd rows shifted half a hex): click anywhere to walk the cheapest route. Roads are fast, forest and swamp slow, water and mountains
+  odd rows shifted half a hex): click anywhere to see the cheapest route and its time, click the same spot again (or double click) to walk it. Roads are fast, forest and swamp slow, water and mountains
   impassable. Right click or Space stops.
 - Time runs only while you travel or wait (**Wait 1 h / 4 h**, keys 1 and 4), as in the
   original. At noon the report window shows your gold and mana, the income of your
@@ -143,6 +146,15 @@ terminal, everything the program and its libraries print goes into the log; from
 terminal it is printed there as well. `RAZDOR_LOG=<file>` moves the log;
 `RAZDOR_CRASH_TEST=panic` or `crash` fails on purpose to try the report.
 
+**The play log**, `razdor-play.log` in the same folder (the one before is
+`razdor-play.previous.log`), records a session for reading back when something plays wrong,
+each line with the in-game date: the game started or loaded (map, hero, money), every
+screen, every message, each walk ordered, the world's events (encounters, meetings,
+buildings entered and taken, noon reports, scenario events and quests by number and title),
+and every battle in full: both sides unit by unit (slot, level, hits, all stats,
+protections, bonuses, worn items), the whole battle log and the result. It stays on the
+player's computer.
+
 **"WGL_ARB_pixel_format is required" / no OpenGL driver** (Windows): Razdor needs OpenGL 2,
 and the machine offers only Windows' OpenGL 1.1 fallback. That happens in a Remote Desktop
 (RDP) session, which hides the GPU from OpenGL programs, or without a graphics driver (often
@@ -202,8 +214,11 @@ Enter is "Yes" and **N** / Esc "No").
 | Everywhere (and in the map editor) | F2 | interface language: English / Russian |
 | Everywhere | F9 | quick load: loads the quick save |
 | Everywhere | N | music off / on |
-| World map | click / right click, Space | walk / stop |
+| World map | click, then click the same spot again (or double click) | show the route and its time, then walk it |
+| World map | right click, Space | stop (and drop a shown route) |
 | World map | wheel, + / − | zoom |
+| World map | the mouse at a window edge or corner | pan the map (a click on the map or Tab brings the view back) |
+| World map | right button held and moved | drag the map with the hand |
 | World map | 1 / 4, or left / right click on the time panel | wait 1 or 4 hours |
 | World map | M | minimap |
 | World map | Tab | centre the camera on the hero |

@@ -1552,3 +1552,50 @@ fn real_fort_battle_pays_the_videos_xp() {
     // With a garrison's correction of 100 and "impossible difficulty" (F 100): the video's +25.
     assert_eq!(crate::rules::experience::player_gain(share, c.options.hero_experience_modificator, 100, 100), 25);
 }
+
+#[test]
+fn an_enemys_worn_items_are_known_to_the_battle() {
+    let mut c = content(units(), vec![item(113, ArtefactType::Amulet)]);
+    c.formation = Formation::WIDE;
+    let c = Arc::new(c);
+    let hero = Unit::new(&c, UnitId(10), f(2));
+    let mut shade = Unit::new(&c, UnitId(18), f(2));
+    shade.items[0] = Some(ItemId(113));
+    let bt = Battle::new(c.clone(), &[(0, &hero)], &[shade], Team::Player);
+    assert_eq!(bt.fighters[1].items[0], Some(ItemId(113)), "the panel shows what the enemy wears");
+}
+
+#[test]
+fn the_cards_show_the_actions_left_this_turn() {
+    let quick = UnitDef { manevres: 2, ..warrior(10, 30, 5) };
+    let c = content_with(vec![quick], Formation::WIDE);
+    let mut bt = prepared(&c, &[(10, f(0))], &[(18, f(0))], Team::Player);
+    assert_eq!(bt.shown_stats(0)[Stat::Manevres], 2, "deploying: the plain stat");
+    bt.begin();
+    turn_of(&mut bt, 0);
+    assert_eq!(bt.shown_stats(0)[Stat::Manevres], 2);
+    bt.pass();
+    assert_eq!(bt.shown_stats(0)[Stat::Manevres], 1, "one action spent");
+    bt.fighters[0].actions += 2;
+    assert_eq!(bt.shown_stats(0)[Stat::Manevres], 3, "a haste shows as more");
+}
+
+#[test]
+fn a_piercing_blow_on_the_invulnerable_is_one_hit() {
+    let piercer = bonus(40, Bonus::ArmorIgnore, UnitDef { initiative: 30, ..warrior(40, 60, 0) });
+    let stone = bonus(31, Bonus::Unvulnerabe, UnitDef { hits: 50, ..warrior(31, 1, 30) });
+    let ghost = bonus(33, Bonus::Ghost, UnitDef { hits: 50, ..warrior(33, 1, 30) });
+    for target in [31, 33] {
+        let mut bt = with(vec![piercer.clone(), stone.clone(), ghost.clone()], &[(40, f(2))], &[(target, f(2))]);
+        assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 1, "{target}");
+        turn_of(&mut bt, 0);
+        let hit = bt.act(1).unwrap();
+        assert_eq!((hit.amount, bt.fighters[1].hp), (1, 49), "{target}: {hit:?}");
+    }
+    // The Wrath and Anger of God add nothing to it either.
+    for god in [Bonus::GodAnger, Bonus::GodStrike] {
+        let smiter = bonus(40, god.clone(), UnitDef { initiative: 30, ..warrior(40, 60, 0) });
+        let bt = with(vec![smiter, stone.clone(), ghost.clone()], &[(40, f(2))], &[(31, f(2)), (33, f(3))]);
+        assert_eq!((bt.physical_damage(0, 1, ActionKind::Melee), bt.physical_damage(0, 2, ActionKind::Melee)), (1, 1), "{god:?}");
+    }
+}

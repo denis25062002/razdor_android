@@ -54,8 +54,6 @@ An army attacks! = На вас нападает армия!
 {name} attacks! = {name} нападает!
 A meeting on the road: {who} lets you pass. = Встреча в пути: {who} пропускает вас.
 No way through. = Пути нет.
-At sea: click the shore to land. = В море: щёлкните по берегу, чтобы высадиться.
-Your ship waits; walk onto it to sail. = Корабль ждёт: взойдите на него, чтобы отплыть.
 
 # Spell book
 heals {h} hits = лечит: жизнь +{h}
@@ -88,6 +86,7 @@ Cast on {name} ({d} cells) = Применить: {name} (клеток: {d})
 , {killed} fell = , павших: {killed}
 . The army is no more. = . Армия уничтожена.
 An enemy fell on you while you were casting: the spell is lost. = Враг напал, пока вы творили заклинание: оно потеряно.
+Reading «{name}»… = Чтение «{name}»…
 The target got away before the spell was ready. = Цель ушла прежде, чем заклинание было готово.
 Not enough mana left when the spell was ready. = К концу сотворения не хватило маны.
 Close = Закрыть

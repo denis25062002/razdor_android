@@ -6,12 +6,103 @@ can rebuild from the same commit with `scripts/dist.sh` (see the README). From 0
 release pipeline (`.github/workflows/release.yml`) builds and publishes a version when its
 tag is pushed, and the SHA-256 are in the release's notes.
 
-## Unreleased
+## 0.2.0 — 2026-09-30
+
+### New
+- **Following an army** as in the original («Автоматически преследовать выбранную армию»):
+  after a click on an army (a second click, with the route preview) the hero keeps going to
+  where it is now, until they meet; a right click or Space stops him.
+- **Rearranging the army by dragging**: on the army screen and in the barracks a unit's card
+  dragged onto another cell goes there, swapping with a unit standing in it.
+- **The play log** (`razdor-play.log`, next to `razdor.log`): the session's games, screens,
+  messages, walks, world and scenario events, and every battle in full with both armies'
+  units, stats and items, for reading back when something plays wrong.
+- **Route preview** (a Razdor extra): a click on the map shows the route and its travel
+  time; clicking the same spot again, or a double click, walks it. A right click, Space or
+  a move of the hero drops the preview.
+- **A click while the hero walks stops him**, as in the original (a right click and Space
+  still do too).
+- **Armies on the minimap:** every army on explored ground shows as a mark in the original's
+  colours (`ColorMarkEnemy` for hostile ones, `ColorMarkAlly` for the others), under the
+  hero's blinking mark.
+- **Drag the map with the right button** (a hand cursor while it moves); a right click that
+  does not move still stops the walk.
+- **Edge scrolling** as in the original: the mouse at an edge or a corner of the window pans
+  the map; a click on the map or Tab brings the view back to the hero.
+- **After a quest shows places on the map** the camera flies back to the hero by itself
+  (a click or Tab still skips straight back).
+- **The defeat screen** offers «Загрузить последнее сохранение» (the newest save, manual or
+  automatic, of the same map) and «Начать карту заново» (the same map, the same hero),
+  besides a new game.
+- **A shown place opens like an iris:** a circle grows from its centre to its edges, with a
+  soft rim, instead of the whole area fading in at once.
+
+### Changed
+- **A meeting's words come before the fight:** when an army comes at the hero with an
+  event's message («Встреча с Блэки»), the message is read over the map and the battle opens
+  after «ОК», instead of the battle opening under the message.
+- **No ship hints** in the map's top left corner («Корабль ждёт…», «В море…»): the original
+  has none.
+- **Map zoom** follows the screen size: at zoom 1 the map shows as much ground as the
+  original at its 1024×768 (about 32 cells across), with larger cells and figures on larger
+  screens, instead of fixed 32 px cells that made everything small on big screens. The mouse
+  wheel and +/- still zoom from there.
+- **AI armies keep to the same roads as the hero:** their routes go around castles and
+  forts that aren't their own or a friend's, ruins that aren't theirs, and any other building
+  hostile to them. The building an army heads for (to take it, heal, hire…) and the one it
+  stands in stay open. Before, armies walked straight through any building.
 
 ### Fixed
+- **The invulnerable take 1 hit from any blow or shot:** units with «Неуязвимость» and
+  ghosts («Яростный Дух») lose exactly 1 hit however hard they are hit, piercing blow
+  («Проникающий Удар») or not. «Кара Господня» and «Гнев Господен» added their 10 or 20 on
+  top of that 1.
+- **Spell pictures in the book and the sanctuary** take each layer's `ColorC` away, as the
+  ini says ("colour correction (-RGB)"): «Исцеление» is green, the lightnings purple and
+  cyan. They were multiplied by it, which tinted every picture towards that colour.
+- **A percent bonus to a protection adds its points:** 44% magic protection with +20% from a
+  spell or a potion is 64%, not 55% (the rest of the way to 100 closed by a fifth), up to
+  100%. The same for regeneration and vampirism.
+- **Casting on the map takes its time in front of you:** the hero reads the spell while the
+  clock runs, as a rest does (the time panel shows «Чтение: 2 час» counting down), the armies
+  move meanwhile, and the spell lands at the end. Before, the whole reading passed in one
+  frame and the clock only jumped. An enemy reaching the hero loses the spell; a message
+  pauses the reading; walking, resting or Space drops it. Mana is only spent when the spell
+  lands.
+- **Battle cards show the actions left:** "Mnvr" on the card and in the panel counts down as
+  the unit acts and shows extra actions (haste, a first-turn bonus) in blue and lost ones in
+  red, refilled every turn. It used to show the unchanging stat.
+- **An item that raises maximum HP brings the hit points with it:** a unit at 70/70 given
+  +10 HP is 80/80, not 70/80 (from the pack, handed from another unit, or given by a quest).
+  Hit points already lost stay lost: 60/70 becomes 70/80.
+- **Objects at the edge of the dark** (trees, hills, bridges, buildings) are drawn and fade
+  into it with the fog's soft edge, instead of vanishing while part of the edge still showed
+  ground.
+- **Messengers come to the hero:** a friendly army that hunts only the player (such as
+  «Посыльный» on «Тихая пристань») stood still in its castle, because the AI let armies go
+  for the player only to attack him. It now comes to meet him once he is within its view
+  range, and the meeting's event runs.
+- **A crash on the map** ("byte index 1 is not a char boundary … `Деревня`"): a building
+  drawn without its picture showed the first letter of its type, cut as a byte, which broke
+  on Russian names.
+- **The sell shop** shows items the market does not buy (personal and quest items such as
+  «Проклятые кости», a price of 1 or less) as «не продаётся», and «Продать» stays off for
+  them; before they looked sellable and the button only said no.
+- **Enemies' items in battle:** the unit panel showed worn items for the player's units only;
+  an enemy's now show too (a Тень wearing «Проклятые кости» looked as if it wore nothing).
+- **Past the map's right edge** a strip of half a cell showed terrain without fog; the view
+  now ends at the map's edge, and anything beyond the map is black.
+- **A shown place** no longer shows a faint ring before it fades in: the fog over it is kept
+  exactly as it was, soft edges included, until the reveal.
 - **Builds:** a local build could differ from the release pipeline's when the Rust source
   component was installed (its real paths went into the programs); `scripts/dist.sh` maps
   them back, and a local build of v0.1.2 gives the released `Razdor.exe` bit for bit.
+
+SHA-256 (built with `scripts/dist.sh` from the 0.2.0 sources):
+```
+c0767c6362edc4e1e0ee6022caeeede0010abbae4a14c7bf4ae28b20bcbbfb02  razdor
+96965fe8d922422804ac7da548e5a06643d7466a1d30790a050f7d7815e1d261  Razdor.exe
+```
 
 ## 0.1.2 — 2026-09-30
 

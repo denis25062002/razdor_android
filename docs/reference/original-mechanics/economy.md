@@ -235,7 +235,7 @@ DeltaFixedHits +0x284, DeltaPercentHits +0x288, p-LifeLose +0x30c.
 4. Items' `d-`.
 5. Spells' `d-`.
 6. Potion `p-`.
-7. Each item's `p-` **in turn, compounding**: `x = x + x·p/100`, truncated each time. On a percent stat (protections, regeneration, vampirism) a positive `p-` closes the gap to 100 instead, `x + (100 − x)·p/100`, as levels do: the player observes «Святое писание» (`p-ProtectDeath=30`) giving 30% to a unit with none, which the plain rule cannot. The rule for units that already have some is a guess.
+7. Each item's `p-` **in turn, compounding**: `x = x + x·p/100`, truncated each time. On a percent stat (protections, regeneration, vampirism) a positive `p-` adds its points instead, `min(x + p, 100)`: the player observes «Святое писание» (`p-ProtectDeath=30`) giving 30% to a unit with none, which the plain rule cannot, and a unit with 44% magic protection given +20% having 64%.
 8. Each spell's `p-`, compounding the same way.
 9. HP keeps its fraction of max HP (with a carried fraction). Below 1 → 1; above max → unhurt.
 

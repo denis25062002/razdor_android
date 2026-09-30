@@ -22,6 +22,7 @@ pub mod snapshot;
 pub mod spellbook;
 pub mod story;
 pub mod terrain;
+pub mod unit_drag;
 pub mod unit_sheet;
 pub mod widgets;
 pub mod world_view;
@@ -85,6 +86,23 @@ pub enum Screen {
 }
 
 /// A scenario of the player's install, loaded for the select screen.
+/// The play log's line for a game that starts: how, the map, the hero, the money.
+pub(super) fn play_game_line(game: &Game, how: &str) -> String {
+    let map = match &game.origin {
+        Some(save::ScenarioRef::Map { file, .. }) => file.clone(),
+        Some(save::ScenarioRef::Demo) | None => "demo".into(),
+    };
+    format!(
+        "GAME {how}: map «{map}», hero {} «{}» at {:?}, gold {}, mana {}, squad {}",
+        game.hero().name(&game.content),
+        game.hero_name.clone().unwrap_or_default(),
+        game.tile(),
+        game.gold,
+        game.mana,
+        game.squad.len()
+    )
+}
+
 pub struct ScenarioEntry {
     /// File name without the extension.
     pub file: String,
@@ -116,6 +134,8 @@ pub struct App {
     last_screen: Option<std::mem::Discriminant<Screen>>,
     /// Gold at the end of the last frame of this game (`None` right after a new game or load).
     last_gold: Option<i32>,
+    /// The play log's last screen and message, to write each change once.
+    play_last: (&'static str, Option<String>),
     /// The map editor, kept while a test play runs.
     editor: Option<Box<editor::EditorScreen>>,
     /// The game is a test play of the editor's map: leaving it returns to the editor.
@@ -159,6 +179,7 @@ impl App {
             audio,
             last_screen: None,
             last_gold: None,
+            play_last: ("", None),
             editor: None,
             test_play: false,
             help: false,
@@ -212,6 +233,7 @@ impl App {
                 self.map_view.forget_shows();
                 self.audio.loaded_game();
                 self.last_gold = None;
+                razdor::diag::play(&game.clock.label(), &play_game_line(&game, "editor test play"));
                 self.game = Some(game);
                 self.test_play = true;
                 self.screen = Screen::WorldMap;
@@ -232,6 +254,7 @@ impl App {
                 self.map_view.forget_shows();
                 self.audio.loaded_game();
                 self.last_gold = None;
+                razdor::diag::play(&game.clock.label(), &play_game_line(&game, "loaded"));
                 if let Some(q) = game.pending_question() {
                     story::show(&game, &EventOutcome::Question(q), &mut self.message, &mut self.dialogs);
                 }
@@ -406,6 +429,20 @@ impl App {
         chrome::shadow_text(&label, macroquad::prelude::screen_width() - w - 8.0 * k, 8.0 * k + size, size, chrome::GOLD);
     }
 
+    /// The play log (`diag::play`): the screen when it changes and every new message line.
+    fn play_log_frame(&mut self) {
+        let when = self.game.as_ref().map_or_else(|| "menu".to_string(), |g| g.clock.label());
+        let screen = self.screen_name();
+        if self.play_last.0 != screen {
+            razdor::diag::play(&when, &format!("SCREEN {screen}"));
+            self.play_last.0 = screen;
+        }
+        if self.message.is_some() && self.message != self.play_last.1 {
+            razdor::diag::play(&when, &format!("MESSAGE {}", self.message.as_deref().unwrap_or_default()));
+        }
+        self.play_last.1 = self.message.clone();
+    }
+
     /// The current screen's name, for the frame timer (`RAZDOR_PROFILE`).
     pub fn screen_name(&self) -> &'static str {
         match self.screen {
@@ -482,7 +519,7 @@ impl App {
             (Screen::Battle(view), Some(game)) => view.frame(game, &self.assets, &mut self.message, &mut self.dialogs),
             (Screen::Journal(view), Some(game)) => story::journal(game, &self.assets, view),
             (Screen::Spellbook { selected }, Some(game)) => {
-                spellbook::frame(game, &self.assets, selected, &mut self.message, &mut self.dialogs)
+                spellbook::frame(game, &self.assets, selected, &mut self.message)
             }
             (Screen::Menu(asking), Some(game)) => match saves::exit_window(game, &self.assets, asking) {
                 (Some(saves::ExitChoice::Quit), _) => {
@@ -502,7 +539,17 @@ impl App {
             }
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
-            (Screen::GameOver, game) => screens::game_over(game),
+            (Screen::GameOver, game) => match screens::game_over(game) {
+                (next, Some(screens::EndChoice::Load(path))) => {
+                    self.pending_load = Some(path);
+                    next
+                }
+                (_, Some(screens::EndChoice::Restart)) => {
+                    restart = true;
+                    None
+                }
+                (next, None) => next,
+            },
             (Screen::Victory, game) => screens::victory(game, &self.scenarios, self.dt_content.clone()),
             (Screen::Editor, _) => None,
             (_, None) => Some(Screen::MainMenu),
@@ -548,6 +595,13 @@ impl App {
                 }
             }
         }
+        // A fight decided on the map or in a building begins once the messages of that moment
+        // are read (the original shows a meeting's words over the map, then the battle).
+        if next.is_none() && self.dialogs.is_empty() && matches!(self.screen, Screen::WorldMap | Screen::Building(_)) {
+            if let Some(game) = self.game.as_mut().filter(|g| g.foe.is_some()) {
+                next = Some(saves::battle(game));
+            }
+        }
         // A victory or defeat event ends the game once its window is read.
         if next.is_none() && self.dialogs.is_empty() {
             let end = self.game.as_ref().and_then(Game::script_end);
@@ -591,6 +645,7 @@ impl App {
             }
             self.screen = next;
         }
+        self.play_log_frame();
         // A new game may run on other content: draw its pictures.
         if let Some(g) = &self.game {
             if !Arc::ptr_eq(&g.content, self.assets.content()) {

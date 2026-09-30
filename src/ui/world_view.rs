@@ -30,8 +30,16 @@ use super::story;
 use super::widgets::*;
 use super::Screen;
 
-/// Screen pixels per world unit (one cell width) at zoom 1: the original's 32 px cells.
+/// Screen pixels per world unit (one cell width) at zoom 1 on the original's 1024×768
+/// screen: its 32 px cells.
 const PX: f32 = 32.0;
+
+/// How much larger than the original's 1024×768 the screen is (the interface's scale,
+/// `chrome::k`, is against the 960×720 footage): at zoom 1 the map shows as much ground as
+/// the original's, about 32 cells across, whatever the window size.
+fn map_scale() -> f32 {
+    super::chrome::k() * 0.9375
+}
 /// Sail colour of the hero's own ship.
 const HERO_SAIL: Color = Color::new(0.35, 0.8, 0.45, 1.0);
 fn bar_h() -> f32 {
@@ -49,12 +57,86 @@ pub struct MapView {
     /// Places the scenario's events have shown (lanterns, shown armies), first in line: the
     /// camera flies to each in turn and its uncovered cells fade in from the fog.
     shows: VecDeque<Showing>,
+    /// After the last shown place: when the camera set off back to the hero, and from where.
+    returning: Option<(f64, (f32, f32))>,
+    /// A right-button drag of the map: where the mouse and the camera were when it was
+    /// pressed, and whether it has moved (a press that did not move is a click: stop).
+    grab: Option<(Vec2, (f32, f32), bool)>,
+    /// The route a first click on the map shows (a Razdor extra: the original walks at once):
+    /// the spot clicked, the route, and where the hero stood. A second click on the same
+    /// spot (or a double click) sets off; a move of the hero or a right click drops it.
+    preview: Option<(Tile, Vec<Tile>, Tile)>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new() }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, grab: None, preview: None }
     }
+}
+
+/// Pixels the mouse must move with the right button held before it drags the map.
+const GRAB_START: f32 = 4.0;
+
+/// The right button on the map: pressed, held and moved, it drags the map with the mouse
+/// under a hand cursor; the camera then stays there, as after the minimap, until a click on
+/// the map or Tab. Returns true for a right click that did not drag (it stops the walk).
+fn grab_map(game: &Game, view: &mut MapView, cam: &Camera, on_minimap: bool) -> bool {
+    use macroquad::miniquad::{window::set_mouse_cursor, CursorIcon};
+    let m = Vec2::from(crate::ui::widgets::pointer());
+    if view.grab.is_none() {
+        let on_map = cam.view.contains(m) && !on_minimap;
+        if right_clicked() && on_map && view.shows.is_empty() {
+            view.grab = Some((m, view.look.unwrap_or(game.display_pos()), false));
+        }
+        return false;
+    }
+    let Some((start, from, mut moved)) = view.grab else { return false };
+    if !is_mouse_button_down(MouseButton::Right) || input_blocked() {
+        view.grab = None;
+        set_mouse_cursor(CursorIcon::Default);
+        return !moved && !input_blocked();
+    }
+    let d = m - start;
+    if !moved && d.length() > GRAB_START {
+        moved = true;
+        set_mouse_cursor(CursorIcon::Pointer);
+    }
+    if moved {
+        // The ground follows the mouse: the camera moves against it, kept on the map.
+        let at = Vec2::from(from) - d / cam.scale;
+        view.look = Some(Camera::looking_at(game, view.zoom, at.into()).centre());
+    }
+    view.grab = Some((start, from, moved));
+    false
+}
+
+/// Pixels from a window edge where the mouse pans the map, and the pan's speed in cells per
+/// second at zoom 1 *(the original's default scroll speed is not measured; its settings have
+/// a slider for it)*.
+const EDGE: f32 = 6.0;
+const EDGE_SPEED: f32 = 18.0;
+
+/// The original's edge scrolling: the mouse at an edge (or a corner) of the window pans the
+/// map that way. The camera then stays there, as after the minimap, until a click on the
+/// map or Tab brings it back to the hero. Not while a window or a shown place is open.
+fn edge_scroll(game: &Game, view: &mut MapView, free: bool) {
+    if !free || input_blocked() || !view.shows.is_empty() || view.minimap || view.grab.is_some() {
+        return;
+    }
+    let (mx, my) = crate::ui::widgets::pointer();
+    let (w, h) = (screen_width(), screen_height());
+    let dir = vec2(
+        if mx < EDGE { -1.0 } else if mx >= w - EDGE { 1.0 } else { 0.0 },
+        if my < EDGE { -1.0 } else if my >= h - EDGE { 1.0 } else { 0.0 },
+    );
+    if dir == Vec2::ZERO || mx < 0.0 || my < 0.0 || mx > w || my > h {
+        return;
+    }
+    let step = dir * EDGE_SPEED * get_frame_time().min(0.1) / view.zoom;
+    let at = Vec2::from(view.look.unwrap_or(game.display_pos())) + step;
+    // Where the camera can really look: at the map's border it stops, and so does the pan,
+    // so turning back moves the view at once.
+    view.look = Some(Camera::looking_at(game, view.zoom, at.into()).centre());
 }
 
 /// Seconds the camera takes to reach a shown place, then the uncovered area takes to fade
@@ -68,32 +150,43 @@ const SHOW_REST: f64 = 0.4;
 struct Showing {
     /// World position of the place.
     at: (f32, f32),
-    /// The uncovered cells, as a fog-sized mask (alpha 255 on them).
+    /// The fog as it was before the place was uncovered (soft edges and all), one darkness
+    /// per cell, and the texture it is drawn from: over the map until the reveal, so the
+    /// place pops out of the dark without any hint before.
+    before: Vec<u8>,
     mask: Option<Texture2D>,
+    /// World distance from the place's centre to its farthest uncovered cell, plus the rim.
+    reach: f32,
     /// When the camera set off, and from where.
     started: Option<(f64, (f32, f32))>,
 }
 
+/// Width of the soft rim of the opening circle, in world units (cells).
+const SHOW_RIM: f32 = 2.5;
+
 impl Showing {
     fn new(game: &Game, shown: &razdor::rules::game::Shown) -> Showing {
         let fog = &game.fog;
+        let map = &game.world.map;
+        let at = map.center(shown.at);
+        let mut before = Vec::new();
         let mask = (!shown.cells.is_empty() && fog.w > 0 && fog.h > 0).then(|| {
-            let mut rgba = vec![0u8; (fog.w * fog.h * 4) as usize];
-            for &(x, y) in &shown.cells {
-                rgba[((y * fog.w + x) * 4 + 3) as usize] = 255;
-            }
+            let fresh: std::collections::HashSet<Tile> = shown.cells.iter().copied().collect();
+            before = minimap::darkness_of(fog.w, fog.h, |t| fog.explored(t) && !fresh.contains(&t));
+            let rgba: Vec<u8> = before.iter().flat_map(|&a| [0, 0, 0, a]).collect();
             let t = Texture2D::from_rgba8(fog.w as u16, fog.h as u16, &rgba);
             t.set_filter(FilterMode::Linear);
             t
         });
-        Showing { at: game.world.map.center(shown.at), mask, started: None }
+        let reach = shown.cells.iter().map(|&t| (Vec2::from(map.center(t)) - Vec2::from(at)).length()).fold(0.0, f32::max) + SHOW_RIM + 1.0;
+        Showing { at, before, mask, reach, started: None }
     }
 
-    /// How dark the uncovered cells still are (1 until the camera arrives).
-    fn darkness(&self, now: f64) -> f32 {
+    /// How far the reveal has come: 0 until the camera arrives, 1 when it is open.
+    fn progress(&self, now: f64) -> f32 {
         match self.started {
-            Some((t0, _)) => (1.0 - ((now - t0 - SHOW_PAN) / SHOW_FADE).clamp(0.0, 1.0)) as f32,
-            None => 1.0,
+            Some((t0, _)) => ((now - t0 - SHOW_PAN) / SHOW_FADE).clamp(0.0, 1.0) as f32,
+            None => 0.0,
         }
     }
 }
@@ -106,6 +199,8 @@ impl MapView {
     /// A game was loaded: the places the old one was about to show are dropped.
     pub fn forget_shows(&mut self) {
         self.shows.clear();
+        self.returning = None;
+        self.preview = None;
     }
 }
 
@@ -164,15 +259,24 @@ impl Camera {
 
     fn looking_in(game: &Game, zoom: f32, at: (f32, f32), view: Rect) -> Camera {
         let map = &game.world.map;
-        let scale = PX * zoom;
+        let scale = PX * zoom * map_scale();
         let rh = map.grid.row_height();
-        let world = vec2((map.w as f32 + 0.5) * scale, (map.h as f32) * rh * scale);
+        // The map's extent is its fog grid's: half a cell either side of the cell centres.
+        // Odd rows of a staggered map reach half a cell further right; that overhang stays
+        // out of view.
+        let world = vec2((map.w as f32) * scale, (map.h as f32) * rh * scale);
         let pad = vec2(0.5 * scale, 0.5 * rh * scale);
         let centre = Vec2::from(at) * scale + pad;
         let mut origin = centre - vec2(view.w, view.h) / 2.0;
         origin.x = origin.x.clamp(0.0, (world.x - view.w).max(0.0));
         origin.y = origin.y.clamp(0.0, (world.y - view.h).max(0.0));
         Camera { origin: origin - pad, view, scale, grid: map.grid }
+    }
+
+    /// The world point at the middle of the view (where the camera really looks, the map's
+    /// border taken into account).
+    fn centre(&self) -> (f32, f32) {
+        ((self.origin + vec2(self.view.w, self.view.h) / 2.0) / self.scale).into()
     }
 
     /// Screen position of a world-space point.
@@ -202,22 +306,51 @@ impl Camera {
         (self.to_screen((-0.5, -0.5 * rh)), self.to_screen((map.w as f32 - 0.5, (map.h as f32 - 0.5) * rh)))
     }
 
-    /// The fog layer over the whole map (`ui::minimap`).
+    /// The fog layer over the whole map (`ui::minimap`), and black beyond the map's limits:
+    /// nothing drawn past its edges shows (a map smaller than the window, the overhang of
+    /// staggered rows).
     fn draw_fog(&self, game: &Game) {
         let (tl, br) = self.fog_corners(game);
         minimap::draw_fog(&game.fog, tl, br);
+        let v = self.view;
+        let (l, r) = (tl.x.clamp(v.x, v.x + v.w), br.x.clamp(v.x, v.x + v.w));
+        let (t, b) = (tl.y.clamp(v.y, v.y + v.h), br.y.clamp(v.y, v.y + v.h));
+        for (x, y, w, h) in [(v.x, v.y, l - v.x, v.h), (r, v.y, v.x + v.w - r, v.h), (l, v.y, r - l, t - v.y), (l, b, r - l, v.y + v.h - b)] {
+            if w > 0.0 && h > 0.0 {
+                draw_rectangle(x, y, w, h, BLACK);
+            }
+        }
     }
 
     /// The fog still over places being shown, as dark as each one's fade has left it.
+    /// The fog kept over places being shown. The one being revealed opens like an iris: a
+    /// circle from its centre out to its edges, with a soft rim, clears the old fog.
     fn draw_showing(&self, game: &Game, shows: &VecDeque<Showing>, now: f64) {
         let (tl, br) = self.fog_corners(game);
+        let map = &game.world.map;
+        let (w, h) = (game.fog.w, game.fog.h);
         for s in shows {
-            if let Some(mask) = &s.mask {
-                let a = s.darkness(now);
-                if a > 0.0 {
-                    draw_texture_ex(mask, tl.x, tl.y, Color::new(0.0, 0.0, 0.0, a), DrawTextureParams { dest_size: Some(br - tl), ..Default::default() });
-                }
+            let Some(mask) = &s.mask else { continue };
+            let p = s.progress(now);
+            if p >= 1.0 {
+                continue;
             }
+            if p > 0.0 {
+                // Ease out: quick at first, slowing as it reaches the edges.
+                let r = (1.0 - (1.0 - p) * (1.0 - p)) * s.reach;
+                let centre = Vec2::from(s.at);
+                let mut rgba = vec![0u8; s.before.len() * 4];
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = (y * w + x) as usize;
+                        let d = (Vec2::from(map.center((x, y))) - centre).length();
+                        let keep = ((d - r) / SHOW_RIM + 0.5).clamp(0.0, 1.0);
+                        rgba[i * 4 + 3] = (s.before[i] as f32 * keep) as u8;
+                    }
+                }
+                mask.update(&Image { bytes: rgba, width: w as u16, height: h as u16 });
+            }
+            draw_texture_ex(mask, tl.x, tl.y, WHITE, DrawTextureParams { dest_size: Some(br - tl), ..Default::default() });
         }
     }
 
@@ -395,7 +528,9 @@ fn draw_building(l: &Location, art: Option<&DtArt>, cam: &Camera) {
         if !l.kind.is_bridge() {
             let roof = if l.kind == LocationKind::Camp && l.cleared { rgb(60, 56, 50) } else { rgb(170, 64, 48) };
             draw_triangle(vec2(base.x, base.y - h - h * 0.5), vec2(base.x - w / 2.0, base.y - h), vec2(base.x + w / 2.0, base.y - h), roof);
-            text_centered(&l.kind.label()[..1], base.x, base.y - h * 0.3, (h * 0.6).clamp(10.0, 30.0), BLACK);
+            // The first letter (a char: Russian letters take two bytes).
+            let letter: String = l.kind.label().chars().take(1).collect();
+            text_centered(&letter, base.x, base.y - h * 0.3, (h * 0.6).clamp(10.0, 30.0), BLACK);
         }
         (w, h)
     };
@@ -536,13 +671,15 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     }
 }
 
-fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
+fn draw_world(game: &Game, assets: &Assets, cam: &Camera, preview: Option<&[Tile]>) {
     let art = assets.dt.as_ref();
     draw_terrain(game, art, cam);
-    // The route being walked lies on the ground, under the figures (the original shows no
-    // preview before the click).
+    // The route being walked, or the one a first click shows, lies on the ground under the
+    // figures.
     if game.moving() {
         draw_route(game, &game.path, cam);
+    } else if let Some(path) = preview {
+        draw_route(game, path, cam);
     }
     let map = &game.world.map;
     let ((c0, c1), (r0, r1)) = cam.visible(map);
@@ -552,7 +689,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     let mut items: Vec<(f32, Drawable)> = Vec::new();
     let fog = &game.fog;
     for o in map.objects_in_rows(r0 - 1, r1 + below) {
-        if o.tile.0 >= c0 - side && o.tile.0 < c1 + side && fog.explored(o.tile) {
+        if o.tile.0 >= c0 - side && o.tile.0 < c1 + side && razdor::rules::map::object_cells(o).any(|t| fog.explored_near(t, minimap::FEATHER)) {
             items.push((o.tile.1 as f32 * rh, Drawable::Object(*o)));
         }
     }
@@ -562,7 +699,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     let mut buildings: Vec<(f32, Drawable)> = Vec::new();
     for (i, l) in game.world.locations.iter().enumerate() {
         let (ax, ay) = l.anchor;
-        let seen = l.cells().any(|t| fog.explored(t));
+        let seen = l.cells().any(|t| fog.explored_near(t, minimap::FEATHER));
         if seen && ay >= r0 - 1 && ay < r1 + below && ax >= c0 - side && ax - l.size.0 < c1 + side {
             if l.kind.is_bridge() {
                 items.push((ay as f32 * rh - 1000.0, Drawable::Building(i)));
@@ -831,9 +968,31 @@ fn reopen_here(game: &mut Game, t: Tile) -> Option<Screen> {
 }
 
 
+/// The play log's line for a world event: scenario events by number and title.
+fn play_event(game: &Game, event: &Event) {
+    use razdor::rules::events::EventOutcome as O;
+    let title = |id: u16| story::event_title(game, id);
+    let line = match event {
+        Event::Script(O::Fired { event, message }) => format!("EVENT {event} «{}» fired{}", title(*event), if *message { " (message)" } else { "" }),
+        Event::Script(O::Question(id)) => format!("EVENT {id} «{}» asks", title(*id)),
+        Event::Script(O::Declined(id)) => format!("EVENT {id} «{}» declined", title(*id)),
+        Event::Script(O::QuestAdded(id)) => format!("QUEST {id} «{}» added", title(*id)),
+        Event::Script(O::QuestCompleted(id)) => format!("QUEST {id} «{}» completed", title(*id)),
+        Event::Script(other) => format!("EVENT {other:?}"),
+        Event::Encounter(i) => format!("ENCOUNTER army {} «{}» at {:?}", game.world.armies.get(*i).map_or(0, |a| a.id), game.world.armies.get(*i).map_or("", |a| &a.name), game.tile()),
+        Event::Met(i) => format!("MET army {} «{}»", game.world.armies.get(*i).map_or(0, |a| a.id), game.world.armies.get(*i).map_or("", |a| &a.name)),
+        Event::Arrived(l) => format!("ARRIVED at building {} «{}»", game.world.locations[*l].id, game.world.locations[*l].name),
+        Event::Captured(l) => format!("CAPTURED building {} «{}»", game.world.locations[*l].id, game.world.locations[*l].name),
+        Event::NewDay(r) => format!("NOON income {} mana {} wages {} unpaid {} deserted {} gold {}", r.income, r.mana, r.wages, r.unpaid, r.deserted.len(), r.gold),
+        other => format!("{other:?}"),
+    };
+    razdor::diag::play(&game.clock.label(), &line);
+}
+
 fn describe(event: &Event, game: &Game) -> Option<String> {
     match event {
         Event::NewDay(_) | Event::Captured(_) | Event::Script(_) => None,
+        Event::SpellCast { spell, target, outcome } => game.spell(*spell).map(|s| super::spellbook::landed(s, *target, *outcome)),
         Event::Tribute { paid, mana, .. } => Some(match paid {
             razdor::rules::game::Tribute::Gold(g) => trf!("The village pays its tribute: {g} gold and {mana} mana.", g, mana),
             razdor::rules::game::Tribute::Item(item) => trf!("The village pays with a {item} and {mana} mana.", item = game.content.item(*item).name, mana),
@@ -862,14 +1021,16 @@ fn describe(event: &Event, game: &Game) -> Option<String> {
 pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let mut next = None;
     for event in events {
+        play_event(game, &event);
         if let Some(m) = describe(&event, game) {
             *message = Some(m);
         }
         match event {
-            Event::Encounter(_) => next = Some(saves::battle(game)),
+            // The battle waits for the messages of the same moment (a meeting's words) to be
+            // read: the app starts it once no dialog is open (`App::frame`).
+            Event::Encounter(_) => {}
             Event::Arrived(l) => {
                 if game.foe.is_some() {
-                    next = Some(saves::battle(game));
                 } else if let Some(first) = first_tab(&game.world.locations[l]) {
                     *message = None;
                     next = Some(Screen::Building(BuildingView::new(first)));
@@ -879,7 +1040,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             Event::NewDay(r) if r.is_empty() => {}
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
-            Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } => {}
+            Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } | Event::SpellCast { .. } => {}
             Event::LevelUp(..) => cue(Cue::Upgrade),
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }
@@ -893,7 +1054,7 @@ pub fn backdrop_lit(game: &Game, assets: &Assets, lit: Option<BarButton>) {
     clear_background(rgb(10, 12, 10));
     let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
     let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
-    draw_world(game, assets, &cam);
+    draw_world(game, assets, &cam, None);
     cam.draw_fog(game);
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.2));
     game_bar::draw(game, |b| if Some(b) == lit { Look::Lit } else { Look::Grey });
@@ -910,7 +1071,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
     clear_background(rgb(10, 12, 10));
     let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
     let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
-    draw_world(game, assets, &cam);
+    draw_world(game, assets, &cam, None);
     cam.draw_fog(game);
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.0, 0.0, 0.0, 0.2));
     let idle = game.foe.is_none();
@@ -997,7 +1158,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.zoom = (view.zoom / 1.2).max(0.4);
     }
 
-    // Input: click to walk, right click or Space to stop; M toggles the minimap.
+    // Input: click to walk, a click while walking, right click or Space to stop; M toggles
+    // the minimap.
     if key(KeyCode::M) {
         view.minimap = !view.minimap;
     }
@@ -1007,18 +1169,26 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for shown in std::mem::take(&mut game.shown) {
         view.shows.push_back(Showing::new(game, &shown));
     }
-    if !view.shows.is_empty() && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
+    if (!view.shows.is_empty() || view.returning.is_some()) && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
         view.shows.clear();
+        view.returning = None;
+        view.look = None;
     }
     if key(KeyCode::Tab) {
         view.look = None;
     }
+    edge_scroll(game, view, dialogs.is_empty());
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     let mut reopened = None;
     if clicked() && !on_minimap {
-        if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
+        if game.moving() {
+            // A click while the hero walks stops him, as in the original.
+            game.stop();
+            view.preview = None;
+            view.look = None;
+        } else if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
             // A click on the building the party stands in opens it again.
             *message = None;
             reopened = Some(screen);
@@ -1029,14 +1199,39 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             } else {
                 game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t)
             };
-            if target != game.tile() && !game.set_destination(target) {
-                *message = Some(tr("No way through.").into());
+            // The first click shows the route; a second one on the same spot (a double
+            // click, or a later click) sets off.
+            if target != game.tile() {
+                if view.preview.as_ref().is_some_and(|p| p.0 == target) {
+                    view.preview = None;
+                    if game.set_destination(target) {
+                        razdor::diag::play(&game.clock.label(), &format!("WALK from {:?} to {:?}: {} steps, {:.0} min", game.tile(), target, game.path.len(), game.minutes_left()));
+                    } else {
+                        *message = Some(tr("No way through.").into());
+                    }
+                } else {
+                    let route = game.route_to(target);
+                    view.preview = (!route.is_empty()).then(|| (target, route, game.tile()));
+                    if view.preview.is_none() {
+                        *message = Some(tr("No way through.").into());
+                    }
+                }
             }
             view.look = None;
         }
     }
-    if right_clicked() || key(KeyCode::Space) {
+    // Right button: a click stops the walk; held and moved, it grabs the map (the hand).
+    if key(KeyCode::Space) {
         game.stop();
+        view.preview = None;
+    }
+    if grab_map(game, view, &cam, on_minimap) {
+        game.stop();
+        view.preview = None;
+    }
+    // A shown route belongs to where the hero stood.
+    if view.preview.as_ref().is_some_and(|p| p.2 != game.tile() || game.moving()) {
+        view.preview = None;
     }
 
     // Time stands still while a window is open.
@@ -1047,8 +1242,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let mut next = handle_events(game, events, message, dialogs).or(reopened);
 
     // The place being shown: once its message is read, the camera flies there and the
-    // uncovered area fades in; then the next place, if any. The camera stays on the last
-    // one until a click on the map or Tab brings it back to the hero.
+    // uncovered area fades in; then the next place, if any. After the last one the camera
+    // flies back to the hero.
     let now = get_time();
     for shown in std::mem::take(&mut game.shown) {
         view.shows.push_back(Showing::new(game, &shown));
@@ -1062,19 +1257,38 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             view.look = Some((from.0 + (front.at.0 - from.0) * ease, from.1 + (front.at.1 - from.1) * ease));
             if now - t0 > SHOW_PAN + SHOW_FADE + SHOW_REST {
                 view.shows.pop_front();
+                if view.shows.is_empty() {
+                    view.returning = view.look.map(|at| (now, at));
+                }
+            }
+        } else if let Some((t0, from)) = view.returning {
+            let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
+            let ease = p * p * (3.0 - 2.0 * p);
+            let to = game.display_pos();
+            view.look = Some((from.0 + (to.0 - from.0) * ease, from.1 + (to.1 - from.1) * ease));
+            if p >= 1.0 {
+                view.returning = None;
+                view.look = None;
             }
         }
     }
 
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
-    draw_world(game, assets, &cam);
+    draw_world(game, assets, &cam, view.preview.as_ref().map(|p| p.1.as_slice()));
     cam.draw_fog(game);
     cam.draw_showing(game, &view.shows, now);
+    // The shown route's travel time, at its end.
+    if let Some(end) = view.preview.as_ref().and_then(|p| p.1.last().map(|&e| (e, game.travel_minutes(&p.1)))) {
+        let c = cam.cell_centre(end.0);
+        let label = duration_label(end.1 as f64);
+        let size = (15.0 * super::chrome::k()).round();
+        super::chrome::shadow_centered(&label, c.x, c.y - 14.0 * cam.scale / PX, size, ACCENT);
+    }
 
     // The original has no side panel: the map fills the screen above the bar. Lasting
-    // world spells and ship hints stand small in the top left corner.
+    // world spells stand small in the top left corner.
     let now = game.clock.total_minutes() as u64;
-    let mut notes: Vec<(String, Color)> = game
+    let notes: Vec<(String, Color)> = game
         .active_spells()
         .iter()
         .filter_map(|e| {
@@ -1086,17 +1300,12 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         })
         .map(|l| (l, MANA))
         .collect();
-    if game.aboard() {
-        notes.push((tr("At sea: click the shore to land.").into(), ACCENT));
-    } else if game.ship.is_some() {
-        notes.push((tr("Your ship waits; walk onto it to sail.").into(), ACCENT));
-    }
     for (i, (line, color)) in notes.iter().enumerate() {
         super::chrome::shadow_text(line, 10.0, 22.0 + i as f32 * 18.0, 16.0, *color);
     }
     // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
     // time, a 30-minute tick every 150 ms (`Game::tick`).
-    let can_wait = game.foe.is_none() && !game.waiting();
+    let can_wait = game.foe.is_none() && !game.waiting() && game.reading().is_none();
     let clock = game_bar::time_panel();
     let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
     if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {

@@ -86,6 +86,7 @@ pub fn quiet<T>(f: impl FnOnce() -> T) -> T {
 /// and crash reports and writes the system summary. Call first, once.
 pub fn init() {
     elapsed();
+    PLAY_ON.store(true, std::sync::atomic::Ordering::Relaxed);
     let path = log_path();
     let file = path.as_ref().and_then(|p| {
         let _ = p.parent().map(std::fs::create_dir_all);
@@ -178,6 +179,42 @@ fn known_cause(msg: &str) -> Option<&'static str> {
          What to do: put Mesa's opengl32.dll (github.com/pal1000/mesa-dist-win, x64 folder) next to Razdor.exe; \
          or connect another way than RDP (Parsec, VNC, the VM's console); or install the graphics driver.",
     )
+}
+
+/// The play log, `razdor-play.log` next to [`log_path`] (the one before kept as
+/// `razdor-play.previous.log`): what the player did and what the game did, with the in-game
+/// time, for reading back when something played wrong. Opened on the first line.
+static PLAY: Mutex<Option<File>> = Mutex::new(None);
+/// The play log runs only in the game ([`init`]); tests and tools write none.
+static PLAY_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Where the play log is written.
+pub fn play_log_path() -> Option<PathBuf> {
+    log_path().map(|p| p.with_file_name("razdor-play.log"))
+}
+
+/// Writes `msg` (one or more lines) to the play log, each line after `when` (the in-game date
+/// and time, or a label such as "menu").
+pub fn play(when: &str, msg: &str) {
+    if !PLAY_ON.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let mut f = PLAY.lock().unwrap_or_else(|e| e.into_inner());
+    if f.is_none() {
+        let Some(path) = play_log_path() else { return };
+        let _ = path.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::rename(&path, path.with_file_name("razdor-play.previous.log"));
+        *f = File::create(&path).ok();
+    }
+    if let Some(file) = f.as_mut() {
+        let t = elapsed();
+        let mut text = String::new();
+        for line in msg.lines() {
+            text.push_str(&format!("[{t:8.1}] {when} | {line}\n"));
+        }
+        let _ = file.write_all(text.as_bytes());
+        let _ = file.flush();
+    }
 }
 
 /// Tells the player the game has failed and where the log is.

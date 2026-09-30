@@ -432,6 +432,9 @@ pub fn squad(
         if i == 0 {
             chrome::badge("SI_Helm", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, chrome::GOLD);
         }
+        if super::unit_drag::dragged() == Some(i) {
+            draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
+        }
         let over = mouse_in(p.x, p.y, card.x, card.y);
         if over {
             card_under = Some(i);
@@ -441,10 +444,18 @@ pub fn squad(
         } else if over {
             chrome::glow_frame(sq, Color::new(0.35, 0.55, 1.0, 0.9), false);
         }
-        if over && clicked() && i != sel {
-            *selected = i;
-            *message = None;
+        if over && clicked() {
+            // A press: select the unit; moved while held, it is dragged to another cell.
+            super::unit_drag::press(i, v.def);
+            if i != sel {
+                *selected = i;
+                *message = None;
+            }
         }
+    }
+    let cells: Vec<(razdor::rules::formation::Slot, Rect)> = f.slots().map(|s| (s, Rect::new(cell_at(s).x, cell_at(s).y, card.x, card.y))).collect();
+    if let Some((unit, slot)) = super::unit_drag::update(assets, &cells, card) {
+        game.move_unit(unit, slot);
     }
 
     // The held item follows the mouse; let go, it goes to the card or the pack under it.
@@ -485,6 +496,7 @@ pub fn squad(
 
     if close || key(KeyCode::Escape) || key(KeyCode::A) {
         HELD.with(|c| c.set(None));
+        super::unit_drag::cancel();
         *message = None;
         return Some(match back {
             Some(v) => Screen::Building(v.clone()),

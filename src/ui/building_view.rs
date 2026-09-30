@@ -450,7 +450,14 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         } else if u.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
+        if super::unit_drag::dragged() == Some(i) {
+            draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
+        }
         if mouse_in(sq.x, sq.y, sq.w, sq.h) {
+            // A press on the portrait may drag the unit to another cell.
+            if clicked() {
+                super::unit_drag::press(i, u.def);
+            }
             chrome::glow_frame(sq, Color::new(0.35, 0.55, 1.0, 0.9), false);
             hover_lines = vec![(u.name(&c).to_string(), ACCENT)];
             hover_lines.extend(unit_stat_lines(&c, &u, game.wage(i)).into_iter().map(|s| (s, INK)));
@@ -459,6 +466,10 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
                 hover_lines.push((left, DIM));
             }
         }
+    }
+    let cells: Vec<(Slot, Rect)> = form.slots().map(|s| (s, Rect::new(cell_at(s).x, cell_at(s).y, card.x, card.y))).collect();
+    if let Some((unit, slot)) = super::unit_drag::update(assets, &cells, card) {
+        game.move_unit(unit, slot);
     }
     let mut next = None;
     if let Some((i, raise)) = action {
@@ -654,7 +665,8 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     let dw = w * 0.42;
     let (lx, lw) = (x + dw + 10.0 * k, w - dw - 10.0 * k);
     let rows: Vec<(Option<ItemId>, String, String)> = if view.selling {
-        game.pack.iter().map(|&i| (Some(i), c.item(i).name.clone(), game.sell_price(i).to_string())).collect()
+        // Personal and quest items (a price of 1 or less) are not bought (0x4abbfc).
+        game.pack.iter().map(|&i| (Some(i), c.item(i).name.clone(), if game.can_sell(i) { game.sell_price(i).to_string() } else { tr("not for sale").to_string() })).collect()
     } else {
         game.market_here().unwrap_or(&[]).iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string())).collect()
     };
@@ -682,7 +694,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     text(&trf!("Gold {gold}", gold = game.gold), x + 202.0 * k, by + 27.0 * k, 20.0 * k, ACCENT);
     let label = if view.selling { tr("Sell") } else { tr("Buy") };
     let can = match (view.selling, view.pick) {
-        (true, Some(k)) => k < game.pack.len(),
+        (true, Some(k)) => game.pack.get(k).is_some_and(|&i| game.can_sell(i)),
         (false, Some(k)) => rows.get(k).and_then(|r| r.0).is_some_and(|i| game.gold >= game.buy_price(i) && game.pack.len() < PACK_SIZE),
         _ => false,
     };

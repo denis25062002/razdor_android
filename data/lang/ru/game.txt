@@ -210,6 +210,7 @@ Map = Карта
 Path left: {left} = До конца пути: {left}
 waiting… = ожидание…
 Time: = Время:
+Reading: {left} = Чтение: {left}
 
 # Levels, lists, dates
 Lv {level} · XP {xp}/{need} = Ур. {level} · Опыт {xp}/{need}

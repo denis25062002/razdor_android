@@ -6,8 +6,8 @@
 //!   how much dark lies around them, so the edge is a soft feathered band like the original's.
 //! - Minimap: a toggle window in the top-right corner of the map view (bottom-bar "Map" button
 //!   or M). The whole map scaled down, explored cells in their terrain colour and the rest
-//!   black, locations as small icons in their owner's colour, the hero, and a light rectangle
-//!   for the view. A click on it moves the camera there (as in the video); walking still
+//!   black, locations as small icons in their owner's colour, the armies and the hero as
+//!   marks, and a light rectangle for the view. A click on it moves the camera there (as in the video); walking still
 //!   needs a click on the map.
 //!
 //! Both textures are rebuilt only when the explored set changes.
@@ -24,7 +24,7 @@ use razdor::rules::world::LocationKind;
 use super::widgets::*;
 
 /// Explored cells within this many cells of the dark are shaded (the feathered edge).
-const FEATHER: i32 = 2;
+pub const FEATHER: i32 = 2;
 
 struct Cached {
     key: u64,
@@ -56,12 +56,18 @@ fn cached(cache: &'static std::thread::LocalKey<RefCell<Option<Cached>>>, key: u
 /// explored cells at the edge are shaded and dark cells at the edge let a little through:
 /// the soft edge of the original. Deep in the dark it is black, well inside it is clear.
 pub fn darkness(fog: &Fog) -> Vec<u8> {
-    let (w, h) = (fog.w.max(0) as usize, fog.h.max(0) as usize);
+    darkness_of(fog.w, fog.h, |t| fog.explored(t))
+}
+
+/// [`darkness`] of a `w` × `h` fog whose explored cells `explored` tells (the fog as it was
+/// before an event uncovered some of it, for the map's reveal).
+pub fn darkness_of(w: i32, h: i32, explored: impl Fn((i32, i32)) -> bool) -> Vec<u8> {
+    let (w, h) = (w.max(0) as usize, h.max(0) as usize);
     let mut sum = vec![0u32; (w + 1) * (h + 1)];
     for y in 0..h {
         let mut row = 0;
         for x in 0..w {
-            row += (!fog.explored((x as i32, y as i32))) as u32;
+            row += (!explored((x as i32, y as i32))) as u32;
             sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + row;
         }
     }
@@ -279,6 +285,15 @@ pub fn window(game: &Game, art: Option<&super::dt_art::DtArt>, view: Rect, view_
                 draw_circle(c.x, c.y, 2.5, col);
             }
         }
+    }
+
+    // The armies on explored ground, as the map shows them: marks in the original's enemy
+    // or ally colour (`ColorMarkEnemy`, `ColorMarkAlly`).
+    let (enemy, ally) = (option_color("ColorMarkEnemy", [255, 66, 0]), option_color("ColorMarkAlly", [0, 160, 255]));
+    for a in game.world.armies.iter().filter(|a| fog.explored(a.tile(map))) {
+        let p = to_mini(game.army_display_pos(a));
+        draw_circle(p.x, p.y, 3.5 * zoom.max(1.0), BLACK);
+        draw_circle(p.x, p.y, 2.5 * zoom.max(1.0), if a.hostile() { enemy } else { ally });
     }
 
     // The hero: a blinking mark in the player's colour.

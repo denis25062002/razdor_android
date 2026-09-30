@@ -912,8 +912,9 @@ Explored cells stay explored; there is no "seen before" state (the video).
   route runs out, the route is planned again. So the hero feels his way through the fog and
   stops when no explored way gets closer.
 - **Armies** move in the dark as before (the original AI ignores the fog; chases are not
-  changed); they are only hidden, and so are their tooltips. Map objects and buildings whose
-  cells are all dark are not drawn.
+  changed); they are only hidden, and so are their tooltips. Map objects and buildings with no
+  explored cell within two cells of them are not drawn; nearer ones show faded through the
+  soft edge.
 - **Look**: unexplored cells are black; the edge is a feathered band about two cells wide on
   each side of the border (a box blur of the explored mask, eased), so a sliver of the dark
   side shows through as the original's soft ellipse.
