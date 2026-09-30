@@ -37,6 +37,12 @@ can rebuild from the same commit with `scripts/dist.sh` (see the README).
   the path remappings in `scripts/dist.sh`). The same commit and tools now give the same
   files anywhere.
 
+SHA-256 (built from commit 48af7af):
+```
+6f3291970860c208770d0af4d09e89d2b93d595fb84e22472fa80e4a30815540  razdor
+4f39e09b7d4cd042cddc27314fd715be458d6c1a9104267b2f3cd44fb2cce3b0  Razdor.exe
+```
+
 ## 0.1.0 — 2026-09-29
 
 The first release: `Razdor.exe` (Windows x86_64) and `razdor` (Linux x86_64).
