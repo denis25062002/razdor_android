@@ -32,16 +32,17 @@ cargo test          # game rules
 Razdor's code is under the [MIT License](LICENSE). The fonts in `data/fonts/` keep their own
 licence, the SIL Open Font License 1.1 (the `*-OFL.txt` files next to them).
 
-## Before the repository goes public
-The repository is private for now. When it is opened, the public copy must contain none of
-the following, **in any commit of its history** (deleting a file in a new commit does not
-remove it from the history, so the public repository starts from a fresh, cleaned copy):
+## What the repository never contains
+No commit may add any of the following, and anyone contributing keeps to it too:
 - **Anything from the game:** maps, ini data, texts, art, sounds, music, decoded or converted
-  assets, screenshots or recordings of the original (the content boundary above applies to
-  the history too).
+  assets, screenshots or recordings of the original (the content boundary above).
 - **Sensitive things:** credentials, tokens, keys, personal data (email addresses, home-folder
   paths, names), logs (`razdor.log`, `razdor-play.log`), saves, settings files, and anything
   else local to a machine.
+
+If something like this is ever committed, it has to be removed from the history (rewritten
+and force-pushed), not only deleted in a new commit: an old commit keeps it. The whole
+history was checked against these rules on 2026-09-30 and holds none of it.
 
 The reverse-engineering notes may stay: executable addresses, memory offsets, disassembly and
 how the executable was read (`docs/reference/original-mechanics/`, the `[exe]`/**code**
