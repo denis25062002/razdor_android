@@ -1,6 +1,7 @@
 //! The interface language: the player's choice kept in `settings.json` (next to
 //! `audio.json` in the save folder), the EN / RU switch and its F2 key. Russian when nothing
-//! is saved (English when no font with Cyrillic was found).
+//! is saved (English when no font with Cyrillic was found). The same file remembers that
+//! the tutorial was offered.
 
 use std::path::PathBuf;
 
@@ -19,6 +20,8 @@ pub const KEY: KeyCode = KeyCode::F2;
 pub struct Settings {
     /// "en" or "ru"; empty: never chosen.
     pub language: String,
+    /// The window offering the tutorial scenario was shown and answered: it comes only once.
+    pub tutorial_offered: bool,
 }
 
 impl Settings {
@@ -26,13 +29,13 @@ impl Settings {
         razdor::rules::save::default_dir().map(|d| d.join("settings.json"))
     }
 
-    fn load() -> Settings {
+    pub fn load() -> Settings {
         let read = Settings::path().and_then(|p| std::fs::read(p).ok());
         read.and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
     /// Writes the settings, keeping fields of the file this version does not know.
-    fn save(&self) {
+    pub fn save(&self) {
         let Some(path) = Settings::path() else { return };
         let mut json = std::fs::read(&path)
             .ok()
@@ -40,6 +43,7 @@ impl Settings {
             .filter(serde_json::Value::is_object)
             .unwrap_or_else(|| serde_json::json!({}));
         json["language"] = serde_json::Value::String(self.language.clone());
+        json["tutorial_offered"] = serde_json::Value::Bool(self.tutorial_offered);
         let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| {
             std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap_or_default())
         });
@@ -64,7 +68,7 @@ pub fn init() {
 pub fn toggle() {
     let next = i18n::lang().other();
     i18n::set_lang(next);
-    Settings { language: next.code().to_string() }.save();
+    Settings { language: next.code().to_string(), ..Settings::load() }.save();
 }
 
 /// The EN / RU switch: both codes, the current one lit; a click switches. True when it did.
@@ -101,10 +105,11 @@ mod tests {
     fn russian_unless_chosen_otherwise() {
         assert_eq!(initial(&Settings::default(), true), Lang::Ru, "the default");
         assert_eq!(initial(&Settings::default(), false), Lang::En, "no Cyrillic font");
-        assert_eq!(initial(&Settings { language: "en".into() }, true), Lang::En);
-        assert_eq!(initial(&Settings { language: "ru".into() }, false), Lang::Ru, "a choice is kept");
-        assert_eq!(initial(&Settings { language: "xx".into() }, true), Lang::Ru);
+        assert_eq!(initial(&Settings { language: "en".into(), ..Settings::default() }, true), Lang::En);
+        assert_eq!(initial(&Settings { language: "ru".into(), ..Settings::default() }, false), Lang::Ru, "a choice is kept");
+        assert_eq!(initial(&Settings { language: "xx".into(), ..Settings::default() }, true), Lang::Ru);
         let s: Settings = serde_json::from_str(r#"{"language":"en","other":1}"#).unwrap();
         assert_eq!(s.language, "en");
+        assert!(!s.tutorial_offered, "older files: the tutorial was not offered yet");
     }
 }

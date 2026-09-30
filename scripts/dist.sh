@@ -12,8 +12,11 @@ set -eu
 cd "$(dirname "$0")/.."
 mkdir -p dist
 
-# Panic messages name source files: without the builder's home and folders.
-REMAP="--remap-path-prefix=$PWD=razdor --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo --remap-path-prefix=$HOME=~"
+# Panic messages name source files: without the builder's home and folders. When several
+# prefixes match a path, rustc applies the last one, so the most specific comes last: the
+# project folder is always razdor/ and Cargo's cargo/, wherever they are (with the home
+# last, a project inside the home became ~/…/razdor, and the SHAs depended on the folder).
+REMAP="--remap-path-prefix=$HOME=~ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo --remap-path-prefix=$PWD=razdor"
 RUSTFLAGS="$REMAP" cargo build --release
 cp target/release/razdor dist/razdor
 

@@ -56,6 +56,8 @@ pub enum Screen {
     Options,
     /// The built-in demo or a map of the install.
     ScenarioSelect,
+    /// "Обучающий сценарий": the offer to play the tutorial, before the first new game.
+    TutorialOffer,
     /// Hero class for the demo (`None`) or for `scenarios[i]`.
     ClassSelect { scenario: Option<usize> },
     WorldMap,
@@ -273,7 +275,7 @@ impl App {
     /// The music the current screen wants.
     fn mood(&self) -> Mood {
         match &self.screen {
-            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
+            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
             Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
             Screen::Battle(_) => Mood::Battle,
             Screen::GameOver => Mood::Lost,
@@ -302,7 +304,7 @@ impl App {
             }
         }
         self.last_screen = Some(now);
-        let new_game = matches!(self.screen, Screen::ScenarioSelect | Screen::ClassSelect { .. });
+        let new_game = matches!(self.screen, Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. });
         let gold = self.game.as_ref().filter(|_| !new_game).map(|g| g.gold);
         if let (Some(before), Some(after)) = (self.last_gold, gold) {
             if after > before {
@@ -326,7 +328,7 @@ impl App {
     fn place(&self) -> hotkeys::Place {
         use hotkeys::Place;
         match &self.screen {
-            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect => Place::Title,
+            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer => Place::Title,
             Screen::ClassSelect { .. } => Place::ClassSelect,
             Screen::WorldMap => Place::WorldMap,
             Screen::Building(_) => Place::Building,
@@ -407,6 +409,7 @@ impl App {
             Screen::Authors(_) => "authors",
             Screen::Options => "options",
             Screen::ScenarioSelect => "scenario select",
+            Screen::TutorialOffer => "tutorial offer",
             Screen::ClassSelect { .. } => "class select",
             Screen::WorldMap => "world map",
             Screen::Building(_) => "building",
@@ -439,6 +442,7 @@ impl App {
         let mut restart = false;
         let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::MainMenu, _) => match main_menu::frame() {
+                Some(main_menu::Pick::NewGame) if new_game::tutorial_map(&self.scenarios).is_some() => Some(Screen::TutorialOffer),
                 Some(main_menu::Pick::NewGame) => Some(Screen::ScenarioSelect),
                 Some(main_menu::Pick::Load) => Some(Screen::Load(saves::LoadView::new(saves::Back::Title))),
                 Some(main_menu::Pick::Editor) => Some(Screen::Editor),
@@ -453,6 +457,7 @@ impl App {
             (Screen::Authors(started), _) => main_menu::authors(*started).then_some(Screen::MainMenu),
             (Screen::Options, _) => main_menu::options(&mut self.audio.settings).then_some(Screen::MainMenu),
             (Screen::ScenarioSelect, _) => new_game::scenario_select(&self.scenarios, self.dt_content.is_some()),
+            (Screen::TutorialOffer, _) => new_game::tutorial_offer(&self.scenarios),
             (Screen::ClassSelect { scenario }, game) => {
                 let pick = scenario.and_then(|i| Some((self.scenarios.get(i)?, self.dt_content.clone()?)));
                 new_game::class_select(game, &self.demo, pick, &self.assets)

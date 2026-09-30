@@ -240,7 +240,7 @@ unless noted. "Before" is what Razdor did until then.
 | Step time | cost of entered cell | cost of the cell left (planner: entered) | done (`Game::step_time`, `TileMap::search`) |
 | Ranger | ×1/1.2 | speed 4 vs 5 (×0.8) | done (`KNIGHT_SPEED`, `RANGER_SPEED`) |
 | Speed correction | ±10%/pt | `max(1, 5−c)/5`; archmage-led AI −1 | done (`Army::speed_for`, also for the event that changes it) |
-| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route | done (`place_buildings`, `Location::bars_hero`, the hero's mask in `Game::plan`); entry cells and gates removed; stationary guards and bridges at sea closed too |
+| Buildings | footprint blocks except an entry cell; gates | footprint walkable (road); any cell enters; only hostile/neutral castles, forts and unowned ruins block the hero's route | done (`place_buildings`, `Location::bars_hero`, the hero's mask in `Game::plan`); entry cells and gates removed; bridges at sea closed too, and **every** army's cell (not only stationary guards: in play no army can be walked through, as the player observed); an army stepping onto the route makes the hero plan around it |
 | Hero start | building entry / nearest flagged building | preset x/y; flagged buildings become his | done (`World::start_buildings`, `give_to_player`); a preset on water starts him aboard *(guess)* |
 | Sight | 7.5 cell widths on screen | 9/8/10 cells (knight/archmage/ranger), circle in cells | done (`fog::sight_radius`, edge +0.6 M) |
 | Lantern unit | cell widths, guess | cells (×2 half-cells) | done |

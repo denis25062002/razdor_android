@@ -24,11 +24,15 @@ use super::widgets::*;
 use super::{screens, ScenarioEntry, Screen};
 
 thread_local! {
-    /// The scenario row picked (index into the list shown) and the hero picked.
+    /// The scenario group picked (index into the list shown), the list's scroll in pixels
+    /// at k = 1, and the hero picked.
     static PICKED: Cell<usize> = const { Cell::new(0) };
+    static SCROLL: Cell<f32> = const { Cell::new(0.0) };
     static HERO: Cell<usize> = const { Cell::new(0) };
     /// The map preview of the scenario shown: (index into `scenarios`, texture).
     static PREVIEW: RefCell<Option<(usize, Texture2D)>> = const { RefCell::new(None) };
+    /// The scenario's own picture, decoded once per scenario shown (`None`: it has none).
+    static PICTURE: RefCell<Option<(usize, Option<Texture2D>)>> = const { RefCell::new(None) };
 }
 
 /// A text of the install (`[<section>] <key>`) in Russian, else ours.
@@ -112,10 +116,87 @@ fn preview(index: usize, e: &ScenarioEntry) -> Option<Texture2D> {
     })
 }
 
-/// The maps a new game can start on, as in the original: the single scenarios and the first
-/// map of each campaign (a later campaign map is reached by winning the one before).
-fn startable(scenarios: &[ScenarioEntry]) -> Vec<usize> {
-    scenarios.iter().enumerate().filter(|(_, e)| e.scenario.header.scenario_kind != 2).map(|(i, _)| i).collect()
+/// The picture the map carries (a 267×134 LIT image after the header, dtm-format.md §11),
+/// shown in the map frame as the original does.
+fn picture(index: usize, e: &ScenarioEntry) -> Option<Texture2D> {
+    PICTURE.with(|p| {
+        let mut p = p.borrow_mut();
+        if let Some((i, t)) = p.as_ref() {
+            if *i == index {
+                return t.clone();
+            }
+        }
+        let t = e.scenario.scenario_picture.as_deref().and_then(|b| razdor::dt::gfx::decode_lit(b).ok()).and_then(|img| {
+            let (w, h) = (u16::try_from(img.width).ok()?, u16::try_from(img.height).ok()?);
+            (img.rgba.len() == w as usize * h as usize * 4).then(|| Texture2D::from_rgba8(w, h, &img.rgba))
+        });
+        *p = Some((index, t.clone()));
+        t
+    })
+}
+
+/// A row of the scenario list, as the original groups it: a single scenario, or a campaign
+/// under its name with its chapters listed below. A new game starts on `first`: the single
+/// scenario or the campaign's first map (a later chapter is reached by winning the one
+/// before, so the chapters are shown, not picked).
+#[derive(Debug, PartialEq)]
+struct Group {
+    first: usize,
+    /// The campaign's maps in play order, `first` included; empty for a single scenario.
+    chapters: Vec<usize>,
+}
+
+/// The groups of the list from each map's file name, header kind (0 single, 1 campaign
+/// start, 2 later campaign map) and next map. A campaign's chapters follow the next-map
+/// links from its first map (the later maps' own campaign names are not trusted: one map of
+/// the Community Update names its campaign «Компания»). Later maps no campaign reaches are
+/// left out, as before; a broken or looping chain stops where it breaks.
+fn groups(maps: &[(&str, u8, &str)]) -> Vec<Group> {
+    let by_file = |next: &str| {
+        let next = next.trim();
+        let stem = next.rsplit_once('.').filter(|(_, ext)| ext.eq_ignore_ascii_case("DTm")).map_or(next, |(stem, _)| stem);
+        maps.iter().position(|(file, _, _)| !stem.is_empty() && file.to_lowercase() == stem.to_lowercase())
+    };
+    maps.iter()
+        .enumerate()
+        .filter(|(_, (_, kind, _))| *kind != 2)
+        .map(|(first, &(_, kind, _))| {
+            let mut chapters = Vec::new();
+            if kind == 1 {
+                let mut at = Some(first);
+                while let Some(i) = at.filter(|i| !chapters.contains(i)) {
+                    chapters.push(i);
+                    at = by_file(maps[i].2);
+                }
+            }
+            Group { first, chapters }
+        })
+        .collect()
+}
+
+fn scenario_groups(scenarios: &[ScenarioEntry]) -> Vec<Group> {
+    let maps: Vec<(&str, u8, &str)> = scenarios.iter().map(|e| (e.file.as_str(), e.scenario.header.scenario_kind, e.scenario.next_map.as_str())).collect();
+    groups(&maps)
+}
+
+/// A map's title, or its file name when it has none.
+fn title(e: &ScenarioEntry) -> &str {
+    if e.scenario.title.trim().is_empty() { e.file.as_str() } else { e.scenario.title.as_str() }
+}
+
+/// The name a group's row shows: the campaign's name, else the map's title.
+fn group_name<'a>(scenarios: &'a [ScenarioEntry], g: &Group) -> &'a str {
+    let e = &scenarios[g.first];
+    let campaign = e.scenario.campaign_name.trim();
+    if g.chapters.is_empty() || campaign.is_empty() { title(e) } else { campaign }
+}
+
+/// The chapters a campaign's row lists under its name. The original lists none for the
+/// tutorial, the one campaign named as its first map («Обучающий сценарий»), so a campaign
+/// named like its first map lists none here either *(guess, from one screenshot)*.
+fn listed_chapters<'a>(scenarios: &[ScenarioEntry], g: &'a Group) -> &'a [usize] {
+    let e = &scenarios[g.first];
+    if e.scenario.campaign_name.trim() == title(e).trim() { &[] } else { &g.chapters }
 }
 
 /// "Сценарий для Новой Игры".
@@ -126,60 +207,98 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     super::main_menu::backdrop();
     let (win, closed) = Win::open(&own("NewGame", "Title", n_("Scenario for a new game")));
     let k = win.k;
-    let list = startable(scenarios);
+    let list = scenario_groups(scenarios);
     let mut picked = PICKED.with(|p| p.get()).min(list.len().saturating_sub(1));
-    // The list: a round icon and the title per row.
+    // The list: per group a round icon and the name, and a campaign's chapters under it in
+    // small type; the picked group's block is lit. The wheel scrolls it.
     let rows = win.rect(12.0, 36.0, 270.0, 396.0);
     chrome::text_box(rows);
-    let rh = 30.0 * k;
+    let (head_h, chapter_h) = (30.0 * k, 18.0 * k);
+    let block_h = |g: &Group| head_h + listed_chapters(scenarios, g).len() as f32 * chapter_h + if listed_chapters(scenarios, g).is_empty() { 0.0 } else { 4.0 * k };
+    let content_h: f32 = list.iter().map(block_h).sum::<f32>() + 12.0 * k;
+    let max_scroll = (content_h - rows.h).max(0.0) / k;
+    let mut scroll = SCROLL.with(|s| s.get());
+    let over_list = !input_blocked() && rows.contains(crate::ui::widgets::pointer().into());
+    if over_list {
+        scroll -= wheel().signum() * 30.0;
+    }
+    scroll = scroll.clamp(0.0, max_scroll);
+    SCROLL.with(|s| s.set(scroll));
     let mut next = None;
-    for (row, &i) in list.iter().enumerate() {
-        let r = Rect::new(rows.x + 4.0 * k, rows.y + 6.0 * k + row as f32 * rh, rows.w - 8.0 * k, rh - 2.0 * k);
-        if r.y + r.h > rows.y + rows.h {
-            break;
+    let mut y = rows.y + 6.0 * k - scroll * k;
+    for (row, g) in list.iter().enumerate() {
+        let r = Rect::new(rows.x + 4.0 * k, y, rows.w - 8.0 * k, block_h(g) - 2.0 * k);
+        y += block_h(g);
+        if r.y + r.h > rows.y + rows.h + 1.0 || r.y < rows.y {
+            continue;
         }
-        let hover = !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
+        let hover = over_list && r.contains(crate::ui::widgets::pointer().into());
         if row == picked {
             picked_bar(r);
         } else if hover {
             draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.1, 0.15, 0.45, 0.35));
         }
-        let e = &scenarios[i];
-        scenario_icon(e.scenario.header.scenario_picture_index, vec2(r.x + 14.0 * k, r.y + r.h / 2.0), 26.0 * k);
-        let title = if e.scenario.title.trim().is_empty() { e.file.as_str() } else { e.scenario.title.as_str() };
+        let e = &scenarios[g.first];
+        let head = Rect::new(r.x, r.y, r.w, head_h - 2.0 * k);
+        scenario_icon(e.scenario.header.scenario_picture_index, vec2(head.x + 14.0 * k, head.y + head.h / 2.0), 26.0 * k);
+        let name = group_name(scenarios, g);
         with_face(Face::Title, || {
-            let size = fit_size(title, r.w - 40.0 * k, 15.0 * k);
-            chrome::shadow_text(&ellipsize(title, r.w - 40.0 * k, size), r.x + 32.0 * k, r.y + r.h * 0.5 + size * 0.36, size, CREAM);
+            let size = fit_size(name, r.w - 40.0 * k, 15.0 * k);
+            chrome::shadow_text(&ellipsize(name, r.w - 40.0 * k, size), head.x + 32.0 * k, head.y + head.h * 0.5 + size * 0.36, size, CREAM);
         });
+        let small = 12.0 * k;
+        for (n, &c) in listed_chapters(scenarios, g).iter().enumerate() {
+            let cy = r.y + head_h + n as f32 * chapter_h + chapter_h * 0.5 + small * 0.36;
+            chrome::shadow_text(&ellipsize(title(&scenarios[c]), r.w - 60.0 * k, small), r.x + 52.0 * k, cy, small, CREAM);
+        }
         if hover && clicked() {
             cue(Cue::Button);
             if row == picked {
-                next = Some(Screen::ClassSelect { scenario: Some(i) });
+                next = Some(Screen::ClassSelect { scenario: Some(g.first) });
             }
             picked = row;
         }
     }
     PICKED.with(|p| p.set(picked));
     // The map and what it is.
-    if let Some(&i) = list.get(picked) {
-        let e = &scenarios[i];
+    if let Some(g) = list.get(picked) {
+        let (i, e) = (g.first, &scenarios[g.first]);
         let frame = win.rect(290.0, 36.0, 295.0, 162.0);
         draw_rectangle(frame.x, frame.y, frame.w, frame.h, BLACK);
-        if let Some(t) = preview(i, e) {
-            // Square maps, centred in the frame's opening.
-            let inner = Rect::new(frame.x + 8.0 * k, frame.y + 8.0 * k, frame.w - 16.0 * k, frame.h - 16.0 * k);
-            let side = inner.w.min(inner.h);
-            chrome::tex(&t, Rect::new(inner.center().x - side / 2.0, inner.y + (inner.h - side) / 2.0, side, side), WHITE);
+        // The frame's opening: the map's own picture (it is made for it), else the terrain.
+        let inner = Rect::new(frame.x + 8.0 * k, frame.y + 8.0 * k, frame.w - 16.0 * k, frame.h - 16.0 * k);
+        let pic = picture(i, e);
+        match (&pic, preview(i, e)) {
+            (Some(p), _) => chrome::tex(p, inner, WHITE),
+            (None, Some(t)) => {
+                // Square maps, centred in the opening.
+                let side = inner.w.min(inner.h);
+                chrome::tex(&t, Rect::new(inner.center().x - side / 2.0, inner.y + (inner.h - side) / 2.0, side, side), WHITE);
+            }
+            (None, None) => {}
         }
         if let Some(t) = chrome::win_fx("MapImageFrame", chrome::Fx::KeyBlack) {
             chrome::tex(&t, frame, WHITE);
+        }
+        // With the picture in the frame, the terrain goes next to the name, status and size.
+        let mut beside = 0.0;
+        if pic.is_some() {
+            if let Some(t) = preview(i, e) {
+                let side = 56.0 * k;
+                let r = Rect::new(frame.x + frame.w - side - 2.0 * k, frame.y + frame.h + 8.0 * k, side, side);
+                let edge = Rect::new(r.x - 2.0 * k, r.y - 2.0 * k, r.w + 4.0 * k, r.h + 4.0 * k);
+                draw_rectangle(edge.x, edge.y, edge.w, edge.h, BLACK);
+                chrome::tex(&t, r, WHITE);
+                chrome::silver_frame(edge, 1.0);
+                beside = side + 10.0 * k;
+            }
         }
         let status = match e.scenario.header.scenario_kind {
             1 => own("NewGame", "Campaign", n_("Campaign")),
             _ => own("NewGame", "OneScenario", n_("Single scenario")),
         };
         let lines = [
-            (own("NewGame", "Name", n_("Name:")), e.scenario.title.clone()),
+            (own("NewGame", "Name", n_("Name:")), group_name(scenarios, g).to_string()),
             (own("NewGame", "Status", n_("Status:")), status),
             (own("NewGame", "MapSize", n_("Map size")), format!("{}×{}", e.scenario.width(), e.scenario.height())),
         ];
@@ -189,7 +308,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             let label = label.trim_end_matches(':').to_string() + ":";
             chrome::shadow_text(&label, frame.x + 4.0 * k, y, size, GOLD);
             let lw = measure(&label, size).width + 6.0 * k;
-            chrome::shadow_text(&ellipsize(&value, frame.w - lw - 8.0 * k, size), frame.x + 4.0 * k + lw, y, size, CREAM);
+            chrome::shadow_text(&ellipsize(&value, frame.w - lw - 8.0 * k - beside, size), frame.x + 4.0 * k + lw, y, size, CREAM);
             y += 17.0 * k;
         }
         let descript = own("NewGame", "Descript", n_("Description:"));
@@ -209,12 +328,88 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     let can = !list.is_empty();
     if (win.button(369.0, 116.0, &own("Buttons", "Next", n_("Next")), can) || (can && key(KeyCode::Enter))) && next.is_none() {
         cue(Cue::MenuPress);
-        next = list.get(picked).map(|&i| Screen::ClassSelect { scenario: Some(i) });
+        next = list.get(picked).map(|g| Screen::ClassSelect { scenario: Some(g.first) });
     }
     if win.button(492.0, 95.0, &own("Buttons", "Cancel", n_("Cancel")), true) || closed || key(KeyCode::Escape) {
         return Some(Screen::MainMenu);
     }
     next
+}
+
+/// The tutorial map to offer before a new game, as an index into `scenarios`: the install's
+/// `[Tutorial] Tutorial_MapName` (Обучающий1), while the offer was never answered and the
+/// install does not say the tutorial is done (`Completed=1`, written by the original).
+pub fn tutorial_map(scenarios: &[ScenarioEntry]) -> Option<usize> {
+    if chrome::win("Win-marble").is_none() || chrome::ui_text("Tutorial", "Completed").is_some_and(|c| c.trim() == "1") {
+        return None;
+    }
+    if super::language::Settings::load().tutorial_offered {
+        return None;
+    }
+    let name = chrome::ui_text("Tutorial", "Tutorial_MapName")?;
+    scenarios.iter().position(|e| e.file.eq_ignore_ascii_case(name.trim()) || e.file == name.trim())
+}
+
+/// The paragraphs of an ini text: its lines, without the original's layout marks (`*`, `^`
+/// at the start), empty lines kept as the gaps between them.
+fn paragraphs(text: &str) -> Vec<&str> {
+    text.split('\n').map(|l| l.trim().trim_start_matches(['*', '^']).trim_start()).collect()
+}
+
+/// "Обучающий сценарий", before the first new game: the install's picture (`Как Играть`) on
+/// the left and its text on the right. «Да» starts the tutorial map (the hero choice next),
+/// «Нет» opens the scenario list; either answer, or closing the window, means it was
+/// offered, and it does not come again.
+pub fn tutorial_offer(scenarios: &[ScenarioEntry]) -> Option<Screen> {
+    let Some(map) = tutorial_map(scenarios) else { return Some(Screen::ScenarioSelect) };
+    super::main_menu::backdrop();
+    let (win, closed) = Win::open(&own("Tutorial", "Title", n_("Tutorial scenario")));
+    let k = win.k;
+    let pic = win.rect(18.0, 44.0, 152.0, 386.0);
+    let picture = chrome::ui_text("Tutorial", "Picture")
+        .and_then(|p| p.rsplit(['\\', '/']).next().map(|f| f.trim_end_matches(".lit").trim_end_matches(".LIT").to_string()))
+        .and_then(|name| chrome::win(&name));
+    match picture {
+        Some(t) => {
+            // The whole picture, as tall as the box allows, centred.
+            let h = pic.h.min(t.height() * pic.w / t.width());
+            let w = t.width() * h / t.height();
+            chrome::tex(&t, Rect::new(pic.x + (pic.w - w) / 2.0, pic.y + (pic.h - h) / 2.0, w, h), WHITE);
+        }
+        None => chrome::text_box(pic),
+    }
+    let text = win.rect(182.0, 44.0, 396.0, 386.0);
+    chrome::text_box(text);
+    let size = (14.0 * k).round();
+    let (x0, width) = (text.x + 20.0 * k, text.w - 40.0 * k);
+    let mut y = text.y + 26.0 * k;
+    let body = own("Tutorial", "Text", n_("Welcome to the world of \"A Time of Discord\"!\n\nThe tutorial scenario shows you the game's interface and how to play it with each of the heroes.\n\n\n\nPress \"No\" to open the list of all scenarios and campaigns.\n\nPress \"Yes\" to start the tutorial and choose your hero."));
+    for para in paragraphs(&body) {
+        if para.is_empty() {
+            y += size * 0.9;
+            continue;
+        }
+        // The first line of a paragraph is indented, as in the original.
+        let indent = 26.0 * k;
+        let first = wrap(para, width - indent, size).into_iter().next().unwrap_or_default();
+        let rest: Vec<&str> = para.split_whitespace().skip(first.split_whitespace().count()).collect();
+        let lines = std::iter::once((indent, first)).chain(wrap(&rest.join(" "), width, size).into_iter().map(|l| (0.0, l)));
+        for (dx, line) in lines.filter(|(_, l)| !l.is_empty()) {
+            if y > text.y + text.h - 8.0 * k {
+                break;
+            }
+            chrome::shadow_text(&line, x0 + dx, y, size, GOLD);
+            y += size * 1.3;
+        }
+    }
+    let yes = win.button(92.0, 116.0, &own("Buttons", "Yes", n_("Yes")), true) || key(KeyCode::Enter) || key(KeyCode::Y);
+    let no = win.button(386.0, 116.0, &own("Buttons", "No", n_("No")), true) || key(KeyCode::N) || key(KeyCode::Escape) || closed;
+    if yes || no {
+        cue(Cue::MenuPress);
+        super::language::Settings { tutorial_offered: true, ..super::language::Settings::load() }.save();
+        return Some(if yes { Screen::ClassSelect { scenario: Some(map) } } else { Screen::ScenarioSelect });
+    }
+    None
 }
 
 /// "Стартовые характеристики Героя".
@@ -334,4 +529,33 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
         return Some(Screen::ScenarioSelect);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn campaigns_are_grouped_by_their_next_map_chain() {
+        let maps = [
+            ("Другой берег", 0, ""),
+            ("ДС1-Начало", 1, "ДС2-Продолжение.DTm"),
+            ("ДС2-Продолжение", 2, ""),
+            ("РК1-Первая", 1, "рк2-вторая.dtm"),
+            ("РК2-Вторая", 2, "РК3-Третья.DTm"),
+            ("РК3-Третья", 2, "РК2-Вторая.DTm"),
+            ("Сирота", 2, ""),
+            ("Обрыв", 1, "Нет такой.DTm"),
+        ];
+        assert_eq!(
+            groups(&maps),
+            vec![
+                Group { first: 0, chapters: vec![] },
+                Group { first: 1, chapters: vec![1, 2] },
+                Group { first: 3, chapters: vec![3, 4, 5] },
+                Group { first: 7, chapters: vec![7] },
+            ],
+            "names match without case or extension; a loop and a missing map end the chain; an unreached later map is left out"
+        );
+    }
 }

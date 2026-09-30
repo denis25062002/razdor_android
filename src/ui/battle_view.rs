@@ -4,7 +4,8 @@
 //! player's formation below, front rows facing each other in the middle. Each card is the
 //! unit's portrait with the original's stat strip ("A: 45 D: 35/40 / Mnvr: 1 Ini: 12 /
 //! Hits: 70"); empty cells show where each kind of unit belongs. The acting card has a green
-//! frame, cells it can step to blue ones and its targets red (hostile) or blue (friendly).
+//! frame, cells it can step to blue ones and its targets red (hostile, green under the
+//! mouse) or blue (friendly).
 //! Hovering a target previews the action ("Click to curse X" / "Initiative -5 Actions -1");
 //! a click does it. As in the original each cell has one action: a hostile mage curses a
 //! target without a negative modifier and strikes the others, a friendly one heals the
@@ -490,7 +491,13 @@ impl BattleView {
             let frame = if Some(i) == active && self.fx.is_none() && !b.is_deploying() {
                 Some((ACTIVE, true))
             } else if targets.contains(&i) {
-                let c = if f.team == Team::Player { FRIENDLY } else { HOSTILE };
+                // The enemy under the mouse is framed green, as in the original; the other
+                // enemies in reach stay faintly red.
+                let c = match (f.team, hovered) {
+                    (Team::Player, _) => FRIENDLY,
+                    (_, true) => ACTIVE,
+                    (_, false) => HOSTILE,
+                };
                 Some((if hovered { c } else { Color { a: 0.6, ..c } }, hovered))
             } else if self.selected == Some(f.slot) && f.team == Team::Player {
                 Some((WHITE, true))

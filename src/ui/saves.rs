@@ -396,8 +396,9 @@ pub fn load_screen(game: Option<&Game>, assets: &Assets, view: &mut LoadView, pe
     if !asking && (book.button(492.0, 95.0, &own("Buttons", "Cancel", n_("Cancel")), true) || closed) {
         return Some(view.back.screen());
     }
-    // The original's question before deleting: "Удаление сохранения".
-    if let Some(k) = view.confirm_delete {
+    // The original's question before deleting: "Удаление сохранения". It opens on the next
+    // frame, so the click that asked it cannot also answer it.
+    if let Some(k) = view.confirm_delete.filter(|_| asking) {
         match delete_question(view.entries.get(k).map(|e| row_of(e).name).unwrap_or_default()) {
             Some(true) => {
                 if let Some(e) = view.entries.get(k) {
@@ -487,6 +488,9 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
     let by = inner.y + inner.h - 42.0 * k;
     let mut choice = None;
     let mut cancel = closed;
+    // The restart question opens on the next frame, so the click on «Рестарт» cannot also
+    // answer it (its «Нет» lies over that button).
+    let was_asking = *asking;
     for (i, (label, what)) in labels.iter().enumerate() {
         let b = Rect::new(inner.x + 10.0 * k + i as f32 * (bw + 10.0 * k), by, bw, 30.0 * k);
         let over = !*asking && b.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
@@ -499,7 +503,7 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
             }
         }
     }
-    if *asking {
+    if was_asking {
         let t = own("MessageBox", "Restart_Title", n_("Restart the game"));
         let q = own("MessageBox", "Restart_Text", n_("Do you really want to start the scenario under way again from the beginning?"));
         match question(&t, q.trim_start_matches('^')) {
@@ -510,6 +514,9 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
             Some(false) => *asking = false,
             None => {}
         }
+        return (None, false);
+    }
+    if *asking {
         return (None, false);
     }
     (choice, cancel || key(KeyCode::Escape))

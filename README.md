@@ -32,6 +32,23 @@ cargo test          # game rules
 Razdor's code is under the [MIT License](LICENSE). The fonts in `data/fonts/` keep their own
 licence, the SIL Open Font License 1.1 (the `*-OFL.txt` files next to them).
 
+## Before the repository goes public
+The repository is private for now. When it is opened, the public copy must contain none of
+the following, **in any commit of its history** (deleting a file in a new commit does not
+remove it from the history, so the public repository starts from a fresh, cleaned copy):
+- **Reverse-engineering notes:** addresses in the original's executable (such as `485908`),
+  record offsets read from its memory (such as `+0xDD`), disassembly, decompiled code or
+  anything else showing how the executable was read. This covers most of
+  `docs/reference/original-mechanics/` and the `[exe]`/**code** evidence in
+  `docs/reference/mechanics.md`: the rules stay, in our own words, without the addresses.
+  The full notes stay in the private repository.
+- **Anything from the game:** maps, ini data, texts, art, sounds, music, decoded or converted
+  assets, screenshots or recordings of the original (the content boundary above applies to
+  the history too).
+- **Sensitive things:** credentials, tokens, keys, personal data (email addresses, home-folder
+  paths, names), logs (`razdor.log`), saves, settings files, and anything else local to a
+  machine.
+
 ## How to play
 - Pick a hero: Knight (melee; his army takes 10% less physical damage), Archmage
   (Elemental magic: slows or burns the enemy), Ranger (long bow; the army heals 20% a day).
@@ -117,6 +134,15 @@ or a crash is written there too and, on Windows, shown in a message box. Started
 terminal, everything the program and its libraries print goes into the log; from `cmd` or a
 terminal it is printed there as well. `RAZDOR_LOG=<file>` moves the log;
 `RAZDOR_CRASH_TEST=panic` or `crash` fails on purpose to try the report.
+
+**"WGL_ARB_pixel_format is required" / no OpenGL driver** (Windows): Razdor needs OpenGL 2,
+and the machine offers only Windows' OpenGL 1.1 fallback. That happens in a Remote Desktop
+(RDP) session, which hides the GPU from OpenGL programs, or without a graphics driver (often
+in virtual machines). Put Mesa's software OpenGL (`opengl32.dll`, and `libgallium_wgl.dll` in
+newer releases, from the `x64` folder of
+[mesa-dist-win](https://github.com/pal1000/mesa-dist-win/releases)) next to `Razdor.exe`, or
+connect another way than RDP (Parsec, VNC, the VM's console), or install the graphics driver.
+Razdor then shows this advice itself instead of the bare error.
 
 What is read (only read, never modified): `Rus_Units.ini`, `Rus_Artefacts.ini`,
 `Rus_Spells.ini`, `_Global.ini` and the scenario maps `Maps_Rus/*.DTm`. The readers live in
@@ -237,7 +263,7 @@ the acting (or hovered) unit's full-body figure, stat list and traits on the lef
 enemy's formation on top, a hint strip, and yours below, each card the portrait with the
 stat strip (`A: 45 D: 35/40`, `Mnvr: 1 Ini: 12`, `Hits: 70`; `Pwr` for casters); empty
 cells show swords (front), a bow (back) or a tent (reserve). The acting card is framed
-green, cells it can step to blue, its targets red or blue; hovering one previews the action
+green, cells it can step to blue, its targets red (green under the mouse) or blue; hovering one previews the action
 ("Click to curse X / Initiative: -5 Actions: -1"), and hits and spells play the original's
 battle and spell animations. Building windows (tab column and content), the hero and army
 screen (unit panel with four item slots, backpack or upgrade tree, item description, army

@@ -153,9 +153,31 @@ fn install_panic_hook() {
         log(&format!("PANIC in thread '{name}'{place}: {msg}\nbacktrace:\n{bt}"));
         // Only the main thread's panic ends the game (the audio thread's does not).
         if name == "main" {
-            fatal(&format!("{msg}{place}"));
+            match known_cause(&msg) {
+                Some(help) => {
+                    log(help);
+                    fatal(&format!("{help}\n\n({msg})"));
+                }
+                None => fatal(&format!("{msg}{place}")),
+            }
         }
     }));
+}
+
+/// What a player can do about a failure that has a known cause outside the game, in Russian
+/// and English (it can come before the interface language is known).
+fn known_cause(msg: &str) -> Option<&'static str> {
+    // miniquad needs WGL_ARB_pixel_format (and a real OpenGL 2 context) from the Windows
+    // driver. Windows' own fallback, OpenGL 1.1 "GDI Generic", has neither: no graphics
+    // driver, or a Remote Desktop session, which hides the GPU from OpenGL programs.
+    (msg.contains("WGL_ARB_pixel_format") || msg.starts_with("WGL:")).then_some(
+        "Не найден драйвер OpenGL. Так бывает в сеансе удалённого рабочего стола (RDP) или без драйвера видеокарты.\n\
+         Что сделать: положите opengl32.dll из Mesa (github.com/pal1000/mesa-dist-win, папка x64) рядом с Razdor.exe; \
+         или подключитесь не через RDP (Parsec, VNC, консоль ВМ); или установите драйвер видеокарты.\n\n\
+         No OpenGL driver was found. This happens in a Remote Desktop (RDP) session or without a graphics driver.\n\
+         What to do: put Mesa's opengl32.dll (github.com/pal1000/mesa-dist-win, x64 folder) next to Razdor.exe; \
+         or connect another way than RDP (Parsec, VNC, the VM's console); or install the graphics driver.",
+    )
 }
 
 /// Tells the player the game has failed and where the log is.
@@ -167,6 +189,18 @@ pub fn fatal(what: &str) {
 /// Without a terminal, standard output and error go into the log file. True when they do.
 fn redirect_output(file: &File) -> bool {
     platform::redirect_output(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::known_cause;
+
+    #[test]
+    fn a_missing_opengl_driver_is_explained() {
+        assert!(known_cause("WGL_ARB_pixel_format is required").is_some_and(|h| h.contains("opengl32.dll")));
+        assert!(known_cause("WGL: Failed to create dummy context").is_some());
+        assert!(known_cause("index out of bounds: the len is 3 but the index is 7").is_none());
+    }
 }
 
 #[cfg(windows)]

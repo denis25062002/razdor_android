@@ -948,7 +948,7 @@ pub fn cell_icon(icon: CellIcon, sq: Rect) {
 }
 
 /// A coloured frame around a card or cell: green for the unit that acts, blue for a cell to
-/// move to or a friendly target, red for a hostile target.
+/// move to or a friendly target, red for a hostile target (green for the one under the mouse).
 pub fn glow_frame(r: Rect, color: Color, strong: bool) {
     let k = k();
     let w = if strong { 3.0 * k } else { 2.0 * k };

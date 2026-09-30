@@ -537,8 +537,9 @@ impl Game {
     /// ground only, towards the nearest explored cell if `to` is in the dark ([`fog::plan`]);
     /// through towns, villages and bridges but not through castles and forts ill-disposed
     /// towards him, or ruins not his, unless it is the building clicked or the one he stands
-    /// in; around armies that stand guard (patrol radius 0), except the one clicked; at sea
-    /// not under bridges. A click on a building ends on any of its cells. With a ship the
+    /// in; around every other army, friendly or hostile, except the one clicked (the original's
+    /// planner closes only stationary guards, world.md §1, but in play no army can be walked
+    /// through); at sea not under bridges. A click on a building ends on any of its cells. With a ship the
     /// route may board it, sail and land ([`Game::step_cost`]).
     pub fn plan(&self, to: Tile) -> Vec<Tile> {
         self.plan_from(self.tile(), to)
@@ -549,13 +550,13 @@ impl Game {
         let target = w.location_at(to);
         let standing = w.location_at(from);
         let at_sea = w.is_sea(from);
-        let guards: Vec<Tile> = w.armies.iter().filter(|a| a.patrols && a.patrol_radius == 0).map(|a| a.tile(&w.map)).filter(|&t| t != to).collect();
+        let armies: Vec<Tile> = self.army_cells().filter(|&t| t != to).collect();
         let closed = |t: Tile| {
             let barred = w.location_covering(t).is_some_and(|l| {
                 let loc = &w.locations[l];
                 (at_sea && loc.kind.is_bridge()) || (Some(l) != target && Some(l) != standing && loc.bars_hero())
             });
-            barred || guards.contains(&t)
+            barred || armies.contains(&t)
         };
         let step = |a: Tile, b: Tile| if closed(b) { None } else { self.step_cost(a, b, at_sea) };
         match target {
@@ -565,6 +566,11 @@ impl Game {
             }
             None => fog::plan_by(&w.map, &self.fog, from, to, &step),
         }
+    }
+
+    /// The cells armies stand on: the hero cannot walk through them.
+    fn army_cells(&self) -> impl Iterator<Item = Tile> + '_ {
+        self.world.armies.iter().map(|a| a.tile(&self.world.map))
     }
 
     /// How far the hero sees, in cells: 9 for the knight, 8 for the archmage, 10 for the
@@ -693,10 +699,25 @@ impl Game {
 
     /// The hero takes the next step of his route (world.md §1): it is charged the cell he
     /// leaves; stepping onto a cell of another building (not a bridge) enters it and ends the
-    /// walk; the world moves on by the step's time; an army next to him stops him. Returns
-    /// false when the walk ended.
+    /// walk; the world moves on by the step's time; an army next to him stops him. An army
+    /// that has stepped onto his route makes him plan around it, or stop if there is no way.
+    /// Returns false when the walk ended.
     fn hero_step(&mut self, events: &mut Vec<Event>) -> bool {
-        let Some(&next) = self.path.first() else { return false };
+        let Some(&(mut next)) = self.path.first() else { return false };
+        if self.army_cells().any(|t| t == next) && Some(next) != self.goal {
+            let Some(goal) = self.goal else {
+                self.path.clear();
+                return false;
+            };
+            self.path = self.plan(goal);
+            match self.path.first() {
+                Some(&around) => next = around,
+                None => {
+                    self.goal = None;
+                    return false;
+                }
+            }
+        }
         let from = self.tile();
         let w = &self.world;
         let allowed = if w.is_sea(next) { self.ship.is_some() } else { w.map.passable(next) };
@@ -2397,6 +2418,22 @@ mod tests {
         // Moved by other means since: drawn where it is.
         g.world.armies[0].pos = (1.0, 1.0);
         assert_eq!(at(&mut g, 0.5), (1.0, 1.0));
+    }
+
+    #[test]
+    fn no_army_can_be_walked_through() {
+        let mut s = strip();
+        for y in [0u32, 1, 3, 4, 5] {
+            tk::set(&mut s, 10, y, crate::dt::dtm::Surface::DeepSea);
+        }
+        let mut friend = army(1, 10, 2, 1, &[troop(4, 0, 1)]);
+        friend.patrols = 1;
+        friend.patrol_radius = 5;
+        s.armies = vec![friend];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        assert!(!g.set_destination((20, 2)), "a patrolling army standing in the gap blocks it");
+        assert!(g.set_destination((10, 2)), "the army itself can be clicked");
     }
 
     #[test]
