@@ -10,6 +10,8 @@ Each version names its commit. On 2026-09-30 the history was rewritten to a new 
 email and every commit got a new id: the programs released before then show their commit's
 old id, and their versions give both.
 
+## Unreleased
+
 ## 0.2.0 — 2026-09-30
 
 Commit `610a898` (tag `v0.2.0`); its programs show `85b063f`, the id before the history
