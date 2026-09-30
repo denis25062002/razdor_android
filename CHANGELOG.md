@@ -98,10 +98,11 @@ tag is pushed, and the SHA-256 are in the release's notes.
   component was installed (its real paths went into the programs); `scripts/dist.sh` maps
   them back, and a local build of v0.1.2 gives the released `Razdor.exe` bit for bit.
 
-SHA-256 (built with `scripts/dist.sh` from the 0.2.0 sources):
+SHA-256 of the released programs (built by the release pipeline from commit 85b063f; a
+local `scripts/dist.sh` of that commit gives the same `Razdor.exe`):
 ```
-c0767c6362edc4e1e0ee6022caeeede0010abbae4a14c7bf4ae28b20bcbbfb02  razdor
-96965fe8d922422804ac7da548e5a06643d7466a1d30790a050f7d7815e1d261  Razdor.exe
+066579d52a7d5862d766c64d50deb97d13547b2cb52fe25dc1d0457a17dcf989  razdor
+2f77bab02e97413fce47bbf39ebb328d95a4c613e5c83541239f6e94ca44bd84  Razdor.exe
 ```
 
 ## 0.1.2 — 2026-09-30
