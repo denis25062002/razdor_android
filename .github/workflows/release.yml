@@ -1,0 +1,80 @@
+# The release pipeline: pushing a tag vX.Y.Z builds razdor (Linux) and Razdor.exe (Windows)
+# with scripts/dist.sh and publishes them as the GitHub release vX.Y.Z, with that version's
+# section of CHANGELOG.md and the programs' SHA-256 as its notes.
+#
+#   1. Set `version` in Cargo.toml and turn "Unreleased" in CHANGELOG.md into
+#      "## X.Y.Z — date"; commit.
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# The tools are pinned (Rust in rust-toolchain.toml, llvm-mingw below) so a local
+# scripts/dist.sh of the same commit builds the same Razdor.exe.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  LLVM_MINGW_RELEASE: "20260922"
+  LLVM_MINGW_NAME: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag matches the version and the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          grep -qx "version = \"$version\"" Cargo.toml || { echo "Cargo.toml is not version $version"; exit 1; }
+          grep -q "^## $version " CHANGELOG.md || { echo "CHANGELOG.md has no section for $version"; exit 1; }
+
+      - name: Libraries for sound (ALSA)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup show active-toolchain
+
+      - name: Tests
+        run: cargo test --no-default-features
+
+      - name: llvm-mingw for the Windows build
+        run: |
+          curl -fsSL -o /tmp/llvm-mingw.tar.xz \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_RELEASE/$LLVM_MINGW_NAME.tar.xz"
+          tar -xf /tmp/llvm-mingw.tar.xz -C /opt
+          echo "LLVM_MINGW=/opt/$LLVM_MINGW_NAME" >> "$GITHUB_ENV"
+
+      - name: Build razdor and Razdor.exe
+        run: sh scripts/dist.sh
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '$0 ~ "^## "v" " {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "## Downloads"
+            echo "- **Razdor.exe**: Windows (x86_64). **razdor**: Linux (x86_64). **SHA256SUMS**: their checksums."
+            echo "- Put the program next to \`DiscordTimes.exe\` in your game folder and start it."
+            echo
+            echo "## SHA-256"
+            echo "Built from commit ${GITHUB_SHA::7}."
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "Provided as is, without warranty; see the Disclaimer in the README. MIT License."
+          } >> notes.md
+          cat notes.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "Razdor ${GITHUB_REF_NAME#v}" --notes-file notes.md \
+            dist/Razdor.exe dist/razdor dist/SHA256SUMS

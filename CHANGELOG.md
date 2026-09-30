@@ -2,9 +2,55 @@
 
 What changed in each version of Razdor. The newest version comes first; changes not released
 yet are under "Unreleased". Each release lists the SHA-256 of its programs, which anyone
-can rebuild from the same commit with `scripts/dist.sh` (see the README).
+can rebuild from the same commit with `scripts/dist.sh` (see the README). From 0.1.2 the
+release pipeline (`.github/workflows/release.yml`) builds and publishes a version when its
+tag is pushed, and the SHA-256 are in the release's notes.
 
 ## Unreleased
+
+## 0.1.2 — 2026-09-30
+
+### New
+- **Battle AI, easy or expert:** the settings window has the original's «Улучшенный
+  интеллект противника в битве». Expert lets the enemy count a unit as killable when the
+  actions it has left can finish it, not only with one hit. Until changed it follows the
+  install's own setting (`OptValue9`).
+
+- **Quests show places on the map:** when an event lights a lantern or shows an army, the
+  camera flies there once its message is read and the uncovered area fades in from the fog,
+  one place after another. A click on the map or Tab skips it.
+- **Unit cards in battle** show every gain or loss against the start of the battle (blue
+  raised, red lowered), also the lasting ones, and the building's defence in the D values;
+  the unit panel writes it apart, as the original does («15 + 12»).
+
+### Changed
+- **Ships** on the map are the original's: the hero's galley (at sea and waiting at the
+  shore), pirate ships and merchant cogs, rowing and turning as they move. The drawn
+  placeholder is left only for playing without an install.
+- **The noon report** no longer opens when nothing came in or went out that day (no
+  income, no wages, nobody unpaid or gone).
+- **Item restrictions** follow the original: shields need a melee attack (warriors only),
+  artillery cannot use bows, the undead cannot wear holy items («Святое писание», icons…),
+  and «Королевская корона» is for the hero and a few noble units.
+- **Building defence** also counts in a friendly building for the hero's side, and for an
+  enemy army attacked in a building of its own side (before: the hero's own buildings and
+  castle garrisons only).
+- **Battle:** a side with nobody in the front row steps forward at once, also at the start
+  of the battle (as the player sees in the original), not only after a death.
+- **Map:** buildings are drawn in front of hills, rocks and trees, which no longer hide them.
+- **Market:** after a buy or a sale the selection moves to the next item (or the one
+  above), for many trades in a row.
+- **The autosave before a battle** is the moment just before it: loading it puts the hero
+  on the map next to the enemy, not straight into the fight.
+
+### Fixed
+- **Item and spell bonuses on protections, regeneration and vampirism** (`p-` values) did
+  nothing for a unit starting at 0%: «Святое писание», «Меч "Кровопийца"», «Латы
+  крестоносца», «Шлем Героя» and others now give their percent.
+- **Esc in battle** opened the ways out and closed them in the same moment, and did nothing
+  while an animation played.
+- **Music after loading a game:** the triumph of a battle won before no longer carries on;
+  the map music starts again.
 
 ## 0.1.1 — 2026-09-30
 

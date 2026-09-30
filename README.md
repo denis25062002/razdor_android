@@ -124,6 +124,11 @@ the home folder. Made for the Community Update 1.2 (game 1.8.1).
 `scripts/dist.sh` builds both programs into `dist/`: `razdor` for Linux and `Razdor.exe` for
 Windows (x86_64, one file with no DLLs of its own; cross-built with
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), see the script), with their SHA-256 in `dist/SHA256SUMS`.
+Releases are built on GitHub (`.github/workflows/release.yml`): set the version in
+`Cargo.toml`, turn "Unreleased" in `CHANGELOG.md` into that version's section, commit, then
+push the tag `vX.Y.Z`. The pipeline runs the tests, builds both programs with the same
+script and the same pinned tools (Rust in `rust-toolchain.toml`, llvm-mingw in the
+workflow), and publishes the release with the changelog section and the SHA-256.
 
 **When it fails to start or play**: every start writes `razdor.log` (`%APPDATA%\razdor\` on
 Windows, `~/.local/share/razdor/` on Linux; the one before is `razdor.previous.log`): the
@@ -358,7 +363,10 @@ equipped or drunk (by type) and gold coming in.
 - The `.raw` files do not store their sample rate; Razdor plays them at 22050 Hz. If the
   music sounds too low or slow, try `RAZDOR_MUSIC_RATE=44100`.
 - The settings window (gears on the bottom bar, or **Settings** on the title screen) also has
-  **FPS**: the frame rate in the top right corner, off by default and kept in `audio.json`.
+  **FPS**: the frame rate in the top right corner, off by default and kept in `audio.json`;
+  and the **battle AI**, easy or expert (the original's "improved enemy AI in battle": the
+  enemy also finishes off a unit it can kill with the actions it has left), at first as your
+  install has it.
 - `RAZDOR_NO_AUDIO=1` turns sound off; `RAZDOR_AUDIO_LOG=1` prints each sound as it plays.
   The demo (no install) is silent.
 - On Linux the sound goes through ALSA (`libasound.so.2`, present on any desktop; PipeWire
