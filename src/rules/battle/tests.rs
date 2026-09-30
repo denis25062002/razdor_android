@@ -461,11 +461,14 @@ fn row12_a_voluntary_move_collapses_only_after_the_movers_last_action() {
 }
 
 #[test]
-fn row12_no_collapse_at_deployment() {
-    let mut bt = battle(&[(11, b(2)), (11, b(3))], &[(18, f(2))]);
-    assert_eq!(bt.fighters[0].slot, b(2), "a back-row army stays where it deployed");
-    bt.skip();
-    assert_eq!(bt.fighters[0].slot, f(2), "until its first unit has acted");
+fn row12_an_empty_front_row_is_filled_when_the_battle_starts() {
+    // The player's observation of the original; the notes read the collapse only after a
+    // death or a unit's last action.
+    let bt = battle(&[(11, b(2)), (11, b(3))], &[(18, f(2))]);
+    assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (f(2), f(3)), "the back row steps forward at once");
+    let c = content_with(vec![], Formation::VANILLA);
+    let bt = battle_in(&c, &[(11, r(1))], &[(18, f(1)), (11, r(2))]);
+    assert_eq!((bt.fighters[0].slot, bt.fighters[2].slot), (f(1), r(2)), "a reserve alone steps forward; one behind a front row stays");
 }
 
 #[test]
@@ -953,8 +956,8 @@ fn row35_splash_80_40_on_melee_shots_and_heals_in_battles_on_screen_only() {
     assert_eq!(bt.act(2).unwrap().splash, vec![(1, 20)]);
     // Shots: both neighbours.
     let gun = bonus(68, Bonus::Splash, shooter(68, 50));
-    let mut bt = with(vec![gun], &[(68, b(2))], &[(18, f(3)), (18, f(4)), (18, f(5))]);
-    assert_eq!(bt.act(2).unwrap().splash, vec![(1, 20), (3, 20)]);
+    let mut bt = with(vec![gun], &[(68, b(2)), (10, f(0))], &[(18, f(3)), (18, f(4)), (18, f(5))]);
+    assert_eq!(bt.act(3).unwrap().splash, vec![(2, 20), (4, 20)]);
     // Heals: 80% and 40%.
     let medic = bonus(64, Bonus::Splash, mage(64, 20, MagicSchool::Life, MagicDirection::ToAlly));
     let mut bt = with(vec![medic], &[(64, b(2)), (10, f(1)), (10, f(2)), (10, f(3))], &[(18, f(5))]);
@@ -1048,8 +1051,8 @@ fn row42_flying_melees_the_three_front_cells_from_either_row() {
     assert!(bt.targets(0).is_empty(), "not from the reserve");
     // A flying shooter shoots as before and gains a melee cell only where it cannot shoot.
     let hawk = bonus(80, Bonus::Flying, shooter(80, 20));
-    let bt = with(vec![hawk], &[(80, b(2))], &[(18, f(2)), (18, b(3))]);
-    assert_eq!((bt.options(0, 1), bt.options(0, 2)), (vec![ActionKind::Shot], vec![ActionKind::Shot]));
+    let bt = with(vec![hawk], &[(80, b(2)), (10, f(0))], &[(18, f(2)), (18, b(3))]);
+    assert_eq!((bt.options(0, 2), bt.options(0, 3)), (vec![ActionKind::Shot], vec![ActionKind::Shot]));
 }
 
 #[test]

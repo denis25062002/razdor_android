@@ -7,7 +7,8 @@
 //! `title`, `authors`, `options`, `scenarios`, `tutorial`, `load`, `editor`, `classes:<map>`, `map:<map>[:x,y]`, `minimap:<map>`, `walk:<map>:dx,dy` (the
 //! hero sets off that many cells away), `building:<map>:<n>`
 //! (the hero in the n-th building), `army:<map>`, `journal:<map>`, `spells:<map>`,
-//! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_QUIET=1` drops
+//! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_SHOW=x,y,r` shows
+//! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
 //! puts the pointer there.
 
@@ -102,6 +103,14 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
             // A different share for each, to see the fill vary.
             u.hp = (u.max_hp(&content) * (pct - 15 * i as i32).clamp(0, 100) / 100).max(1);
         }
+    }
+    // `RAZDOR_SCENE_SHOW=x,y,r`: an event shows that place (as a lantern does), to see the
+    // camera fly there and the area fade in.
+    if let Some((x, y, r)) = std::env::var("RAZDOR_SCENE_SHOW").ok().and_then(|v| {
+        let n: Vec<i32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        (n.len() == 3).then(|| (n[0], n[1], n[2]))
+    }) {
+        game.reveal_area((x, y), r);
     }
     let arg = parts.next();
     let n = || arg.and_then(|a| a.parse::<usize>().ok()).ok_or("no index given");

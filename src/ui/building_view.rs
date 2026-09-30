@@ -639,6 +639,12 @@ pub(super) fn item_description(game: &Game, assets: &Assets, item: ItemId, x: f3
     }
 }
 
+/// The row to select after row `k` left a list that now has `left` rows: the one that
+/// moved up into it, else the one above, else none.
+fn next_pick(k: usize, left: usize) -> Option<usize> {
+    (left > 0).then(|| k.min(left - 1))
+}
+
 /// Market: the goods (or, in the sell shop, the pack) with prices, the selected item's
 /// description, and the buy / sell buttons.
 fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, message: &mut Option<String>) -> Option<Screen> {
@@ -682,22 +688,33 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     };
     if button(lx, by, 130.0 * k, 40.0 * k, label, can) {
         let k = view.pick.unwrap_or(0);
+        let mut done = false;
         *message = Some(if view.selling {
             let name = c.item(game.pack[k]).name.clone();
             match game.sell(k) {
-                Ok(g) => trf!("Sold {name} for {g} gold.", name, g),
+                Ok(g) => {
+                    done = true;
+                    trf!("Sold {name} for {g} gold.", name, g)
+                }
                 Err(e) => trade_error(e),
             }
         } else {
             match game.buy(k) {
                 Ok(item) => {
+                    done = true;
                     cue(Cue::Item(c.item(item).kind));
                     trf!("Bought {item}. It is in your pack.", item = c.item(item).name)
                 }
                 Err(e) => trade_error(e),
             }
         });
-        view.pick = None;
+        // For many buys (or sales) in a row the selection stays: on the item that moved up
+        // into the bought one's row, or the one above when it was the last; none when the
+        // list is empty. A refused trade keeps it where it was.
+        if done {
+            let left = if view.selling { game.pack.len() } else { game.market_here().map_or(0, <[ItemId]>::len) };
+            view.pick = next_pick(k, left);
+        }
     }
     let toggle = if view.selling { tr("Back to the goods") } else { tr("Sell shop") };
     if button(lx + lw - 190.0 * k, by, 190.0 * k, 40.0 * k, toggle, true) {
@@ -907,4 +924,16 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         Some(Screen::Squad { selected, scroll, .. }) => Some(Screen::Squad { selected, scroll, back: Some(view.clone()) }),
         other => other,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_pick;
+
+    #[test]
+    fn after_a_buy_the_selection_moves_to_the_next_item_or_the_one_above() {
+        assert_eq!(next_pick(2, 5), Some(2), "the item below moved up into row 2");
+        assert_eq!(next_pick(4, 4), Some(3), "the last one bought: the one above");
+        assert_eq!(next_pick(0, 0), None, "nothing left");
+    }
 }

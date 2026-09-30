@@ -288,6 +288,12 @@ fn slider(r: Rect, value: f32) -> Option<f32> {
     (over && is_mouse_button_down(MouseButton::Left)).then(|| ((mx - r.x - knob_w / 2.0) / (r.w - knob_w)).clamp(0.0, 1.0))
 }
 
+/// The battle AI's level: the player's choice, else the install's "improved enemy AI in
+/// battle" (`[Options] OptValue9`), else easy.
+pub fn expert_ai(audio: &super::audio::Settings) -> bool {
+    audio.expert_ai.unwrap_or_else(|| chrome::ui_text("Options", "OptValue9").is_some_and(|v| v.trim() == "1"))
+}
+
 /// "Настройки звука, графики и геймплея", with what Razdor lets the player change: the
 /// music and sound volumes (saved at once) and the interface language. Returns true when
 /// closed.
@@ -299,7 +305,7 @@ pub fn options(audio: &mut super::audio::Settings) -> bool {
 /// The settings window alone (over the main menu, or over the map from the bar's gears).
 pub fn options_window(audio: &mut super::audio::Settings) -> bool {
     let title = own("Options", "Title", n_("Sound, graphics and gameplay settings"));
-    let (inner, closed) = window(&title, 594.0, 260.0);
+    let (inner, closed) = window(&title, 594.0, 310.0);
     let k = chrome::k();
     let rows = [
         (own("Options", "OptionSld0", n_("Background music volume")), audio.music_volume, true),
@@ -337,6 +343,20 @@ pub fn options_window(audio: &mut super::audio::Settings) -> bool {
     if over_fps && clicked() {
         cue(Cue::Button);
         audio.show_fps = !audio.show_fps;
+    }
+    // The battle AI, as the original's "Улучшенный интеллект противника в битве": easy or
+    // expert, from the install's setting until chosen here.
+    let y = inner.y + 36.0 * k + 2.0 * 58.0 * k;
+    let label = own("Options", "Option9", n_("Improved enemy AI in battle"));
+    chrome::shadow_text(&label, inner.x + 24.0 * k, y + 18.0 * k, 14.0 * k, chrome::CREAM);
+    let expert = expert_ai(audio);
+    let ar = Rect::new(inner.x + inner.w - 24.0 * k - 150.0 * k, y, 150.0 * k, 28.0 * k);
+    let ai_label = if expert { tr("Expert") } else { tr("Easy") };
+    let over_ai = ar.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
+    chrome::marble_button(ar, ai_label, true, over_ai);
+    if over_ai && clicked() {
+        cue(Cue::Button);
+        audio.expert_ai = Some(!expert);
     }
     let ok = Rect::new(inner.x + inner.w - 120.0 * k, inner.y + inner.h - 44.0 * k, 96.0 * k, 28.0 * k);
     let over_ok = ok.contains(crate::ui::widgets::pointer().into()) && !input_blocked();

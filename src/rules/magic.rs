@@ -128,7 +128,7 @@ pub fn is_lasting(spell: &SpellDef) -> bool {
 }
 
 /// Applies lasting spells to `stats` (economy.md §5): all `d-` values are added, then each
-/// spell's `p-` in turn, compounding (`x += x·p/100`, truncated each time). A negative
+/// spell's `p-` in turn, compounding ([`crate::rules::items::percent_mod`], truncated each time). A negative
 /// `p-LifeLose` (the scripted curses) cuts maximum HP by that percent.
 pub fn apply(stats: &mut Stats, spells: &[&SpellDef]) {
     for s in spells {
@@ -136,7 +136,7 @@ pub fn apply(stats: &mut Stats, spells: &[&SpellDef]) {
     }
     for s in spells {
         for (&st, &v) in &s.percent {
-            stats[st] += stats[st] * v / 100;
+            stats[st] = super::items::percent_mod(st, stats[st], v);
         }
         if let Some(p) = s.life_lose_percent.filter(|&p| p < 0) {
             stats[Stat::Hits] += stats[Stat::Hits] * p / 100;

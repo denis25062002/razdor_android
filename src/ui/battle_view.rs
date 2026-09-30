@@ -279,8 +279,12 @@ impl BattleView {
         }
 
         self.quick_played = false;
-        if !self.exiting && self.battle.outcome() == Outcome::Ongoing && self.fx.is_none() && key(KeyCode::Escape) {
+        // Esc opens the ways out, also while a strike or spell plays. The window opens on the
+        // next frame, so the Esc that opened it does not also close it.
+        let mut just_opened = false;
+        if !self.exiting && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Escape) {
             self.exiting = true;
+            just_opened = true;
         }
         let exiting = self.exiting;
         if exiting {
@@ -354,7 +358,7 @@ impl BattleView {
             }
             return self.result_overlay(&l, game, message, dialogs, outcome);
         }
-        if exiting {
+        if exiting && !just_opened {
             set_input_blocked(false);
             match super::saves::battle_exit_dialog(&mut self.exit_asking) {
                 (Some(choice), _) => {
@@ -587,7 +591,10 @@ impl BattleView {
     #[allow(clippy::too_many_arguments)]
     fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, frame: Option<(Color, bool)>, aimed: bool, order: Option<usize>) {
         let f = &self.battle.fighters[id];
-        let (s, base) = (&f.stats, &f.base);
+        // Against the start of the battle, so every gain or loss shows (blue or red), with
+        // the building's defence in the D values.
+        let s = &self.battle.shown_stats(id);
+        let base = &f.at_start;
         let k = l.k;
         let p = p.round();
         let (w, h) = (l.card.x, l.card.y);
@@ -735,13 +742,13 @@ impl BattleView {
             xp: f.xp,
             need: self.need(f),
             hp: f.hp,
-            now: &f.stats,
-            start: &f.base,
+            now: &self.battle.shown_stats(id),
+            start: &f.at_start,
             power: f.power,
             wage: if f.is_hero || f.team == Team::Enemy { 0 } else { b.content().wage(f.unit) },
             items,
             back_row: f.slot.row == Row::Back,
-            in_building: b.building_defence(f.team) > 0,
+            building: b.building_defence(f.team),
             hero,
             status,
             battle: true,

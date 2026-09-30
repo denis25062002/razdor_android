@@ -157,6 +157,9 @@ own side when the actor has used its last action (48b5ac).
 - **Only row 1 empty:** every row-2 unit moves to row 1, in the same column, and keeps its actions.
 - **A voluntary move** that empties the front row therefore makes the back row step forward only
   once that unit has finished its actions.
+- **At the start of the battle** the code reading shows no collapse, but the player observes
+  the original filling an empty front row at once. Razdor follows the observation: the check
+  also runs when the battle begins (after the deployment) and at every turn start.
 - **Removal of the dead:** a dead unit is taken out of the side's list. Later records shift down
   and the side's unit count drops (hook c252bd).
 
@@ -493,7 +496,7 @@ All rows are implemented (2026-09-25); each has a test in `src/rules/battle/test
 | 27 | Turn limit | 25 full turns, then a stalemate (player withdraws) | Ends after the first action of turn 25. **Victory** if the player has any unit left (normal loot) | 5 | Done; the enemy's survivors are handled as a beaten army (the leader-only detail is not modelled) |
 | 28 | Surrender | `game.rs`: every beaten enemy gives its Surrender in mana | A side whose remaining units **all** have Surrender > 0 gives up at once. Only those units' Surrender sum becomes mana; units killed earlier give none. Applies to the player too (defeat) | 5 | Done |
 | 29 | Bonus count | A list of bonuses per unit (`has_any`) | Exactly one bonus byte; each worn item with a bonus overwrites it (last wins) | 7 | Done in battle (the last bonus is kept); `items::apply` outside battle still lists all |
-| 30 | AI | Heal < 50%, kill the most dangerous, curse, fewest hits, heal or bless; step-forward moves | Scored priorities (retreat non-warriors, melee `dmg×round((R+1)M)`, shots, school magic, moves). Kill test depends on OptValue9. Never moves into the reserve. No randomness | 4 | Done; magic scoring is as approximate as the notes, `OptValue9` is not read yet (`Battle::set_improved_ai`), Manevres 0 counts as 1 |
+| 30 | AI | Heal < 50%, kill the most dangerous, curse, fewest hits, heal or bless; step-forward moves | Scored priorities (retreat non-warriors, melee `dmg×round((R+1)M)`, shots, school magic, moves). Kill test depends on OptValue9. Never moves into the reserve. No randomness | 4 | Done; magic scoring is as approximate as the notes, `OptValue9` is read from the install and can be changed in the settings (easy / expert, `Game::improved_ai`), Manevres 0 counts as 1 |
 | 31 | Hunger | Any kill heals to full | Melee kills only; plus a turn-start heal when the living-unit count changed (shared counter) | 7 | Done |
 | 32 | Berserk | Damage × (2·max − hp)/max | Attack modifier = AB × 75% × missing/max (up to +75% AB), overwrites a blessing's attack | 7 | Done |
 | 33 | Exhaustion | −15 | −10 points on all three protections | 7 | Done |

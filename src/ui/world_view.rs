@@ -46,17 +46,66 @@ pub struct MapView {
     pub minimap: bool,
     /// Where the camera looks when moved by the minimap (world units); `None` follows the hero.
     pub look: Option<(f32, f32)>,
+    /// Places the scenario's events have shown (lanterns, shown armies), first in line: the
+    /// camera flies to each in turn and its uncovered cells fade in from the fog.
+    shows: VecDeque<Showing>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new() }
+    }
+}
+
+/// Seconds the camera takes to reach a shown place, then the uncovered area takes to fade
+/// in, then the view rests there before the next place.
+const SHOW_PAN: f64 = 0.8;
+const SHOW_FADE: f64 = 1.2;
+const SHOW_REST: f64 = 0.4;
+
+/// A place an event showed: the cells it uncovered stay dark until the camera is there
+/// (after the event's message is read), then fade in.
+struct Showing {
+    /// World position of the place.
+    at: (f32, f32),
+    /// The uncovered cells, as a fog-sized mask (alpha 255 on them).
+    mask: Option<Texture2D>,
+    /// When the camera set off, and from where.
+    started: Option<(f64, (f32, f32))>,
+}
+
+impl Showing {
+    fn new(game: &Game, shown: &razdor::rules::game::Shown) -> Showing {
+        let fog = &game.fog;
+        let mask = (!shown.cells.is_empty() && fog.w > 0 && fog.h > 0).then(|| {
+            let mut rgba = vec![0u8; (fog.w * fog.h * 4) as usize];
+            for &(x, y) in &shown.cells {
+                rgba[((y * fog.w + x) * 4 + 3) as usize] = 255;
+            }
+            let t = Texture2D::from_rgba8(fog.w as u16, fog.h as u16, &rgba);
+            t.set_filter(FilterMode::Linear);
+            t
+        });
+        Showing { at: game.world.map.center(shown.at), mask, started: None }
+    }
+
+    /// How dark the uncovered cells still are (1 until the camera arrives).
+    fn darkness(&self, now: f64) -> f32 {
+        match self.started {
+            Some((t0, _)) => (1.0 - ((now - t0 - SHOW_PAN) / SHOW_FADE).clamp(0.0, 1.0)) as f32,
+            None => 1.0,
+        }
     }
 }
 
 impl MapView {
     pub fn reset(&mut self) {
         self.look = None;
+    }
+
+    /// A game was loaded: the places the old one was about to show are dropped.
+    pub fn forget_shows(&mut self) {
+        self.shows.clear();
     }
 }
 
@@ -146,13 +195,30 @@ impl Camera {
         Rect::new(o.x, o.y, self.view.w / self.scale, self.view.h / self.scale)
     }
 
-    /// The fog layer over the whole map (`ui::minimap`).
-    fn draw_fog(&self, game: &Game) {
+    /// Screen corners of the fog grid over the whole map.
+    fn fog_corners(&self, game: &Game) -> (Vec2, Vec2) {
         let map = &game.world.map;
         let rh = map.grid.row_height();
-        let tl = self.to_screen((-0.5, -0.5 * rh));
-        let br = self.to_screen((map.w as f32 - 0.5, (map.h as f32 - 0.5) * rh));
+        (self.to_screen((-0.5, -0.5 * rh)), self.to_screen((map.w as f32 - 0.5, (map.h as f32 - 0.5) * rh)))
+    }
+
+    /// The fog layer over the whole map (`ui::minimap`).
+    fn draw_fog(&self, game: &Game) {
+        let (tl, br) = self.fog_corners(game);
         minimap::draw_fog(&game.fog, tl, br);
+    }
+
+    /// The fog still over places being shown, as dark as each one's fade has left it.
+    fn draw_showing(&self, game: &Game, shows: &VecDeque<Showing>, now: f64) {
+        let (tl, br) = self.fog_corners(game);
+        for s in shows {
+            if let Some(mask) = &s.mask {
+                let a = s.darkness(now);
+                if a > 0.0 {
+                    draw_texture_ex(mask, tl.x, tl.y, Color::new(0.0, 0.0, 0.0, a), DrawTextureParams { dest_size: Some(br - tl), ..Default::default() });
+                }
+            }
+        }
     }
 
     fn tile_under_mouse(&self) -> Option<Tile> {
@@ -366,28 +432,54 @@ fn facing_row(d: Vec2) -> f32 {
     ((dir + 1) % 8) as f32
 }
 
-/// Draws a map figure standing at world `pos`, heading towards `next`. Returns false if the
-/// install has no such figure.
-fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, cam: &Camera) -> bool {
+/// The original's ship sprites (`Graphics/Units`) by ship type (army byte 72,
+/// `rules::ships::kind`): the hero's galley, pirates and merchants.
+fn ship_stem(kind: u8) -> &'static str {
+    match kind {
+        razdor::rules::ships::kind::PIRATE => "Ship-Pirat",
+        razdor::rules::ships::kind::MERCHANT => "Ship-Merchant",
+        _ => "Hero-Ship-Vesla",
+    }
+}
+
+/// How a sprite stands on its point: a figure's feet near the frame's bottom, with a
+/// shadow; a ship's waterline across the frame's middle (its reflection is in the art).
+#[derive(Clone, Copy)]
+enum Stand {
+    Feet,
+    Afloat,
+}
+
+/// Draws a map figure (or ship) at world `pos`, heading towards `next`, drawn at one
+/// sprite pixel per map pixel whatever its frame size. Returns false if the install has no
+/// such sprite.
+fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, cam: &Camera, stand: Stand) -> bool {
     let Some(sheet) = art.and_then(|a| a.figure_sheet(stem)) else { return false };
+    let n = sheet.width() / 8.0;
     let p = cam.to_screen(pos);
     let heading = next.map_or(Vec2::ZERO, |n| cam.to_screen(n) - p);
     let row = facing_row(heading);
     let frame = if next.is_some() { ((get_time() * 10.0) as i32 % 8) as f32 } else { 0.0 };
-    let size = 64.0 * cam.scale / PX;
-    let dest = vec2(p.x - size / 2.0, p.y - size * 0.8);
-    draw_ellipse(p.x, p.y + size * 0.1, size * 0.22, size * 0.08, 0.0, Color::new(0.0, 0.0, 0.0, 0.25));
+    let size = n * cam.scale / PX;
+    let dest = match stand {
+        Stand::Feet => {
+            draw_ellipse(p.x, p.y + size * 0.1, size * 0.22, size * 0.08, 0.0, Color::new(0.0, 0.0, 0.0, 0.25));
+            vec2(p.x - size / 2.0, p.y - size * 0.8)
+        }
+        Stand::Afloat => vec2(p.x - size / 2.0, p.y - size * 0.55),
+    };
     draw_texture_ex(
         &sheet,
         dest.x,
         dest.y,
         WHITE,
-        DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(frame * 64.0, row * 64.0, 64.0, 64.0)), ..Default::default() },
+        DrawTextureParams { dest_size: Some(vec2(size, size)), source: Some(Rect::new(frame * n, row * n, n, n)), ..Default::default() },
     );
     true
 }
 
-/// A ship on the water (a placeholder shape: hull, mast and a sail of `sail` colour).
+/// A ship on the water without the install's sprites (a placeholder shape: hull, mast and a
+/// sail of `sail` colour).
 fn draw_ship(cam: &Camera, pos: (f32, f32), sail: Color) {
     let c = cam.to_screen(pos);
     let k = cam.scale / PX;
@@ -406,9 +498,11 @@ fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &
     let next = a.path.first().map(|&t| game.world.map.center(t));
     let pos = game.army_display_pos(a);
     if a.sails() {
-        let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
-        draw_ship(cam, pos, sail);
-    } else if !draw_figure(art, figure_stem(a.model), pos, next, cam) {
+        if !draw_figure(art, ship_stem(a.ship), pos, next, cam, Stand::Afloat) {
+            let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
+            draw_ship(cam, pos, sail);
+        }
+    } else if !draw_figure(art, figure_stem(a.model), pos, next, cam, Stand::Feet) {
         let c = cam.to_screen(pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
@@ -432,10 +526,12 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let c = cam.to_screen(game.display_pos());
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
     if game.aboard() {
-        draw_ship(cam, game.display_pos(), HERO_SAIL);
+        if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), game.display_pos(), next, cam, Stand::Afloat) {
+            draw_ship(cam, game.display_pos(), HERO_SAIL);
+        }
         return;
     }
-    if !draw_figure(art, figure_stem(model), game.display_pos(), next, cam) {
+    if !draw_figure(art, figure_stem(model), game.display_pos(), next, cam, Stand::Feet) {
         assets.draw_unit(game.hero().def, Team::Player, c.x, c.y - 10.0, 30.0);
     }
 }
@@ -460,13 +556,19 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
             items.push((o.tile.1 as f32 * rh, Drawable::Object(*o)));
         }
     }
+    // Buildings stand in front of the scenery: hills, rocks and trees south of one would
+    // hide it, so they are drawn after every object, sorted among themselves. Bridges lie
+    // flat, under everything standing on them.
+    let mut buildings: Vec<(f32, Drawable)> = Vec::new();
     for (i, l) in game.world.locations.iter().enumerate() {
         let (ax, ay) = l.anchor;
         let seen = l.cells().any(|t| fog.explored(t));
         if seen && ay >= r0 - 1 && ay < r1 + below && ax >= c0 - side && ax - l.size.0 < c1 + side {
-            // Bridges lie flat: under everything standing on them.
-            let key = if l.kind.is_bridge() { ay as f32 * rh - 1000.0 } else { ay as f32 * rh + 0.01 };
-            items.push((key, Drawable::Building(i)));
+            if l.kind.is_bridge() {
+                items.push((ay as f32 * rh - 1000.0, Drawable::Building(i)));
+            } else {
+                buildings.push((ay as f32 * rh, Drawable::Building(i)));
+            }
         }
     }
     // Figures (armies, the waiting ship, the hero) always stand in front of the scenery: they
@@ -481,15 +583,19 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera) {
     }
     figures.push((game.display_pos().1 + 0.03, Drawable::Hero));
     items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    buildings.sort_by(|a, b| a.0.total_cmp(&b.0));
     figures.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, d) in items.iter().chain(&figures) {
+    for (_, d) in items.iter().chain(&buildings).chain(&figures) {
         match d {
             Drawable::Object(o) => draw_object(o, art, cam),
             Drawable::Building(i) => draw_building(&game.world.locations[*i], art, cam),
             Drawable::Army(i) => draw_army(game, &game.world.armies[*i], assets, art, cam),
             Drawable::Ship => {
                 if let Some(ship) = game.ship {
-                    draw_ship(cam, map.center(ship.tile), HERO_SAIL);
+                    let at = map.center(ship.tile);
+                    if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), at, None, cam, Stand::Afloat) {
+                        draw_ship(cam, at, HERO_SAIL);
+                    }
                 }
             }
             Drawable::Hero => draw_hero(game, assets, art, cam),
@@ -769,6 +875,8 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
                     next = Some(Screen::Building(BuildingView::new(first)));
                 }
             }
+            // A noon when no money came in or went out has nothing to report.
+            Event::NewDay(r) if r.is_empty() => {}
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
             Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } => {}
@@ -893,7 +1001,15 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     if key(KeyCode::M) {
         view.minimap = !view.minimap;
     }
-    // Tab: the camera back on the hero (after the minimap moved it).
+    // Places the scenario has just shown wait in line (dark until their turn). Tab or a
+    // click on the map skips the showing; Tab: the camera back on the hero (after the
+    // minimap or a showing moved it).
+    for shown in std::mem::take(&mut game.shown) {
+        view.shows.push_back(Showing::new(game, &shown));
+    }
+    if !view.shows.is_empty() && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
+        view.shows.clear();
+    }
     if key(KeyCode::Tab) {
         view.look = None;
     }
@@ -930,9 +1046,30 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
     let mut next = handle_events(game, events, message, dialogs).or(reopened);
 
+    // The place being shown: once its message is read, the camera flies there and the
+    // uncovered area fades in; then the next place, if any. The camera stays on the last
+    // one until a click on the map or Tab brings it back to the hero.
+    let now = get_time();
+    for shown in std::mem::take(&mut game.shown) {
+        view.shows.push_back(Showing::new(game, &shown));
+    }
+    if dialogs.is_empty() {
+        if let Some(front) = view.shows.front_mut() {
+            let here = view.look.unwrap_or(game.display_pos());
+            let (t0, from) = *front.started.get_or_insert((now, here));
+            let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
+            let ease = p * p * (3.0 - 2.0 * p);
+            view.look = Some((from.0 + (front.at.0 - from.0) * ease, from.1 + (front.at.1 - from.1) * ease));
+            if now - t0 > SHOW_PAN + SHOW_FADE + SHOW_REST {
+                view.shows.pop_front();
+            }
+        }
+    }
+
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     draw_world(game, assets, &cam);
     cam.draw_fog(game);
+    cam.draw_showing(game, &view.shows, now);
 
     // The original has no side panel: the map fills the screen above the bar. Lasting
     // world spells and ship hints stand small in the top left corner.

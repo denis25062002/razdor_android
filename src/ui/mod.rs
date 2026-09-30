@@ -209,6 +209,8 @@ impl App {
                 self.dialogs.clear();
                 self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());
                 self.map_view.reset();
+                self.map_view.forget_shows();
+                self.audio.loaded_game();
                 self.last_gold = None;
                 self.game = Some(game);
                 self.test_play = true;
@@ -227,6 +229,8 @@ impl App {
                 self.message = None;
                 self.load_error = None;
                 self.map_view.reset();
+                self.map_view.forget_shows();
+                self.audio.loaded_game();
                 self.last_gold = None;
                 if let Some(q) = game.pending_question() {
                     story::show(&game, &EventOutcome::Question(q), &mut self.message, &mut self.dialogs);
@@ -431,6 +435,10 @@ impl App {
         chrome::begin_frame();
         self.follow_language();
         self.sounds();
+        // The battle AI's level from the settings: the next battle uses it.
+        if let Some(g) = self.game.as_mut() {
+            g.improved_ai = main_menu::expert_ai(&self.audio.settings);
+        }
         if matches!(self.screen, Screen::Editor) {
             self.editor_frame();
             return;

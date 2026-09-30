@@ -108,9 +108,14 @@ pub fn autosave(game: &Game, name: &str) {
 }
 
 /// The battle against the pending foe, after the autosave the original makes before every
-/// battle.
+/// battle. The autosave is the moment just before it: without the pending foe, so loading
+/// it puts the hero on the map next to the enemy (potions, spells and the army can still be
+/// seen to) instead of straight into the fight, which starts again when he moves or waits.
 pub fn battle(game: &mut Game) -> Screen {
-    autosave(game, &battle_name(game));
+    let name = battle_name(game);
+    let foe = game.foe.take();
+    autosave(game, &name);
+    game.foe = foe;
     Screen::Battle(Box::new(BattleView::new(game.start_battle())))
 }
 

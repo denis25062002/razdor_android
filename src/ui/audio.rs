@@ -118,8 +118,8 @@ fn take_cues() -> Vec<Cue> {
     cues
 }
 
-/// Volumes (0..1) and mutes, and whether the frame rate shows in the corner, saved in
-/// `audio.json` in the save folder.
+/// Volumes (0..1) and mutes, whether the frame rate shows in the corner and the battle AI's
+/// level, saved in `audio.json` in the save folder.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -128,11 +128,14 @@ pub struct Settings {
     pub music_muted: bool,
     pub sfx_muted: bool,
     pub show_fps: bool,
+    /// The enemy's battle AI: `Some(true)` expert (the original's "improved enemy AI in
+    /// battle"), `Some(false)` easy; `None` until chosen: the install's `OptValue9`.
+    pub expert_ai: Option<bool>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false }
+        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None }
     }
 }
 
@@ -265,6 +268,15 @@ pub struct Audio {
 }
 
 impl Audio {
+    /// A game was loaded: the triumph of a battle won before it stops, and the map music
+    /// plays again.
+    pub fn loaded_game(&mut self) {
+        if let Some(b) = self.backend.as_mut() {
+            let change = b.jukebox.interrupt_sting();
+            b.apply(change, &self.settings, self.log);
+        }
+    }
+
     /// No sound at all.
     pub fn silent() -> Audio {
         let settings = Settings::load();
@@ -466,6 +478,7 @@ mod tests {
         assert_eq!(s.sfx_volume, 0.0);
         s.music_muted = true;
         s.show_fps = true;
+        s.expert_ai = Some(true);
         assert_eq!(s.music_gain(), 0.0);
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);

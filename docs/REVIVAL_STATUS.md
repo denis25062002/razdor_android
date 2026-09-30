@@ -91,9 +91,10 @@ after `main` returned); the game now ends the process directly once everything i
 
 ## Not done yet
 
-- **Ships** are drawn as a placeholder shape (hull and sail), not the original's ship
-  sprites (`Ship-*.ugs` are read but their sheet layout is not decoded). What the "hero
-  ship" type (army byte 72 = 1) means is unknown; such ships sail like friendly armies.
+- **Ships** use the original's sprites (`Hero-Ship-Vesla`, `Ship-Pirat`, `Ship-Merchant`:
+  8 headings × 8 rowing frames, like the map figures, 64 or 128 px square). What the "hero
+  ship" type (army byte 72 = 1) means is unknown; such ships sail like friendly armies and
+  are drawn as the hero's galley.
 - The second tutorial's church (building 15) stands in a ring of dense thickets and bog:
   unreachable unless some thicket sprites are passable in the original.
 - **Events** (economy.md §6): quests of towns and castles fire on entering (the original offers

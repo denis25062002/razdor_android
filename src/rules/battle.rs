@@ -222,6 +222,9 @@ pub struct Fighter {
     pub base: Stats,
     /// Current stats: base with this turn's modifiers and the drained magic power.
     pub stats: Stats,
+    /// The stats the unit began the battle with (after the deployment): the cards show
+    /// every gain or loss against them.
+    pub at_start: Stats,
     /// Magic power left after the per-turn drain.
     pub power: i32,
     /// This turn's attack, defence and initiative modifiers (blessings, curses, Stun,
@@ -281,6 +284,7 @@ impl Fighter {
             power: base[Stat::MagicPower],
             regen: base[Stat::Regen],
             stats: base.clone(),
+            at_start: base.clone(),
             base,
             mods: Buff::default(),
             blessed: false,
@@ -444,7 +448,7 @@ pub struct Battle {
     interactive: bool,
     /// The AI's level (battle B+5): 1 normally, 2 with "improved enemy AI" (`OptValue9`), 0
     /// between AI armies. It decides when a target counts as killable.
-    ai_level: u8,
+    pub(crate) ai_level: u8,
     /// Community `Hunger`: the living-unit count it last saw (shared by all Hunger units).
     hunger_seen: usize,
     /// Mana a side's surrender gives the winner.
@@ -617,6 +621,17 @@ impl Battle {
     }
 
     /// The defence bonus `team` has from standing in its own building (0 in the open).
+    /// The stats of fighter `i` as the cards and the panel show them: its current stats with
+    /// its side's building defence added to both defences, as the damage formula adds it.
+    pub fn shown_stats(&self, i: usize) -> Stats {
+        let f = &self.fighters[i];
+        let mut s = f.stats.clone();
+        let b = self.building_defence[f.team.index()];
+        s[Stat::DefenceBlow] += b;
+        s[Stat::DefenceShot] += b;
+        s
+    }
+
     pub fn building_defence(&self, team: Team) -> i32 {
         self.building_defence[team.index()]
     }
@@ -657,6 +672,14 @@ impl Battle {
             return;
         }
         self.deploying = false;
+        // A side with nobody in front steps forward before the first turn, as it would the
+        // moment its front row fell (the deployment may leave it empty).
+        for team in Team::BOTH {
+            self.collapse(team);
+        }
+        for f in &mut self.fighters {
+            f.at_start = f.stats.clone();
+        }
         // Strength at the start, from the stats the units bring (items, spells) and the
         // building they stand in.
         for f in &mut self.fighters {
@@ -792,6 +815,10 @@ impl Battle {
     /// Starts the next battle turn: modifiers and flags reset, actions refilled, then from
     /// turn 2 magic drain, regeneration and poison, then the Community turn-start bonuses.
     fn start_turn(&mut self) {
+        // No turn starts with an empty front row while someone stands behind it.
+        for team in Team::BOTH {
+            self.collapse(team);
+        }
         self.round += 1;
         let round = self.round;
         self.threshold = if round == 1 { TURN_ONE_THRESHOLD } else { self.first_threshold };

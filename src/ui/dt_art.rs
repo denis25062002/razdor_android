@@ -219,24 +219,27 @@ impl DtArt {
     }
 
     /// A map figure sheet (`Graphics/Units/<stem>.ugs`): 8 rows (facings, clockwise from
-    /// north-west) of 8 walking frames, 64×64 each.
+    /// north-west) of 8 walking (or rowing) frames, square: 64×64 for the figures and the
+    /// hero's galley, 128×128 for the pirate and merchant ships. The frame size is the
+    /// sheet's width / 8.
     pub fn figure_sheet(&self, stem: &str) -> Option<Texture2D> {
         if let Some(t) = self.figures_sheets.borrow().get(stem) {
             return t.clone();
         }
         let frames = or_log("map figures", self.install.graphic(&format!("Graphics/Units/{stem}.ugs")));
-        let t = (frames.len() == 64 && frames.iter().all(|f| f.width == 64 && f.height == 64))
+        let n = frames.first().map_or(0, |f| f.width as usize);
+        let t = (frames.len() == 64 && n > 0 && frames.iter().all(|f| f.width as usize == n && f.height as usize == n))
             .then(|| {
-                let refs: Vec<&Image> = frames.iter().collect();
-                let mut rgba = vec![0u8; 512 * 512 * 4];
-                for (i, f) in refs.iter().enumerate() {
-                    let (ox, oy) = ((i % 8) * 64, (i / 8) * 64);
-                    for row in 0..64 {
-                        let dst = ((oy + row) * 512 + ox) * 4;
-                        rgba[dst..dst + 256].copy_from_slice(&f.rgba[row * 256..row * 256 + 256]);
+                let side = n * 8;
+                let mut rgba = vec![0u8; side * side * 4];
+                for (i, f) in frames.iter().enumerate() {
+                    let (ox, oy) = ((i % 8) * n, (i / 8) * n);
+                    for row in 0..n {
+                        let dst = ((oy + row) * side + ox) * 4;
+                        rgba[dst..dst + n * 4].copy_from_slice(&f.rgba[row * n * 4..(row + 1) * n * 4]);
                     }
                 }
-                texture(&Image { width: 512, height: 512, rgba })
+                texture(&Image { width: side as u32, height: side as u32, rgba })
             })
             .flatten();
         self.figures_sheets.borrow_mut().insert(stem.to_string(), t.clone());

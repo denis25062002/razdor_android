@@ -30,7 +30,8 @@ pub struct Sheet<'a> {
     pub wage: i32,
     pub items: [Option<ItemId>; 4],
     pub back_row: bool,
-    pub in_building: bool,
+    /// The defence the building adds to both defences (0 outside one); `now` includes it.
+    pub building: i32,
     pub hero: Option<HeroClass>,
     /// Status lines under the name (actions left, poison, this turn's modifiers).
     pub status: Vec<(String, Color)>,
@@ -155,9 +156,17 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
         let (v, c) = split(Stat::AttackShot);
         lines.push((label("SAttackShot", n_("Ranged attack")), v, c));
     }
-    let (v, c) = split(Stat::DefenceBlow);
+    // In a building its defence is written apart, "15 + 12", as the original does.
+    let defence = |st: Stat| -> (String, Color) {
+        if s.building > 0 {
+            (format!("{} + {}", now[st] - s.building, s.building), cmp_color(now[st], start[st]))
+        } else {
+            split(st)
+        }
+    };
+    let (v, c) = defence(Stat::DefenceBlow);
     lines.push((label("SDefenceBlow", n_("Melee defence")), v, c));
-    let (v, c) = split(Stat::DefenceShot);
+    let (v, c) = defence(Stat::DefenceShot);
     lines.push((label("SDefenceShot", n_("Ranged defence")), v, c));
     if now.is_mage() || start.is_mage() {
         let school = now.magic.unwrap_or(MagicSchool::Elemental);
@@ -383,7 +392,7 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
     if s.back_row {
         traits.push(("Bonus-2Row".into(), chrome::ui_text("Army", "Hint1").unwrap_or_else(|| tr("In the second row the unit gets a bonus to its ranged defence!").into())));
     }
-    if s.in_building {
+    if s.building > 0 {
         traits.push(("Bonus-InCastle".into(), chrome::ui_text("Army", "Hint2").unwrap_or_else(|| tr("In its own building the unit gets a bonus to all defences!").into())));
     }
     let icon = 24.0 * k;

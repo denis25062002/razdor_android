@@ -251,11 +251,22 @@ impl Game {
     }
 
     /// Reveals the cells within `radius` of `at` (lanterns, a shown army) in the fog of war,
-    /// and records it in [`Game::pending_reveals`].
+    /// and records it in [`Game::pending_reveals`], and the cells it uncovered in
+    /// [`Game::shown`] for the map to show.
     pub fn reveal_area(&mut self, at: (i32, i32), radius: i32) {
         let r = radius.max(1);
         self.pending_reveals.push((at.0, at.1, r));
+        // Every cell the reveal can reach: the fog's own shape lies within r + 1.
+        let reach = r + 1;
+        let square = |fog: &crate::rules::fog::Fog| -> Vec<(i32, i32)> {
+            let (x0, x1) = ((at.0 - reach).max(0), (at.0 + reach).min(fog.w - 1));
+            let (y0, y1) = ((at.1 - reach).max(0), (at.1 + reach).min(fog.h - 1));
+            (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| (x, y))).collect()
+        };
+        let dark: Vec<(i32, i32)> = if self.fog.enabled { square(&self.fog).into_iter().filter(|&t| !self.fog.explored(t)).collect() } else { Vec::new() };
         self.reveal(at.0, at.1, r);
+        let cells: Vec<(i32, i32)> = dark.into_iter().filter(|&t| self.fog.explored(t)).collect();
+        self.shown.push(super::game::Shown { at, cells });
     }
 }
 
@@ -1357,6 +1368,21 @@ mod tests {
     }
 
     #[test]
+    fn a_shown_place_lists_only_the_cells_it_uncovered() {
+        let mut g = start(&world(vec![]));
+        g.fog = crate::rules::fog::Fog::new(g.fog.w, g.fog.h);
+        g.fog.reveal(10, 4, 1);
+        g.shown.clear();
+        g.reveal_area((10, 4), 3);
+        let first = g.shown.pop().unwrap();
+        assert_eq!(first.at, (10, 4));
+        assert!(!first.cells.is_empty() && first.cells.iter().all(|&t| g.fog.explored(t)));
+        assert!(!first.cells.contains(&(10, 4)), "the cell already seen is not faded in again");
+        g.reveal_area((10, 4), 3);
+        assert!(g.shown.pop().unwrap().cells.is_empty(), "nothing new the second time");
+    }
+
+    #[test]
     fn lanterns_are_recorded_for_the_fog() {
         let mut e = ev(EventKind::Global);
         e.results.light_lanterns = [7, 0, 0, 0];
@@ -1364,6 +1390,9 @@ mod tests {
         s.points = vec![point(7, 10, 4, 6)];
         let g = start(&s);
         assert_eq!(g.pending_reveals, vec![(10, 4, 6)]);
+        let shown = g.shown.last().expect("the lantern is shown on the map");
+        assert_eq!(shown.at, (10, 4));
+        assert!(shown.cells.iter().all(|&t| g.fog.explored(t)), "only cells it uncovered, all lit now");
         assert!(!g.fog.enabled || g.fog.explored((10, 4)), "the lantern lights the fog");
     }
 

@@ -143,6 +143,21 @@ pub struct DayReport {
     pub mana_total: i32,
 }
 
+/// A place an event showed on the map: its centre and the cells that were dark before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub at: Tile,
+    pub cells: Vec<Tile>,
+}
+
+impl DayReport {
+    /// Nothing came in or went out: no income, no wages, nobody unpaid or gone. The report
+    /// window is then not shown.
+    pub fn is_empty(&self) -> bool {
+        self.income == 0 && self.mana == 0 && self.wages == 0 && self.mana_wages == 0 && self.unpaid == 0 && self.deserted.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     /// The party stopped on a location (index into `world.locations`).
@@ -215,6 +230,10 @@ pub struct Game {
     /// Areas revealed by events (lanterns, shown armies): (x, y, radius) in cells, for the
     /// fog of war to take.
     pub pending_reveals: Vec<(i32, i32, i32)>,
+    /// Places an event has just shown (lanterns, shown armies) with the cells it uncovered,
+    /// for the map to fly to and fade in; the interface takes them. Not saved.
+    #[serde(skip)]
+    pub shown: Vec<Shown>,
     /// Scenario armies (ids) the player has met / beaten.
     pub(crate) met_armies: BTreeSet<ArmyId>,
     /// The army the player clicked (its `uid`): reaching it always starts a meeting ("click
@@ -268,6 +287,10 @@ pub struct Game {
     /// Real seconds since the world last moved, for drawing armies between cells.
     #[serde(skip)]
     pub(crate) since_step: f32,
+    /// "Improved enemy AI in battle" (the original's `OptValue9`, "expert" in Razdor's
+    /// settings): the player's choice, set by the interface, not part of the save.
+    #[serde(skip)]
+    pub improved_ai: bool,
     /// The AI's simulated battles of the day (`rules::ai`).
     #[serde(skip)]
     pub(crate) sims: ai::Sims,
@@ -319,6 +342,7 @@ impl Game {
             pending: Vec::new(),
             effect_events: Vec::new(),
             pending_reveals: Vec::new(),
+            shown: Vec::new(),
             met_armies: BTreeSet::new(),
             talk_to: None,
             beaten_armies: BTreeSet::new(),
@@ -338,6 +362,7 @@ impl Game {
             step_elapsed: 0.0,
             wait_ticks: 0,
             since_step: 0.0,
+            improved_ai: false,
             sims: ai::Sims::default(),
         };
         // The hero draws no wage; everyone counts as paid at the start.
@@ -1059,6 +1084,7 @@ impl Game {
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
         b.set_xp_correction(correction);
+        b.set_improved_ai(self.improved_ai);
         // Lasting world spells change the stats of both sides.
         // Spells on a leader alone (`OneEnemy`, `p-LifeLose`) hold its first unit.
         b.apply_spells(Team::Player, &self.army_spells());
@@ -1071,12 +1097,20 @@ impl Game {
                 magic::apply_to_fighter(f, &self.spells_on_leader(i));
             }
         }
-        if defence > 0 {
-            b.set_building_defence(Team::Enemy, defence);
+        // An enemy army attacked in a building of its own side (one hostile to the hero)
+        // defends with that building's defence, as a garrison does.
+        let army_home = match self.foe {
+            Some(Foe::Army(i)) => self.world.location_covering(self.world.armies[i].tile(&self.world.map)).map(|l| &self.world.locations[l]).filter(|l| l.hostile()).map_or(0, |l| l.garrison_defence),
+            _ => 0,
+        };
+        if defence.max(army_home) > 0 {
+            b.set_building_defence(Team::Enemy, defence.max(army_home));
         }
-        // The hero fighting in a building of his own: its extra defence is added to every
-        // defence of his units (battle.md §0, 485908), as for any garrison at home.
-        if let Some(own) = self.location.map(|l| &self.world.locations[l]).filter(|l| l.owned() && l.garrison_defence > 0) {
+        // The hero fighting in a building of his own or of a friend (attitude above 0): its
+        // extra defence is added to every defence of his units (battle.md §0, 485908), as for
+        // any garrison at home.
+        let here = self.location.or_else(|| self.world.location_covering(self.tile()));
+        if let Some(own) = here.map(|l| &self.world.locations[l]).filter(|l| (l.owned() || l.attitude > 0) && l.garrison_defence > 0) {
             b.set_building_defence(Team::Player, own.garrison_defence);
         }
         b
@@ -2158,6 +2192,27 @@ mod tests {
     }
 
     #[test]
+    fn a_friends_building_helps_the_hero_and_an_enemys_helps_the_enemy() {
+        let mut s = strip();
+        let mut castle = building(BuildingType::Castle, 6, 3, (2, 2));
+        castle.garrison_extra_defence = 12;
+        s.buildings = vec![castle];
+        s.armies = vec![army(1, 12, 2, -2, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.world.locations[0].owner = Owner::Neutral;
+        g.world.locations[0].attitude = 2;
+        g.foe = Some(Foe::Army(0));
+        g.location = Some(0);
+        assert_eq!(g.start_battle().building_defence(Team::Player), 12, "a friend's castle");
+        g.world.locations[0].attitude = -3;
+        g.location = None;
+        let at = g.world.locations[0].tile;
+        g.world.armies[0].pos = g.world.map.center(at);
+        let b = g.start_battle();
+        assert_eq!((b.building_defence(Team::Enemy), b.building_defence(Team::Player)), (12, 0), "the enemy at home in a hostile castle");
+    }
+
+    #[test]
     fn a_hostile_fort_is_taken_by_beating_its_garrison() {
         let mut s = strip();
         let mut fort = building(BuildingType::Fort, 16, 3, (2, 2));
@@ -2418,6 +2473,25 @@ mod tests {
         // Moved by other means since: drawn where it is.
         g.world.armies[0].pos = (1.0, 1.0);
         assert_eq!(at(&mut g, 0.5), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_noon_with_no_money_moving_is_empty() {
+        let quiet = DayReport { day: 3, income: 0, mana: 0, wages: 0, mana_wages: 0, unpaid: 0, deserted: vec![], gold: 150, mana_total: 7 };
+        assert!(quiet.is_empty(), "the balance alone does not count");
+        assert!(!DayReport { income: 10, ..quiet.clone() }.is_empty());
+        assert!(!DayReport { mana_wages: 2, ..quiet.clone() }.is_empty());
+        assert!(!DayReport { unpaid: 1, ..quiet.clone() }.is_empty(), "the unpaid are news");
+        assert!(!DayReport { deserted: vec![UnitId(4)], ..quiet }.is_empty());
+    }
+
+    #[test]
+    fn the_expert_setting_gives_battles_the_improved_ai() {
+        let mut g = quiet_game(HeroClass::Knight);
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        assert_eq!(g.start_battle().ai_level, 1, "easy: the original's normal AI");
+        g.improved_ai = true;
+        assert_eq!(g.start_battle().ai_level, 2, "expert: improved enemy AI in battle");
     }
 
     #[test]

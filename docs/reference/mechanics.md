@@ -589,8 +589,9 @@ Each is marked *(guess)* in the code.
   units' `Surrender` becomes mana), Knight −20%, Poison as regeneration −20, the piercing sets
   per path, one bonus per unit, the deterministic scored AI and the code's numbers for every
   Community bonus. The remaining choices:
-  - `OptValue9` ("improved enemy AI") is not read from the install yet; battles use the
-    normal level, AI-vs-AI battles level 0 and no `Splash` (`Battle::set_simulation`).
+  - `OptValue9` ("improved enemy AI") comes from the install, and the settings window can
+    change it (easy = the normal level, expert = improved); AI-vs-AI battles keep level 0 and
+    no `Splash` (`Battle::set_simulation`).
   - The AI's magic scoring follows the notes, which are approximate for Elemental casters
     (the front-row hits cap is left out); a target with 0 Manevres counts as 1 in the melee
     score *(guess)*.

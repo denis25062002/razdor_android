@@ -20,8 +20,13 @@ pub enum EquipError {
     SameType,
     /// Already holds a weapon or staff.
     SecondWeapon,
-    /// A melee weapon on a non-warrior, a bow on a non-shooter or a staff on a non-mage.
+    /// A melee weapon or shield on a non-warrior, a bow on a non-shooter (or on artillery),
+    /// or a staff on a non-mage.
     WrongClass,
+    /// A holy item on an undead unit.
+    Unholy,
+    /// The crown on a unit that may not wear it.
+    NotAllowed,
     /// Potions and trade goods cannot be worn.
     NotWearable,
     /// The dead cannot hold items.
@@ -31,10 +36,24 @@ pub enum EquipError {
     NoSuchItem,
 }
 
+/// One `p-` modifier of an item, potion or spell on stat value `x`: `x + x·p/100`, truncated
+/// (economy.md §5). On a percent stat (the three protections, regeneration, vampirism) a
+/// positive `p` closes that share of the gap to 100 instead, as levels do
+/// (experience.md): the player observes «Святое писание» (`p-ProtectDeath=30`) giving a
+/// unit without Death protection 30%, where the plain rule would give 0% of 0 *(guess for
+/// units that already have some: 20% becomes 44%)*.
+pub fn percent_mod(st: Stat, x: i32, p: i32) -> i32 {
+    if p > 0 && crate::rules::experience::is_percent_stat(st) {
+        x + (100 - x).max(0) * p / 100
+    } else {
+        x + x * p / 100
+    }
+}
+
 /// Applies worn items and active potions to `stats` in the original's order
 /// (original-mechanics/economy.md §5): each worn item's `f-` in slot order replaces its stat
 /// when above 0 (a later slot wins); the potions' `d-`, then the items' `d-`; the potions'
-/// `p-`, then each item's `p-` in turn, compounding (`x += x·p/100`, truncated each time).
+/// `p-`, then each item's `p-` in turn, compounding ([`percent_mod`], truncated each time).
 /// A potion's `f-Hits` is its healing and does not count here. Item bonuses are added to the
 /// unit's, and an item's magic school replaces the unit's. Spells come after
 /// (`magic::apply`).
@@ -53,7 +72,7 @@ pub fn apply(content: &Content, stats: &mut Stats, worn: &[ItemId], potions: &[I
     }
     for d in potions.iter().chain(&worn) {
         for (&st, &v) in &d.percent {
-            stats[st] += stats[st] * v / 100;
+            stats[st] = percent_mod(st, stats[st], v);
         }
     }
     for d in &worn {
@@ -67,7 +86,17 @@ pub fn apply(content: &Content, stats: &mut Stats, worn: &[ItemId], potions: &[I
     stats.clamp();
 }
 
-/// Slot `item` would go into on `unit`, or why it can't be worn.
+/// Items the undead cannot wear (0x49765c, economy.md §5): the church's holy things.
+const HOLY: [u32; 13] = [12, 46, 59, 72, 73, 74, 75, 76, 77, 85, 94, 120, 131];
+/// «Королевская корона», worn only by the hero (or an army's leader) and these unit types.
+const CROWN: u32 = 154;
+const CROWN_WEARERS: [u32; 23] = [1, 2, 3, 11, 13, 15, 36, 42, 45, 46, 48, 49, 53, 56, 58, 69, 70, 72, 73, 77, 89, 97, 99];
+
+/// Slot `item` would go into on `unit`, or why it can't be worn. The original's wear rules
+/// (0x49765c, economy.md §5): a melee weapon or a shield needs melee attack, a ranged
+/// weapon ranged attack and no artillery (a type whose ranged attack is above
+/// `ShotWeaponRange`), a staff magic; one weapon, no two items of a type; no holy items on
+/// the undead; the crown only on the hero and some unit types.
 pub fn slot_for(content: &Content, unit: &Unit, item: ItemId) -> Result<usize, EquipError> {
     let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
     if !unit.alive() {
@@ -78,13 +107,19 @@ pub fn slot_for(content: &Content, unit: &Unit, item: ItemId) -> Result<usize, E
     }
     let base = unit.base_stats(content);
     let class_ok = match def.kind {
-        ArtefactType::BlowWeapon => base.is_warrior(),
-        ArtefactType::ShotWeapon => base.is_shooter(),
+        ArtefactType::BlowWeapon | ArtefactType::Shield => base.is_warrior(),
+        ArtefactType::ShotWeapon => base.is_shooter() && content.unit(unit.def).attack_shot <= content.options.shot_weapon_range,
         ArtefactType::Staff => base.is_mage(),
         _ => true,
     };
     if !class_ok {
         return Err(EquipError::WrongClass);
+    }
+    if HOLY.contains(&item.0) && base.has_any(&[Bonus::Dead, Bonus::FastDead]) {
+        return Err(EquipError::Unholy);
+    }
+    if item.0 == CROWN && unit.wage_kind != crate::rules::content::WageKind::Leader && !CROWN_WEARERS.contains(&unit.def.0) {
+        return Err(EquipError::NotAllowed);
     }
     let worn: Vec<&ArtefactDef> = unit.items.iter().flatten().map(|&i| content.item(i)).collect();
     if def.kind.is_weapon() && worn.iter().any(|w| w.kind.is_weapon()) {
@@ -252,8 +287,19 @@ pub fn describe(content: &Content, item: ItemId) -> String {
 mod tests {
     use super::*;
     use crate::rules::content::testkit::*;
-    use crate::rules::content::{Bonus, MagicDirection, MagicSchool, StatMods, UnitId};
+    use crate::rules::content::{Bonus, MagicDirection, MagicSchool, StatMods, UnitDef, UnitId};
     use crate::rules::formation::{Row, Slot};
+
+    #[test]
+    fn a_percent_bonus_on_a_protection_closes_the_gap_to_100() {
+        // «Святое писание»: p-ProtectDeath=30 on a unit with none.
+        assert_eq!(percent_mod(Stat::ProtectDeath, 0, 30), 30);
+        assert_eq!(percent_mod(Stat::ProtectDeath, 20, 30), 44, "20 + 80 × 30%");
+        assert_eq!(percent_mod(Stat::Vampirizm, 0, 25), 25, "«Кровопийца» works from nothing");
+        assert_eq!(percent_mod(Stat::ProtectLife, 60, -50), 30, "a curse scales it down");
+        assert_eq!(percent_mod(Stat::AttackBlow, 40, 25), 50, "other stats as before");
+        assert_eq!(percent_mod(Stat::ProtectElemental, 100, 30), 100);
+    }
 
     fn gear() -> Vec<ArtefactDef> {
         let mut sword = item(1, ArtefactType::BlowWeapon);
@@ -325,6 +371,28 @@ mod tests {
         assert_eq!(slot_for(&c, &w, ItemId(9)), Err(EquipError::NotWearable));
         w.hp = 0;
         assert_eq!(slot_for(&c, &w, ItemId(5)), Err(EquipError::Dead));
+    }
+
+    #[test]
+    fn the_originals_wear_rules_for_shields_artillery_holy_things_and_the_crown() {
+        let undead = UnitDef { bonus: Some(Bonus::Dead), ..warrior(7, 20, 5) };
+        let cannon = shooter(6, 70);
+        let (shield, bow, holy, crown) = (item(30, ArtefactType::Shield), item(31, ArtefactType::ShotWeapon), item(73, ArtefactType::Amulet), item(154, ArtefactType::Helm));
+        let c = content(vec![warrior(5, 20, 5), shooter(8, 10), cannon, undead, warrior(1, 30, 5)], vec![shield, bow, holy, crown]);
+        let at = Slot::new(Row::Front, 0);
+        let (knight, archer, gun, ghoul, hero) =
+            (Unit::new(&c, UnitId(5), at), Unit::new(&c, UnitId(8), at), Unit::new(&c, UnitId(6), at), Unit::new(&c, UnitId(7), at), Unit::new(&c, UnitId(1), at));
+        assert_eq!(slot_for(&c, &knight, ItemId(30)), Ok(0), "a shield for a warrior");
+        assert_eq!(slot_for(&c, &archer, ItemId(30)), Err(EquipError::WrongClass), "not for a shooter");
+        assert_eq!(slot_for(&c, &archer, ItemId(31)), Ok(0));
+        assert_eq!(slot_for(&c, &gun, ItemId(31)), Err(EquipError::WrongClass), "artillery: ranged 70 > ShotWeaponRange 60");
+        assert_eq!(slot_for(&c, &knight, ItemId(73)), Ok(0));
+        assert_eq!(slot_for(&c, &ghoul, ItemId(73)), Err(EquipError::Unholy), "«Святое писание» is holy");
+        assert_eq!(slot_for(&c, &knight, ItemId(154)), Err(EquipError::NotAllowed), "type 5 may not wear the crown");
+        assert_eq!(slot_for(&c, &hero, ItemId(154)), Ok(0), "type 1 may");
+        let mut leader = knight.clone();
+        leader.wage_kind = crate::rules::content::WageKind::Leader;
+        assert_eq!(slot_for(&c, &leader, ItemId(154)), Ok(0), "the hero or a leader may");
     }
 
     #[test]

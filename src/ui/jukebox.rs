@@ -148,6 +148,16 @@ impl Jukebox {
         Some(Change::Play(track))
     }
 
+    /// A new game was loaded: a one-shot piece still playing (the triumph carried over onto
+    /// the map) stops, and the mood's own music starts again.
+    pub fn interrupt_sting(&mut self) -> Option<Change> {
+        if self.current.is_some_and(|c| c.sting) {
+            self.current = None;
+            return self.next_for_mood();
+        }
+        None
+    }
+
     /// What to change for `mood` at time `now` (seconds).
     pub fn update(&mut self, mood: Mood, now: f64) -> Option<Change> {
         if mood != self.mood {
@@ -215,6 +225,16 @@ mod tests {
             j.started(t, now, secs);
         }
         c
+    }
+
+    #[test]
+    fn loading_a_game_stops_the_triumph_and_brings_back_the_map_music() {
+        let mut j = all();
+        assert!(matches!(step(&mut j, Mood::Map, 0.0, 100.0), Some(Change::Play(_))));
+        assert_eq!(j.sting(TRIUMPH), Some(Change::Play(TRIUMPH)));
+        assert_eq!(step(&mut j, Mood::Map, 1.0, 60.0), None, "the triumph carries on over the map");
+        assert!(matches!(j.interrupt_sting(), Some(Change::Play(t)) if MAP.contains(&t)), "a load: the map music again");
+        assert_eq!(j.interrupt_sting(), None, "nothing to stop the second time");
     }
 
     #[test]

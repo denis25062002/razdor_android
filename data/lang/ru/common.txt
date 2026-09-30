@@ -31,3 +31,6 @@ OK = Ок
 Sound, graphics and gameplay settings = Настройки звука, графики и игры
 FPS shown = FPS: показ
 FPS hidden = FPS: скрыт
+Improved enemy AI in battle = Улучшенный интеллект противника в бою
+Easy = Лёгкий
+Expert = Эксперт
