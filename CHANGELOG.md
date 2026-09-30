@@ -6,7 +6,14 @@ can rebuild from the same commit with `scripts/dist.sh` (see the README). From 0
 release pipeline (`.github/workflows/release.yml`) builds and publishes a version when its
 tag is pushed, and the SHA-256 are in the release's notes.
 
+Each version names its commit. On 2026-09-30 the history was rewritten to a new author
+email and every commit got a new id: the programs released before then show their commit's
+old id, and their versions give both.
+
 ## 0.2.0 — 2026-09-30
+
+Commit `610a898` (tag `v0.2.0`); its programs show `85b063f`, the id before the history
+was rewritten.
 
 ### New
 - **Following an army** as in the original («Автоматически преследовать выбранную армию»):
@@ -98,14 +105,16 @@ tag is pushed, and the SHA-256 are in the release's notes.
   component was installed (its real paths went into the programs); `scripts/dist.sh` maps
   them back, and a local build of v0.1.2 gives the released `Razdor.exe` bit for bit.
 
-SHA-256 of the released programs (built by the release pipeline from commit 85b063f; a
-local `scripts/dist.sh` of that commit gives the same `Razdor.exe`):
+SHA-256 of the released programs (built by the release pipeline):
 ```
 066579d52a7d5862d766c64d50deb97d13547b2cb52fe25dc1d0457a17dcf989  razdor
 2f77bab02e97413fce47bbf39ebb328d95a4c613e5c83541239f6e94ca44bd84  Razdor.exe
 ```
 
 ## 0.1.2 — 2026-09-30
+
+Commit `bb09967` (tag `v0.1.2`); its programs show `378c873`, the id before the history
+was rewritten.
 
 ### New
 - **Battle AI, easy or expert:** the settings window has the original's «Улучшенный
@@ -151,6 +160,9 @@ local `scripts/dist.sh` of that commit gives the same `Razdor.exe`):
 
 ## 0.1.1 — 2026-09-30
 
+Commit `8d42bff` (tag `v0.1.1`); its programs show `48af7af`, the id before the history
+was rewritten.
+
 ### New
 - **New game:** the scenario list groups the maps as the original does. A campaign is one
   row under its name («Раменское королевство», «Сказка странствий»), with its chapters
@@ -180,13 +192,16 @@ local `scripts/dist.sh` of that commit gives the same `Razdor.exe`):
   the path remappings in `scripts/dist.sh`). The same commit and tools now give the same
   files anywhere.
 
-SHA-256 (built from commit 48af7af):
+SHA-256:
 ```
 6f3291970860c208770d0af4d09e89d2b93d595fb84e22472fa80e4a30815540  razdor
 4f39e09b7d4cd042cddc27314fd715be458d6c1a9104267b2f3cd44fb2cce3b0  Razdor.exe
 ```
 
 ## 0.1.0 — 2026-09-29
+
+Commit `bf01d7a` (tag `v0.1.0`); its programs show `8593815`, the id before the history
+was rewritten.
 
 The first release: `Razdor.exe` (Windows x86_64) and `razdor` (Linux x86_64).
 
