@@ -129,6 +129,9 @@ Releases are built on GitHub (`.github/workflows/release.yml`): set the version 
 push the tag `vX.Y.Z`. The pipeline runs the tests, builds both programs with the same
 script and the same pinned tools (Rust in `rust-toolchain.toml`, llvm-mingw in the
 workflow), and publishes the release with the changelog section and the SHA-256.
+`Razdor.exe` comes out the same from the same commit on any machine. The Linux program also
+depends on the system it is linked on (its C library and linker): the pipeline builds it on
+Ubuntu 22.04, which makes it run on older distributions too, so releases take it from there.
 
 **When it fails to start or play**: every start writes `razdor.log` (`%APPDATA%\razdor\` on
 Windows, `~/.local/share/razdor/` on Linux; the one before is `razdor.previous.log`): the

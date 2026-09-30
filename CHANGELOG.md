@@ -8,6 +8,11 @@ tag is pushed, and the SHA-256 are in the release's notes.
 
 ## Unreleased
 
+### Fixed
+- **Builds:** a local build could differ from the release pipeline's when the Rust source
+  component was installed (its real paths went into the programs); `scripts/dist.sh` maps
+  them back, and a local build of v0.1.2 gives the released `Razdor.exe` bit for bit.
+
 ## 0.1.2 — 2026-09-30
 
 ### New

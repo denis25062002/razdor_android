@@ -16,7 +16,16 @@ mkdir -p dist
 # prefixes match a path, rustc applies the last one, so the most specific comes last: the
 # project folder is always razdor/ and Cargo's cargo/, wherever they are (with the home
 # last, a project inside the home became ~/…/razdor, and the SHAs depended on the folder).
-REMAP="--remap-path-prefix=$HOME=~ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo --remap-path-prefix=$PWD=razdor"
+REMAP="--remap-path-prefix=$HOME=~ --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=cargo"
+# The standard library's own sources: with the rust-src component installed, rustc writes
+# their real paths (under the toolchain) where it would write /rustc/<commit>, and a cache
+# built by another toolchain of the same release can bring them in too. Every toolchain's
+# sources map back to /rustc/<commit>, so the programs do not depend on what is installed.
+RUSTC_COMMIT=$(rustc -vV | sed -n 's/^commit-hash: //p')
+for src in "${RUSTUP_HOME:-$HOME/.rustup}"/toolchains/*/lib/rustlib/src/rust; do
+    [ -d "$src" ] && REMAP="$REMAP --remap-path-prefix=$src=/rustc/$RUSTC_COMMIT"
+done
+REMAP="$REMAP --remap-path-prefix=$PWD=razdor"
 RUSTFLAGS="$REMAP" cargo build --release
 cp target/release/razdor dist/razdor
 
