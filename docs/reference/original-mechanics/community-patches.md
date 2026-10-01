@@ -656,7 +656,7 @@ the Status column says where it stands now.
 | 4 | Splash heal on crippled units | Follow-ups bypass the cell filter and heal or bless them | Heals or blesses them (follow-ups bypass the cell filter) | 6, 7 | Matches |
 | 5 | PreventiveStrike before spells | Never | Never: only before melee and shots | 7 | Matches |
 | 6 | Flying shooters and mages | The three facing front cells are melee only | Those cells become melee only, for every Flying unit in rows 1–2 | 7 | Matches |
-| 7 | Stun amount | 30% of the base initiative with the turn-1 bonus, the same each hit | 30% of current initiative (base + turn-1 Artillery/FirstShot bonus), the same each hit | 5 | Matches |
+| 7 | Stun amount | 30% of the current initiative (`cur_initiative`: the base as of the turn start, with the turn-1 bonus), the same each hit | 30% of current initiative (base + turn-1 Artillery/FirstShot bonus), the same each hit | 5 | Matches |
 | 8 | ArmorBreaker rounding | `x − x×25/100` (5 → 4, 1 → 1) | `x − floor(x/4)` (5 → 4, 1 → 1) | 5 | Matches |
 | 9 | FateGift vs Neutralize | FateGift in the on-hit block, after KillingStrike and before Neutralize | FateGift is checked first and saves; Neutralize then clears an already erased bonus | 5 | Matches |
 | 10 | Mage poison threshold | `poison_power`: raw MP × (99 − prot) / 100 (Elemental `/114`), unsigned for Life and Elemental, > 15 | `MP × (99 − prot) / 100` (Elemental: `/114`), raw MP, protection always applied, > 15 | 5 | Matches |
@@ -670,7 +670,7 @@ the Status column says where it stands now.
 | 18 | Drain for types without MagicPower | Per type (`drain_of`): no drain, no floor | No drain, no floor (both 0) | 10 | Matches |
 | 19 | Magic Bleed on a bleeding target | Bleed stays at 75 | The patch faults (access violation). Razdor should **not** reproduce this; keep as a documented deviation | 5 | Deviation kept |
 | 20 | Cripple marks after deaths | A table by side and record index, not shifted | Stay on the slot index, so they can pass to another unit | 7 | Matches |
-| 21 | AI vs Manevres-0 targets | Manevres 0 counts as 1 | Factor ≈ 1.75×10⁹ with 32-bit wrap: erratic. Keeping Razdor's choice is reasonable | 11 | Razdor's kept |
+| 21 | AI vs Manevres-0 targets | The factor `MANEVRES_0_FACTOR` (1.5 × 1 164 546 049), the rounded product's low 32 bits and a 32-bit score, as the patch | Factor ≈ 1.75×10⁹ with 32-bit wrap: erratic | 11 | Matches |
 | 22 | Flock sizes | The side blocks of the battle on screen (`PatchGlobals`), refreshed after each of its actions; off-screen battles read them | Living counts of the interactive battle's two sides as of its last completed action (the starting counts on turn 1), so deaths during the current turn start are not seen yet; simulations see the interactive battle's counts | 3 | Matches |
 | 23 | Hunger counter | Global (`PatchGlobals`, 3 at start, never reset); every removal stores the living count of the battle on screen; turn 1 only looks | Global, persists across battles (only matters on coincidences) | 9 | Matches |
 | 24 | Keys | F1 help, F2 language, F5 quick save, F9 quick load (`ui/hotkeys.rs`) | F1/F2 load lists (autosave / private), F3 save window, F4/F5 endless wait on/off | 12 | Interface, left |
@@ -682,6 +682,9 @@ Also brought in line with these: the bleed loss and Flock's step divide unsigned
 sum kills, a negative attack gives a huge step), the bleed shift clears the enemy's first
 bleeding when the player's 12th record goes, Evasion is a byte and divides unsigned, the hit
 chains test a strike's damage (not its power) in the on-hit block, and Bastion's doubling wraps.
+EternalGift's attack is AB unless AB is 0 (an AB cursed below 0 still takes it), and its
+initiative change reaches the turn order and Stun only at the next turn start, since both read
+the current initiative.
 
 Already matching (checked against the code): Berserk, Fortify, the Garrison fix, FirstShot, Bastion,
 FasterAttack, Assault doubling, Exhaustion, Drying amount, CtrPoison, PoisonS, PoisonArmorIgnore, the

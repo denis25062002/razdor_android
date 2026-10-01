@@ -2498,3 +2498,51 @@ fn community_a_strike_tests_its_damage_in_the_on_hit_block() {
     let hit = bt.act(2).unwrap();
     assert_eq!((hit.kind, bt.fighters[2].regen), (ActionKind::Strike, -10));
 }
+
+#[test]
+fn community_eternal_gift_moves_the_turn_order_and_the_stun_only_from_the_next_turn() {
+    // The turn order and Stun read the current initiative, set from the base at the turn
+    // start: the blessing's +6 base initiative shows only on turn 2.
+    let wind = bonus(46, Bonus::EternalGift, mage(46, 40, MagicSchool::Elemental, MagicDirection::ToAlly));
+    let mut bt = with(vec![wind], &[(10, f(0)), (46, b(2))], &[(18, f(5))]);
+    bt.skip();
+    bt.act(0).unwrap();
+    assert_eq!((bt.fighters[0].base[Stat::Initiative], bt.fighters[0].stats[Stat::Initiative]), (17, 11));
+    let mace = bonus(75, Bonus::Stun, acts(75, 2, warrior(75, 30, 0)));
+    let mut bt = with(vec![mace], &[(75, f(2))], &[(18, f(2))]);
+    bt.fighters[1].base[Stat::Initiative] = 40;
+    bt.act(1).unwrap();
+    assert_eq!(bt.fighters[1].mods.initiative, -3, "30% of 10, the turn start's value");
+}
+
+#[test]
+fn community_eternal_gift_takes_a_negative_ab_and_not_the_as() {
+    let saint = bonus(55, Bonus::EternalGift, mage(55, 40, MagicSchool::Death, MagicDirection::ToAlly));
+    let mut bt = with(vec![saint], &[(10, f(0)), (55, b(2))], &[(18, f(5))]);
+    bt.fighters[0].base[Stat::AttackBlow] = -5;
+    bt.fighters[0].base[Stat::AttackShot] = 10;
+    bt.refresh(0);
+    bt.skip();
+    let hit = bt.act_with(0, ActionKind::Bless).unwrap();
+    assert!(hit.buff.attack > 0);
+    let s = &bt.fighters[0].base;
+    assert_eq!((s[Stat::AttackBlow], s[Stat::AttackShot]), (-5 + hit.buff.attack, 10), "AB ≠ 0, so AB");
+}
+
+#[test]
+fn community_row21_the_ai_scores_a_manevres_0_target_with_the_wrapping_constant() {
+    // Bags answer with 1 (def 100): (1 + 1) × 1.5 × 1 164 546 049 rounds to 3 493 638 147,
+    // which is −801 329 149 in 32 bits. Damage 2 makes it more negative (never picked);
+    // damage 3 wraps it to +1 890 979 849, above any normal score.
+    for (atk, pick) in [(2, 2), (3, 0)] {
+        let brute = warrior(97, atk, 100);
+        let c = content_with(vec![brute], Formation::WIDE);
+        let mut bt = prepared(&c, &[(18, f(1)), (18, f(2)), (18, f(3))], &[(97, f(2))], Team::Player);
+        bt.begin();
+        bt.fighters[0].base[Stat::Manevres] = 0;
+        turn_of(&mut bt, 3);
+        assert_eq!(bt.ai_choice(), Some((pick, ActionKind::Melee)), "attack {atk}");
+    }
+    assert_eq!(experience::round_half_even(2.0 * MANEVRES_0_FACTOR) as i32, -801_329_149);
+    assert_eq!(experience::round_half_even(MANEVRES_0_FACTOR), 1_746_819_074, "r = 0: .5 to even");
+}

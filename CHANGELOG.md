@@ -122,6 +122,12 @@ old id, and their versions give both.
   shared by every battle and kept from one battle to the next.
 - Bleeding and Flock divide unsigned as the patch does, Evasion is read as a byte, and the
   player's twelfth unit's death stops the enemy's first unit bleeding, all as in the patch.
+- An EternalGift change to a unit's initiative moves it in the turn order only from the next
+  turn, and Stun keeps taking 30% of the initiative the unit started the turn with. An
+  EternalGift blessing or curse on a unit cursed below 0 attack still changes that attack,
+  not its shot.
+- The battle AI scores a melee target with 0 Manevres with the patch's huge constant, its
+  32-bit wrap included, so it fixates on such a target or ignores it as the original does.
 
 ## 0.2.2 — 2026-10-01
 

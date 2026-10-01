@@ -56,6 +56,9 @@ const RECORDS: usize = 12;
 /// The drain loader's floor for a type with magic power but no school: the unused slot of the
 /// floor table holds these bytes (c28480).
 const SCHOOLLESS_FLOOR: i32 = 16_777_215;
+/// Community c25b63: the battle AI's factor for a melee target with 0 Manevres, 1.5 × the
+/// number the four bytes at c25bc1 make (1 164 546 049).
+const MANEVRES_0_FACTOR: f64 = 1_164_546_049.0 * 1.5;
 /// `KillingStrike`: a target left at or below this % of max HP dies.
 const KILLING_STRIKE_PERCENT: i32 = 25;
 /// `Bleed`: the bleeding value a hit sets; each action start costs this % of AB + AS + MP.
@@ -250,10 +253,12 @@ pub struct Fighter {
     pub cursed: bool,
     /// Actions left this turn.
     pub actions: i32,
-    /// This turn's bonus to the current initiative (+0x95): the turn-1 Artillery and
-    /// FirstShot +30. It is not a modifier, so it does not count where the original reads the
-    /// initiative modifier (the Elemental AI's haste test).
-    turn_initiative: i32,
+    /// The current initiative (+0x95), which the turn order reads with the modifier: the base
+    /// initiative as of the turn start, with the turn-1 Artillery and FirstShot +30. It is
+    /// not a modifier, so it does not count where the original reads the initiative modifier
+    /// (the Elemental AI's haste test). An EternalGift change to the base initiative waits
+    /// for the next turn start (the original's).
+    cur_initiative: i32,
     /// Regeneration % per turn; a poison replaces it with a negative value.
     pub regen: i32,
     /// Community `Bleed`: % of AB + AS + MP lost at each action start (0 = not bleeding).
@@ -312,7 +317,7 @@ impl Fighter {
             blessed: false,
             cursed: false,
             actions: 0,
-            turn_initiative: 0,
+            cur_initiative: 0,
             bleed: 0,
             reserve_move: true,
             suicided: false,
@@ -1160,7 +1165,7 @@ impl Battle {
                 *sum += f.base[Stat::Initiative] as f64;
             }
             f.mods = Buff::default();
-            f.turn_initiative = 0;
+            f.cur_initiative = f.base[Stat::Initiative];
             f.reserve_move = true;
             f.actions = f.base[Stat::Manevres] + i32::from(round == 1 && f.base.has_any(&FAST_START));
             self.turn_bonus(i);
@@ -1261,7 +1266,7 @@ impl Battle {
         let f = &mut self.fighters[i];
         if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
             // To the current initiative, not to the modifier (484365, c28935).
-            f.turn_initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
+            f.cur_initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
         }
         // Hunger: a removal since the last look (anywhere: the counter is global) heals it to
         // full, except on turn 1, where it only looks. One look for all Hunger units, so only
@@ -1362,6 +1367,7 @@ impl Battle {
 
     /// Recomputes current stats from base, drain and this turn's modifiers.
     fn refresh(&mut self, i: usize) {
+        let started = self.round > 0;
         let f = &mut self.fighters[i];
         let mut s = f.base.clone();
         s[Stat::MagicPower] = f.power;
@@ -1373,7 +1379,9 @@ impl Battle {
         }
         s[Stat::DefenceBlow] = s[Stat::DefenceBlow].wrapping_add(f.mods.defence);
         s[Stat::DefenceShot] = s[Stat::DefenceShot].wrapping_add(f.mods.defence);
-        s[Stat::Initiative] = s[Stat::Initiative].wrapping_add(f.mods.initiative.wrapping_add(f.turn_initiative));
+        // Before the first turn start the current initiative is not set yet: the base shows.
+        let current = if started { f.cur_initiative } else { s[Stat::Initiative] };
+        s[Stat::Initiative] = current.wrapping_add(f.mods.initiative);
         s.clamp();
         s[Stat::Regen] = f.regen;
         f.stats = s;
@@ -2333,7 +2341,8 @@ impl Battle {
         let life = self.school(caster) == Some(MagicSchool::Life);
         let t = &mut self.fighters[target];
         if eternal {
-            let attack = if t.base[Stat::AttackBlow] > 0 { Stat::AttackBlow } else { Stat::AttackShot };
+            // AB, or AS when AB is 0: an AB cursed below 0 still takes it (c29ea3 …).
+            let attack = if t.base[Stat::AttackBlow] != 0 { Stat::AttackBlow } else { Stat::AttackShot };
             t.base[attack] += b.attack;
             let defence = if bless && life { -b.defence } else { b.defence };
             t.base[Stat::DefenceBlow] += defence;
@@ -2359,12 +2368,13 @@ impl Battle {
     }
 
     /// Community `Stun` (c27e5a, c2899a, c26e1f): every hit takes 30% of the target's current
-    /// initiative (its base with the turn-1 Artillery or FirstShot bonus, not lowered by the
-    /// earlier Stuns) off its initiative modifier, so each hit takes the same amount.
+    /// initiative (its base as of the turn start with the turn-1 Artillery or FirstShot bonus,
+    /// not lowered by the earlier Stuns) off its initiative modifier, so each hit takes the
+    /// same amount.
     fn stun(&mut self, id: usize, target: usize) {
         if self.fighters[id].has(Bonus::Stun) {
             let t = &mut self.fighters[target];
-            t.mods.initiative -= (t.base[Stat::Initiative] + t.turn_initiative) * STUN_PERCENT / 100;
+            t.mods.initiative -= t.cur_initiative * STUN_PERCENT / 100;
             self.refresh(target);
         }
     }
@@ -2566,21 +2576,32 @@ impl Battle {
         let pick = |kinds: &[ActionKind], score: &dyn Fn(usize, ActionKind) -> i64| {
             self.pick(opts.iter().filter(|o| kinds.contains(&o.1)).map(|&(t, k)| (self.fighters[t].slot, score(t, k) as f64, (t, k))))
         };
-        // Melee on the enemy front row: `dmg × (R + 1) × M`, ×2 for a poison; a kill
-        // replaces it with `100 × (R + 1) × M`.
+        // Melee on the enemy front row (486bb9): `dmg × round((R + 1) × M)`, ×2 for a poison;
+        // a kill replaces it with `100 × round((R + 1) × M)`, all in 32 bits. M is the
+        // target's Manevres, plus half its actions left when those are negative.
         let melee = |t: usize, k: ActionKind| {
-            let dmg = self.physical_damage(id, t, k) as i64;
-            // The Community's constant for a target with 0 Manevres is unread: 1 is a guess.
-            let m = self.fighters[t].base[Stat::Manevres].max(1) as i64;
-            let r = (self.return_threat(id, t) as i64 + 1) * m;
-            let mut s = dmg * r;
-            if self.poisons(id, t, dmg) {
-                s *= 2;
+            let dmg = self.physical_damage(id, t, k);
+            let tf = &self.fighters[t];
+            let manevres = tf.base[Stat::Manevres];
+            let m = if manevres == 0 {
+                // Community c25b63: 1.5 × K for a target with 0 Manevres, K being four bytes
+                // that are mostly the next instruction, so about 1.75e9. Only the low 32 bits
+                // of the rounded product are kept and the score wraps (the original's).
+                MANEVRES_0_FACTOR
+            } else if tf.actions < 0 {
+                manevres as f64 + tf.actions as f64 / 2.0
+            } else {
+                manevres as f64
+            };
+            let r = experience::round_half_even((self.return_threat(id, t) as f64 + 1.0) * m) as i32;
+            let mut s = dmg.wrapping_mul(r);
+            if self.poisons(id, t, dmg as i64) {
+                s = s.wrapping_mul(2);
             }
-            if self.killable(id, t, dmg as i32) {
-                s = 100 * r;
+            if self.killable(id, t, dmg) {
+                s = r.wrapping_mul(100);
             }
-            s
+            s as i64
         };
         if let Some((_, (t, k))) = pick(&[ActionKind::Melee, ActionKind::LongStrike], &melee) {
             return Some(Plan::Act(t, k));
@@ -3160,10 +3181,11 @@ fn ai_power_role(s: &Stats) -> (i32, AiRole) {
     (power, role)
 }
 
-/// Community `Berserk`: the attack modifier is `AB × 75% × (maxHP − HP) / maxHP`.
+/// Community `Berserk` (c256c8): the attack modifier is `((maxHP − HP) × 75 × AB / maxHP) / 100`,
+/// two truncating divisions, the product in 32 bits (it wraps for a Bastion's huge AB).
 fn berserk(f: &Fighter) -> i32 {
     let max = f.base.max_hp().max(1);
-    f.base[Stat::AttackBlow] * BERSERK_PERCENT * (max - f.hp.clamp(0, max)) / max / 100
+    (max - f.hp.clamp(0, max)).wrapping_mul(BERSERK_PERCENT).wrapping_mul(f.base[Stat::AttackBlow]) / max / 100
 }
 
 #[cfg(test)]
