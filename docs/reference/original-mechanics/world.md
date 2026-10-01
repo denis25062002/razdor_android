@@ -305,8 +305,10 @@ bridge or the target's own (otherwise both armies' scores against each other are
 10000; `ai.md`). A friendly army in contact greets the hero (meeting) only right
 after the hero finished a step and only if its talk counter towards him is > 0; then the
 counter is set to −500 on both sides. Talk counters grow by `relation + 1` per AI step while
-the relation is ≥ 0, plus 1 per step for every other army at distance > 0 (0x4a399c). A
-meeting is handled before an attack in the same frame (0x4ade3c).
+the relation is ≥ 0 (0x4a548c, at any distance), plus 1 per step for every other army at
+distance > 0 (0x4a399c). A greeting in a frame takes the place of any attack in it; of several
+armies, the last in army order acts (the loop keeps overwriting its pick, 0x4ade3c). An attack
+also runs the event scan with the attacker first; the battle opens only if no event fired.
 
 Both the attack and the greeting are acted on only in a frame where the hero has **just
 finished a step** (the hero's "arrived" flag, set only by the walk timer, 0x4ae977; tested in
@@ -346,10 +348,12 @@ What the world needs:
   flag with radius 0) are skipped entirely.
 - **The hero's cells are never entered**: if an AI step would go onto the hero's cell or the
   cell he is stepping to, the army spends the time but stays put (and is then in contact).
+  The test is his cell plus his direction (0x75c050), which only a step writes: while he
+  stands after a walk, the cell ahead of him in his last step's direction stays closed too.
 - AI armies stand at the centre of their home building's footprint `(x0 + sx div 2,
   y0 + sy div 2)` when they respawn.
 - Boarding or leaving the sea (§8) empties the banks and route countdowns of the AI armies on
-  the other medium (0x496d28).
+  the medium he goes to: the ships when he boards, the land armies when he lands (0x496d28).
 - An AI army runs its own noon (income, wages) only when it finishes a step after its noon
   time (0x4a548c): armies that never step skip it.
 
@@ -496,7 +500,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Plants / massifs on water | a plant, mountain or rock in the water blocks ships | the cell is blocked for ships too | Matches |
 | Massif at west/north edge | clipped | wraps / writes out of the map | keep clipping (document) |
 | Buildings on the maps | road on LAND and SHIP, 6 at sea | same | none |
-| Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, cell (0,0) quirk (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | Matches (hero) |
+| Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, cell (0,0) quirk, seed rules of 0x482984 (a seed on the walker's cell dropped) (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | Matches (hero) |
 | Click into the dark | not a target, nothing happens (`Game::can_target`) | not a valid target, nothing happens | Matches |
 | First / second click | first click shows the route, second click walks (`world_view.rs`) | same | none |
 | Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
@@ -504,20 +508,20 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Mask: bridges at sea | closed only when clicking land or standing on a bridge; a bridge is no target at sea | only when clicking land or standing in a bridge | Matches |
 | Hero step time | cost of the cell left × speed, ×1.5 diagonal | same | none |
 | AI step time | cost of the cell **left** (`step_army`) | cost of the cell **left** | Matches |
-| AI never enters the hero's cells | a step onto his cell or the one he steps from spends its time, the army stays | waits in place, then contact | Matches |
+| AI never enters the hero's cells | a step onto his cell or the one he steps from, or, standing, the cell ahead of him in his last step's direction (`Game::facing`), spends its time, the army stays | his cell plus his direction, which a stop does not clear; waits in place, then contact | Matches |
 | Stationary guards' clock | skipped (no bank) | skipped | Matches |
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
 | Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
 | Village crossed on the way | an unguarded village stepped on is his | an unguarded village is captured when crossed | Matches |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
-| Friendly meeting | talk counter per army: +1 per step, + relation + 1 next to him, greets above 0, then −500 | talk counters, −500 after each meeting, grow per AI step | Matches |
+| Friendly meeting | talk counter per army: +1 per step off his cell, + relation + 1 per step wherever he is (relation ≥ 0), greets above 0, then −500; the events run, and only one that fires stops the walk; the last army in order acts | talk counters, −500 after each meeting, grow per AI step; walk stops only if an event fires | Matches |
 | Sight radii | 9/8/10 cells | same | none |
 | Explored edge | the original's half-cell stamps (`fog::stamp`): 241 / 293 / 349 cells for radius 8 / 9 / 10 | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | Matches |
 | Start reveal | instant | grows over ~0.4 s, camera on the hero | cosmetic |
 | Lantern radius unit | cells | cells | none |
 | No re-fogging | yes | yes | none |
 | Clock start | DTm start minute + 1 | start minute + 1 | Matches |
-| First noon | always the next day's noon for the hero (the AI keeps its own) | always the next day's noon | Matches |
+| First noon | always the next day's noon for the hero (the AI keeps its own); after each noon paid, the next is the day after the moment it was paid (`Game::noon_from`) | always the next day's noon; next noon from the payment time (0x4a41d8) | Matches |
 | Day shown | 0-based (`Clock::day`) | 0-based | none |
 | Wait 1 h / 4 h | 2 / 8 ticks of 30 min | same | none |
 | F4 endless wait | not present (`hotkeys.rs`: F5 is quick save) | Community: F4 waits until F5 | Community extra, optional |
@@ -528,8 +532,8 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
 | Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, the patrol box stays (`Army::box_centre`), a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | Matches |
 | Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
-| AI attack while waiting | never: AI attacks and greetings only after a step of his | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
-| Chase target unreachable | chase ends and the hero stops; the new plan keeps the original click's buildings | chase ends and the hero stops | Matches |
+| AI attack while waiting | never: AI attacks and greetings only after a step of his; an attack's events run first and one that fires means no battle; no attack in a step with a greeting | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
+| Chase target unreachable | chase ends and the hero stops, also when the army's cell is in the dark; the new plan keeps the original click's buildings | chase ends and the hero stops (target cell tested after the fog is laid) | Matches |
 | Show army reveal | 3 cells | 3 cells (6 half-cells), growing | none |
 | Minimap size | 400×400 frame | 200 px under 100 cells wide, else 400 | small |
 | Minimap click | centres the view | clicked cell ~15 cells from the view corner | small |

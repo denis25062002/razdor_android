@@ -639,7 +639,8 @@ impl TileMap {
     ///   multiplier laid over it (0 closes a cell, 1 keeps it). Their product is 16-bit; the
     ///   original's loop skips cell (0, 0), which keeps the bare mask as its cost.
     /// - `seeds`: target cells and start values; a seed on a cell `cost` blocks is refused,
-    ///   the value is capped at 32 766 and stored plus 1.
+    ///   the value is capped at 32 766 and stored plus 1. A seed on `from` is dropped, so a
+    ///   walker standing on the target has no route.
     /// - A cell's distance is that of the cell it was reached from plus its own cost times
     ///   the step weight: walking the other way, every step is charged the cell **left**
     ///   (`from` included, the target not). Rounds expand the frontier entries at its
@@ -668,16 +669,18 @@ impl TileMap {
         for &(t, v) in seeds {
             let Some(i) = self.index(t) else { continue };
             let v = v.min(32_766);
-            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v + 1) {
+            // The original (0x482984) compares the stored value (plus 1) of a seed already on
+            // the cell with the new value before its plus 1: a seed one above is still added.
+            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
                 continue;
             }
             placed.push((i, v + 1));
         }
-        for &(i, v) in &placed {
+        // A seed on `from` itself is dropped before the flood (0x482a58): his cell stays
+        // unreached and there is no route.
+        for &(i, v) in placed.iter().filter(|&&(i, _)| i != stop) {
             dist[i] = v as u16;
-            if i != stop {
-                frontier.push((i, v));
-            }
+            frontier.push((i, v));
         }
         let mut threshold = 1;
         'flood: while !frontier.is_empty() {
@@ -1099,7 +1102,23 @@ TTTTT
         assert_eq!(route((0, 0), (3, 1)), vec![(1, 1), (2, 1), (3, 1)]);
         assert_eq!(route((0, 3), (4, 0)), vec![(1, 2), (2, 1), (3, 0), (4, 0)]);
         assert_eq!(route((5, 0), (0, 1)), vec![(4, 1), (3, 1), (2, 1), (1, 1), (0, 1)]);
-        assert!(route((2, 2), (2, 2)).is_empty(), "standing on the target");
+        // Standing on the target: the seed on his own cell is dropped, so no route at all.
+        assert!(m.flood_route(&grass, &|_| 1, &[((2, 2), 0)], (2, 2)).is_none());
+    }
+
+    #[test]
+    fn a_second_seed_one_above_on_the_same_cell_is_still_added() {
+        // 0x482984 compares a seed already on the cell (stored plus 1) with the new value
+        // before its plus 1: (1, 0) with 0 then 1 is stored 1, then 2, the later winning.
+        // With (3, 0) stored 2 east of the walker at (2, 0), both sides read 2 and the
+        // descent keeps the first direction tried, east; with (1, 0) at 1 it would go west.
+        let m = TileMap::from_codes(Grid::Square8, 4, 1, &[Surface::GrassPlain as u8; 4], vec![]);
+        let grass = |_| 5;
+        let (route, _) = m.flood_route(&grass, &|_| 1, &[((1, 0), 0), ((1, 0), 1), ((3, 0), 1)], (2, 0)).unwrap();
+        assert_eq!(route, vec![(3, 0)]);
+        // A seed two above is refused: (1, 0) keeps 1 and the walker goes west.
+        let (route, _) = m.flood_route(&grass, &|_| 1, &[((1, 0), 0), ((1, 0), 2), ((3, 0), 1)], (2, 0)).unwrap();
+        assert_eq!(route, vec![(1, 0)]);
     }
 
     #[test]

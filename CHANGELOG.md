@@ -167,7 +167,15 @@ old id, and their versions give both.
   always the next day's, even after a morning start.
 - The noon report comes in the first event check after 12:00 in which no event fired and no
   spell is being read (so after a cast, not in the middle of it); midnight comes after the
-  armies have moved.
+  armies have moved. A noon held up past midnight skips that day's own noon, as in the
+  original.
+- A friendly army's talk counter grows with each of its steps wherever the hero is, so it
+  greets him again sooner. A greeting no longer stops his walk unless one of its events
+  fires; an AI attack whose events fire brings no battle. Of several armies next to him,
+  the last in the map's order acts.
+- After a walk, AI armies keep off the cell in front of the hero (his last step's
+  direction) while he stands, as in the original. A pursued army that goes into the dark
+  ends the pursuit.
 - An event that moves an army to the hero puts it on his cheapest free neighbour (a road
   before grass, a building only as a last resort), moves its home there too but keeps its
   patrol area where it was, and leaves a waiting army off the map.

@@ -639,7 +639,8 @@ Each is marked *(guess)* in the code.
   relation below 0 (0x4a0868, `world::relation`): the player's attitude to the army's faction
   (header matrix) and the army's own to the player; so an enemy-faction army whose own
   attitudes were left at 0 (РК1's mage) is hostile. Contact on neighbouring cells (diagonals
-  too): hostile ones fight, others greet once. Word 17 is the army's starting gold, byte 80 ×
+  too), right after a step of the hero: hostile ones attack, friendly ones greet when their
+  talk counter is above 0 (world.md §4.3). Word 17 is the army's starting gold, byte 80 ×
   10 its daily income. The demo's gangs chase the hero within 6 cells and patrol, resting
   30–180 min between legs *(Razdor's demo rule)*. Everything else is the AI's (§8.8).
   Troops: the middle byte of each triple is levels above the first; the leader is a troop of
@@ -850,10 +851,12 @@ events only; texts are read from the scenario at runtime.
   time does not pass while a dialog is open.
 - **Place**: the building the hero stands in (its 1-based scenario id), else the event point
   on his cell.
-- **Meetings**: meeting an army on the road (friendly greeting, or a hostile army's attack)
-  runs the events with that meeting in force before the battle; the battle happens only if
-  the army is still on the map and hostile. A friendly army greets once until it has been
-  away (a repeatable meeting event fires once per greeting).
+- **Meetings**: meeting an army on the road (friendly greeting, a hostile army's attack, or
+  the hero stepping onto it) runs the events with that meeting in force before the battle;
+  the battle happens only if no event fired and the army is still on the map and hostile. A
+  greeting stops the walk only when an event fired. A friendly army greets again once its
+  talk counter, −500 after a greeting, has climbed above 0 (a repeatable meeting event fires
+  once per greeting).
 - **A building taken from its garrison is entered**: its events are checked right after the
   won battle, as when the hero walks in (the original opens the building's window, 4bbc84,
   which runs the scan). Before, РК2's mine forts asked for the peasants only on a second

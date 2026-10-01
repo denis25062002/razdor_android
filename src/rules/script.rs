@@ -158,10 +158,11 @@ impl Game {
     }
 
     /// An army that met the hero (`Met` or `Encounter` from [`Game::ai_contact`]): the
-    /// meeting is recorded, the events run (a talk may come first), and the meeting stands
-    /// only if the army is still there (and, for a battle, still hostile).
-    pub(crate) fn meet(&mut self, e: Event, events: &mut Vec<Event>) {
-        self.meet_as(e, events, false);
+    /// meeting is recorded and the events run with it as the met army (0x4ade3c). An attack
+    /// opens the battle only if none of them fired and the army is still there and hostile.
+    /// Returns whether an event fired (only then does a greeting stop his walk).
+    pub(crate) fn meet(&mut self, e: Event, events: &mut Vec<Event>) -> bool {
+        self.meet_as(e, events, false)
     }
 
     /// The hero stepped onto army `e`'s cell (world.md §4.2 e, 0x4ad94c): the events run with
@@ -172,15 +173,15 @@ impl Game {
         self.meet_as(e, events, true);
     }
 
-    fn meet_as(&mut self, e: Event, events: &mut Vec<Event>, on_step: bool) {
+    fn meet_as(&mut self, e: Event, events: &mut Vec<Event>, on_step: bool) -> bool {
         let (Event::Met(i) | Event::Encounter(i)) = e else {
             events.push(e);
-            return;
+            return false;
         };
         let id = self.world.armies[i].id;
         if id == 0 || self.script.is_none() {
             events.push(e);
-            return;
+            return false;
         }
         self.met_armies.insert(id);
         let after = match self.script.take() {
@@ -197,9 +198,11 @@ impl Game {
         match e {
             // A battle the events started instead comes with `after`.
             Event::Encounter(_) if after.iter().any(|e| matches!(e, Event::Encounter(_))) => {}
-            Event::Encounter(_) if on_step && fired => {
+            // An event fired: no battle (0x4ad94c, 0x4ade3c). Stepped onto, the army also
+            // forgets him for now; an attacker does not.
+            Event::Encounter(_) if fired => {
                 self.foe = None;
-                if let Some(j) = now {
+                if let Some(j) = now.filter(|_| on_step) {
                     let a = &mut self.world.armies[j];
                     a.talk = super::game::TALKED;
                     a.path.clear();
@@ -215,6 +218,7 @@ impl Game {
             _ => events.extend(now.map(Event::Met)),
         }
         events.extend(after);
+        fired
     }
 
     /// Removes active army `i` from the map, keeping the pending foe pointing at the right army.
@@ -1493,6 +1497,42 @@ mod tests {
         let events = walk(&mut g);
         assert_eq!(events.last(), Some(&Event::Encounter(0)));
         assert_eq!(g.foe, Some(Foe::Army(0)));
+    }
+
+    /// The hero walks from (2, 2) to (8, 4) while army 2 (`attitude`) steps from (5, 2) to
+    /// (4, 2), next to him after his first step, to (3, 3); an event fires on meeting it.
+    fn walk_past_army_with_event(attitude: i8) -> (Game, Vec<Event>) {
+        let mut talk = ev(EventKind::Global);
+        talk.conditions.meet_army = 2;
+        let mut s = world(vec![talk]);
+        s.armies = vec![army(2, 5, 2, attitude, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.drain_events();
+        let a = &mut g.world.armies[0];
+        a.ai.enabled = false;
+        a.path = vec![(4, 2)];
+        assert!(g.set_destination((8, 4)));
+        let events = walk(&mut g);
+        (g, events)
+    }
+
+    #[test]
+    fn a_greeting_whose_event_fires_stops_the_walk() {
+        // 0x4ade3c: the greeting runs the events with the army met; one fired, he stops.
+        let (g, events) = walk_past_army_with_event(1);
+        assert_eq!(fired(&events), vec![1]);
+        assert_eq!((g.tile(), g.moving(), g.world.armies[0].talk), ((3, 3), false, -500));
+    }
+
+    #[test]
+    fn an_attack_whose_event_fires_brings_no_battle() {
+        // 0x4ade3c: an AI attack runs the events with the attacker first; the battle opens
+        // only if none fired. Unlike an army stepped onto, it keeps its talk counter.
+        let (g, events) = walk_past_army_with_event(-2);
+        assert_eq!(fired(&events), vec![1]);
+        assert!(!events.iter().any(|e| matches!(e, Event::Encounter(_))), "{events:?}");
+        assert_eq!((g.foe, g.tile(), g.moving()), (None, (3, 3), false));
+        assert_ne!(g.world.armies[0].talk, super::super::game::TALKED);
     }
 
     #[test]

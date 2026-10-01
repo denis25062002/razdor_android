@@ -279,6 +279,16 @@ pub struct Game {
     /// While the hero steps: the cell he left, which AI armies keep off too.
     #[serde(skip)]
     pub(crate) step_from: Option<Tile>,
+    /// The offset of the hero's last step: the original keeps his direction after a walk
+    /// (0x75c050), and AI armies keep off the cell it points to (0x4a399c). `None` before
+    /// his first step.
+    #[serde(default)]
+    pub(crate) facing: Option<(i32, i32)>,
+    /// The first day whose 12:00 is the hero's noon: the day after the start, then the day
+    /// after each noon paid (0x4a41d8: the next noon is the day after the moment it was
+    /// paid). `None` in older saves: the day after the start.
+    #[serde(default)]
+    pub(crate) noon_from: Option<u64>,
     /// The building clicked and the one he stood in at the last click (a pursuit plans
     /// with them).
     #[serde(skip)]
@@ -332,9 +342,9 @@ pub(crate) const TALKED: i32 = -500;
 /// 0x4a399c): `cost(the cell it leaves) × speed`, ×1.5 diagonally; `cost` gives the cost units
 /// of a cell, `None` where it cannot go (the route is dropped). A step onto one of the hero's
 /// cells spends its time but the army stays put. Every step taken (or tried) marks it
-/// arrived for [`Game::ai_contact`] and feeds its talk counter towards the hero: +1, and
-/// `relation + 1` more next to him when the relation is 0 or above. Remembers where it stood
-/// for drawing.
+/// arrived for [`Game::ai_contact`] and feeds its talk counter towards the hero: +1 when it
+/// is not on his cell (0x4a399c), and `relation + 1` more wherever he is when the relation
+/// is 0 or above (0x4a548c). Remembers where it stood for drawing.
 fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>, hero: &HeroCells) {
     while let Some(&next) = a.path.first() {
         if cost(next).is_none() {
@@ -351,8 +361,10 @@ fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>, he
         a.arrived = true;
         let blocked = hero.cells.contains(&Some(next));
         let at = if blocked { here } else { next };
-        a.talk = a.talk.saturating_add(1);
-        if (at.0 - hero.at.0).abs() <= 1 && (at.1 - hero.at.1).abs() <= 1 && a.attitude >= 0 {
+        if map.distance(at, hero.at) > 0 {
+            a.talk = a.talk.saturating_add(1);
+        }
+        if a.attitude >= 0 {
             a.talk = a.talk.saturating_add(a.attitude as i32 + 1);
         }
         if blocked {
@@ -418,6 +430,8 @@ impl Game {
             noon_due: None,
             speed_set: None,
             step_from: None,
+            facing: None,
+            noon_from: None,
             click_buildings: (None, None),
             hero_name: None,
             journal: History::default(),
@@ -758,10 +772,13 @@ impl Game {
         if let Some(i) = map.mask_index(from).filter(|_| reopen) {
             mask[i] = 1;
         }
-        if mask[ti] == 0 {
+        let open = |t: Tile| map.mask_index(t).map_or(0, |i| if self.fog.explored(t) { mask[i] } else { 0 });
+        // The pursuit gives up on a target cell closed once the fog is laid over the mask
+        // (0x4aedd1): an army gone into the dark is not followed. A click is not tested (the
+        // seed only needs a cost; the dark is no target anyway).
+        if !reopen && open(to) == 0 {
             return Vec::new();
         }
-        let open = |t: Tile| map.mask_index(t).map_or(0, |i| if self.fog.explored(t) { mask[i] } else { 0 });
         map.flood_route(&cost, &open, &[(to, 0)], from).map(|r| r.0).unwrap_or_default()
     }
 
@@ -927,13 +944,19 @@ impl Game {
         self.pos = self.world.map.center(next);
         self.move_to_cell(from, next);
         self.look_around();
+        // His facing stays the step's direction until the next one (0x4ae8e0).
+        self.facing = Some((next.0 - from.0, next.1 - from.1));
         self.pass_time_walking(minutes, from, events);
         if let Some(e) = self.ai_contact() {
-            self.path.clear();
-            self.goal = None;
-            self.talk_to = None;
-            self.meet(e, events);
-            return false;
+            let attack = matches!(e, Event::Encounter(_));
+            // The events run with the army as the met army; a greeting stops the walk only
+            // when one of them fired (0x4ade3c), an attack always.
+            if self.meet(e, events) || attack {
+                self.path.clear();
+                self.goal = None;
+                self.talk_to = None;
+                return false;
+            }
         }
         if self.path.is_empty() {
             self.arrive_at_end(events);
@@ -1037,9 +1060,10 @@ impl Game {
 
     /// After the hero's step, an AI army that stepped during it and stands next to him
     /// (|dx| ≤ 1 and |dy| ≤ 1) acts (world.md §4.3, 0x4a548c, 0x4ade3c): a friendly one whose
-    /// talk counter towards him is above 0 greets him (both counters then −500), before a
-    /// hostile one attacks him; he is attacked in a building only when it is a bridge or
-    /// his own.
+    /// talk counter towards him is above 0 greets him (both counters then −500); only when
+    /// none does, a hostile one attacks him, and he is attacked in a building only when it is
+    /// a bridge or his own. Of several, the last in army order acts (the original's loop
+    /// keeps overwriting its pick).
     pub(crate) fn ai_contact(&mut self) -> Option<Event> {
         if self.foe.is_some() {
             return None;
@@ -1051,7 +1075,7 @@ impl Game {
             let t = a.tile(map);
             a.arrived && (t.0 - here.0).abs() <= 1 && (t.1 - here.1).abs() <= 1
         };
-        let greets = self.world.armies.iter().position(|a| next_to(a) && !a.hostile() && a.talk > 0);
+        let greets = self.world.armies.iter().rposition(|a| next_to(a) && !a.hostile() && a.talk > 0);
         if let Some(i) = greets {
             self.world.armies[i].talk = TALKED;
             return Some(Event::Met(i));
@@ -1063,7 +1087,7 @@ impl Game {
         if sheltered {
             return None;
         }
-        let i = self.world.armies.iter().position(|a| next_to(a) && a.hostile() && now >= a.ignore_until)?;
+        let i = self.world.armies.iter().rposition(|a| next_to(a) && a.hostile() && now >= a.ignore_until)?;
         self.foe = Some(Foe::Army(i));
         Some(Event::Encounter(i))
     }
@@ -1114,7 +1138,7 @@ impl Game {
                 Tick::Midnight(_) => self.midnight(),
                 Tick::Noon(day) => {
                     self.ai_new_day();
-                    if day > self.start_day {
+                    if day >= self.noon_from.unwrap_or(self.start_day + 1) {
                         self.noon_due = Some(day);
                     }
                 }
@@ -1126,6 +1150,9 @@ impl Game {
         events.extend(script);
         if let Some(day) = self.noon_due.filter(|_| !fired && self.reading.is_none()) {
             self.noon_due = None;
+            // The next noon is the day after now (0x4a41d8): a noon paid late, after
+            // midnight, skips that day's own noon (the original's behaviour).
+            self.noon_from = Some(self.clock.day_index() + 1);
             let report = self.new_day(day);
             events.push(Event::NewDay(report));
             // The original autosaves every day at 12:00, named by the date.
@@ -1184,8 +1211,11 @@ impl Game {
         self.ai_plan();
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
-        // The hero's cells: where he stands and, while he steps, the cell he left.
-        let hero = HeroCells { cells: [Some(hero_tile), self.step_from], at: hero_tile };
+        // The hero's cells: where he stands and, while he steps, the cell he left; standing,
+        // the cell ahead of him in the direction of his last step (the original tests his
+        // cell plus his direction, which a stop does not clear: 0x4a399c).
+        let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
+        let hero = HeroCells { cells: [Some(hero_tile), self.step_from.or(ahead)], at: hero_tile };
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;
         let map = &world.map;
@@ -1871,6 +1901,30 @@ mod tests {
         assert!(events.is_empty(), "13:01 on the start day: no noon report");
         g.pass_time(24.0 * 60.0, &mut events);
         assert!(matches!(events.as_slice(), [Event::NewDay(r)] if r.day == g.start_day + 1), "{events:?}");
+    }
+
+    #[test]
+    fn a_noon_paid_after_midnight_skips_that_days_noon() {
+        // 0x4a41d8 sets the next noon to the day after the moment the noon is paid: held up
+        // past 00:00 by a reading, the start day's noon comes at 01:30 and the next day's
+        // 12:00 brings none; the one after does.
+        let mut g = start(&strip());
+        g.first_noon_today();
+        g.mana = 1000;
+        g.spells = vec![1];
+        let d = g.clock.day_index();
+        g.reading = Some(magic::Reading { spell: 1, target: magic::CastTarget::Own });
+        let mut events = Vec::new();
+        g.pass_time(16.0 * 60.0, &mut events);
+        assert!(events.is_empty() && g.noon_due == Some(d), "{events:?}");
+        g.reading = None;
+        g.pass_time(30.0, &mut events);
+        assert!(matches!(events.as_slice(), [Event::NewDay(r)] if r.day == d), "{events:?}");
+        events.clear();
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert!(events.is_empty(), "day {}'s noon is skipped: {events:?}", d + 1);
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert!(matches!(events.as_slice(), [Event::NewDay(r)] if r.day == d + 2), "{events:?}");
     }
 
     #[test]
@@ -2601,6 +2655,81 @@ mod tests {
         assert!(g.set_destination((3, 3)));
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_))), "{events:?}");
+    }
+
+    #[test]
+    fn talk_counters_grow_by_the_relation_wherever_the_hero_is() {
+        // 0x4a399c, 0x4a548c: each step of an army adds 1 (it is not on his cell) and, when
+        // its relation to him is 0 or above, relation + 1, far from him too.
+        let mut g = with_walker(1, (12, 2), vec![(13, 2), (14, 2)]);
+        let rel = g.world.armies[0].attitude as i32;
+        assert!(rel >= 0);
+        g.wait(1);
+        assert_eq!(g.world.armies[0].tile(&g.world.map), (14, 2));
+        assert_eq!(g.world.armies[0].talk, 2 * (1 + rel + 1));
+        let mut g = with_walker(-2, (12, 2), vec![(13, 2), (14, 2)]);
+        g.wait(1);
+        assert_eq!(g.world.armies[0].talk, 2, "ill-disposed: only the 1 per step");
+    }
+
+    #[test]
+    fn a_greeting_without_an_event_does_not_stop_the_walk() {
+        // 0x4ade3c: a greeting runs the events with the army; only one that fires stops him.
+        // It steps (5, 2) → (4, 2) during his first step, to (3, 3): next to him, it greets
+        // him, and he walks on to (8, 4).
+        let mut g = with_walker(1, (5, 2), vec![(4, 2)]);
+        assert!(g.set_destination((8, 4)));
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Met(0)), "{events:?}");
+        assert_eq!((g.tile(), g.world.armies[0].talk), ((8, 4), -500));
+    }
+
+    #[test]
+    fn of_two_armies_next_to_him_the_last_in_order_acts() {
+        // 0x4ade3c keeps overwriting its pick in the army loop: the last one greets.
+        let mut s = strip();
+        s.armies = vec![army(1, 5, 2, 1, &[troop(4, 0, 1)]), army(2, 5, 4, 1, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        for (a, to) in g.world.armies.iter_mut().zip([(4, 2), (4, 4)]) {
+            a.ai.enabled = false;
+            a.path = vec![to];
+        }
+        assert!(g.set_destination((3, 3)));
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Met(1)) && !events.contains(&Event::Met(0)), "{events:?}");
+        assert_eq!((g.world.armies[0].talk, g.world.armies[1].talk), (3, -500));
+    }
+
+    #[test]
+    fn armies_keep_off_the_cell_ahead_of_a_standing_hero() {
+        // The original keeps the hero's direction after a walk (0x75c050), and an AI step
+        // onto his cell plus that direction stays put (0x4a399c). He walks east to (4, 2):
+        // (5, 2) ahead of him is closed while he waits, (5, 3) is not.
+        let mut g = with_walker(1, (6, 2), vec![]);
+        assert!(g.set_destination((4, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!((g.facing, g.world.armies[0].tile(&g.world.map)), (Some((1, 0)), (6, 2)));
+        g.world.armies[0].path = vec![(5, 2)];
+        g.wait(1);
+        assert_eq!(g.world.armies[0].tile(&g.world.map), (6, 2), "the cell ahead of him");
+        g.world.armies[0].path = vec![(5, 3)];
+        g.wait(1);
+        assert_eq!(g.world.armies[0].tile(&g.world.map), (5, 3));
+    }
+
+    #[test]
+    fn a_chased_army_gone_into_the_dark_ends_the_chase() {
+        // 0x4aedd1 tests the army's cell once the fog is laid over the mask: it runs east,
+        // five cells for each of his steps, out of his sight after his first step.
+        let mut g = with_walker(1, (8, 2), (9..=16).map(|x| (x, 2)).collect());
+        g.world.armies[0].speed = 1;
+        g.fog = Fog::new(24, 6);
+        g.look_around();
+        assert!(g.set_destination((8, 2)));
+        walk_until_stopped(&mut g);
+        assert!(!g.fog.explored(g.world.armies[0].tile(&g.world.map)));
+        assert_eq!((g.tile(), g.talk_to, g.moving()), ((3, 2), None, false));
     }
 
     #[test]
