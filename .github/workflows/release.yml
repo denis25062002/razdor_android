@@ -42,7 +42,7 @@ jobs:
       - name: Build razdor-macos
         run: sh scripts/dist-macos.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: razdor-macos
           path: dist/razdor-macos
@@ -80,7 +80,7 @@ jobs:
       - name: Build razdor and Razdor.exe
         run: sh scripts/dist.sh
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: razdor-macos
           path: dist
@@ -93,7 +93,7 @@ jobs:
 
       - name: The programs of a run by hand
         if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: razdor-${{ github.sha }}
           path: |
