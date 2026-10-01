@@ -14,6 +14,8 @@ old id, and their versions give both.
 
 ## 0.2.2 — 2026-10-01
 
+Commit `b01b492` (tag `v0.2.2`).
+
 ### New
 - **Discord Times mods**: an install with a mod in it (its own `Rus_*.ini`, art and maps)
   plays with the mod's units, upgrade tree, items and spells, e.g. the Evolution mod (161
@@ -26,6 +28,13 @@ old id, and their versions give both.
 - One value Razdor could not read made it drop the whole install and fall back to the demo
   with placeholder art. The Evolution mod's spell «Сангвинаре Вампирис» ends an effect line
   with an empty start time (`Effect2=…,1500,`), which now reads as 0.
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+994ecb4309cbfd932280b37fe4a3fd6bfe89cd0c84b605f207d11d434d0fc1d8  razdor
+a6f42ab99ad4968b6af2181db53ea022a59260f2ce4b4d0147c8d0afad5ac4d7  Razdor.exe
+0770c065199ea27449911994f331acca4452c679b6787a12b3c1e5757791a7cb  razdor-macos
+```
 
 ## 0.2.1 — 2026-10-01
 
