@@ -57,6 +57,9 @@ old id, and their versions give both.
   a "clear" front; the player's own battle grid has no blocked cells, as in the original.
 - A turn starts unit by unit: each unit's turn-start bonuses come before its own
   regeneration or poison (Berserk reads the hit points it had before).
+- The turn-1 initiative of Artillery and FirstShot units is part of their initiative, not a
+  modifier: an Elemental mage of the AI may haste such a unit on turn 1, and the panel no
+  longer lists it under "this turn".
 - The battle AI follows the original's scores to the letter, its slips included: the normal
   AI judges a kill by the hit points of its own unit at the target's place in the list, Life
   mages score curses with the original's defence mix-up, Elemental mages weigh a front-row

@@ -655,7 +655,9 @@ This matches src/dt/data.rs. The vanilla values are 1 SpearDefense, 2 HorseAtack
   (48b917). There is no code that gives it to the enemy. Off-screen, side 1 is the attacking AI
   army, so there the attacker does get it.
 - **Artillery** is not "always first". It gets **+30 initiative on turn 1 only**, and +30 more
-  when its building defence is ≥ 10 (484365–4843d8).
+  when its building defence is ≥ 10 (484365–4843d8). The bonus goes to the unit's current
+  initiative, not to its initiative modifier, so the tests that read the modifier (the
+  Elemental AI's haste candidates) do not see it. Community FirstShot does the same (c28935).
 - **+1 action on turn 1:** HorseAtack, OldVampirsGist and FastDead (48431a).
 
 **Start of each turn** (4840ec, 4843f3, 484683), unit by unit in list order, side 1 first:
@@ -873,7 +875,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 23 | Deployment | A deployment phase before the first turn (`move_card`) | None seen; the battle starts from the army formation | 9 | Razdor extra (**unknown** in the original) |
 | 24 | Turn order | Threshold scan from 75, ties to the player, cursor by index | Same | 8 | Matches |
 | 25 | Attacker +1 initiative | Side 1 (the player; the attacker off-screen) | Same | 8 | Matches |
-| 26 | Artillery | +30 (+60 with building defence ≥ 10) on turn 1; pierces shots | Same | 0, 8 | Matches |
+| 26 | Artillery | +30 (+60 with building defence ≥ 10) on turn 1, to the current initiative, not to the modifier (FirstShot too); pierces shots | Same | 0, 8 | Matches |
 | 27 | Piercing set | Melee: ArmorIgnore, PoisonArmorIgnore, both vampire gifts; shots: ArmorIgnore, PoisonArmorIgnore, Artillery | Same | 0 | Matches |
 | 28 | Defence order | SpearDefense, piercing, long strike, then building (+Row2Def for shots); the attack modifier added to an attack of 0; Unvulnerabe/Ghost 1 with GodAnger/GodStrike on top | Same | 0 | Matches |
 | 29 | Knight | Any side whose first unit is of the Knight type, AI lords included | Any army whose first unit is of the Knight type, AI lords included | 0 | Matches |

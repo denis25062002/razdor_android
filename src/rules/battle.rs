@@ -237,6 +237,10 @@ pub struct Fighter {
     pub cursed: bool,
     /// Actions left this turn.
     pub actions: i32,
+    /// This turn's bonus to the current initiative (+0x95): the turn-1 Artillery and
+    /// FirstShot +30. It is not a modifier, so it does not count where the original reads the
+    /// initiative modifier (the Elemental AI's haste test).
+    turn_initiative: i32,
     /// Regeneration % per turn; a poison replaces it with a negative value.
     pub regen: i32,
     /// Community `Bleed`: % of AB + AS + MP lost at each action start (0 = not bleeding).
@@ -293,6 +297,7 @@ impl Fighter {
             blessed: false,
             cursed: false,
             actions: 0,
+            turn_initiative: 0,
             bleed: 0,
             reserve_move: true,
             crippled: false,
@@ -1014,6 +1019,7 @@ impl Battle {
                 *sum += f.base[Stat::Initiative] as f64;
             }
             f.mods = Buff::default();
+            f.turn_initiative = 0;
             f.reserve_move = true;
             f.actions = f.base[Stat::Manevres] + i32::from(round == 1 && f.base.has_any(&FAST_START));
             self.turn_bonus(i);
@@ -1092,7 +1098,8 @@ impl Battle {
         let their_building = self.building_defence[team.other().index()];
         let f = &mut self.fighters[i];
         if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
-            f.mods.initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
+            // To the current initiative, not to the modifier (484365, c28935).
+            f.turn_initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
         }
         // Hunger: the unit count changed since the last look: healed to full.
         if round >= 2 && f.has(Bonus::Hunger) && living != self.hunger_seen {
@@ -1196,7 +1203,7 @@ impl Battle {
         }
         s[Stat::DefenceBlow] += f.mods.defence;
         s[Stat::DefenceShot] += f.mods.defence;
-        s[Stat::Initiative] += f.mods.initiative;
+        s[Stat::Initiative] += f.mods.initiative + f.turn_initiative;
         s.clamp();
         s[Stat::Regen] = f.regen;
         f.stats = s;

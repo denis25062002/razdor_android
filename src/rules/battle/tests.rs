@@ -2131,3 +2131,15 @@ fn row18_a_corpse_in_the_front_row_stops_the_start_fix() {
     bt.begin();
     assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (f(2), f(3)));
 }
+
+#[test]
+fn row26_the_turn_one_artillery_bonus_is_not_an_initiative_modifier() {
+    // 484365 adds the +30 to the current initiative, not to the modifier: on turn 1 an
+    // Artillery ally still passes the Elemental AI's haste test (modifier below 1).
+    let gun = bonus(152, Bonus::Artillery, shooter(152, 20));
+    let wind = UnitDef { initiative: 50, ..mage(153, 40, MagicSchool::Elemental, MagicDirection::ToAlly) };
+    let mut bt = with(vec![gun, wind], &[(18, f(2))], &[(153, b(2)), (152, b(3))]);
+    assert_eq!((bt.fighters[2].mods.initiative, bt.initiative(2)), (0, 40));
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_choice(), Some((2, ActionKind::Bless)), "the haste goes to the gun");
+}
