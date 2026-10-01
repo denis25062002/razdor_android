@@ -388,7 +388,8 @@ pub fn target_range(o: &GlobalOptions, style: Style) -> i32 {
 /// Cell `t` lies inside army `a`'s patrol box (`post ± radius`, world.md §4); an army that
 /// does not patrol takes targets anywhere.
 pub fn in_patrol(a: &Army, t: Tile) -> bool {
-    !a.patrols || ((t.0 - a.post.0).abs() <= a.patrol_radius && (t.1 - a.post.1).abs() <= a.patrol_radius)
+    let c = a.patrol_centre();
+    !a.patrols || ((t.0 - c.0).abs() <= a.patrol_radius && (t.1 - c.1).abs() <= a.patrol_radius)
 }
 
 /// Attitude of army `a` towards faction `f` (1 player, 2 ally, 3 neighbour, 4 enemy).
@@ -1033,7 +1034,7 @@ impl Game {
         let (w, h) = (self.world.map.w, self.world.map.h);
         let (post, r, here, patrols) = {
             let a = &self.world.armies[i];
-            (a.post, a.patrol_radius, a.tile(&self.world.map), a.patrols)
+            (a.patrol_centre(), a.patrol_radius, a.tile(&self.world.map), a.patrols)
         };
         if patrols && r <= 0 {
             return Vec::new();

@@ -1221,11 +1221,11 @@ impl Game {
                 a.path.clear();
             }
             if a.path.is_empty() && !a.chasing && a.patrols && a.patrol_radius > 0 && now >= a.rest_until {
-                let r = a.patrol_radius;
+                let (r, c) = (a.patrol_radius, a.patrol_centre());
                 for _ in 0..3 {
-                    let t = (a.post.0 + self.rng.range(-r, r), a.post.1 + self.rng.range(-r, r));
+                    let t = (c.0 + self.rng.range(-r, r), c.1 + self.rng.range(-r, r));
                     let fits = if sails { world.is_sea(t) } else { map.passable(t) };
-                    if fits && world.location_at(t).is_none() && map.distance(t, a.post) <= r {
+                    if fits && world.location_at(t).is_none() && map.distance(t, c) <= r {
                         a.path = route(a, here, t);
                         if !a.path.is_empty() {
                             break;

@@ -550,6 +550,8 @@ impl EventWorld for Game {
         let Some((_, t)) = best.filter(|&(score, _)| score < BLOCKED) else { return };
         let pos = map.center(t);
         if let Some(a) = self.army_mut(army) {
+            // The patrol box stays where it was.
+            a.box_centre = Some(a.patrol_centre());
             a.pos = pos;
             a.post = t;
             a.path.clear();
@@ -1521,6 +1523,7 @@ mod tests {
         g.move_army_to_hero(2);
         let a = &g.world.armies[0];
         assert_eq!((a.tile(&g.world.map), a.post), ((3, 3), (3, 3)), "the road cell, home moved too");
+        assert_eq!(a.patrol_centre(), (12, 10), "the patrol box is not recomputed");
         // Taken now: the next one goes to the first grass neighbour, NW, though it waits off
         // the map (it stays there).
         g.move_army_to_hero(3);

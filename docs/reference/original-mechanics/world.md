@@ -526,7 +526,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Ship purchase | no ship object; planner switches to MIXED in the shipyard; leaving it on land loses it | no ship object; planner switches to MIXED in the shipyard | Matches |
 | Landing | land or a building ahead ends the route on it, the ship parked on the water left; the land test reads the misplaced row (the bug); rows past the buffer read as water *(guess)* | same, but the landing test reads a cell further south (bug); building cells also land | Matches |
 | Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
-| Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | small: Razdor's patrol box follows the moved post (it keeps no separate box) |
+| Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, the patrol box stays (`Army::box_centre`), a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | Matches |
 | Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
 | AI attack while waiting | never: AI attacks and greetings only after a step of his | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
 | Chase target unreachable | chase ends and the hero stops; the new plan keeps the original click's buildings | chase ends and the hero stops | Matches |

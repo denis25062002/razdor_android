@@ -169,8 +169,8 @@ old id, and their versions give both.
   spell is being read (so after a cast, not in the middle of it); midnight comes after the
   armies have moved.
 - An event that moves an army to the hero puts it on his cheapest free neighbour (a road
-  before grass, a building only as a last resort), moves its home there too, and leaves a
-  waiting army off the map.
+  before grass, a building only as a last resort), moves its home there too but keeps its
+  patrol area where it was, and leaves a waiting army off the map.
 
 ## 0.2.2 — 2026-10-01
 

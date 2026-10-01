@@ -457,8 +457,12 @@ pub struct Army {
     pub pos: (f32, f32),
     /// Home building, index into `locations`.
     pub home: Option<usize>,
-    /// Centre of its patrol.
+    /// Its home cell, the centre of its patrol.
     pub post: Tile,
+    /// The centre of its patrol box when that is no longer its post: an event moved it to
+    /// the hero, and the original does not recompute the box (world.md §4.4, 0x4980d8).
+    #[serde(default)]
+    pub box_centre: Option<Tile>,
     pub patrols: bool,
     pub patrol_radius: i32,
     pub troops: Vec<Troop>,
@@ -514,6 +518,11 @@ pub struct Army {
 impl Army {
     pub fn tile(&self, map: &TileMap) -> Tile {
         map.tile_at(self.pos)
+    }
+
+    /// The centre of its patrol box: its post, unless an event moved the post away from it.
+    pub fn patrol_centre(&self) -> Tile {
+        self.box_centre.unwrap_or(self.post)
     }
 
     /// Attacks the player on contact and chases him (its `attitude` is the relation of
@@ -837,6 +846,7 @@ impl World {
                 pos: world.map.center(tile),
                 home,
                 post: tile,
+                box_centre: None,
                 // Ships always cruise their waters *(guess)*.
                 patrols: a.patrols != 0 || a.ship != 0,
                 patrol_radius: if a.ship != 0 && a.patrol_radius == 0 { super::ships::SHIP_PATROL } else { a.patrol_radius as i32 },
@@ -1111,6 +1121,7 @@ impl World {
             pos: self.map.center(at),
             home: Some(home),
             post: self.locations[home].tile,
+            box_centre: None,
             patrols: true,
             patrol_radius: GANG_PATROL,
             troops: self.gang.clone(),
