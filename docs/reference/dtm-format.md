@@ -25,9 +25,14 @@ Reference implementation: `dtm_decode.py`. It parses every shipped map with zero
 | off | type | value | conf |
 |---|---|---|---|
 | 0 | char[6] | `AIpf\r\n` | C |
-| 6 | u16 | container version (19 in all maps) | C |
+| 6 | u8 | compression code: 19 in all maps = 10 + bzip2 level 9 | C |
+| 7 | u8 | scramble mode, 0 in all maps (1 = XOR byte i with i+1, 2 = XOR with a random byte) | C |
 | 8 | u32 | size of the uncompressed payload | C |
 | 12 | … | a bzip2 stream (`BZh…`) running to EOF | C |
+
+The game (0x473188) only checks bytes 0, 2 and 3 (`A`, `p`, `f`); byte 1 = `I` selects this
+layout, and bytes 4–5 are ignored. Its saves use the same reader with `AEpf` and a block layout
+(original-mechanics/saves-data.md §9). Bytes 6–7 were described here as a u16 "version" before.
 
 ## 2. Payload layout
 
@@ -60,14 +65,14 @@ The following invariants hold for all 15 maps (C):
 | 0x0C | u32 | width in cells (50 / 100 / 200) | C |
 | 0x10 | u32 | height in cells (all shipped maps are square) | C |
 | 0x14 | u32 | random-generator seed from the "generate map" dialog. Several maps share one value. | L |
-| 0x18 | u32 | `text_offset`: absolute offset of the first string, just after the text marker | C |
+| 0x18 | u32 | `text_offset`: absolute offset of the first string, just after the text marker. The game seeks here before reading the strings and never reads the marker | C |
 | 0x1C | u32 | terrain RLE size | C |
 | 0x20 | u32 | objects size (a multiple of 6) | C |
 | 0x24 | u32 | buildings size (a multiple of 358) | C |
 | 0x28 | u32 | armies size (a multiple of 89) | C |
 | 0x2C | u32 | points size (a multiple of 99) | C |
 | 0x30 | u32 | events size (a multiple of 171) | C |
-| 0x34 | u32 | always 0 | U |
+| 0x34 | u32 | always 0; not read by the game | U |
 | 0x38 | u32 | scenario start time, in minutes (see *Game clock*). 0 means unset. | C |
 | 0x3C | 3 × 50 B | starting-hero presets: knight, archmage, ranger (see below) | C/L |
 | 0xD2 | u16 | victory event (1-based event id, 0 = none) | C |
@@ -82,7 +87,9 @@ The following invariants hold for all 15 maps (C):
 | 0x117 | 5 B | always 0 | U |
 | 0x11C | u32 | size of the embedded scenario picture (0 = none) | C |
 | 0x120 | u8 | scenario picture index (a built-in picture choice) | L |
-| 0x121 | 14 B | always 0 | U |
+| 0x121 | u8 | always 0 in maps. The game overwrites it at load with its wide-front-row option (6 units per row when set, else 4); in a save it stores that option and restores it | C |
+| 0x122 | 12 B | always 0 | U |
+| 0x12E | u8 | always 0 in maps; in a save the save kind (1 manual, 2 autosave) | C |
 
 ### Hero preset (50 bytes, at 0x3C + 50·k)
 
@@ -97,8 +104,12 @@ The following invariants hold for all 15 maps (C):
 | 19 | 6 × (u8 unit, u8 level, u8 count) | starting troops; the level is 0-based (0 = level 1 as the game shows it) | C |
 | 37 | u16 | start x | C |
 | 39 | u16 | start y | C |
-| 41 | u8[3] | starting artifacts (artifact GlobalIndex) | L |
-| 44 | u8[6] | starting spells and prayers (1-based index into `Rus_Spells.ini`) | L |
+| 41 | u8[3] | starting artifacts (artifact GlobalIndex), put into the pack | C |
+| 44 | u8[6] | starting spells and prayers (1-based index into `Rus_Spells.ini`), learned | C |
+
+The game offers a class on the new-game screen only when its start x or start y is non-zero
+(0x4c1804). Troop triples with unit id 1–3 (the hero types) are skipped, here and in armies and
+garrisons (0x4b44db). Bytes 0–7 and 17–18 are not read by the map loader. (C)
 
 ### Game clock (C)
 
@@ -238,13 +249,13 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 2 | u16 | y | C |
 | 4 | u8 | army id (1-based) | C |
 | 5 | u8 | map model: 1 knight hero, 2 archmage, 3 ranger, 4 feudal, 5 bandits, 6 peasants, 7 inactive, 8 lantern, 9 event point, 10 necromancer, 11 ghosts, 12 zombies. Shipped maps use only 4–7. | C |
-| 6 | u16 | tactical cost (editor value 1) | L |
-| 8 | u8 | 0..3. Possibly the leader archetype. | U |
+| 6 | u16 | tactical cost (editor value 1); not read by the game's map loader | L |
+| 8 | u8 | 0..3. Possibly the leader archetype. Not read by the game's map loader | U |
 | 9 | 4 B | always 0 | U |
-| 13 | i8 | speed correction | C |
+| 13 | i8 | speed correction: speed = max(1, 5 − value − 1 if the leader is unit type 2) | C |
 | 14 | u8 | "add experience like the player" flag: units the army hires start with XP from the player's army (experience.md §5) | C |
 | 15 | 2 B | always 0 | U |
-| 17 | u16 | extra daily gold income | C |
+| 17 | i16 | starting gold of the army (not an income; corrected after reading the game's loader 0x4b2504) | C |
 | 19 | u16 | bonus experience given to the units the army hires | C |
 | 21 | 4 B | always 0 | U |
 | 25 | u8 | home building (1-based, 0 = none) | C |
@@ -267,12 +278,12 @@ The army id is at byte 4, and it always equals the 1-based record index. Unit id
 | 71 | u8 | experience correction in percent (100 = normal): scales the XP the player gains by beating this army | C |
 | 72 | u8 | ship type (0 none, then hero, pirate, merchant) | L |
 | 73 | u8 | always 0 | U |
-| 74 | u16 | tactical cost (editor value 2) | L |
+| 74 | u16 | tactical cost (editor value 2); not read by the game's map loader | L |
 | 76 | u8 | ignored by AI | C |
 | 77 | u8 | hunts only the player | C |
 | 78 | u8 | no random targets | C |
 | 79 | u8 | no socialising with other armies | C |
-| 80 | u8 | 0..45 | U |
+| 80 | u8 | base daily gold income ÷ 10 (the game stores value × 10) | C |
 | 81 | u8 | no interest in buildings | C |
 | 82 | u8 | garrison strength (default 50) | C |
 | 83 | u8 | respawn the whole army, not only the leader | C |
@@ -404,7 +415,7 @@ condition next to it. The editor holds at most 5000 events.
 |---|---|
 | 23–24, 27–28, 87–88, 91–92 | U (small or rare values) |
 | 151–162 | U. Byte 156 is a 0/1 flag in about 2% of events; the editor's window does not write it. |
-| 163 | size of this event's custom picture (the editor writes a u32 at 163–166; shipped sizes fit in the low u16). It is stored after the scenario picture: u16 width, u16 height, then width·height 16-bit pixels. The only example is 128×128, 32,772 bytes. The pixel format is probably RGB565 (L). |
+| 163 | size of this event's custom picture, a u32 at 163–166 (the game reads all 32 bits; shipped sizes fit in the low u16). It is stored after the scenario picture: u16 width, u16 height, then width·height 16-bit pixels. The only example is 128×128, 32,772 bytes. The pixel format is probably RGB565 (L). |
 | 165–170 | U |
 
 **Strings.** Each event has three strings:
@@ -434,6 +445,10 @@ The strings follow the text marker, in this order (C):
 7. three strings per event: title with flags, question, message
 8. N named-character names (N from header byte 0xEE; their classes are at 0xEF+i)
 
+When the game loads the map (0x4b2504), every run of two or more spaces in the description and in
+the building, army and event strings is collapsed to one space, and `#HERONAME` in the third
+string of buildings and armies is replaced by the hero's name at that moment.
+
 Victory and defeat conditions are not stored as text. They are the event ids at 0xD2 and 0xD8. Text escapes such as
 `#HERONAME` are substituted at runtime.
 
@@ -459,10 +474,11 @@ codec itself is out of scope here (U).
 
 - Guard the text marker: check that it sits at `0x12F + sum(sizes)`. The decoder raises an error if any section size is
   not a multiple of its record size, or if bytes are left over at the end.
-- Cells: `terrain[y][x]`, plus zero or more objects per cell. Building footprints extend up and to the left of `(x, y)`
-  by `size_x × size_y`.
+- Cells: `terrain[y][x]`, plus zero or more objects per cell (the game keeps one object of classes 1–8 and one of the
+  other classes per cell; a later record replaces an earlier one). Building footprints extend up and to the left of
+  `(x, y)` by `size_x × size_y`, plus one extra row above when `size_x > size_y` (0x4b2f57).
 - **Buildings.** Use type, owner, faction, garrison, barracks, market or treasure contents, income, and local events.
-- **Armies.** Each is placed at `(x, y)`; model 7 (with byte 63 set) keeps it off the map until an event activates it. `home_building` ties
+- **Armies.** Each is placed exactly at `(x, y)` (it is at sea when that cell is water and not a bridge); byte 63 alone keeps it off the map until an event activates it. `home_building` ties
   it to a building, and `named_character` indexes the named-character table.
 - **Hero.** Pick one of the three presets by archetype. It gives the start position, gold, mana, troops,
   artifacts and spells.

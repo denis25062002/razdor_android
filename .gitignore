@@ -3,3 +3,6 @@
 .claude/
 /.env
 /dist
+
+# raw reverse-engineering notes and decompiler output: local only
+docs/notes/
