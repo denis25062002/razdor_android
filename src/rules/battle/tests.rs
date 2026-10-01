@@ -2143,3 +2143,20 @@ fn row26_the_turn_one_artillery_bonus_is_not_an_initiative_modifier() {
     turn_of(&mut bt, 1);
     assert_eq!(bt.ai_choice(), Some((2, ActionKind::Bless)), "the haste goes to the gun");
 }
+
+#[test]
+fn row36_winning_with_only_surrendering_units_left_is_a_defeat() {
+    // 48b6ba tests every side that has units, whether the other is gone or not: a priest
+    // that kills the last enemy surrenders all the same (the original's, kept).
+    let priest = UnitDef { surrender: 20, ..warrior(154, 30, 0) };
+    let mut bt = with(vec![priest], &[(154, f(2))], &[(18, f(2))]);
+    bt.fighters[1].hp = 1;
+    assert!(bt.act(1).unwrap().killed);
+    assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Defeat, Some(EndReason::Surrender(Team::Player))));
+    assert_eq!(bt.surrender_mana(Team::Player), 0);
+    // With the hero (Surrender 0) still standing it is a victory.
+    let mut bt = with(vec![UnitDef { surrender: 20, ..warrior(154, 30, 0) }], &[(154, f(2)), (10, f(3))], &[(18, f(2))]);
+    bt.fighters[2].hp = 1;
+    assert!(bt.act(2).unwrap().killed);
+    assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Victory, Some(EndReason::Wiped)));
+}

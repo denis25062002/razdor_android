@@ -528,6 +528,10 @@ stops after the **first action of turn 25**: 24 full turns plus one action. **co
     enemy side's sum to the player as mana (4c50ec). This is the mana the VictoryMana message
     reports after such a battle.
   - Units killed before the surrender give **no** mana.
+- **Even after a win:** the test runs for each side that still has units, whether the
+  other side is gone or not (48b6ba). So a player whose last enemy falls while only
+  surrender-capable units are left on his side surrenders all the same, and since his side
+  then has no unit, the battle is a defeat. **code**
 - **Either side:** the rule applies to the player's side too. With only surrender-capable units
   left (a hero has Surrender 0, so only once the hero is down), the player's side is removed and
   it is a defeat. Nothing gives the enemy mana. **code**
@@ -885,7 +889,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 33 | Regen and poison | `round(maxHP × regen/100)`, half to even, no minimum | Same | 8 | Matches |
 | 34 | Damage-taken counters | Only the damage routine's wounds and a cursed killer's HP count in `lost`; counter blows, preventive strikes, poison, bleeding and the Community side effects do not | Not counted in the side's damage taken | 8 | Matches |
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
-| 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte | Same; only the player can receive the mana | 5 | Matches |
+| 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte; tested for each side with units even when the other side is gone (a win with only surrender-capable units left is a defeat) | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
 | 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors; a front-row caster's fallback may pick an ally's front cell it can tend, in any column); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |

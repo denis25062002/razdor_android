@@ -1259,12 +1259,15 @@ impl Battle {
     /// The end check after every action (48b67b): a side gone, the turn limit, or a side
     /// whose every unit has `Surrender > 0`, which then gives up.
     fn end_check(&mut self) {
-        if self.living(Team::Player).next().is_none() || self.living(Team::Enemy).next().is_none() {
-            return;
-        }
+        let standing = Team::BOTH.map(|t| self.living(t).next().is_some());
         let limit = self.round >= self.turn_limit();
-        let giving_up: Vec<Team> =
-            Team::BOTH.into_iter().filter(|&t| self.living(t).all(|f| f.surrender > 0)).collect();
+        // Each side that still has units is tested on its own, whether the other side is
+        // gone or not (48b6ba): a player who wins with only surrender-capable units left
+        // surrenders all the same, and that is a defeat. The original's, kept.
+        let giving_up: Vec<Team> = Team::BOTH
+            .into_iter()
+            .filter(|&t| standing[t.index()] && self.living(t).all(|f| f.surrender > 0))
+            .collect();
         for &team in &giving_up {
             let mut mana = 0;
             for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team) {
@@ -1277,7 +1280,12 @@ impl Battle {
             let msg = if team == Team::Player { tr("Your army surrenders") } else { tr("The enemy surrenders") };
             self.log.push(msg.to_string());
         }
-        if let Some(&team) = giving_up.first() {
+        if !standing.iter().all(|&s| s) {
+            // A side wiped out: the battle is over anyway (a beaten player stays beaten).
+            if giving_up.contains(&Team::Player) {
+                self.ended = Some(EndReason::Surrender(Team::Player));
+            }
+        } else if let Some(&team) = giving_up.first() {
             self.ended = Some(EndReason::Surrender(team));
         } else if limit {
             self.ended = Some(EndReason::TurnLimit);

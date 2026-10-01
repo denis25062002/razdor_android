@@ -43,6 +43,9 @@ old id, and their versions give both.
 - Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
 - Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
   for the battle XP.
+- A side left with only surrender-capable units gives up even when its last action wins the
+  battle: a player whose hero has fallen and whose priests or mages kill the last enemy
+  surrenders and loses, as in the original.
 - The space key in battle does what a click on the unit's own card does: one action, a
   spell on itself when it can cast one, else a pass. It no longer skips the whole turn.
 - A front-row shooter or mage in the first or last column never sees a clear front, as in
