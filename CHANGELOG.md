@@ -12,6 +12,21 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.2.2 — 2026-10-01
+
+### New
+- **Discord Times mods**: an install with a mod in it (its own `Rus_*.ini`, art and maps)
+  plays with the mod's units, upgrade tree, items and spells, e.g. the Evolution mod (161
+  units). The ini files are read as leniently as the original reads them: a value that
+  cannot be read takes its default, an entry without a usable `GlobalIndex` (or an item
+  without a `Type`) is skipped, and each case is written to `razdor.log`, as is an upgrade
+  naming a unit that does not exist. Only a missing or unreadable file refuses the install.
+
+### Fixed
+- One value Razdor could not read made it drop the whole install and fall back to the demo
+  with placeholder art. The Evolution mod's spell «Сангвинаре Вампирис» ends an effect line
+  with an empty start time (`Effect2=…,1500,`), which now reads as 0.
+
 ## 0.2.1 — 2026-10-01
 
 Commit `68cc569` (tag `v0.2.1`).
