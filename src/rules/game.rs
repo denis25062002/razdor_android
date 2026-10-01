@@ -269,6 +269,10 @@ pub struct Game {
     /// A ship was just bought: his planner works on the MIXED map until his next step.
     #[serde(default)]
     pub(crate) ship_bought: bool,
+    /// The hero's noon (by its day) waiting for an event scan in which no event fires and
+    /// no spell is being read.
+    #[serde(default)]
+    pub(crate) noon_due: Option<u64>,
     /// The hero's speed as a Community event set it (0xc279e6); `None`: his class's.
     #[serde(default)]
     pub(crate) speed_set: Option<u32>,
@@ -411,6 +415,7 @@ impl Game {
             autosave_due: None,
             ship: None,
             ship_bought: false,
+            noon_due: None,
             speed_set: None,
             step_from: None,
             click_buildings: (None, None),
@@ -1094,26 +1099,38 @@ impl Game {
         self.step_from = None;
     }
 
+    /// A slice of time (world.md §6.4): the armies move, then 00:00 comes (0x4a1998 runs at
+    /// the end of the AI's advance); the scenario's events run, and the hero's 12:00 comes
+    /// in that scan when no event fired and no spell is being read (0x4abfbc), else at a
+    /// later scan. His first noon is the day after the start, even after a morning start
+    /// (0x4b4388); the AI's armies keep theirs.
     fn pass_slice(&mut self, minutes: f32, events: &mut Vec<Event>) {
-        for tick in self.clock.advance(minutes as f64) {
-            match tick {
-                Tick::Midnight(_) => self.midnight(),
-                // The hero's first noon is the day after the start, even after a morning
-                // start (world.md §6.4, 0x4b4388); the AI's armies keep theirs.
-                Tick::Noon(day) if day <= self.start_day => self.ai_new_day(),
-                Tick::Noon(day) => {
-                    let report = self.new_day(day);
-                    events.push(Event::NewDay(report));
-                    // The original autosaves every day at 12:00, named by the date.
-                    self.autosave_due = Some(super::save::date_name(&self.clock));
-                }
-            }
-        }
+        let ticks = self.clock.advance(minutes as f64);
         self.bury_old_corpses();
         self.expire_spells();
         self.move_armies(minutes, events);
+        for tick in ticks {
+            match tick {
+                Tick::Midnight(_) => self.midnight(),
+                Tick::Noon(day) => {
+                    self.ai_new_day();
+                    if day > self.start_day {
+                        self.noon_due = Some(day);
+                    }
+                }
+            }
+        }
         // Time passed: the scenario's events run.
-        events.extend(self.run_script());
+        let script = self.run_script();
+        let fired = script.iter().any(|e| matches!(e, Event::Script(super::events::EventOutcome::Fired { .. } | super::events::EventOutcome::Question(_))));
+        events.extend(script);
+        if let Some(day) = self.noon_due.filter(|_| !fired && self.reading.is_none()) {
+            self.noon_due = None;
+            let report = self.new_day(day);
+            events.push(Event::NewDay(report));
+            // The original autosaves every day at 12:00, named by the date.
+            self.autosave_due = Some(super::save::date_name(&self.clock));
+        }
     }
 
     /// 00:00 (world.md §6): villages refill (slower as they fill), barracks may gain a unit,
@@ -1146,7 +1163,7 @@ impl Game {
     fn new_day(&mut self, day: u64) -> DayReport {
         let pay = self.pay_noon();
         self.noon_heal();
-        let n = day.saturating_sub(self.start_day) + 1; // the game's first noon is day 1
+        let n = day.saturating_sub(self.start_day); // the game's first noon is day 1
         if self.world.demo && n.is_multiple_of(SPAWN_EVERY_DAYS) {
             let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
             for (camp, tile) in camps {
@@ -1155,7 +1172,6 @@ impl Game {
                 }
             }
         }
-        self.ai_new_day();
         let super::economy::NoonPay { income, mana, wages, mana_wages, unpaid, deserted } = pay;
         DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
     }
@@ -1858,6 +1874,27 @@ mod tests {
     }
 
     #[test]
+    fn the_noon_waits_for_a_scan_with_no_event_and_no_spell_being_read() {
+        // World.md §6.4 (0x4abfbc): checked in the event scan when nothing fired and no
+        // spell is being cast; 00:00 comes after the armies moved.
+        let mut g = start(&strip());
+        g.first_noon_today();
+        g.mana = 1000;
+        g.spells = vec![1];
+        // A reading across 12:00: the report comes after it, at the next scan.
+        let t0 = g.clock.total_minutes();
+        g.reading = Some(magic::Reading { spell: 1, target: magic::CastTarget::Own });
+        let mut events = Vec::new();
+        g.pass_time(4.0 * 60.0, &mut events);
+        assert!(g.clock.total_minutes() > t0 + 3.0 * 60.0 && events.is_empty(), "{events:?}");
+        assert!(g.noon_due.is_some());
+        g.reading = None;
+        g.pass_time(30.0, &mut events);
+        assert!(matches!(events.as_slice(), [Event::NewDay(_)]), "{events:?}");
+        assert!(g.noon_due.is_none());
+    }
+
+    #[test]
     fn villages_refill_at_midnight() {
         let mut g = quiet_game(HeroClass::Knight);
         g.location = Some(g.world.index_of("Millbrook"));
@@ -2092,7 +2129,8 @@ mod tests {
     fn camps_send_out_new_gangs_every_few_days() {
         let mut g = quiet_game(HeroClass::Knight);
         let mut events = Vec::new();
-        g.pass_time((4 + 24) as f32 * 60.0, &mut events); // two noons
+        // 08:00: the start day's noon is not the hero's; then two noons.
+        g.pass_time((4 + 48) as f32 * 60.0, &mut events);
         assert!(g.world.armies.is_empty());
         g.pass_time(24.0 * 60.0, &mut events); // the third noon
         assert_eq!(g.world.armies.len(), 2, "one gang from each camp");

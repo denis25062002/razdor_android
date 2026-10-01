@@ -165,6 +165,9 @@ old id, and their versions give both.
   nothing.
 - The clock starts a minute after the map's start time, and the hero's first noon report is
   always the next day's, even after a morning start.
+- The noon report comes in the first event check after 12:00 in which no event fired and no
+  spell is being read (so after a cast, not in the middle of it); midnight comes after the
+  armies have moved.
 - An event that moves an army to the hero puts it on his cheapest free neighbour (a road
   before grass, a building only as a last resort), moves its home there too, and leaves a
   waiting army off the map.
