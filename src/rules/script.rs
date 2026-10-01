@@ -157,10 +157,22 @@ impl Game {
         Ok(self.script_events(out))
     }
 
-    /// An army met on the road (`Met` or `Encounter` from [`Game::contact`]): the meeting is
-    /// recorded, the events run (a talk may come first), and the meeting stands only if the
-    /// army is still there (and, for a battle, still hostile).
+    /// An army that met the hero (`Met` or `Encounter` from [`Game::ai_contact`]): the
+    /// meeting is recorded, the events run (a talk may come first), and the meeting stands
+    /// only if the army is still there (and, for a battle, still hostile).
     pub(crate) fn meet(&mut self, e: Event, events: &mut Vec<Event>) {
+        self.meet_as(e, events, false);
+    }
+
+    /// The hero stepped onto army `e`'s cell (world.md §4.2 e, 0x4ad94c): the events run with
+    /// it as the met army; the battle opens only if none of them fired (an army ill-disposed
+    /// to him, attitude 0 included). If one fired, the army forgets him for now: its talk
+    /// counter is −500 and it plans again.
+    pub(crate) fn engage(&mut self, e: Event, events: &mut Vec<Event>) {
+        self.meet_as(e, events, true);
+    }
+
+    fn meet_as(&mut self, e: Event, events: &mut Vec<Event>, on_step: bool) {
         let (Event::Met(i) | Event::Encounter(i)) = e else {
             events.push(e);
             return;
@@ -180,10 +192,20 @@ impl Game {
             None => Vec::new(),
         };
         let now = self.world.armies.iter().position(|a| a.id == id);
+        let fired = after.iter().any(|e| matches!(e, Event::Script(EventOutcome::Fired { .. } | EventOutcome::Question(_))));
+        let fights = |a: &Army| if on_step { a.attitude <= 0 } else { a.hostile() };
         match e {
             // A battle the events started instead comes with `after`.
             Event::Encounter(_) if after.iter().any(|e| matches!(e, Event::Encounter(_))) => {}
-            Event::Encounter(_) => match now.filter(|&j| self.world.armies[j].hostile()) {
+            Event::Encounter(_) if on_step && fired => {
+                self.foe = None;
+                if let Some(j) = now {
+                    let a = &mut self.world.armies[j];
+                    a.talk = super::game::TALKED;
+                    a.path.clear();
+                }
+            }
+            Event::Encounter(_) => match now.filter(|&j| fights(&self.world.armies[j])) {
                 Some(j) => {
                     self.foe = Some(Foe::Army(j));
                     events.push(Event::Encounter(j));
@@ -1440,6 +1462,35 @@ mod tests {
         assert_eq!(shown.at, (10, 4));
         assert!(shown.cells.iter().all(|&t| g.fog.explored(t)), "only cells it uncovered, all lit now");
         assert!(!g.fog.enabled || g.fog.explored((10, 4)), "the lantern lights the fog");
+    }
+
+    #[test]
+    fn an_event_on_stepping_onto_an_army_takes_the_place_of_the_battle() {
+        // World.md §4.2 e (0x4ad94c): the events run with the army met; if one fires, no
+        // battle, and the army's talk counter towards him drops to −500.
+        let mut talk = ev(EventKind::Global);
+        talk.conditions.meet_army = 2;
+        let mut s = world(vec![talk]);
+        let mut guard = army(2, 6, 2, -2, &[troop(4, 0, 1)]);
+        (guard.patrols, guard.patrol_radius) = (1, 0);
+        s.armies = vec![guard];
+        let mut g = start(&s);
+        g.drain_events();
+        assert!(g.set_destination((6, 2)));
+        let events = walk(&mut g);
+        assert_eq!(fired(&events), vec![1]);
+        assert!(!events.iter().any(|e| matches!(e, Event::Encounter(_))), "{events:?}");
+        assert_eq!((g.foe, g.tile(), g.world.armies[0].talk), (None, (5, 2), -500));
+        // Without an event: the battle.
+        let mut s = world(vec![]);
+        s.armies = vec![army(2, 6, 2, -2, &[troop(4, 0, 1)])];
+        s.armies[0].patrols = 1;
+        let mut g = start(&s);
+        g.world.armies[0].patrol_radius = 0;
+        assert!(g.set_destination((6, 2)));
+        let events = walk(&mut g);
+        assert_eq!(events.last(), Some(&Event::Encounter(0)));
+        assert_eq!(g.foe, Some(Foe::Army(0)));
     }
 
     #[test]

@@ -274,8 +274,20 @@ impl Game {
             Some(_) => {}
             None => self.location = None,
         }
+        if at_sea != self.aboard() {
+            self.sea_changed(at_sea);
+        }
         self.ship = if at_sea { Some(Ship { tile: new, aboard: true }) } else { self.ship.filter(|s| !s.aboard) };
         self.ship_bought = false;
+    }
+
+    /// The hero goes to sea (`true`) or leaves it (0x496d28): the AI armies on the medium he
+    /// is now on (ships, or land armies) lose their banked time and plan again.
+    fn sea_changed(&mut self, at_sea: bool) {
+        for a in self.world.armies.iter_mut().filter(|a| a.sails() == at_sea) {
+            a.budget = 0.0;
+            a.path.clear();
+        }
     }
 
     /// At sea, the hero's next step lands him (world.md §4.2 d, 0x4ad94c) when the cell is
@@ -292,6 +304,7 @@ impl Game {
     pub(crate) fn land(&mut self, from: Tile) {
         let in_yard = self.world.location_at(from).is_some_and(|l| self.world.locations[l].kind == LocationKind::Shipyard);
         self.ship = (!in_yard).then_some(Ship { tile: from, aboard: false });
+        self.sea_changed(false);
     }
 
     /// Where a hostile ship army at `from` heads to reach the hero: his cell at sea, else the
@@ -457,6 +470,26 @@ mod tests {
         walk_until_stopped(&mut g);
         assert_eq!(g.ship, Some(Ship { tile: (19, 5), aboard: true }), "walking onto it, he is at sea again");
         assert!(g.can_target((15, 5)));
+    }
+
+    #[test]
+    fn going_to_sea_or_ashore_empties_the_banks_of_the_armies_there() {
+        // 0x496d28: boarding resets the ships' banks, landing the land armies'.
+        let mut s = strait();
+        let mut pirate = army(1, 15, 20, -2, &[troop(4, 0, 1)]);
+        pirate.ship = kind::PIRATE;
+        s.armies = vec![pirate, army(2, 3, 20, 1, &[troop(4, 0, 1)])];
+        let mut g = at_yard(&s);
+        g.rent_ship().unwrap();
+        for a in &mut g.world.armies {
+            a.budget = 100.0;
+        }
+        g.move_to_cell((9, 5), (10, 5));
+        assert!(g.aboard());
+        assert_eq!(g.world.armies.iter().map(|a| a.budget).collect::<Vec<_>>(), [0.0, 100.0]);
+        g.world.armies[0].budget = 100.0;
+        g.land((10, 5));
+        assert_eq!(g.world.armies.iter().map(|a| a.budget).collect::<Vec<_>>(), [100.0, 0.0]);
     }
 
     #[test]

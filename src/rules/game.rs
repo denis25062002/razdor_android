@@ -322,7 +322,7 @@ struct HeroCells {
 }
 
 /// Talk counter an army towards the hero is set to after a greeting (world.md §4.3).
-const TALKED: i32 = -500;
+pub(crate) const TALKED: i32 = -500;
 
 /// Army `a` walks its path while its banked minutes cover the next step (world.md §5,
 /// 0x4a399c): `cost(the cell it leaves) × speed`, ×1.5 diagonally; `cost` gives the cost units
@@ -893,7 +893,7 @@ impl Game {
                 if let Event::Encounter(i) = e {
                     self.foe = Some(Foe::Army(i));
                 }
-                self.meet(e, events);
+                self.engage(e, events);
                 return false;
             }
             Some(StepContact::Garrison(l)) => {

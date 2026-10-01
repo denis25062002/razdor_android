@@ -149,6 +149,9 @@ old id, and their versions give both.
   when its talk counter is above 0 (it grows as the army steps), then not for a long while.
 - AI armies pay for a step with the cell they leave; stationary guards bank no time.
 - A pursued army that goes out of reach ends the pursuit and the hero stops.
+- An event that fires when the hero steps onto an army takes the place of the battle: the
+  army then leaves him alone for a while. Going to sea or ashore makes the AI armies on that
+  side lose their banked time and plan again.
 - **Ships as in the original**: buying one puts no ship on the water; he steps out of the
   shipyard onto the water to sail, and leaving it on foot loses the purchase. Landing parks
   the ship on the water he left; the original's landing test, which reads a cell further
