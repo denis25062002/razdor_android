@@ -850,7 +850,8 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     description_box(&v.description, x, dy, w, f.y + f.h - dy - 10.0 * k);
 }
 
-/// A shipyard: rent a ship for `ShipCost` gold. It waits on the water nearby.
+/// A shipyard: buy a ship for `ShipCost` gold. As in the original none appears: the hero
+/// steps out of the shipyard onto the water to sail.
 fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     let k = chrome::k();
     let Some(l) = game.location else { return };
@@ -864,8 +865,7 @@ fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     let label = if game.ship.is_some() { tr("Rent a new ship") } else { tr("Rent a ship") };
     if button(x, by, 420.0 * k, 42.0 * k, label, game.gold >= price) {
         *message = Some(match game.rent_ship() {
-            Ok(_) => tr("The ship waits at the pier. Walk onto it, or click the water.").into(),
-            Err(razdor::rules::ships::ShipError::NoWater) => tr("There is no water to sail from here.").into(),
+            Ok(_) => tr("The ship is ready. Click the water next to the shipyard to sail; leaving on foot loses it.").into(),
             Err(razdor::rules::ships::ShipError::NotEnoughGold) => tr("Not enough gold.").into(),
             Err(razdor::rules::ships::ShipError::NoShipyard) => tr("The shipwright will not deal with you.").into(),
         });

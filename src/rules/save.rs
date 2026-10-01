@@ -32,8 +32,9 @@ use super::world::World;
 
 /// Bumped when the saved state changes shape. 2: the random generator is no longer saved
 /// (as in the original, a load starts it afresh); version 1 saves still load, their saved
-/// generator ignored.
-pub const FORMAT_VERSION: u32 = 2;
+/// generator ignored. 3: armies keep a talk counter towards the hero and the hero a ship just
+/// bought and an event's speed; older saves load with none.
+pub const FORMAT_VERSION: u32 = 3;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";

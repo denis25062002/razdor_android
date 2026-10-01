@@ -10,10 +10,8 @@
 //! - A lantern's radius (at most 24) is in cells too.
 //! - The original's edge is soft (a brightness per half-cell); a cell counts as explored within
 //!   about `r + 0.6` cells of the centre ([`EDGE`], M).
-//! - Clicking into the dark plans a route over explored ground only, to the explored cell
-//!   nearest the target ([`plan`]); as the walk reveals ground the route is planned again, so
-//!   the hero feels his way towards the spot and stops when no explored way gets closer
-//!   *(Razdor's handling of such a click)*.
+//! - An unexplored cell is no target for a click, and the hero's planner treats it as closed
+//!   (`Game::plan`).
 //! - The built-in demo plays without fog ([`Fog::disabled`]).
 //!
 //! The state is plain data (`w`, `h`, a flag and a `Vec<u64>` bitset) so a save file can store
@@ -162,80 +160,6 @@ pub fn for_scenario(map: &TileMap, s: Option<&Scenario>, enabled: bool) -> Fog {
     fog
 }
 
-/// Route from `from` towards `to` over explored ground only (unexplored cells are impassable).
-///
-/// If `to` is explored and reachable that way, the cheapest such path. Otherwise the path to
-/// the explored cell reachable from `from` nearest to `to` (on screen, ties to the cheaper
-/// path), so walking there reveals more ground and the route can be planned again. Empty when
-/// no explored cell gets closer than `from` itself.
-pub fn plan(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Vec<Tile> {
-    plan_by(map, fog, from, to, &|_, n| map.cost(n))
-}
-
-/// [`plan`] with the steps a [`TileMap::path_by`] cost function allows (on foot, or with a
-/// ship, `rules::ships`).
-pub fn plan_by(map: &TileMap, fog: &Fog, from: Tile, to: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
-    let ok = |a: Tile, n: Tile| step(a, n).filter(|_| fog.explored(n));
-    if !fog.enabled || fog.explored(to) {
-        let p = map.path_by(from, to, usize::MAX, &ok);
-        if !p.is_empty() || !fog.enabled {
-            return p;
-        }
-    }
-    let Some(goal) = nearest_explored_by(map, fog, from, to, step) else { return Vec::new() };
-    map.path_by(from, goal, usize::MAX, &ok)
-}
-
-/// [`plan_by`] towards any cell `goal` accepts (a building's footprint), over explored
-/// ground: the cheapest way to the nearest explored goal cell; if none can be reached, the
-/// way towards the explored cell nearest `centre`.
-pub fn plan_to_any(map: &TileMap, fog: &Fog, from: Tile, goal: &dyn Fn(Tile) -> bool, centre: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Vec<Tile> {
-    let ok = |a: Tile, n: Tile| step(a, n).filter(|_| fog.explored(n));
-    let p = map.path_to_any(from, &|t| goal(t) && fog.explored(t), usize::MAX, &ok);
-    if !p.is_empty() || !fog.enabled || goal(from) {
-        return p;
-    }
-    let Some(near) = nearest_explored_by(map, fog, from, centre, step) else { return Vec::new() };
-    map.path_by(from, near, usize::MAX, &ok)
-}
-
-/// The explored, passable cell reachable from `from` over explored cells whose centre is
-/// nearest to `to`'s; `None` if that is `from` itself (or `from` is off the map).
-pub fn nearest_explored(map: &TileMap, fog: &Fog, from: Tile, to: Tile) -> Option<Tile> {
-    nearest_explored_by(map, fog, from, to, &|_, n| map.cost(n))
-}
-
-/// [`nearest_explored`] over the steps `step` allows.
-pub fn nearest_explored_by(map: &TileMap, fog: &Fog, from: Tile, to: Tile, step: &dyn Fn(Tile, Tile) -> Option<u16>) -> Option<Tile> {
-    let start = map.mask_index(from)?;
-    let g = map.grid;
-    let target = g.center(to);
-    let dist = |t: Tile| {
-        let c = g.center(t);
-        (c.0 - target.0).hypot(c.1 - target.1)
-    };
-    let mut seen = vec![false; (map.w * map.h) as usize];
-    seen[start] = true;
-    let mut stack = vec![from];
-    let mut best = (dist(from), 0, from);
-    while let Some(t) = stack.pop() {
-        for n in g.neighbours(t) {
-            let Some(j) = map.mask_index(n) else { continue };
-            if seen[j] || step(t, n).is_none() || !fog.explored(n) {
-                continue;
-            }
-            seen[j] = true;
-            let d = dist(n);
-            let steps = g.distance(from, n);
-            if d < best.0 - 1e-4 || ((d - best.0).abs() <= 1e-4 && steps < best.1) {
-                best = (d, steps, n);
-            }
-            stack.push(n);
-        }
-    }
-    (best.2 != from).then_some(best.2)
-}
-
 /// Which side a location or army belongs to, for its colour on the minimap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -381,50 +305,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn planning_refuses_unexplored_cells() {
-        let m = open_map(30, 10);
-        let mut f = Fog::new(30, 10);
-        f.reveal(5, 5, 3);
-        // Explored target: an ordinary path, every step explored.
-        let p = plan(&m, &f, (5, 5), (7, 5));
-        assert_eq!(p.last(), Some(&(7, 5)));
-        // A target in the dark: walk to the explored cell nearest to it, over explored cells.
-        let p = plan(&m, &f, (5, 5), (25, 5));
-        assert_eq!(p.last(), Some(&(8, 5)));
-        assert!(p.iter().all(|&t| f.explored(t)));
-        // Standing on that cell already: nothing to do.
-        assert!(plan(&m, &f, (8, 5), (25, 5)).is_empty());
-        // An explored target with only dark ground between: walk towards it, not through.
-        f.reveal(25, 5, 2);
-        let p = plan(&m, &f, (5, 5), (25, 5));
-        assert_eq!(p.last(), Some(&(8, 5)));
-        // The plain pathfinder would cross the dark.
-        assert_eq!(m.path((5, 5), (25, 5)).last(), Some(&(25, 5)));
-        // With the fog off, the ordinary path.
-        let off = Fog::disabled(30, 10);
-        assert_eq!(plan(&m, &off, (5, 5), (25, 5)), m.path((5, 5), (25, 5)));
-        // Towards any cell of a footprint: the nearest explored one.
-        let p = plan_to_any(&m, &f, (5, 5), &|t| t.0 >= 7 && t.1 == 5, (9, 5), &|_, n| m.cost(n));
-        assert_eq!(p.last(), Some(&(7, 5)));
-    }
 
-    #[test]
-    fn feeling_the_way_reaches_a_dark_target() {
-        let m = open_map(60, 12);
-        let mut f = Fog::new(60, 12);
-        let mut here = (2, 6);
-        f.reveal(here.0, here.1, 9);
-        for _ in 0..20 {
-            let p = plan(&m, &f, here, (57, 6));
-            let Some(&next) = p.last() else { break };
-            for &t in &p {
-                f.reveal(t.0, t.1, 9);
-            }
-            here = next;
-        }
-        assert_eq!(here, (57, 6));
-    }
 
     #[test]
     fn sides_and_colours() {
@@ -525,20 +406,11 @@ mod real_maps {
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;
             let dark = !g.fog.explored(target);
-            assert!(g.set_destination(target), "{prefix}");
-            let mut replans = 0;
-            for _ in 0..40_000 {
-                if !g.moving() {
-                    break;
-                }
-                assert!(g.path.iter().take(1).all(|&t| g.fog.explored(t)), "{prefix}: steps only onto explored cells");
-                if g.path.last() != Some(&target) {
-                    replans += 1;
-                }
-                g.tick(0.05);
-            }
-            assert_eq!(g.location, Some(village), "{prefix}: arrives (village in the dark at start: {dark}, {replans} ticks short of it)");
-            eprintln!("{prefix}: village in the dark at start: {dark}; {replans} ticks heading for the frontier");
+            // A cell in the dark is no target; leg by leg over explored ground he gets there.
+            assert_eq!(g.can_target(target), !dark, "{prefix}");
+            g.walk_through_fog(target);
+            assert_eq!(g.location, Some(village), "{prefix}: arrives (village in the dark at start: {dark})");
+            eprintln!("{prefix}: village in the dark at start: {dark}");
         }
     }
 }

@@ -205,8 +205,7 @@ The shipwright rents out ships. One ship at a time: a new one sends the old one 
 A ship: {price} gold = Корабль: {price} золота
 Rent a new ship = Нанять новый корабль
 Rent a ship = Нанять корабль
-The ship waits at the pier. Walk onto it, or click the water. = Корабль ждёт у пристани. Взойдите на него или щёлкните по воде.
-There is no water to sail from here. = Отсюда некуда плыть.
+The ship is ready. Click the water next to the shipyard to sail; leaving on foot loses it. = Корабль готов. Щёлкните по воде у верфи, чтобы отплыть; уйдя пешком, вы его потеряете.
 The shipwright will not deal with you. = Корабел не желает иметь с вами дела.
 With a ship, click the water to sail; click the shore to land. = С кораблём щёлкните по воде, чтобы плыть, и по берегу, чтобы высадиться.
 The ship waits where you land; walk back onto it to sail again. = Корабль ждёт там, где вы сошли; взойдите на него, чтобы плыть дальше.

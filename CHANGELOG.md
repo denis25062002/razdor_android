@@ -128,6 +128,35 @@ old id, and their versions give both.
   not its shot.
 - The battle AI scores a melee target with 0 Manevres with the patch's huge constant, its
   32-bit wrap included, so it fixates on such a target or ignores it as the original does.
+- **The hero's route is planned as the original plans it**: a flood from the clicked cell
+  that prices each step by the cell he leaves and stops as soon as it reaches him, so a
+  route can be a little dearer than the cheapest (a diagonal first step, say). The walk goes
+  to the very cell clicked, also inside a building.
+- A click on an unexplored cell does nothing: the hero no longer feels his way into the dark.
+  Water is a target only with a ship; a click next to open ground no longer means it.
+- The route goes around only castles and forts whose attitude is 0 or less and ruins not
+  his; every other building, ill-disposed towns included, is crossed. At sea, bridges close
+  only when he clicks land or stands on one.
+- Stepping onto an army engages it, before he moves: a hostile one fights, a friend meets
+  him. Stepping onto a cell of a village, castle, fort, ruins or bridge meets the army that
+  lives there, or the garrison of an ill-disposed castle or fort (attitude 0 included) at its
+  gate; an empty one is taken, and so is every unguarded village stepped on, even when the
+  route only crosses it.
+- A building is entered on its second cell crossed (its events may fire) or where the walk
+  ends; its window opens only there.
+- AI armies attack or greet the hero only right after a step of his, never while he waits or
+  casts, and never step onto his cells: they stop next to him. A friendly army greets him
+  when its talk counter is above 0 (it grows as the army steps), then not for a long while.
+- AI armies pay for a step with the cell they leave; stationary guards bank no time.
+- A pursued army that goes out of reach ends the pursuit and the hero stops.
+- **Ships as in the original**: buying one puts no ship on the water; he steps out of the
+  shipyard onto the water to sail, and leaving it on foot loses the purchase. Landing parks
+  the ship on the water he left; the original's landing test, which reads a cell further
+  south, is kept, so he sometimes stops on open water or steps ashore and loses the ship.
+- A plant, mountain or rock standing in the water blocks ships; overlapping hills are laid
+  in the original's row-by-row order.
+- The hero's sight, speed and casting time stay those of the class he started with, whatever
+  unit an event makes him; a Community speed event sets his speed.
 
 ## 0.2.2 — 2026-10-01
 

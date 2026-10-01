@@ -619,13 +619,18 @@ impl EventWorld for Game {
         }
     }
 
-    /// An AI army walks at the new speed. The hero's own speed is not changed *(recorded:
-    /// the player's walking speed is fixed by his class in Razdor)*.
+    /// The army walks at the new speed; the Community patch writes the hero's speed too
+    /// (world.md §2.1, 0xc279e6), which his steps then use instead of his class's
+    /// *(guess: the same `max(1, 5 − correction)`, without the loader's archmage rule)*.
     fn set_army_speed(&mut self, holder: Holder, correction: i8) {
-        if let Holder::Army(a) = holder {
-            if let Some(a) = self.army_mut(a) {
-                a.speed = Army::speed_for(correction, a.troops.first().map_or(0, |t| t.unit.0));
+        match holder {
+            Holder::Army(a) => {
+                if let Some(a) = self.army_mut(a) {
+                    a.speed = Army::speed_for(correction, a.troops.first().map_or(0, |t| t.unit.0));
+                }
             }
+            Holder::Player => self.speed_set = Some(Army::speed_for(correction, 0)),
+            _ => {}
         }
     }
 
@@ -1122,6 +1127,22 @@ mod tests {
     }
 
     #[test]
+    fn the_hero_keeps_his_starting_class_whatever_unit_he_becomes() {
+        // World.md §2.1 (0x4b4300): sight, speed and the cast divisor are set from the class
+        // at the start; an event that changes his unit does not change them. A Community
+        // speed event (0xc279e6) sets his speed itself.
+        use crate::rules::events::EventWorld as _;
+        let mut g = start(&world(vec![]));
+        assert_eq!((g.hero_speed(), g.sight_radius()), (5, 9));
+        g.set_hero_class(3);
+        assert_eq!(g.hero_class(), Some(HeroClass::Ranger), "his unit is the ranger's now");
+        assert_eq!((g.start_class(), g.hero_speed(), g.sight_radius()), (HeroClass::Knight, 5, 9));
+        assert_eq!(g.step_time((2, 2), (3, 2)), 25.0);
+        g.set_army_speed(Holder::Player, -3);
+        assert_eq!((g.hero_speed(), g.step_time((2, 2), (3, 2))), (8, 40.0));
+    }
+
+    #[test]
     fn a_local_event_fires_on_entering_its_building() {
         let mut e = ev(EventKind::Local);
         e.results.gold = 25;
@@ -1150,7 +1171,7 @@ mod tests {
         s.points = vec![p];
         let mut g = start(&s);
         g.drain_events();
-        assert!(g.set_destination((12, 2)));
+        assert!(g.set_destination((11, 2)));
         let events = walk(&mut g);
         assert_eq!(fired(&events), vec![1]);
         assert_eq!(g.tile(), (6, 2), "stopped on the point");
@@ -1330,8 +1351,9 @@ mod tests {
         let mut g = start(&s);
         g.drain_events();
         assert_eq!(g.script_end(), None);
-        // The hostile army next door attacks at once; the player wins.
-        let events = g.wait(1);
+        // He walks into the hostile army next door; the player wins.
+        assert!(g.set_destination((3, 2)));
+        let events = walk(&mut g);
         assert!(matches!(events.last(), Some(Event::Encounter(0))), "{events:?}");
         let mut b = g.start_battle();
         for f in b.fighters.iter_mut().filter(|f| f.team == crate::rules::battle::Team::Enemy) {

@@ -763,9 +763,30 @@ mod tests {
     }
 
     #[test]
-    fn an_ill_disposed_village_pays_nothing() {
+    fn an_ill_disposed_village_stepped_on_is_his_unless_guarded() {
+        // World.md §4.2 (0x4ad94c): an unguarded village is taken by stepping on it, whatever
+        // its owner, so it pays.
         let (g, events, _) = walk_into_village(1, -1);
-        assert!(!events.iter().any(|e| matches!(e, Event::Tribute { .. })));
+        assert!(events.contains(&Event::Captured(0)), "{events:?}");
+        assert!(g.world.locations[0].owned());
+        assert!(g.village_offer().is_some() || events.iter().any(|e| matches!(e, Event::Tribute { .. })), "{events:?}");
+        // Guarded by an ill-disposed army living there, the guard is met instead.
+        let mut s = map();
+        let mut v = town(BuildingType::Village, 8, 2, -1);
+        (v.gold_per_day, v.gold_max) = (40, 40);
+        s.buildings = vec![v];
+        let mut guard = crate::rules::world::testkit::army(1, 12, 6, -2, &[crate::rules::world::testkit::troop(4, 0, 1)]);
+        guard.home_building = 1;
+        (guard.patrols, guard.patrol_radius) = (1, 0);
+        s.armies = vec![guard];
+        let mut g = start(&s);
+        assert!(g.set_destination(g.world.locations[0].tile));
+        let mut events = Vec::new();
+        while g.moving() {
+            events.extend(g.tick(0.05));
+        }
+        assert_eq!(events.last(), Some(&Event::Encounter(0)), "{events:?}");
+        assert!(!g.world.locations[0].owned() && g.location.is_none());
         assert_eq!(g.world.locations[0].tribute_gold, 40);
     }
 
@@ -1261,19 +1282,13 @@ mod real_maps {
         let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
         g.world.armies.clear();
 
-        // Walking onto another building on the way enters it and ends the walk: walk on.
+        // Messages on the way stop the walk, and the fog hides the far ground: walk on.
         let walk_into = |g: &mut Game, l: usize| {
             for _ in 0..10 {
                 if g.location == Some(l) {
                     break;
                 }
-                assert!(g.set_destination(g.world.locations[l].tile));
-                for _ in 0..50_000 {
-                    if !g.moving() {
-                        break;
-                    }
-                    g.tick(0.05);
-                }
+                g.walk_through_fog(g.world.locations[l].tile);
             }
             assert_eq!(g.location, Some(l), "arrived");
         };

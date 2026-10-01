@@ -54,6 +54,21 @@ fn start_with(s: &Scenario, c: Content) -> Game {
     g
 }
 
+/// The hero steps to a cell next to army `i` (AI armies act only after his steps,
+/// world.md §4.3) and walks it; the events.
+fn step_beside(g: &mut Game, i: usize) -> Vec<Event> {
+    let map = &g.world.map;
+    let (here, a) = (g.tile(), g.world.armies[i].tile(map));
+    let n = map.grid.neighbours(here).find(|&n| n != a && (n.0 - a.0).abs() <= 1 && (n.1 - a.1).abs() <= 1 && map.passable(n)).expect("a cell beside it");
+    g.fog = crate::rules::fog::Fog::disabled(map.w, map.h);
+    assert!(g.set_destination(n));
+    let mut events = Vec::new();
+    while g.moving() {
+        events.extend(g.tick(0.05));
+    }
+    events
+}
+
 fn goal(g: &mut Game, i: usize) -> Goal {
     g.ai_choice(i).0
 }
@@ -273,7 +288,9 @@ fn a_friendly_army_hunting_only_the_player_comes_to_meet_him() {
     assert!(!g.world.armies[0].hostile());
     assert_eq!(goal(&mut g, 0), Goal::MeetPlayer, "it sets off towards the hero");
     let events = g.wait(12);
-    assert!(events.iter().any(|e| matches!(e, crate::rules::game::Event::Met(0))), "they meet: {events:?}");
+    assert!(!events.iter().any(|e| matches!(e, Event::Met(0))), "no meeting while he waits: {events:?}");
+    let events = step_beside(&mut g, 0);
+    assert!(events.iter().any(|e| matches!(e, Event::Met(0))), "they meet after his step: {events:?}");
 }
 
 #[test]
@@ -754,6 +771,8 @@ fn hostile_armies_still_chase_the_hero() {
     s.armies = vec![army(1, (30, 9), 4, [-2, -2, 1, 3], 1, &[troop(6, 0, 3)])];
     let mut g = start(&s);
     let events = g.wait(4);
+    assert!(!events.iter().any(|e| matches!(e, Event::Encounter(0))), "never while he waits: {events:?}");
+    let events = step_beside(&mut g, 0);
     assert!(events.iter().any(|e| matches!(e, Event::Encounter(0))), "{events:?}");
 }
 

@@ -16,7 +16,7 @@ use super::journal::History;
 use super::magic::{self, ActiveSpell};
 use super::save::ScenarioRef;
 use super::ships::Ship;
-use super::map::{step_minutes, Tile, TileMap, ROAD};
+use super::map::{is_water, step_minutes, Tile, TileMap};
 use super::rng::{EventRng, Rng, WORLD_MUSIC_DRAW};
 use super::units::{PromoteError, Unit};
 use super::world::{Army, LocationKind, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
@@ -33,13 +33,8 @@ pub const KNIGHT_SPEED: u32 = 5;
 pub const RANGER_SPEED: u32 = 4;
 /// The demo's gangs chase the player inside this many cells (Razdor's own demo rule).
 pub const CHASE_RADIUS: i32 = 6;
-/// Armies meet (and hostile ones attack) on neighbouring cells, diagonals included
-/// (world.md §4).
-const CONTACT: i32 = 1;
 /// Cells a demo gang's or a ship's pathfinder may expand per search.
 const AI_PATH_NODES: usize = 4000;
-/// A friendly army greets the player again only after he has gone this far away.
-const MEET_AGAIN_DISTANCE: i32 = 4;
 const SPAWN_EVERY_DAYS: u64 = 3;
 const MAX_GANGS_PER_CAMP: usize = 2;
 /// Unworn items the hero's backpack holds: 256 slots, shown as a scrolling grid 5 wide.
@@ -217,7 +212,7 @@ pub struct Game {
     pub spells: Vec<u8>,
     /// Explored cells (`rules::fog`): off in the demo, on for scenarios.
     pub fog: Fog,
-    /// Where the player clicked: the walk is planned again towards it as the fog lifts.
+    /// Where the player clicked: the end of the walk under way.
     pub goal: Option<Tile>,
     pub(crate) start_day: u64,
     /// The original's one generator (`rules::rng`): not saved; a map load sets it to 1, a
@@ -268,9 +263,22 @@ pub struct Game {
     /// An autosave is due (the noon report came): its name. The UI writes it and clears it.
     #[serde(skip)]
     pub autosave_due: Option<String>,
-    /// The rented ship (`rules::ships`), if any.
+    /// The hero's ship (`rules::ships`): under him at sea, or parked where he landed.
     #[serde(default)]
     pub ship: Option<Ship>,
+    /// A ship was just bought: his planner works on the MIXED map until his next step.
+    #[serde(default)]
+    pub(crate) ship_bought: bool,
+    /// The hero's speed as a Community event set it (0xc279e6); `None`: his class's.
+    #[serde(default)]
+    pub(crate) speed_set: Option<u32>,
+    /// While the hero steps: the cell he left, which AI armies keep off too.
+    #[serde(skip)]
+    pub(crate) step_from: Option<Tile>,
+    /// The building clicked and the one he stood in at the last click (a pursuit plans
+    /// with them).
+    #[serde(skip)]
+    pub(crate) click_buildings: (Option<usize>, Option<usize>),
     /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
     #[serde(default)]
     pub hero_name: Option<String>,
@@ -307,25 +315,61 @@ pub struct Game {
     pub(crate) sims: ai::Sims,
 }
 
-/// Army `a` walks its path while its banked minutes cover the next step: `cost(next) ×
-/// speed`, ×1.5 diagonally (world.md §2); `cost` gives the cost units of a cell, `None`
-/// where it cannot go (the route is dropped). Remembers where it stood for drawing.
-fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>) {
+/// What an AI army's step needs of the hero: the cells it may not enter, and where he is.
+struct HeroCells {
+    cells: [Option<Tile>; 2],
+    at: Tile,
+}
+
+/// Talk counter an army towards the hero is set to after a greeting (world.md §4.3).
+const TALKED: i32 = -500;
+
+/// Army `a` walks its path while its banked minutes cover the next step (world.md §5,
+/// 0x4a399c): `cost(the cell it leaves) × speed`, ×1.5 diagonally; `cost` gives the cost units
+/// of a cell, `None` where it cannot go (the route is dropped). A step onto one of the hero's
+/// cells spends its time but the army stays put. Every step taken (or tried) marks it
+/// arrived for [`Game::ai_contact`] and feeds its talk counter towards the hero: +1, and
+/// `relation + 1` more next to him when the relation is 0 or above. Remembers where it stood
+/// for drawing.
+fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>, hero: &HeroCells) {
     while let Some(&next) = a.path.first() {
-        let Some(c) = cost(next) else {
+        if cost(next).is_none() {
             a.path.clear();
             break;
-        };
-        let need = step_minutes(map.grid, a.tile(map), next, c, a.speed.max(1));
+        }
+        let here = a.tile(map);
+        let left = cost(here).unwrap_or(0);
+        let need = step_minutes(map.grid, here, next, left, a.speed.max(1));
         if a.budget < need {
             break;
         }
         a.budget -= need;
+        a.arrived = true;
+        let blocked = hero.cells.contains(&Some(next));
+        let at = if blocked { here } else { next };
+        a.talk = a.talk.saturating_add(1);
+        if (at.0 - hero.at.0).abs() <= 1 && (at.1 - hero.at.1).abs() <= 1 && a.attitude >= 0 {
+            a.talk = a.talk.saturating_add(a.attitude as i32 + 1);
+        }
+        if blocked {
+            break;
+        }
         a.pos = map.center(next);
         a.path.remove(0);
         a.walk.points.push(a.pos);
         a.walk.minutes.push(need);
     }
+}
+
+/// What the cell ahead does to the hero's step ([`Game::step_contact`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepContact {
+    /// Army `i` is engaged.
+    Army(usize),
+    /// The garrison of building `l` is engaged.
+    Garrison(usize),
+    /// Building `l` is taken on the way.
+    Captured(usize),
 }
 
 impl Game {
@@ -366,6 +410,10 @@ impl Game {
             origin: None,
             autosave_due: None,
             ship: None,
+            ship_bought: false,
+            speed_set: None,
+            step_from: None,
+            click_buildings: (None, None),
             hero_name: None,
             journal: History::default(),
             offer: None,
@@ -449,6 +497,7 @@ impl Game {
         if g.world.is_sea(start.tile) {
             g.ship = Some(Ship { tile: start.tile, aboard: true });
         }
+        g.archetype = archetype_of(hero);
         g.fog = fog::for_scenario(&g.world.map, Some(scenario), true);
         g.look_around();
         g.gold = start.gold;
@@ -518,23 +567,37 @@ impl Game {
         !self.path.is_empty()
     }
 
+    /// The class the game started with: the hero's sight, speed and cast divisor stay those
+    /// of the starting class whatever unit an event makes him (world.md §2.1, 0x4b4300).
+    pub fn start_class(&self) -> HeroClass {
+        match self.archetype {
+            2 => HeroClass::Archmage,
+            3 => HeroClass::Ranger,
+            _ => HeroClass::Knight,
+        }
+    }
+
     /// The hero's speed: minutes per cost unit of an orthogonal step ([`KNIGHT_SPEED`],
-    /// [`RANGER_SPEED`]).
+    /// [`RANGER_SPEED`] by the starting class), or what a Community speed event set
+    /// (0xc279e6).
     pub fn hero_speed(&self) -> u32 {
-        if self.hero_class() == Some(HeroClass::Ranger) {
+        if let Some(s) = self.speed_set {
+            return s;
+        }
+        if self.start_class() == HeroClass::Ranger {
             RANGER_SPEED
         } else {
             KNIGHT_SPEED
         }
     }
 
-    /// Game minutes of the hero's step from `from` onto its neighbour `to` (world.md §1–2):
-    /// the cost of the cell he leaves (water at sea, else the land under him) times his
-    /// speed, ×1.5 diagonally.
+    /// Game minutes of the hero's step from `from` onto its neighbour `to` (world.md §2.1):
+    /// the cost of the cell he leaves on LAND, or on MIXED at sea, times his speed, ×1.5
+    /// diagonally.
     pub fn step_time(&self, from: Tile, to: Tile) -> f32 {
         let w = &self.world;
-        let left = if w.is_sea(from) { w.map.water_cost(from) } else { w.map.cost(from) };
-        step_minutes(w.map.grid, from, to, left.unwrap_or(ROAD), self.hero_speed())
+        let left = if self.aboard() { w.mixed_cost(from) } else { w.map.cost(from).unwrap_or(0) };
+        step_minutes(w.map.grid, from, to, left, self.hero_speed())
     }
 
     /// Minutes the hero needs to walk `path`.
@@ -572,94 +635,135 @@ impl Game {
     }
 
     /// The pursuit of the army clicked (the original's "automatically pursue the chosen
-    /// army"): while the hero walks to meet it, the route is planned again to where it stands
-    /// now, until they meet (`contact`). An army gone from the map ends the pursuit.
-    fn follow_army(&mut self) {
-        let Some(uid) = self.talk_to else { return };
+    /// army", 0x4aedd1): when it has stepped since the hero's last step, his route is
+    /// planned again to its new cell; if that cell is closed or out of reach the pursuit
+    /// ends and the hero stops where he is. Returns false when he stopped.
+    fn follow_army(&mut self) -> bool {
+        let Some(uid) = self.talk_to else { return true };
         let map = &self.world.map;
-        let Some(at) = self.world.armies.iter().find(|a| a.uid == uid).map(|a| a.tile(map)) else {
+        let Some(a) = self.world.armies.iter().find(|a| a.uid == uid) else {
             self.talk_to = None;
-            return;
+            return true;
         };
-        if self.goal != Some(at) {
-            let path = self.plan(at);
-            if !path.is_empty() {
-                self.path = path;
-                self.goal = Some(at);
-            }
+        let at = a.tile(map);
+        if !a.arrived || self.goal == Some(at) {
+            return true;
         }
-    }
-
-    /// The route [`Game::set_destination`] would walk to `to`, without setting off (the map
-    /// shows it on a first click): empty if it can't be reached.
-    pub fn route_to(&self, to: Tile) -> Vec<Tile> {
-        let to = self.world.location_at(to).map_or(to, |l| self.world.locations[l].tile);
-        self.plan(to)
-    }
-
-    /// Walk to `to` along the cheapest path. A click on a building means the building: the
-    /// walk ends on the first of its cells it reaches. Returns false if it can't be reached.
-    pub fn set_destination(&mut self, to: Tile) -> bool {
-        // A click on an army means meeting it (the help: "click it to talk or fight").
-        let map = &self.world.map;
-        self.talk_to = self.world.armies.iter().find(|a| a.tile(map) == to).map(|a| a.uid);
-        let to = self.world.location_at(to).map_or(to, |l| self.world.locations[l].tile);
-        let path = self.plan(to);
+        let path = self.plan_from(self.tile(), at, self.click_buildings, false);
         if path.is_empty() {
+            self.talk_to = None;
+            self.path.clear();
+            self.goal = None;
             return false;
         }
         self.path = path;
+        self.goal = Some(at);
+        true
+    }
+
+    /// The route a click on `to` would walk (world.md §1.3): the first click shows it.
+    /// Empty if `to` is not a target ([`Game::can_target`]) or out of reach.
+    pub fn route_to(&self, to: Tile) -> Vec<Tile> {
+        self.plan(to)
+    }
+
+    /// A click on `t` is a target (world.md §1.3, 0x4cbf20): an explored cell open on the
+    /// hero's planner map, or his parked ship; at sea not a bridge. Anything else does
+    /// nothing.
+    pub fn can_target(&self, t: Tile) -> bool {
+        let w = &self.world;
+        if !w.map.in_bounds(t) || !self.fog.explored(t) {
+            return false;
+        }
+        if self.aboard() && w.location_covering(t).is_some_and(|l| w.locations[l].kind.is_bridge()) {
+            return false;
+        }
+        self.planner_cost(t) != 0 || self.parked_ship() == Some(t)
+    }
+
+    /// Walk to `to` along the planned route (the second click, world.md §1.3). A click on an
+    /// army makes it the chased army, unless it stands in a building other than a bridge.
+    /// Returns false if it can't be reached; as in the original (0x4cc99f) the walk to cell
+    /// (0, 0) never starts, though its route is shown.
+    pub fn set_destination(&mut self, to: Tile) -> bool {
+        let path = self.plan(to);
+        if path.is_empty() || to == (0, 0) {
+            return false;
+        }
+        let w = &self.world;
+        let in_building = w.location_at(to).is_some();
+        self.talk_to = w.armies.iter().find(|a| a.tile(&w.map) == to).filter(|_| !in_building).map(|a| a.uid);
+        self.click_buildings = self.buildings_of_click(to);
+        self.path = path;
         self.goal = Some(to);
-        self.location = None;
         self.wait_ticks = 0;
         self.reading = None;
         true
     }
 
-    /// The route a click on `to` walks now (world.md §1, the hero's mask): over explored
-    /// ground only, towards the nearest explored cell if `to` is in the dark ([`fog::plan`]);
-    /// through towns, villages and bridges but not through castles and forts ill-disposed
-    /// towards him, or ruins not his, unless it is the building clicked or the one he stands
-    /// in; around every other army, friendly or hostile, except the one clicked (the original's
-    /// planner closes only stationary guards, world.md §1, but in play no army can be walked
-    /// through); at sea not under bridges. A click on a building ends on any of its cells. With a ship the
-    /// route may board it, sail and land ([`Game::step_cost`]).
+    /// The route a click on `to` walks now (world.md §1.2–1.3): the original's flood from
+    /// the clicked cell ([`TileMap::flood_route`]) on the hero's planner map, with these cells
+    /// closed: castles and forts whose attitude to him is 0 or less and ruins not his
+    /// (unless it is the building clicked or the one he stands in); at sea, when he stands on
+    /// a bridge or clicked land, every bridge; every unexplored cell; and every army's cell
+    /// except the one clicked (the original closes only stationary guards, but in Razdor no
+    /// army can be walked through: the player's request). Other buildings are crossed. A
+    /// click on the parked ship costs 1 there for the plan.
     pub fn plan(&self, to: Tile) -> Vec<Tile> {
-        self.plan_from(self.tile(), to)
-    }
-
-    fn plan_from(&self, from: Tile, to: Tile) -> Vec<Tile> {
-        let w = &self.world;
-        let target = w.location_at(to);
-        let standing = w.location_at(from);
-        let at_sea = w.is_sea(from);
-        let armies: Vec<Tile> = self.army_cells().filter(|&t| t != to).collect();
-        let closed = |t: Tile| {
-            let barred = w.location_covering(t).is_some_and(|l| {
-                let loc = &w.locations[l];
-                (at_sea && loc.kind.is_bridge()) || (Some(l) != target && Some(l) != standing && loc.bars_hero())
-            });
-            barred || armies.contains(&t)
-        };
-        let step = |a: Tile, b: Tile| if closed(b) { None } else { self.step_cost(a, b, at_sea) };
-        match target {
-            Some(l) => {
-                let loc = &w.locations[l];
-                fog::plan_to_any(&w.map, &self.fog, from, &|t| w.location_at(t) == Some(l), loc.tile, &step)
-            }
-            None => fog::plan_by(&w.map, &self.fog, from, to, &step),
+        if !self.can_target(to) {
+            return Vec::new();
         }
+        self.plan_from(self.tile(), to, self.buildings_of_click(to), true)
     }
 
-    /// The cells armies stand on: the hero cannot walk through them.
-    fn army_cells(&self) -> impl Iterator<Item = Tile> + '_ {
-        self.world.armies.iter().map(|a| a.tile(&self.world.map))
+    /// The building under a click on `to` and the one the hero stands in: the planner leaves
+    /// both open.
+    fn buildings_of_click(&self, to: Tile) -> (Option<usize>, Option<usize>) {
+        (self.world.location_covering(to), self.world.location_covering(self.tile()))
+    }
+
+    /// [`Game::plan`] from `from`, `(target, standing)` the buildings left open; `reopen`:
+    /// the hero's own cell is reopened before the fog (the click does so, the pursuit does
+    /// not, and keeps the buildings of the original click: 0x4aedd1).
+    fn plan_from(&self, from: Tile, to: Tile, (target, standing): (Option<usize>, Option<usize>), reopen: bool) -> Vec<Tile> {
+        let w = &self.world;
+        let map = &w.map;
+        let Some(ti) = map.mask_index(to) else { return Vec::new() };
+        let ship_click = self.parked_ship() == Some(to);
+        let cost = |t: Tile| if ship_click && t == to { 1 } else { self.planner_cost(t) };
+        let at_sea = self.aboard();
+        let bridges = at_sea && (standing.is_some_and(|l| w.locations[l].kind.is_bridge()) || !is_water(map.surface(to)));
+        let mut mask = vec![1u16; (map.w * map.h).max(0) as usize];
+        for a in &w.armies {
+            if let Some(i) = map.mask_index(a.tile(map)).filter(|&i| i != ti) {
+                mask[i] = 0;
+            }
+        }
+        for (l, loc) in w.locations.iter().enumerate() {
+            if Some(l) == target || Some(l) == standing {
+                continue;
+            }
+            let closed = loc.bars_hero() || (bridges && loc.kind.is_bridge());
+            if closed {
+                for i in loc.cells().filter_map(|t| map.mask_index(t)) {
+                    mask[i] = 0;
+                }
+            }
+        }
+        if let Some(i) = map.mask_index(from).filter(|_| reopen) {
+            mask[i] = 1;
+        }
+        if mask[ti] == 0 {
+            return Vec::new();
+        }
+        let open = |t: Tile| map.mask_index(t).map_or(0, |i| if self.fog.explored(t) { mask[i] } else { 0 });
+        map.flood_route(&cost, &open, &[(to, 0)], from).map(|r| r.0).unwrap_or_default()
     }
 
     /// How far the hero sees, in cells: 9 for the knight, 8 for the archmage, 10 for the
-    /// ranger (world.md §3).
+    /// ranger (world.md §3), by the starting class.
     pub fn sight_radius(&self) -> i32 {
-        fog::sight_radius(self.hero_class().unwrap_or(HeroClass::Knight))
+        fog::sight_radius(self.start_class())
     }
 
     /// Reveals the hero's surroundings. Returns true if new ground came into view.
@@ -671,34 +775,6 @@ impl Game {
     /// Lights a lantern: reveals radius `r` (cells) around cell `(x, y)`.
     pub fn reveal(&mut self, x: i32, y: i32, r: i32) {
         self.fog.reveal(x, y, r);
-    }
-
-    /// The route ends where the click meant: the clicked cell, or a cell of the clicked
-    /// building.
-    fn route_complete(&self, goal: Tile) -> bool {
-        match self.path.last() {
-            Some(&end) => end == goal || self.world.location_at(goal).is_some_and(|l| self.world.location_at(end) == Some(l)),
-            None => false,
-        }
-    }
-
-    /// After a step: plan the walk to the clicked spot again if new ground came into view
-    /// or the route ran out short of it; give up when no explored way gets closer.
-    fn feel_the_way(&mut self, revealed: bool) {
-        let Some(goal) = self.goal else { return };
-        let here = self.tile();
-        if here == goal || self.foe.is_some() {
-            self.goal = None;
-            return;
-        }
-        if self.route_complete(goal) || !(revealed || self.path.is_empty()) {
-            return;
-        }
-        let path = self.plan(goal);
-        if path.is_empty() {
-            self.goal = None;
-        }
-        self.path = path;
     }
 
     pub fn stop(&mut self) {
@@ -773,7 +849,7 @@ impl Game {
                 self.wait_ticks -= 1;
                 let go = self.wait_tick(&mut events);
                 if self.wait_ticks == 0 || self.foe.is_some() {
-                    // The reading is done, or an enemy fell on the hero over his book.
+                    // The reading is done, or an event set a battle over his book.
                     self.end_reading(&mut events);
                 }
                 go
@@ -794,84 +870,152 @@ impl Game {
         events
     }
 
-    /// The hero takes the next step of his route (world.md §1): it is charged the cell he
-    /// leaves; stepping onto a cell of another building (not a bridge) enters it and ends the
-    /// walk; the world moves on by the step's time; an army next to him stops him. An army
-    /// that has stepped onto his route makes him plan around it, or stop if there is no way.
-    /// Returns false when the walk ended.
+    /// The hero takes the next step of his route (world.md §2.2, §4.2): the cell he is about
+    /// to enter is checked first ([`Game::step_contact`]): an army there or a building's
+    /// guard or garrison stops him where he is; an unguarded village, or an empty castle,
+    /// fort or ruins ill-disposed to him, is taken on the way; at sea, land ahead ends the
+    /// route on it. Then he moves, charged the cell he leaves, and the world moves on by the
+    /// step's time; an AI army that stepped next to him may attack or greet him
+    /// ([`Game::ai_contact`]). At the end of the route he stops, and the building he stands
+    /// in (not a bridge or an obelisk) opens. Returns false when the walk ended.
     fn hero_step(&mut self, events: &mut Vec<Event>) -> bool {
-        self.follow_army();
-        let Some(&(mut next)) = self.path.first() else { return false };
-        if self.army_cells().any(|t| t == next) && Some(next) != self.goal {
-            let Some(goal) = self.goal else {
+        if !self.follow_army() {
+            return false;
+        }
+        let Some(&next) = self.path.first() else { return false };
+        let from = self.tile();
+        match self.step_contact(next) {
+            Some(StepContact::Army(i)) => {
                 self.path.clear();
+                self.goal = None;
+                self.talk_to = None;
+                let e = if self.world.armies[i].attitude <= 0 { Event::Encounter(i) } else { Event::Met(i) };
+                if let Event::Encounter(i) = e {
+                    self.foe = Some(Foe::Army(i));
+                }
+                self.meet(e, events);
                 return false;
-            };
-            self.path = self.plan(goal);
-            match self.path.first() {
-                Some(&around) => next = around,
-                None => {
-                    self.goal = None;
-                    return false;
+            }
+            Some(StepContact::Garrison(l)) => {
+                self.path.clear();
+                self.goal = None;
+                self.talk_to = None;
+                self.foe = Some(Foe::Garrison(l));
+                events.push(Event::Arrived(l));
+                return false;
+            }
+            Some(StepContact::Captured(l)) => {
+                if !self.world.locations[l].owned() {
+                    self.world.give_to_player(l);
+                    events.push(Event::Captured(l));
                 }
             }
-        }
-        let from = self.tile();
-        let w = &self.world;
-        let allowed = if w.is_sea(next) { self.ship.is_some() } else { w.map.passable(next) };
-        if !allowed {
-            self.path.clear();
-            return false;
+            None => {}
         }
         let minutes = self.step_time(from, next);
-        // Only the building clicked, or the one the route ends in, is entered; others on the
-        // way are crossed without a visit (no window, tribute or events).
-        let target = self.goal.and_then(|g| w.location_at(g));
-        let last = self.path.len() == 1;
-        let entered = w.location_at(next).filter(|&l| w.location_at(from) != Some(l) && (last || target == Some(l)));
+        if self.landing(next) {
+            // He walks onto the land and stops there; the ship waits on the water he left.
+            self.path.truncate(1);
+            self.land(from);
+        }
         self.path.remove(0);
         self.pos = self.world.map.center(next);
-        self.update_ship();
-        let revealed = self.look_around();
-        if entered.is_some() {
+        self.move_to_cell(from, next);
+        self.look_around();
+        self.pass_time_walking(minutes, from, events);
+        if let Some(e) = self.ai_contact() {
             self.path.clear();
             self.goal = None;
-        }
-        self.pass_time(minutes, events);
-        if let Some(e) = self.contact() {
-            self.goal = None;
+            self.talk_to = None;
             self.meet(e, events);
             return false;
         }
-        if let Some(l) = entered {
-            let taken = self.arrive(l);
-            events.push(Event::Arrived(l));
-            if taken {
-                events.push(Event::Captured(l));
-            }
-            events.extend(self.auto_tribute(l));
-            // Local events of the building.
-            events.extend(self.run_script());
+        if self.path.is_empty() {
+            self.arrive_at_end(events);
             return false;
         }
-        self.feel_the_way(revealed);
-        self.moving()
+        true
     }
 
-    /// One wait tick: [`WAIT_TICK_MINUTES`] pass, armies move; an army reaching the party
-    /// ends the wait. Returns false when it ended.
+    /// The end of a walk (0x4ae5d8): he stops on his cell, which counts as arriving on it
+    /// again, so a building he stands in is entered; its window opens unless it is a bridge
+    /// or an obelisk ([`Event::Arrived`]), with a village's offer or tribute.
+    fn arrive_at_end(&mut self, events: &mut Vec<Event>) {
+        self.goal = None;
+        self.talk_to = None;
+        let here = self.tile();
+        let before = self.location;
+        self.move_to_cell(here, here);
+        let Some(l) = self.location else { return };
+        if self.world.locations[l].kind == LocationKind::Obelisk {
+            return;
+        }
+        self.visit_village(l);
+        events.push(Event::Arrived(l));
+        events.extend(self.auto_tribute(l));
+        if before != Some(l) {
+            // Entered only now: its local events.
+            events.extend(self.run_script());
+        }
+    }
+
+    /// What stops or changes the hero's step onto `next` (world.md §4.2, 0x4ad94c), in this
+    /// order:
+    /// 1. An army stands there: it is engaged, friendly or not, unless the cell belongs to a
+    ///    town, tavern, church, smithy, shipyard, altar or dungeon, or the army is well
+    ///    disposed to him (attitude above 0) and the cell is a building other than a bridge.
+    /// 2. A cell of a village, castle, fort, ruins or bridge: the last army on the map whose
+    ///    home it is guards it, and is engaged when ill-disposed to him (0 or less) or on a
+    ///    bridge.
+    /// 3. Unguarded: a castle or fort whose attitude is 0 or less, or ruins, with an empty
+    ///    garrison is taken (else the garrison is engaged); a village is taken whatever its
+    ///    owner, also when the route only crosses it.
+    fn step_contact(&self, next: Tile) -> Option<StepContact> {
+        use LocationKind as K;
+        let w = &self.world;
+        let map = &w.map;
+        let building = w.location_covering(next);
+        let kind = building.map(|l| w.locations[l].kind);
+        if let Some(i) = w.armies.iter().position(|a| a.tile(map) == next) {
+            let sheltered = matches!(kind, Some(K::Town | K::Tavern | K::Church | K::Smithy | K::Shipyard | K::Altar | K::Entrance));
+            let welcome = w.armies[i].attitude > 0 && kind.is_some_and(|k| !k.is_bridge());
+            if !sheltered && !welcome {
+                return Some(StepContact::Army(i));
+            }
+        }
+        let l = building?;
+        let loc = &w.locations[l];
+        if !matches!(loc.kind, K::Village | K::Castle | K::Fort | K::Ruins | K::Camp) && !loc.kind.is_bridge() {
+            return None;
+        }
+        if let Some(g) = w.armies.iter().rposition(|a| a.home == Some(l)) {
+            if w.armies[g].attitude <= 0 || loc.kind.is_bridge() {
+                return Some(StepContact::Army(g));
+            }
+            return None;
+        }
+        match loc.kind {
+            K::Village => Some(StepContact::Captured(l)),
+            K::Castle | K::Fort | K::Ruins | K::Camp if loc.attitude <= 0 || loc.kind == K::Ruins => {
+                if loc.cleared || loc.garrison.is_empty() {
+                    (loc.kind != K::Camp).then_some(StepContact::Captured(l))
+                } else {
+                    Some(StepContact::Garrison(l))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// One wait tick: [`WAIT_TICK_MINUTES`] pass, armies move. AI armies never attack or
+    /// greet the hero while he waits (world.md §4.3). Returns false when it ended.
     fn wait_tick(&mut self, events: &mut Vec<Event>) -> bool {
         self.pass_time(WAIT_TICK_MINUTES, events);
-        if let Some(e) = self.contact() {
-            self.meet(e, events);
-            return false;
-        }
-        !events.iter().any(Event::needs_reading)
+        !events.iter().any(Event::needs_reading) && self.foe.is_none()
     }
 
     /// Stand still for `hours` at once (1 h = 2 wait ticks, 4 h = 8; world.md §6): time
-    /// passes, armies move, the daily moments happen. A hostile army reaching the party, or
-    /// a message to read, ends the wait.
+    /// passes, armies move, the daily moments happen. A message to read ends the wait.
     pub fn wait(&mut self, hours: u32) -> Vec<Event> {
         let mut events = Vec::new();
         if self.foe.is_some() {
@@ -886,57 +1030,37 @@ impl Game {
         events
     }
 
-    /// An army on a neighbouring cell: a hostile one attacks, a friendly one greets once.
-    pub(crate) fn contact(&mut self) -> Option<Event> {
+    /// After the hero's step, an AI army that stepped during it and stands next to him
+    /// (|dx| ≤ 1 and |dy| ≤ 1) acts (world.md §4.3, 0x4a548c, 0x4ade3c): a friendly one whose
+    /// talk counter towards him is above 0 greets him (both counters then −500), before a
+    /// hostile one attacks him; he is attacked in a building only when it is a bridge or
+    /// his own.
+    pub(crate) fn ai_contact(&mut self) -> Option<Event> {
+        if self.foe.is_some() {
+            return None;
+        }
         let now = self.clock.total_minutes();
         let here = self.tile();
-        let mut found = None;
         let map = &self.world.map;
-        let talk_to = self.talk_to;
-        for (i, a) in self.world.armies.iter_mut().enumerate() {
-            let d = map.distance(a.tile(map), here);
-            if d > MEET_AGAIN_DISTANCE {
-                a.met = false;
-            }
-            if found.is_some() || d > CONTACT || now < a.ignore_until {
-                continue;
-            }
-            if a.hostile() {
-                found = Some(Event::Encounter(i));
-            } else if !a.met || talk_to == Some(a.uid) {
-                a.met = true;
-                found = Some(Event::Met(i));
-            }
+        let next_to = |a: &Army| {
+            let t = a.tile(map);
+            a.arrived && (t.0 - here.0).abs() <= 1 && (t.1 - here.1).abs() <= 1
+        };
+        let greets = self.world.armies.iter().position(|a| next_to(a) && !a.hostile() && a.talk > 0);
+        if let Some(i) = greets {
+            self.world.armies[i].talk = TALKED;
+            return Some(Event::Met(i));
         }
-        if matches!(found, Some(Event::Met(_) | Event::Encounter(_))) {
-            self.talk_to = None;
+        let sheltered = self.world.location_covering(here).is_some_and(|l| {
+            let loc = &self.world.locations[l];
+            !loc.kind.is_bridge() && !loc.owned()
+        });
+        if sheltered {
+            return None;
         }
-        if let Some(e) = &found {
-            self.path.clear();
-            if self.reading.is_none() {
-                self.wait_ticks = 0;
-            }
-            if let Event::Encounter(i) = e {
-                self.foe = Some(Foe::Army(*i));
-            }
-        }
-        found
-    }
-
-    /// Stepping into a building: a hostile garrison bars the way; a hostile castle or fort
-    /// without one is simply taken (owner, income). Healing is paid, in the building's
-    /// barracks (see `rules::town`). Returns true when a building was taken.
-    fn arrive(&mut self, l: usize) -> bool {
-        self.location = Some(l);
-        self.visit_village(l);
-        let loc = &mut self.world.locations[l];
-        if loc.defended() {
-            self.foe = Some(Foe::Garrison(l));
-        } else if loc.kind.capturable() && !loc.owned() && loc.hostile() {
-            self.world.give_to_player(l);
-            return true;
-        }
-        false
+        let i = self.world.armies.iter().position(|a| next_to(a) && a.hostile() && now >= a.ignore_until)?;
+        self.foe = Some(Foe::Army(i));
+        Some(Event::Encounter(i))
     }
 
     /// Game time passes, in slices of at most one wait tick: the day's moments (00:00 and
@@ -950,6 +1074,7 @@ impl Game {
             a.walk.points.push(a.pos);
             a.walk.minutes.clear();
             a.walk.banked = (a.budget + left).min(AI_BUDGET_CAP);
+            a.arrived = false;
         }
         loop {
             let slice = left.min(WAIT_TICK_MINUTES);
@@ -959,6 +1084,14 @@ impl Game {
                 break;
             }
         }
+    }
+
+    /// [`Game::pass_time`] for the hero's step from `from`: while it plays, AI armies keep
+    /// off both his cells (world.md §5).
+    fn pass_time_walking(&mut self, minutes: f32, from: Tile, events: &mut Vec<Event>) {
+        self.step_from = Some(from);
+        self.pass_time(minutes, events);
+        self.step_from = None;
     }
 
     fn pass_slice(&mut self, minutes: f32, events: &mut Vec<Event>) {
@@ -1032,15 +1165,21 @@ impl Game {
         self.ai_plan();
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
+        // The hero's cells: where he stands and, while he steps, the cell he left.
+        let hero = HeroCells { cells: [Some(hero_tile), self.step_from], at: hero_tile };
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;
         let map = &world.map;
         for a in armies.iter_mut() {
+            // Stationary guards (patrol radius 0) are skipped by the AI clock (0x4a399c).
+            if a.patrols && a.patrol_radius == 0 {
+                continue;
+            }
             a.budget = (a.budget + minutes).min(AI_BUDGET_CAP);
             let here = a.tile(map);
             let sails = a.sails();
             if ai::managed(a) {
-                step_army(map, a, &|t| map.cost(t));
+                step_army(map, a, &|t| map.cost(t), &hero);
                 continue;
             }
             // Ships stay on the water: they chase the hero to the water next to him.
@@ -1078,9 +1217,9 @@ impl Game {
                 a.rest_until = now + self.rng.range(30, 180) as f64;
             }
             if sails {
-                step_army(map, a, &|t| world.sea_step(t));
+                step_army(map, a, &|t| world.sea_step(t), &hero);
             } else {
-                step_army(map, a, &|t| map.cost(t));
+                step_army(map, a, &|t| map.cost(t), &hero);
             }
         }
         self.world.armies = armies;
@@ -1248,13 +1387,15 @@ impl Game {
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
         crate::diag::play(&self.clock.label(), &format!("BATTLE log:\n  {}\nBATTLE ends: {:?} after {} turns", battle.log.join("\n  "), battle.outcome(), battle.round));
         let garrison = match self.foe {
-            Some(Foe::Garrison(l)) => Some(self.world.locations[l].id),
+            Some(Foe::Garrison(l)) => Some((l, self.world.locations[l].id)),
             _ => None,
         };
         let result = self.settle_battle(battle);
         // A building taken from its garrison is entered: its events are checked now, as
         // when the hero walks into it (the original opens its window, 4bbc84, which scans).
-        if let (Some(id), BattleResult::Victory { .. }) = (garrison, &result) {
+        // He fought it from the cell before it and stays there.
+        if let (Some((l, id)), BattleResult::Victory { .. }) = (garrison, &result) {
+            self.location = Some(l);
             if let Some(engine) = self.script.as_mut().filter(|_| id != 0) {
                 engine.visit(super::events::Place::Building(id));
             }
@@ -1505,6 +1646,43 @@ impl Game {
 }
 
 
+#[cfg(test)]
+impl Game {
+    /// Walks towards `target` as a player would through the fog (tests on real maps): the
+    /// target itself once it can be clicked, else the explored cell nearest it that has a
+    /// route, leg after leg, until he is there, stopped by an army or a garrison, or stuck.
+    pub(crate) fn walk_through_fog(&mut self, target: Tile) -> Vec<Event> {
+        let mut events = Vec::new();
+        let goal_building = self.world.location_at(target);
+        for _ in 0..400 {
+            let here = self.tile();
+            if self.foe.is_some() || here == target || (goal_building.is_some() && self.location == goal_building) {
+                break;
+            }
+            let leg = if !self.plan(target).is_empty() {
+                Some(target)
+            } else {
+                // The farthest explored cell he can plan to along the way he would take with
+                // the whole map in sight.
+                let map = &self.world.map;
+                let ideal = map.flood_route(&|t| self.planner_cost(t), &|_| 1, &[(target, 0)], here).map(|r| r.0).unwrap_or_default();
+                ideal.into_iter().rev().filter(|&t| self.fog.explored(t)).take(40).find(|&t| t != (0, 0) && !self.plan(t).is_empty())
+            };
+            let Some(leg) = leg else { break };
+            if !self.set_destination(leg) {
+                break;
+            }
+            for _ in 0..20_000 {
+                if !self.moving() {
+                    break;
+                }
+                events.extend(self.tick(0.05));
+            }
+        }
+        events
+    }
+}
+
 /// The event engine's archetype code of a hero class.
 pub(crate) fn archetype_of(hero: HeroClass) -> u8 {
     match hero {
@@ -1605,7 +1783,7 @@ mod tests {
         let mut g = quiet_game(HeroClass::Knight);
         let millbrook = g.world.index_of("Millbrook");
         assert!(g.set_destination(tile_of_location(&g, "Millbrook")));
-        assert_eq!(g.location, None);
+        assert_eq!(g.location, Some(0), "in Oakford until he steps off");
         let events = walk_until_stopped(&mut g);
         // The village makes no offer on this stream, so its tribute is taken on arrival.
         let n = events.len();
@@ -2234,7 +2412,7 @@ mod tests {
     }
 
     #[test]
-    fn the_route_goes_around_an_enemy_building_unless_it_is_clicked() {
+    fn the_route_crosses_even_a_hostile_town() {
         let mut s = strip();
         // A hostile town across rows 0–4 of columns 11–12; row 5 stays open.
         let mut t = building(BuildingType::Town, 12, 4, (2, 5));
@@ -2245,14 +2423,19 @@ mod tests {
         g.world.armies.clear();
         // No fog: these are about buildings on the route.
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        // The original's planner closes only castles, forts and ruins: the road runs
+        // through the town, entered on the way (two cells crossed) but not opened.
+        assert!(!g.world.locations[0].bars_hero());
         assert!(g.set_destination((20, 2)));
-        assert!(g.path.iter().all(|&t| g.world.location_covering(t).is_none()), "around it: {:?}", g.path);
+        assert!(g.path.iter().filter(|&&t| g.world.location_covering(t) == Some(0)).count() == 2, "{:?}", g.path);
         let events = walk_until_stopped(&mut g);
-        assert_eq!(g.tile(), (20, 2));
+        assert_eq!((g.tile(), g.location), ((20, 2), None));
         assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_))));
-        // Clicked, it is the destination: the walk ends inside it.
+        // Clicked, it is the destination: the walk ends on the cell clicked, and it opens.
         assert!(g.set_destination((11, 2)));
-        assert!(g.path.last().is_some_and(|&t| g.world.location_covering(t) == Some(0)));
+        assert_eq!(g.path.last(), Some(&(11, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Arrived(0)));
     }
 
     fn strip() -> Scenario {
@@ -2294,13 +2477,15 @@ mod tests {
         foe.artifacts = [9, 0, 0];
         s.armies = vec![foe];
         let mut g = start(&s);
-        assert!(g.set_destination((22, 2)));
+        g.fog = Fog::disabled(24, 6);
+        // Walking onto it (§4.2): a battle.
+        let at = g.world.armies[0].tile(&g.world.map);
+        assert!(g.set_destination(at));
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Encounter(0)));
         assert_eq!(g.foe, Some(Foe::Army(0)));
         assert!(g.world.map.distance(g.tile(), g.world.armies[0].tile(&g.world.map)) <= 1);
         let mut b = g.start_battle();
-        assert_eq!(b.attacker, Team::Enemy, "the army attacks");
         assert_eq!(b.fighters.iter().filter(|f| f.team == Team::Enemy).count(), 3);
         b.begin();
         wipe_enemies(&mut b);
@@ -2317,58 +2502,137 @@ mod tests {
         assert!(g.world.armies.is_empty());
     }
 
-    #[test]
-    fn friendly_armies_greet_once_and_do_not_fight() {
+    /// A strip game with army 1 (attitude `attitude`) at `at` walking `path` by itself (its
+    /// AI off), no fog.
+    fn with_walker(attitude: i8, at: Tile, path: Vec<Tile>) -> Game {
         let mut s = strip();
-        s.armies = vec![army(1, 10, 2, 1, &[troop(4, 0, 1)])];
+        s.armies = vec![army(1, at.0 as u16, at.1 as u16, attitude, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.set_destination((22, 2));
+        g.fog = Fog::disabled(24, 6);
+        let a = &mut g.world.armies[0];
+        a.ai.enabled = false;
+        a.path = path;
+        g
+    }
+
+    #[test]
+    fn a_friendly_army_stepping_next_to_the_hero_greets_him_then_not_for_long() {
+        // World.md §4.3: the army steps (5, 2) → (4, 2) during his diagonal step to (3, 3):
+        // next to him, its talk counter 0 + 1 + (attitude 1 + 1) = 3 is above 0: a meeting,
+        // and the counter falls to −500.
+        let mut g = with_walker(1, (5, 2), vec![(4, 2)]);
+        assert!(g.set_destination((3, 3)));
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Met(0)));
-        assert_eq!(g.foe, None);
-        g.set_destination((22, 2));
+        assert_eq!((g.foe, g.world.armies[0].talk), (None, -500));
+        // Again next to him after a step of its own: the counter is still far below 0.
+        g.world.armies[0].path = vec![(4, 3)];
+        assert!(g.set_destination((3, 4)));
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_) | Event::Encounter(_))), "{events:?}");
-        assert_eq!(g.tile(), (22, 2));
+        assert_eq!(g.world.armies[0].talk, -500 + 1 + 2);
+        // An army standing still next to him never greets him.
+        let mut g = with_walker(1, (4, 2), vec![]);
+        assert!(g.set_destination((3, 3)));
+        let events = walk_until_stopped(&mut g);
+        assert!(!events.iter().any(|e| matches!(e, Event::Met(_))), "{events:?}");
+    }
+
+    #[test]
+    fn ai_armies_keep_off_the_heros_cells_and_attack_only_after_his_step() {
+        // A hostile army two cells east walks west along row 2: it may not enter his cell,
+        // so it stays next to him; it attacks after his step, never while he waits.
+        let mut g = with_walker(-2, (4, 2), vec![(3, 2), (2, 2), (1, 2)]);
+        g.wait(2);
+        assert_eq!(g.world.armies[0].tile(&g.world.map), (3, 2), "it stopped short of him");
+        assert!(g.foe.is_none(), "no attack while he waits");
+        assert!(g.world.armies[0].path.first() == Some(&(2, 2)), "it keeps trying");
+        assert!(g.set_destination((2, 3)));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Encounter(0)));
+        assert_eq!(g.foe, Some(Foe::Army(0)));
+        // A stationary guard (patrol radius 0) does not even bank time.
+        let mut g = with_walker(-2, (4, 2), vec![(3, 2)]);
+        g.world.armies[0].patrols = true;
+        g.world.armies[0].patrol_radius = 0;
+        g.wait(4);
+        assert_eq!((g.world.armies[0].tile(&g.world.map), g.world.armies[0].budget), ((4, 2), 0.0));
+    }
+
+    #[test]
+    fn stepping_onto_an_army_engages_it() {
+        // §4.2: the cell he is about to enter holds an army: he stays where he is. Hostile, a
+        // battle; well disposed, a meeting (Razdor's guess for what the original's battle
+        // screen does with a friend met on open ground).
+        let mut g = with_walker(-2, (5, 2), vec![]);
+        // A stationary guard: it does not come for him.
+        g.world.armies[0].patrols = true;
+        g.world.armies[0].patrol_radius = 0;
+        assert!(g.set_destination((5, 2)), "the army clicked");
+        let events = walk_until_stopped(&mut g);
+        assert_eq!((events.last(), g.tile(), g.foe), (Some(&Event::Encounter(0)), (4, 2), Some(Foe::Army(0))));
+        let mut g = with_walker(2, (5, 2), vec![]);
+        assert!(g.set_destination((5, 2)));
+        let events = walk_until_stopped(&mut g);
+        assert_eq!((events.last(), g.tile(), g.foe), (Some(&Event::Met(0)), (4, 2), None));
     }
 
     #[test]
     fn the_hero_follows_the_army_he_clicked_until_they_meet() {
-        let mut s = strip();
-        let mut friend = army(1, 12, 2, 1, &[troop(4, 0, 1)]);
-        friend.patrols = 0;
-        s.armies = vec![friend];
-        let mut g = start(&s);
-        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
-        let at = g.world.armies[0].tile(&g.world.map);
-        assert!(g.set_destination(at));
-        // It moves on before the hero gets there.
-        g.world.armies[0].pos = g.world.map.center((20, 2));
-        g.world.armies[0].post = (20, 2);
+        // It walks away east; after each of its steps his route is planned again to its new
+        // cell (0x4aedd1), until he steps onto it.
+        let mut g = with_walker(1, (8, 2), (9..=14).map(|x| (x, 2)).collect());
+        g.world.armies[0].speed = 10;
+        assert!(g.set_destination((8, 2)));
         let events = walk_until_stopped(&mut g);
         assert!(events.contains(&Event::Met(0)), "met where it went: {events:?}");
-        assert!(g.world.map.distance(g.tile(), (20, 2)) <= 1, "next to it at {:?}", g.tile());
+        let at = g.world.armies[0].tile(&g.world.map);
+        assert!(at.0 > 8 && g.tile() == (at.0 - 1, 2), "next to it: {:?} {at:?}", g.tile());
+        // Moved by other means (not a step of its own), it is not followed: he walks to the
+        // cell clicked.
+        let mut g = with_walker(1, (8, 2), vec![]);
+        assert!(g.set_destination((8, 2)));
+        g.world.armies[0].pos = g.world.map.center((12, 2));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (8, 2));
+    }
+
+    #[test]
+    fn a_chased_army_out_of_reach_ends_the_chase_and_stops_the_hero() {
+        // It walks into a hostile castle. The new plan keeps the buildings of the original
+        // click (0x4aedd1): the castle is not the one clicked, so it is closed, the army's
+        // cell with it, and the hero stops where he is.
+        let mut s = strip();
+        let mut castle = building(BuildingType::Castle, 10, 2, (1, 1));
+        castle.relations = [-2, 0, 0, 0];
+        s.buildings = vec![castle];
+        s.armies = vec![army(1, 8, 2, 1, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        let a = &mut g.world.armies[0];
+        a.ai.enabled = false;
+        a.path = vec![(9, 2), (10, 2)];
+        a.speed = 10;
+        assert!(g.set_destination((8, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.world.armies[0].tile(&g.world.map), (10, 2));
+        assert!(g.talk_to.is_none() && !g.moving() && g.foe.is_none());
+        assert!(g.tile().0 < 9, "stopped on the way at {:?}", g.tile());
     }
 
     #[test]
     fn clicking_a_friendly_army_meets_it_again() {
-        // The help: "click it to talk or fight". Passing by greets once; a click always talks.
-        let mut s = strip();
-        let mut friend = army(1, 10, 2, 1, &[troop(4, 0, 1)]);
-        friend.patrols = 0;
-        s.armies = vec![friend];
-        let mut g = start(&s);
-        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
-        g.set_destination((22, 2));
-        assert_eq!(walk_until_stopped(&mut g).last(), Some(&Event::Met(0)));
-        assert!(g.world.armies[0].met, "greeted once");
-        // Standing next to it, the player clicks it: a new meeting.
-        let at = g.world.armies[0].tile(&g.world.map);
-        assert!(g.world.map.distance(g.tile(), at) <= 1);
-        assert!(g.set_destination(at));
-        let events = walk_until_stopped(&mut g);
-        assert!(events.contains(&Event::Met(0)), "{events:?}");
-        assert_eq!(g.foe, None);
+        // The help: "click it to talk or fight": stepping onto it engages it, whatever its
+        // talk counter.
+        let mut g = with_walker(1, (10, 2), vec![]);
+        for _ in 0..2 {
+            let at = g.world.armies[0].tile(&g.world.map);
+            assert!(g.set_destination(at));
+            let events = walk_until_stopped(&mut g);
+            assert!(events.contains(&Event::Met(0)), "{events:?}");
+            assert_eq!((g.foe, g.tile()), (None, (9, 2)));
+            g.pos = g.world.map.center((4, 2));
+        }
     }
 
     #[test]
@@ -2382,8 +2646,15 @@ mod tests {
         let mut g = start(&s);
         let events = g.wait(4);
         assert!(g.world.armies[0].chasing);
-        assert!(matches!(events.last(), Some(Event::Encounter(0))), "it comes for the waiting hero: {events:?}");
-        assert!(g.clock.total_minutes() < g.world.start.total_minutes() + 240.0, "the fight cuts the wait short");
+        assert!(!events.iter().any(|e| matches!(e, Event::Encounter(_))), "no attack on a waiting hero: {events:?}");
+        let a = g.world.armies[0].tile(&g.world.map);
+        assert!((a.0 - 2).abs() <= 1 && (a.1 - 2).abs() <= 1, "it came next to him: {a:?}");
+        // His next step, to a cell still next to it: it steps after him (onto his cell,
+        // which it never enters) and attacks.
+        let n = g.world.map.grid.neighbours((2, 2)).find(|&n| n != a && (n.0 - a.0).abs() <= 1 && (n.1 - a.1).abs() <= 1 && g.world.map.passable(n)).unwrap();
+        assert!(g.set_destination(n));
+        let events = walk_until_stopped(&mut g);
+        assert!(matches!(events.last(), Some(Event::Encounter(0))), "{events:?}");
     }
 
     #[test]
@@ -2440,12 +2711,13 @@ mod tests {
         fort.garrison_extra_defence = 12;
         s.buildings = vec![fort];
         let mut g = start(&s);
-        let centre = g.world.locations[0].tile;
-        assert!(g.set_destination((15, 2)), "clicking any cell of it means the fort");
-        assert_eq!(g.goal, Some(centre));
+        g.fog = Fog::disabled(24, 6);
+        assert!(g.set_destination((15, 2)), "any cell of it can be clicked");
+        assert_eq!(g.goal, Some((15, 2)));
+        // §4.2: stepping onto its cell engages the garrison; he stays outside.
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
-        assert_eq!(g.foe, Some(Foe::Garrison(0)));
+        assert_eq!((g.foe, g.tile(), g.location), (Some(Foe::Garrison(0)), (14, 2), None));
         assert_eq!(g.daily_income(), 0);
         let mut b = g.start_battle();
         assert_eq!(b.attacker, Team::Player);
@@ -2474,6 +2746,7 @@ mod tests {
         ruins.garrison[0] = troop(4, 0, 2);
         s.buildings = vec![ruins];
         let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
         g.set_destination(g.world.locations[0].tile);
         walk_until_stopped(&mut g);
         assert_eq!(g.foe, Some(Foe::Garrison(0)));
@@ -2492,19 +2765,17 @@ mod tests {
         // The knight sees 9 cells.
         assert!(g.fog.enabled && g.fog.explored((2, 2)) && g.fog.explored((11, 2)) && !g.fog.explored((12, 2)));
         assert!(!Game::new(content(), HeroClass::Knight).fog.enabled, "the demo has no fog");
-        assert!(g.set_destination((22, 3)), "a click into the dark walks towards it");
+        // A click into the dark is no target (world.md §1.3): nothing happens.
+        assert!(!g.can_target((22, 3)) && g.route_to((22, 3)).is_empty());
+        assert!(!g.set_destination((22, 3)) && !g.moving());
+        assert!(g.set_destination((11, 3)));
         assert!(g.path.iter().all(|&t| g.fog.explored(t)), "over explored ground only");
-        for _ in 0..10_000 {
-            if !g.moving() {
-                break;
-            }
-            if let Some(&next) = g.path.first() {
-                assert!(g.fog.explored(next), "never steps into the dark");
-            }
-            g.tick(0.05);
-        }
-        assert_eq!(g.tile(), (22, 3), "feels its way there");
-        assert!(g.fog.explored((20, 0)) && g.goal.is_none());
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (11, 3));
+        assert!(g.fog.explored((20, 3)) && g.can_target((20, 3)), "new ground in sight");
+        assert!(g.set_destination((20, 3)));
+        walk_until_stopped(&mut g);
+        assert!(g.fog.explored((23, 0)) && g.goal.is_none());
         g.set_destination((2, 2));
         g.stop();
         assert!(g.goal.is_none() && !g.moving());
@@ -2532,15 +2803,15 @@ mod tests {
         assert!(g.set_destination((10, 2)), "the fort itself can be clicked");
         let events = walk_until_stopped(&mut g);
         assert_eq!(events.last(), Some(&Event::Arrived(0)));
-        assert_eq!((g.tile(), g.foe), ((10, 2), Some(Foe::Garrison(0))));
+        assert_eq!((g.tile(), g.foe), ((9, 2), Some(Foe::Garrison(0))), "its garrison meets him at the gate");
         let mut b = g.start_battle();
         b.begin();
         wipe_enemies(&mut b);
         g.resolve_battle(&b);
         assert!(!g.world.locations[0].bars_hero(), "taken: his own");
         assert!(g.set_destination((20, 2)));
-        // A neutral fort (attitude 0, no garrison) bars the way too, but not the hero
-        // standing in it.
+        // A neutral fort (attitude 0, no garrison) bars the way too: attitude 0 or less. Clicked,
+        // it is taken on the first step onto it (§4.2: an empty garrison).
         let mut s2 = s.clone();
         s2.buildings[0].relations = [0, 0, 0, 0];
         s2.buildings[0].garrison[0] = troop(0, 0, 0);
@@ -2548,9 +2819,10 @@ mod tests {
         g.fog = Fog::disabled(24, 6);
         assert!(!g.set_destination((20, 2)));
         assert!(g.set_destination((10, 2)));
-        walk_until_stopped(&mut g);
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Captured(0)), "{events:?}");
         assert_eq!((g.location, g.foe), (Some(0), None));
-        assert!(!g.world.locations[0].owned(), "not ill-disposed: not taken");
+        assert!(g.world.locations[0].owned());
         assert!(g.set_destination((20, 2)), "from inside it he walks on");
     }
 
@@ -2560,18 +2832,50 @@ mod tests {
         // A 3 × 3 village across the road east (x 9..=11, y 1..=3).
         let mut v = building(BuildingType::Village, 11, 3, (3, 3));
         v.relations = [1, 0, 0, 0];
+        v.gold_per_day = 25;
+        v.gold_max = 50;
         s.buildings = vec![v];
         let mut g = start(&s);
         g.fog = Fog::disabled(24, 6);
         let l = &g.world.locations[0];
         assert!(!l.bars_hero() && l.cells().all(|t| g.world.map.cost(t) == Some(crate::rules::map::ROAD)));
-        // Walking east along row 2 crosses the village's cells (road) without a visit: only the
-        // building clicked, or the one a route ends in, is entered.
+        // Walking east along row 2 crosses the village's cells (road): no window, no
+        // tribute; but an unguarded village stepped on is his (§4.2, 0x4ad94c).
         assert!(g.set_destination((20, 2)));
         assert!(g.path.iter().any(|&t| g.world.location_at(t) == Some(0)), "the route may cross it");
         let events = walk_until_stopped(&mut g);
-        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_))), "{events:?}");
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_) | Event::Tribute { .. })), "{events:?}");
+        assert!(events.contains(&Event::Captured(0)), "{events:?}");
+        assert!(g.world.locations[0].owned());
+        assert_eq!(g.world.locations[0].tribute_gold, 25, "passing by takes no tribute");
         assert_eq!((g.tile(), g.location), ((20, 2), None));
+    }
+
+    #[test]
+    fn a_building_is_entered_on_its_second_cell_and_opens_where_the_walk_ends() {
+        let mut s = strip();
+        // A 3 × 1 town on row 2, x 9..=11 (wider than tall: one more row above, row 1).
+        let mut t = building(BuildingType::Town, 11, 2, (3, 1));
+        t.relations = [1, 0, 0, 0];
+        s.buildings = vec![t];
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        assert!(g.set_destination((9, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.location, Some(0), "the walk ended on it: entered");
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        assert!(g.set_destination((11, 2)));
+        assert_eq!(g.path[..], [(3, 2), (4, 2), (5, 2), (6, 2), (7, 2), (8, 2), (9, 2), (10, 2), (11, 2)]);
+        // The first footprint cell, from outside: not entered yet.
+        while g.tile() != (9, 2) {
+            g.tick(STEP_SECONDS);
+        }
+        assert_eq!(g.location, None);
+        g.tick(STEP_SECONDS);
+        assert_eq!((g.tile(), g.location), ((10, 2), Some(0)), "the second: entered, its window not open");
+        let events = walk_until_stopped(&mut g);
+        assert_eq!(events.last(), Some(&Event::Arrived(0)));
     }
 
     #[test]
@@ -2579,6 +2883,9 @@ mod tests {
         let mut s = strip();
         tk::set(&mut s, 2, 2, crate::dt::dtm::Surface::Road);
         tk::set(&mut s, 3, 2, crate::dt::dtm::Surface::Marsh);
+        // Water either side of the marsh: the way runs through it.
+        tk::set(&mut s, 3, 1, crate::dt::dtm::Surface::DeepSea);
+        tk::set(&mut s, 3, 3, crate::dt::dtm::Surface::DeepSea);
         let mut g = start(&s);
         assert!(g.set_destination((5, 2)));
         assert_eq!(g.path, vec![(3, 2), (4, 2), (5, 2)]);

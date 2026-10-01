@@ -2,10 +2,12 @@
 //!
 //! The original (`docs/reference/original-mechanics/world.md` §1) uses plain squares of 32×22
 //! px with 8 neighbours: [`Grid::Square8`]. Its planner weighs an orthogonal step 2 and a
-//! diagonal one 3 (×1.5, vertical and horizontal alike), and prices the cell entered; walking
-//! charges the cell left, `cost × speed` minutes (×1.5 diagonally). The built-in demo keeps its
-//! hex layout ([`Grid::HexOddR`], odd rows shifted half a cell right, every step weight 2), as
-//! `data/kingdom.txt` was drawn for it.
+//! diagonal one 3 (×1.5, vertical and horizontal alike); it floods from the target, so each
+//! step is priced by the cell it leaves, and stops at the first value reaching the walker
+//! ([`TileMap::flood_route`]); walking charges the cell left, `cost × speed` minutes (×1.5
+//! diagonally). The AI armies' own searches ([`TileMap::path_by`]) are Razdor's. The
+//! built-in demo keeps its hex layout ([`Grid::HexOddR`], odd rows shifted half a cell right,
+//! every step weight 2), as `data/kingdom.txt` was drawn for it.
 //!
 //! Tile `(col, row)`; world positions are in units where one column is 1 wide. Each cell has
 //! a surface (the original's terrain code, `dt::dtm::Surface`) and costs in the original's
@@ -176,6 +178,39 @@ impl Grid {
         }
     }
 
+    /// Neighbour offsets in the original's direction order (world.md §1): on squares 0
+    /// north-west, then clockwise (1 N, 2 NE, 3 E, 4 SE, 5 S, 6 SW, 7 W), even directions
+    /// diagonal; on the demo's hexes the six of [`hex_neighbours`] (row `r` decides them).
+    pub fn directions(self, r: i32) -> [Option<(i32, i32)>; 8] {
+        match self {
+            Grid::Square8 => DIRECTIONS.map(Some),
+            Grid::HexOddR => {
+                let mut out = [None; 8];
+                for (o, (c, rr)) in out.iter_mut().zip(hex_neighbours((0, r))) {
+                    *o = Some((c, rr - r));
+                }
+                out
+            }
+        }
+    }
+
+    /// How many directions [`Grid::directions`] holds.
+    pub fn direction_count(self) -> usize {
+        match self {
+            Grid::Square8 => 8,
+            Grid::HexOddR => 6,
+        }
+    }
+
+    /// Planner weight of a step in direction `dir` (the original's table 0x4ecfd4: 3 on the
+    /// even, diagonal directions, 2 on the others; every hex step 2).
+    pub fn direction_weight(self, dir: usize) -> u32 {
+        match self {
+            Grid::Square8 if dir.is_multiple_of(2) => DIAGONAL_WEIGHT,
+            _ => ORTHOGONAL_WEIGHT,
+        }
+    }
+
     /// Lower bound of the planner weights between two cells (for A*).
     fn weight_bound(self, a: Tile, b: Tile) -> u32 {
         match self {
@@ -187,6 +222,9 @@ impl Grid {
         }
     }
 }
+
+/// The original's eight directions (dx, dy), 0 north-west then clockwise (0x4ecf8c, 0x4ecfb0).
+pub const DIRECTIONS: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)];
 
 /// Planner weight of an orthogonal step; a diagonal one is [`DIAGONAL_WEIGHT`].
 pub const ORTHOGONAL_WEIGHT: u32 = 2;
@@ -328,6 +366,9 @@ impl TileMap {
         objects.retain(|o| o.tile.0 >= 0 && o.tile.1 >= 0 && o.tile.0 < w && o.tile.1 < h);
         let file_order = objects.clone();
         objects.sort_by_key(|o| (o.tile.1, o.tile.0));
+        // The original lays the hills while scanning its cell grid row by row: where hills
+        // overlap, the one later in that scan wins (the sort is stable).
+        let scan_order = objects.clone();
         let mut row_start = Vec::with_capacity(h as usize + 1);
         let mut i = 0;
         for r in 0..=h {
@@ -339,9 +380,9 @@ impl TileMap {
         let n = codes.len();
         let mut m = TileMap { grid, w, h, surface: codes.to_vec(), land: vec![0; n], water: vec![0; n], objects, row_start, markers: Vec::new() };
         let index = |t: Tile| (t.0 >= 0 && t.1 >= 0 && t.0 < w && t.1 < h).then(|| (t.1 * w + t.0) as usize);
-        // Hills set the base of their square (later objects over earlier ones).
+        // Hills set the base of their square (later in the row-by-row scan over earlier).
         let mut v = vec![0i32; n];
-        for o in &file_order {
+        for o in &scan_order {
             if let Some(ObjectEffect::Base(b)) = object_effect(o.class) {
                 for i in object_cells(o).filter_map(index) {
                     v[i] = b;
@@ -356,12 +397,17 @@ impl TileMap {
             };
         }
         // Plants add theirs on their own cell (if it is still open), massifs over their
-        // square.
+        // square. The original then writes the cell back as land whatever it was: on water
+        // its land cost was 0, so a plant, a mountain or a rock standing in the water blocks
+        // ships too (world.md §1.1 steps 4–5).
+        let water = |i: usize| Surface::from_code(codes[i]).is_some_and(is_water);
         for o in &file_order {
             let Some(ObjectEffect::Add(a)) = object_effect(o.class) else { continue };
             let cells: Vec<usize> = if o.class >= object_class::TREES { index(o.tile).into_iter().collect() } else { object_cells(o).filter_map(index).collect() };
             for i in cells {
-                if v[i] > 0 {
+                if water(i) {
+                    v[i] = 0;
+                } else if v[i] > 0 {
                     v[i] = (v[i] + a).max(0);
                 }
             }
@@ -576,6 +622,113 @@ impl TileMap {
             }
         }
         Vec::new()
+    }
+
+    /// Neighbour of cell `i` in direction `dir` of [`Grid::directions`], if on the map.
+    fn neighbour_index(&self, i: usize, dir: usize) -> Option<usize> {
+        let (x, y) = self.tile_of(i);
+        let (dx, dy) = self.grid.directions(y)[dir]?;
+        self.index((x + dx, y + dy))
+    }
+
+    /// The original's planner (world.md §1.2, 0x482a58 and 0x482fe8): a flood from the
+    /// target outwards that stops as soon as it first reaches `from`, then the route read
+    /// back from `from` by steepest descent.
+    ///
+    /// - `cost` is the planner's map (cost units, 0 = impassable) and `mask` the
+    ///   multiplier laid over it (0 closes a cell, 1 keeps it). Their product is 16-bit; the
+    ///   original's loop skips cell (0, 0), which keeps the bare mask as its cost.
+    /// - `seeds`: target cells and start values; a seed on a cell `cost` blocks is refused,
+    ///   the value is capped at 32 766 and stored plus 1.
+    /// - A cell's distance is that of the cell it was reached from plus its own cost times
+    ///   the step weight: walking the other way, every step is charged the cell **left**
+    ///   (`from` included, the target not). Rounds expand the frontier entries at its
+    ///   smallest value; the flood stops the moment `from` is first improved, so the route
+    ///   can be a little dearer than the cheapest one (a first step taken diagonally when
+    ///   the straight one was cheaper). Distances above 65 534 are never stored.
+    /// - Reading: from `from`, step to the neighbour with the smallest distance below the
+    ///   current one, directions tried in order and the first strict minimum winning ties.
+    ///
+    /// Returns the route (without `from`) and its cost: per step the base cost of the cell
+    /// left, ×1.5 rounded down on diagonals (the status bar's time left, §2.4). `None` if
+    /// `from` was not reached.
+    pub fn flood_route(&self, cost: &dyn Fn(Tile) -> u16, mask: &dyn Fn(Tile) -> u16, seeds: &[(Tile, u32)], from: Tile) -> Option<(Vec<Tile>, u32)> {
+        const UNREACHED: u16 = u16::MAX;
+        let stop = self.index(from)?;
+        let n = (self.w.max(0) * self.h.max(0)) as usize;
+        let mut effective = vec![0u16; n];
+        for (i, e) in effective.iter_mut().enumerate() {
+            let t = self.tile_of(i);
+            // The original's multiplying loop stops before cell 0 (the original's quirk).
+            *e = if i == 0 { mask(t) } else { cost(t).wrapping_mul(mask(t)) };
+        }
+        let mut dist = vec![UNREACHED; n];
+        let mut frontier: Vec<(usize, u32)> = Vec::new();
+        let mut placed: Vec<(usize, u32)> = Vec::new();
+        for &(t, v) in seeds {
+            let Some(i) = self.index(t) else { continue };
+            let v = v.min(32_766);
+            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v + 1) {
+                continue;
+            }
+            placed.push((i, v + 1));
+        }
+        for &(i, v) in &placed {
+            dist[i] = v as u16;
+            if i != stop {
+                frontier.push((i, v));
+            }
+        }
+        let mut threshold = 1;
+        'flood: while !frontier.is_empty() {
+            let mut next = Vec::with_capacity(frontier.len());
+            for &(i, d) in &frontier {
+                if d > threshold {
+                    next.push((i, d));
+                    continue;
+                }
+                for dir in (0..self.grid.direction_count()).rev() {
+                    let Some(j) = self.neighbour_index(i, dir) else { continue };
+                    let c = effective[j] as u32;
+                    let nd = if c == 0 { UNREACHED as u32 } else { c * self.grid.direction_weight(dir) + d };
+                    if nd < dist[j] as u32 {
+                        dist[j] = nd as u16;
+                        if j == stop {
+                            break 'flood;
+                        }
+                        next.push((j, nd));
+                    }
+                }
+            }
+            threshold = next.iter().map(|e| e.1).min().unwrap_or(UNREACHED as u32);
+            frontier = next;
+        }
+        if dist[stop] == UNREACHED {
+            return None;
+        }
+        let mut route = Vec::new();
+        let mut total = 0;
+        let (mut at, mut d) = (stop, dist[stop]);
+        let mut here = cost(from) as u32;
+        while d != 0 {
+            let mut best = None;
+            let mut best_d = d;
+            for dir in 0..self.grid.direction_count() {
+                let Some(j) = self.neighbour_index(at, dir) else { continue };
+                if dist[j] != 0 && dist[j] < best_d {
+                    best = Some((j, dir));
+                    best_d = dist[j];
+                }
+            }
+            let Some((j, dir)) = best else { break };
+            let t = self.tile_of(j);
+            route.push(t);
+            total += if self.grid.direction_weight(dir) == DIAGONAL_WEIGHT { (here * 3) >> 1 } else { here };
+            here = cost(t) as u32;
+            at = j;
+            d = best_d;
+        }
+        Some((route, total))
     }
 
     /// Planner cost of `path` from `from` on foot: every cell entered times its step weight.
@@ -807,6 +960,35 @@ TTTTT
     }
 
     #[test]
+    fn plants_and_massifs_in_the_water_block_ships() {
+        use object_class::*;
+        let water = [Surface::CoastalWater as u8; 6];
+        let objects = vec![obj(0, 0, TREES, 1), obj(1, 0, DEAD_TREES, 1), obj(2, 0, MOUNTAINS, 10), obj(3, 0, ROCKS, 10), obj(4, 0, HILLS, 10)];
+        let m = TileMap::from_codes(Grid::Square8, 6, 1, &water, objects);
+        let ship: Vec<Option<u16>> = (0..6).map(|x| m.water_cost((x, 0))).collect();
+        // A hill in the water stays water (1 + 2); the plants, the mountain and the rock block.
+        assert_eq!(ship, [None, None, None, None, Some(3), Some(1)]);
+        assert!((0..6).all(|x| m.cost((x, 0)).is_none()), "never walked");
+    }
+
+    #[test]
+    fn overlapping_hills_the_later_in_the_row_scan_wins() {
+        use object_class::*;
+        // A 2×2 hill of class 4 (base 3) at (1, 1) and a 2×2 of class 1 (base 2) at (2, 1):
+        // they share column 1. In file order the class-4 hill comes last, but the row-by-row
+        // scan meets (2, 1) after (1, 1), so the class-1 hill wins the shared cells.
+        let objects = vec![obj(2, 1, HILLS, 20), obj(1, 1, YELLOW_HILL, 20)];
+        let m = TileMap::from_codes(Grid::Square8, 4, 2, &[Surface::GrassPlain as u8; 8], objects);
+        assert_eq!(m.cost((0, 0)), Some(8), "only the class-4 hill: 3 + 5");
+        assert_eq!(m.cost((1, 0)), Some(7), "shared: the class-1 hill, 2 + 5");
+        assert_eq!(m.cost((2, 1)), Some(7));
+        // In the scan, row 0 comes before row 1 whatever the column.
+        let objects = vec![obj(1, 1, HILLS, 20), obj(2, 0, YELLOW_HILL, 20)];
+        let m = TileMap::from_codes(Grid::Square8, 4, 2, &[Surface::GrassPlain as u8; 8], objects);
+        assert_eq!(m.cost((1, 0)), Some(7), "the row-1 hill is laid after the row-0 one");
+    }
+
+    #[test]
     fn massifs_cover_a_square_with_the_object_at_the_bottom_right() {
         let m = TileMap::from_codes(Grid::Square8, 8, 8, &[Surface::GrassPlain as u8; 64], vec![obj(5, 6, object_class::MOUNTAINS, 34)]);
         for y in 0..8 {
@@ -882,6 +1064,78 @@ TTTTT
         let m = TileMap::from_codes(g, 5, 5, &[Surface::GrassPlain as u8; 25], vec![]);
         assert_eq!(m.path((0, 0), (2, 1)).len(), 2);
         assert_eq!(m.path_cost((0, 0), &m.path((0, 0), (2, 1))), 5 * 3 + 5 * 2);
+    }
+
+    fn costed(rows: &[[u16; 4]]) -> (TileMap, Vec<u16>) {
+        let m = TileMap::from_codes(Grid::Square8, 4, rows.len() as i32, &vec![Surface::GrassPlain as u8; 4 * rows.len()], vec![]);
+        (m, rows.iter().flatten().copied().collect())
+    }
+
+    #[test]
+    fn the_flood_stops_at_the_first_value_reaching_the_hero() {
+        // Costs (cost units of each cell) from the original's rules: the flood starts at the
+        // target (3, 0) and stops when it first reaches the hero at (0, 0).
+        let (m, c) = costed(&[[3, 3, 8, 3], [5, 5, 5, 3], [5, 5, 5, 3]]);
+        let cost = |t: Tile| c[(t.1 * 4 + t.0) as usize];
+        let (route, total) = m.flood_route(&cost, &|_| 1, &[((3, 0), 0)], (0, 0)).unwrap();
+        // Through (2, 1), not along the top row: walking charges the cell left, 3·2 + 3·3 +
+        // 5·3 = 30 weighted units where (1, 0), (2, 0), (3, 0) would cost 3·2 + 3·2 + 8·2 =
+        // 28; the flood stopped before it found the cheaper way.
+        assert_eq!(route, vec![(1, 0), (2, 1), (3, 0)]);
+        // The route's cost for the status bar: 3, then 3·1.5 → 4, then 5·1.5 → 7.
+        assert_eq!(total, 3 + 4 + 7);
+        // The target cell is not charged, the hero's own cell is.
+        let (m, c) = costed(&[[8, 3, 3, 3], [5, 5, 5, 5], [5, 5, 5, 5]]);
+        let cost = |t: Tile| c[(t.1 * 4 + t.0) as usize];
+        assert_eq!(m.flood_route(&cost, &|_| 1, &[((3, 0), 0)], (0, 0)).unwrap(), (vec![(1, 0), (2, 0), (3, 0)], 8 + 3 + 3));
+    }
+
+    #[test]
+    fn the_route_descends_in_direction_order() {
+        let m = TileMap::from_codes(Grid::Square8, 6, 4, &[Surface::GrassPlain as u8; 24], vec![]);
+        let grass = |_| 5;
+        let route = |from, to| m.flood_route(&grass, &|_| 1, &[(to, 0)], from).unwrap().0;
+        // On open grass the diagonal comes first.
+        assert_eq!(route((0, 0), (3, 1)), vec![(1, 1), (2, 1), (3, 1)]);
+        assert_eq!(route((0, 3), (4, 0)), vec![(1, 2), (2, 1), (3, 0), (4, 0)]);
+        assert_eq!(route((5, 0), (0, 1)), vec![(4, 1), (3, 1), (2, 1), (1, 1), (0, 1)]);
+        assert!(route((2, 2), (2, 2)).is_empty(), "standing on the target");
+    }
+
+    #[test]
+    fn the_flood_refuses_blocked_seeds_and_closed_cells() {
+        let mut codes = vec![Surface::GrassPlain as u8; 25];
+        codes[2 * 5 + 2] = Surface::DeepSea as u8;
+        let m = TileMap::from_codes(Grid::Square8, 5, 5, &codes, vec![]);
+        let cost = |t: Tile| m.cost(t).unwrap_or(0);
+        assert!(m.flood_route(&cost, &|_| 1, &[((2, 2), 0)], (0, 2)).is_none(), "a seed on a blocked cell");
+        // A wall of closed cells (mask 0) across column 2 cuts the way.
+        let wall = |t: Tile| u16::from(t.0 != 2);
+        assert!(m.flood_route(&cost, &wall, &[((4, 2), 0)], (0, 2)).is_none());
+        let gap = |t: Tile| u16::from(t.0 != 2 || t.1 == 4);
+        let (r, _) = m.flood_route(&cost, &gap, &[((4, 2), 0)], (0, 2)).unwrap();
+        assert!(r.contains(&(2, 4)) && r.last() == Some(&(4, 2)));
+    }
+
+    #[test]
+    fn cell_zero_keeps_the_bare_mask_as_its_cost() {
+        // The original's multiplying loop skips cell (0, 0): there the mask itself is the
+        // cost (1 when open), whatever stands there. Grass 5, road 3, marsh 8, deep sea:
+        //   G G G R
+        //   G M G G
+        //   G ~ G G
+        use Surface::*;
+        let codes = [GrassPlain, GrassPlain, GrassPlain, Road, GrassPlain, Marsh, GrassPlain, GrassPlain, GrassPlain, DeepSea, GrassPlain, GrassPlain].map(|s| s as u8);
+        let m = TileMap::from_codes(Grid::Square8, 4, 3, &codes, vec![]);
+        let cost = |t: Tile| m.cost(t).unwrap_or(0);
+        // From (2, 0) to (0, 2): the corner priced 1 pulls the route round by the west
+        // column; with (0, 0) at its real cost 5 it would cross the marsh.
+        let (route, total) = m.flood_route(&cost, &|_| 1, &[((0, 2), 0)], (2, 0)).unwrap();
+        assert_eq!(route, vec![(1, 0), (0, 1), (0, 2)]);
+        assert_eq!(total, 5 + 7 + 5);
+        // Closed by the mask, the corner is closed.
+        let (route, _) = m.flood_route(&cost, &|t| u16::from(t != (0, 0)), &[((0, 2), 0)], (2, 0)).unwrap();
+        assert_eq!(route, vec![(1, 1), (0, 2)]);
     }
 
     #[test]

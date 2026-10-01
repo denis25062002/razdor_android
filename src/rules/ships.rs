@@ -1,30 +1,33 @@
-//! Ships (`docs/reference/mechanics.md` §5.2, `original-mechanics/world.md` §1–2): a shipyard
-//! rents the hero a ship for `ShipCost` gold (`_Global.ini [Costs]`); with it he sails the
-//! shallows and coastal water (deep sea blocks ships too), and lands on any walkable cell next
-//! to the water by clicking the land. One ship at a time: renting another sends the old one
-//! back.
+//! Ships (`docs/reference/mechanics.md` §5.2, `original-mechanics/world.md` §8): a shipyard
+//! sells the hero a ship for `ShipCost` gold (`_Global.ini [Costs]`); with it he sails the
+//! shallows and coastal water (deep sea blocks ships too) and lands on the shore. One ship
+//! at a time: buying another loses the old one.
 //!
-//! As the original: ships have no speed of their own. At sea the hero's route is priced on the
-//! original's MIXED map (water at its own cost — coastal 1, shallows 2 — land at 5× its cost,
-//! building footprints 6) and he does not pass under bridges; a step at sea takes the water's
-//! cost times his speed (coastal 5 minutes, shallows 10; the ranger 4 and 8). On landing his
-//! route map returns to land only: the ship is gone (world.md, M).
+//! As the original:
+//! - Buying puts no ship on the water: the hero's planner switches to the MIXED map (water
+//!   at its own cost — coastal 1, shallows 2 — land at 5× its cost, building footprints 6),
+//!   so from the shipyard he can route onto the water next to it. Stepping out of a building
+//!   onto water puts him at sea; leaving the shipyard on land loses the purchase.
+//! - At sea he plans on MIXED and a step takes the water's cost times his speed (coastal 5
+//!   minutes, shallows 10; the ranger 4 and 8). Bridges close to him only when he clicks
+//!   land or stands on one.
+//! - Land or a building ahead ends his route on it: he lands and the ship is parked on the
+//!   water he left, where a click on it takes him back aboard. The land test reads a cell
+//!   further south (the original's bug, kept: [`World::landing_terrain_is_land`]).
 //!
 //! The scenario's own ships (army byte 72: hero, pirate and merchant ships) are armies that
 //! move on the SHIP map (water and building footprints); pirates attack like any hostile army,
 //! merchants never do.
 //!
-//! Razdor's choices *(guess)*, listed in mechanics.md §8.6:
-//! - A rented ship waits at the water nearest the shipyard on foot ([`World::mooring`]); a few
-//!   shipyards of the shipped maps stand well inland. The hero boards it by walking onto it
-//!   (the planner handles boarding, sailing and landing as one route: [`Game::step_cost`]).
-//! - Ship armies always cruise within their patrol radius ([`SHIP_PATROL`] cells when the
-//!   editor gives none) and chase the hero to the water next to him.
+//! Razdor's choices *(guess)*, listed in mechanics.md §8.6: ship armies always cruise within
+//! their patrol radius ([`SHIP_PATROL`] cells when the editor gives none) and chase the hero
+//! to the water next to him. [`World::mooring`] (the water nearest a shipyard on foot) serves
+//! only the reachability check of the editor's tools.
 
 use serde::{Deserialize, Serialize};
 
 use super::game::Game;
-use super::map::{Tile, ROAD};
+use super::map::{is_water, Tile, ROAD};
 use super::world::{Army, LocationKind, World};
 
 /// At sea the original's MIXED map prices land at this many times its cost.
@@ -54,8 +57,6 @@ pub enum ShipError {
     /// The hero is not in a friendly shipyard.
     NoShipyard,
     NotEnoughGold,
-    /// The shipyard has no water the hero can board from.
-    NoWater,
 }
 
 impl World {
@@ -102,6 +103,34 @@ impl World {
             layer = next;
         }
         None
+    }
+
+    /// Cost units of cell `t` on the original's MIXED map (world.md §1.1): water at its ship
+    /// cost (coastal 1, shallows 2), land at [`MIXED_LAND_FACTOR`]× its cost, every building
+    /// footprint twice a road; 0 where it is blocked.
+    pub fn mixed_cost(&self, t: Tile) -> u16 {
+        let map = &self.map;
+        if !map.in_bounds(t) {
+            0
+        } else if self.location_covering(t).is_some() {
+            2 * ROAD
+        } else if is_water(map.surface(t)) {
+            map.water_cost(t).unwrap_or(0)
+        } else {
+            map.cost(t).map_or(0, |c| MIXED_LAND_FACTOR * c)
+        }
+    }
+
+    /// The landing test's terrain (world.md §4.2 d): the original reads row `(y·(W+8) + x)
+    /// div (H+2)` of the bordered terrain, column `x`, and calls it land when its code is 3 or
+    /// more (its bug: the row should be `y`). Row `H` is the copied bottom border (row `H−1`);
+    /// rows beyond the buffer count as water *(guess: the original reads past its terrain
+    /// there, into data that is mostly zero, the shallows' code)*.
+    pub fn landing_terrain_is_land(&self, (x, y): Tile) -> bool {
+        let (w, h) = (self.map.w, self.map.h);
+        let row = (y * (w + 8) + x) / (h + 2);
+        let row = if row == h { h - 1 } else { row };
+        row < h && !is_water(self.map.surface((x, row)))
     }
 
     /// Cost units of a ship army's step onto `to`: the original's SHIP map (shallows 2,
@@ -180,60 +209,89 @@ impl Game {
         (loc.kind == LocationKind::Shipyard && !loc.hostile()).then_some(l)
     }
 
-    /// Rents a ship at the shipyard here for [`Game::ship_price`]. It waits at the
-    /// shipyard's mooring (returned); an earlier ship goes back.
-    pub fn rent_ship(&mut self) -> Result<Tile, ShipError> {
-        let l = self.shipyard_here().ok_or(ShipError::NoShipyard)?;
-        let at = self.world.mooring(l).ok_or(ShipError::NoWater)?;
+    /// Buys a ship at the shipyard here for [`Game::ship_price`] (world.md §8, 0x4c60ac): any
+    /// ship he had is gone (one ship only) and no ship appears yet; his planner switches to
+    /// the MIXED map, so from the shipyard he can route onto the water next to it. Stepping
+    /// out onto the water puts him at sea; leaving the shipyard on land loses the purchase.
+    pub fn rent_ship(&mut self) -> Result<(), ShipError> {
+        self.shipyard_here().ok_or(ShipError::NoShipyard)?;
         let price = self.ship_price();
         if self.gold < price {
             return Err(ShipError::NotEnoughGold);
         }
         self.gold -= price;
-        self.ship = Some(Ship { tile: at, aboard: false });
-        Ok(at)
+        self.ship = None;
+        self.ship_bought = true;
+        Ok(())
     }
 
+    /// The hero is at sea (on his ship).
     pub fn aboard(&self) -> bool {
         self.ship.is_some_and(|s| s.aboard)
     }
 
-    /// Planner cost units of the hero's step from `from` onto its neighbour `to`, `None` if he
-    /// cannot take it (world.md §1): land is walked at its cost; water needs the ship, boarded
-    /// by stepping onto it, and costs its own value. A route planned at sea (`at_sea`) is
-    /// priced on the MIXED map: land at [`MIXED_LAND_FACTOR`]× its cost, building footprints
-    /// twice a road.
-    pub fn step_cost(&self, from: Tile, to: Tile, at_sea: bool) -> Option<u16> {
+    /// Where his ship waits for him, when he is ashore.
+    pub fn parked_ship(&self) -> Option<Tile> {
+        self.ship.filter(|s| !s.aboard).map(|s| s.tile)
+    }
+
+    /// The hero's planner works on the MIXED map: at sea, or with a ship just bought and not
+    /// yet a step taken (0x4c60ac, 0x497c68).
+    pub fn plans_at_sea(&self) -> bool {
+        self.aboard() || self.ship_bought
+    }
+
+    /// Cost units of cell `t` on the hero's planner map (world.md §1.2): LAND on foot, MIXED
+    /// at sea ([`World::mixed_cost`]); 0 where he cannot go.
+    pub fn planner_cost(&self, t: Tile) -> u16 {
+        if self.plans_at_sea() {
+            self.world.mixed_cost(t)
+        } else {
+            self.world.map.cost(t).unwrap_or(0)
+        }
+    }
+
+    /// The hero's cell changes from `old` to `new` (world.md §7.2, §8; 0x497c68): the
+    /// building he is in (entered when he arrives on one of its cells from another building
+    /// cell, or stays on it: `old == new`), and whether he is at sea: out of a building, on
+    /// water he is, on land he is not (a ship he had under him is then lost: it is parked
+    /// only by a landing, [`Game::landing`]); moving inside a shipyard with a ship just
+    /// bought puts him at sea there.
+    pub(crate) fn move_to_cell(&mut self, old: Tile, new: Tile) {
         let w = &self.world;
-        if w.is_sea(to) {
-            let ship = self.ship?;
-            return if w.is_sea(from) || (!ship.aboard && to == ship.tile) { w.map.water_cost(to) } else { None };
+        let (ob, nb) = (w.location_covering(old), w.location_covering(new));
+        let building = |b: Option<usize>| b.filter(|&l| !w.locations[l].kind.is_bridge());
+        let mut at_sea = self.aboard();
+        if nb.is_some() && nb == ob && building(nb).is_some_and(|l| w.locations[l].kind == LocationKind::Shipyard) && self.plans_at_sea() {
+            at_sea = true;
         }
-        let c = w.map.cost(to)?;
-        Some(match (at_sea, w.location_covering(to).is_some()) {
-            (false, _) => c,
-            (true, true) => 2 * ROAD,
-            (true, false) => MIXED_LAND_FACTOR * c,
-        })
+        if nb.is_none() {
+            at_sea = is_water(w.map.surface(new));
+        }
+        match building(nb) {
+            Some(l) if ob.is_some() => self.location = Some(l),
+            // The first footprint cell, stepped on from outside: not entered yet.
+            Some(_) => {}
+            None => self.location = None,
+        }
+        self.ship = if at_sea { Some(Ship { tile: new, aboard: true }) } else { self.ship.filter(|s| !s.aboard) };
+        self.ship_bought = false;
     }
 
-    /// A click on `t` can be sailed to: water the hero can sail, and he has a ship.
-    pub fn can_sail_to(&self, t: Tile) -> bool {
-        self.ship.is_some() && self.world.is_sea(t)
+    /// At sea, the hero's next step lands him (world.md §4.2 d, 0x4ad94c) when the cell is
+    /// land or a building other than a bridge. The original's land test reads the terrain
+    /// row as `cell index div (H+2)` instead of `div (W+8)`, a cell further south (its bug,
+    /// reproduced: [`World::landing_terrain_is_land`]); the building test is right.
+    pub(crate) fn landing(&self, next: Tile) -> bool {
+        let w = &self.world;
+        self.aboard() && (w.landing_terrain_is_land(next) || w.location_at(next).is_some())
     }
 
-    /// After a step: on water the hero is aboard and the ship under him; stepping ashore
-    /// from it he lands and the ship waits on the last water cell, where he left it, until he
-    /// walks back onto it (as in the original). A ship at its mooring stays until boarded.
-    pub(crate) fn update_ship(&mut self) {
-        let t = self.tile();
-        let sea = self.world.is_sea(t);
-        match self.ship {
-            Some(_) if sea => self.ship = Some(Ship { tile: t, aboard: true }),
-            // `tile` still holds the water cell he stepped ashore from.
-            Some(s) if s.aboard => self.ship = Some(Ship { tile: s.tile, aboard: false }),
-            _ => {}
-        }
+    /// The hero lands from `from` (world.md §8): he is no longer at sea and his ship is
+    /// parked on the water cell he leaves, unless he leaves from a shipyard (then it is lost).
+    pub(crate) fn land(&mut self, from: Tile) {
+        let in_yard = self.world.location_at(from).is_some_and(|l| self.world.locations[l].kind == LocationKind::Shipyard);
+        self.ship = (!in_yard).then_some(Ship { tile: from, aboard: false });
     }
 
     /// Where a hostile ship army at `from` heads to reach the hero: his cell at sea, else the
@@ -257,17 +315,18 @@ mod tests {
     use crate::rules::game::{Event, Foe};
     use crate::rules::world::testkit::{self as tk, army, building, hero, scenario, troop};
 
-    /// A 30×12 map: land x 0..=9, a strait of coastal water x 10..=19 (shallows in the
-    /// middle), land x 20..=29. A shipyard at (8, 5); the knight starts at (2, 5) with 600
-    /// gold.
+    /// A 30×30 map: land x 0..=9, a strait of coastal water x 10..=19 (shallows in the
+    /// middle), land x 20..=29. A shipyard at (9, 5) on the shore; the knight starts at
+    /// (2, 5) with 600 gold. (Square, so that the original's landing test reads the right
+    /// kind of cell on the rows used here.)
     fn strait() -> Scenario {
-        let mut s = scenario(30, 12);
-        for y in 0..12 {
+        let mut s = scenario(30, 30);
+        for y in 0..30 {
             for x in 10..20 {
                 tk::set(&mut s, x, y, if (13..17).contains(&x) { Surface::ShallowsFords } else { Surface::CoastalWater });
             }
         }
-        let mut yard = building(BuildingType::Shipyard, 8, 5, (1, 1));
+        let mut yard = building(BuildingType::Shipyard, 9, 5, (1, 1));
         yard.relations = [1, 0, 0, 0];
         s.buildings = vec![yard];
         s.header.heroes[0] = hero(2, 5, 600, &[troop(4, 0, 1)]);
@@ -294,8 +353,18 @@ mod tests {
 
     fn at_yard(s: &Scenario) -> Game {
         let mut g = start(s);
-        assert!(g.set_destination((8, 5)));
+        assert!(g.set_destination((9, 5)));
         assert_eq!(walk_until_stopped(&mut g).last(), Some(&Event::Arrived(0)));
+        g
+    }
+
+    /// Bought at the yard and sailed out to `(x, 5)`.
+    fn at_sea(s: &Scenario, x: i32) -> Game {
+        let mut g = at_yard(s);
+        g.rent_ship().unwrap();
+        assert!(g.set_destination((x, 5)));
+        let ev = walk_until_stopped(&mut g);
+        assert!(g.aboard() && g.tile() == (x, 5), "{:?} {:?} {ev:?} {:?}", g.tile(), g.ship, g.path);
         g
     }
 
@@ -304,8 +373,8 @@ mod tests {
         let g = start(&strait());
         assert!(g.world.is_sea((10, 5)) && g.world.is_sea((15, 0)) && !g.world.is_sea((9, 5)) && !g.world.is_sea((20, 5)));
         assert!(!g.world.map.passable((10, 5)) && !g.world.map.passable((15, 5)), "no wading through the shallows");
-        assert!(!g.world.is_sea((8, 5)), "the shipyard is land");
-        assert!(!g.can_sail_to((15, 5)), "no ship yet");
+        assert!(!g.world.is_sea((9, 5)), "the shipyard is land");
+        assert!(!g.can_target((15, 5)), "no ship: water is not a target on foot");
         let mut g = g;
         assert!(!g.set_destination((25, 5)), "the far shore is out of reach on foot");
     }
@@ -313,18 +382,19 @@ mod tests {
     #[test]
     fn deep_sea_blocks_ships_too() {
         let mut s = strait();
-        for y in 0..12 {
+        for y in 0..30 {
             tk::set(&mut s, 15, y, Surface::DeepSea);
         }
         let mut g = at_yard(&s);
         assert!(!g.world.is_sea((15, 5)));
         g.rent_ship().unwrap();
+        assert!(!g.can_target((15, 5)));
         assert!(!g.set_destination((25, 5)), "no crossing over deep sea");
         assert!(g.set_destination((14, 5)), "the near waters are sailed");
     }
 
     #[test]
-    fn a_shipyard_rents_a_ship_for_ship_cost() {
+    fn buying_a_ship_puts_none_on_the_water_and_plans_on_the_mixed_map() {
         let s = strait();
         let mut g = start(&s);
         assert_eq!(g.rent_ship(), Err(ShipError::NoShipyard), "not in a shipyard");
@@ -335,107 +405,115 @@ mod tests {
         g2.gold = 249;
         assert_eq!(g2.rent_ship(), Err(ShipError::NotEnoughGold));
         g2.gold = 600;
-        assert_eq!(g2.rent_ship(), Ok((10, 5)), "it waits on the water next to the yard");
-        assert_eq!((g2.gold, g2.ship), (350, Some(Ship { tile: (10, 5), aboard: false })));
-        // One ship at a time: renting again replaces it.
-        assert_eq!(g2.rent_ship(), Ok((10, 5)));
-        assert_eq!(g2.gold, 100);
+        assert_eq!(g2.rent_ship(), Ok(()));
+        assert_eq!((g2.gold, g2.ship), (350, None), "no ship object appears (0x4c60ac)");
+        assert!(g2.plans_at_sea() && !g2.aboard());
+        // The MIXED map: water at its own cost, land 5×, buildings 6.
+        assert_eq!([(10, 5), (14, 5), (5, 5), (9, 5)].map(|t| g2.planner_cost(t)), [1, 2, 25, 6]);
+        assert!(g2.can_target((15, 5)));
         g.gold = 0;
         assert_eq!(g.ship, None);
     }
 
     #[test]
-    fn board_sail_and_land_on_the_far_shore() {
-        let mut g = at_yard(&strait());
-        g.rent_ship().unwrap();
-        assert!(g.set_destination((25, 5)), "a route over the water now");
-        let path = g.path.clone();
-        let boards = path.iter().position(|&t| g.world.is_sea(t)).unwrap();
-        assert_eq!(path[boards], (10, 5), "boards the ship where it waits");
-        let lands = path.iter().rposition(|&t| g.world.is_sea(t)).unwrap();
-        assert!(path[boards..=lands].iter().all(|&t| g.world.is_sea(t)), "then stays at sea until it lands");
-        assert_eq!(path.last(), Some(&(25, 5)));
-        let before = g.clock.total_minutes();
-        let expected = g.travel_minutes(&g.path.clone());
-        walk_until_stopped(&mut g);
-        assert_eq!(g.tile(), (25, 5));
-        let spent = g.clock.total_minutes() - before;
-        assert!((spent - expected as f64).abs() < 1.0, "{spent} vs {expected}");
-        // The ship waits on the last water cell, where he stepped ashore, and takes him back.
-        let moored = path[lands];
-        assert_eq!(g.ship, Some(Ship { tile: moored, aboard: false }), "landed: the ship waits where he left it");
-        assert!(g.can_sail_to((15, 5)));
-        assert!(g.set_destination((15, 5)), "back to sea from the shore");
-        let boards = g.path.iter().position(|&t| g.world.is_sea(t)).unwrap();
-        assert_eq!(g.path[boards], moored, "boards it where it waits");
-        walk_until_stopped(&mut g);
-        assert_eq!(g.ship, Some(Ship { tile: (15, 5), aboard: true }));
-    }
-
-    #[test]
-    fn ships_have_no_speed_of_their_own() {
-        let mut g = at_yard(&strait());
-        g.rent_ship().unwrap();
-        // Planner: boarding and sailing cost the water's value; planned at sea, land is 5×.
-        assert_eq!(g.step_cost((9, 5), (10, 5), false), Some(1), "boarding onto coastal water");
-        assert_eq!(g.step_cost((9, 4), (10, 4), false), None, "only onto the ship");
-        g.pos = g.world.map.center((10, 5));
-        g.update_ship();
-        assert!(g.aboard());
-        assert_eq!(g.step_cost((12, 5), (13, 5), true), Some(2), "shallows");
-        assert_eq!(g.step_cost((19, 5), (20, 5), true), Some(25), "landing, priced on the MIXED map");
-        assert_eq!(g.step_cost((19, 5), (20, 5), false), Some(5));
-        // Time: the cell left, times the hero's speed: coastal 5 min, shallows 10.
+    fn stepping_out_onto_the_water_puts_him_at_sea() {
+        let g = at_sea(&strait(), 12);
+        assert_eq!(g.ship, Some(Ship { tile: (12, 5), aboard: true }));
+        // Time: the cell left on the MIXED map, times his speed: coastal 5 min, shallows
+        // 10, a building 30.
         assert_eq!(g.step_time((12, 5), (11, 5)), 5.0);
         assert_eq!(g.step_time((14, 5), (15, 5)), 10.0);
         assert_eq!(g.step_time((14, 5), (15, 6)), 15.0, "diagonal ×1.5");
-        assert_eq!(g.step_time((5, 5), (6, 5)), 25.0, "grass on foot");
+        assert_eq!(g.step_time((9, 5), (10, 5)), 30.0);
     }
 
     #[test]
-    fn at_sea_the_hero_does_not_pass_under_bridges() {
-        let mut s = strait();
-        // A bridge across the strait on row 5 and a pier on row 8.
-        for x in 10..20 {
-            s.buildings.push(building(BuildingType::WoodenBridge, x, 5, (1, 1)));
-        }
-        let mut g = at_yard(&s);
-        g.rent_ship().unwrap_or_else(|e| panic!("{e:?}"));
-        let ship = g.ship.unwrap().tile;
-        assert_ne!(ship.1, 5);
-        g.pos = g.world.map.center(ship);
-        g.update_ship();
-        // From the northern waters to the southern ones: the bridge cuts the strait.
-        let target = if ship.1 < 5 { (15, 9) } else { (15, 1) };
-        assert!(g.plan(target).is_empty(), "under the bridge is closed at sea");
-        // AI ships sail the SHIP map, where bridges are footprints paved as road.
-        assert_eq!(g.world.sea_step((15, 5)), Some(crate::rules::map::ROAD));
-    }
-
-    #[test]
-    fn a_waiting_ship_stays_until_boarded() {
+    fn leaving_the_shipyard_on_foot_loses_the_ship() {
         let mut g = at_yard(&strait());
         g.rent_ship().unwrap();
-        g.set_destination((2, 2));
+        assert!(g.set_destination((5, 5)));
         walk_until_stopped(&mut g);
-        assert_eq!(g.ship, Some(Ship { tile: (10, 5), aboard: false }), "it waits at its mooring");
-        // Back through the shipyard (walking onto it enters it and ends the walk).
-        assert!(g.set_destination((8, 5)));
+        assert_eq!(g.tile(), (5, 5));
+        assert!(g.ship.is_none() && !g.plans_at_sea(), "the purchase is lost");
+        assert!(!g.can_target((12, 5)));
+    }
+
+    #[test]
+    fn landing_parks_the_ship_on_the_water_he_left() {
+        let mut g = at_sea(&strait(), 12);
+        // A click on the far land: the route is priced on MIXED and he stops on the first
+        // land cell, the ship on the water behind him.
+        assert!(g.set_destination((25, 5)));
         walk_until_stopped(&mut g);
-        assert!(g.can_sail_to((15, 8)));
-        assert!(g.set_destination((15, 8)));
-        let boards = g.path.iter().position(|&t| g.world.is_sea(t)).unwrap();
-        assert_eq!(g.path[boards], (10, 5));
+        assert_eq!(g.tile(), (20, 5), "the route ends where he lands");
+        assert_eq!(g.ship, Some(Ship { tile: (19, 5), aboard: false }));
+        assert!(!g.plans_at_sea() && g.planner_cost((19, 5)) == 0);
+        // On foot again; the parked ship is a target although water costs nothing on LAND.
+        assert!(g.can_target((19, 5)) && !g.can_target((18, 5)));
+        assert!(g.set_destination((25, 5)));
         walk_until_stopped(&mut g);
-        assert_eq!(g.ship, Some(Ship { tile: (15, 8), aboard: true }));
-        // Clicking land from the sea sails there and lands.
-        assert!(g.set_destination((4, 10)));
-        let lands = g.path.iter().position(|&t| !g.world.is_sea(t)).unwrap();
-        assert!(g.path[lands..].iter().all(|&t| !g.world.is_sea(t)), "sails, lands, then walks");
-        let moored = g.path[lands - 1];
+        assert_eq!(g.tile(), (25, 5));
+        assert!(g.set_destination((19, 5)));
         walk_until_stopped(&mut g);
-        assert_eq!(g.tile(), (4, 10));
-        assert_eq!(g.ship, Some(Ship { tile: moored, aboard: false }), "the ship waits at the shore");
+        assert_eq!(g.ship, Some(Ship { tile: (19, 5), aboard: true }), "walking onto it, he is at sea again");
+        assert!(g.can_target((15, 5)));
+    }
+
+    #[test]
+    fn at_sea_bridges_close_only_for_a_click_on_land_or_from_a_bridge() {
+        let mut s = strait();
+        // A bridge across the strait on row 8.
+        for x in 10..20 {
+            s.buildings.push(building(BuildingType::WoodenBridge, x, 8, (1, 1)));
+        }
+        let g = at_sea(&s, 12);
+        assert!(!g.can_target((15, 8)), "a bridge is no target at sea");
+        // To the water beyond: the route may pass the bridge (6 on MIXED).
+        let p = g.plan((15, 10));
+        assert!(p.iter().any(|&t| t.1 == 8), "{p:?}");
+        // To land: every bridge is closed.
+        let p = g.plan((25, 10));
+        assert!(!p.is_empty() && p.iter().all(|&t| g.world.location_covering(t).is_none()), "{p:?}");
+        // AI ships sail the SHIP map, where bridges are footprints paved as road.
+        assert_eq!(g.world.sea_step((15, 8)), Some(crate::rules::map::ROAD));
+    }
+
+    /// A 10×10 sea with the hero aboard at `at`, land at the `land` cells.
+    fn bay(at: Tile, land: &[Tile]) -> Game {
+        let mut s = scenario(10, 10);
+        for y in 0..10 {
+            for x in 0..10 {
+                let ground = land.contains(&(x as i32, y as i32));
+                tk::set(&mut s, x, y, if ground { Surface::GrassPlain } else { Surface::CoastalWater });
+            }
+        }
+        s.header.heroes[0] = hero(at.0 as u16, at.1 as u16, 0, &[]);
+        let g = start(&s);
+        assert!(g.aboard(), "a start on the water is at sea");
+        g
+    }
+
+    #[test]
+    fn the_landing_test_reads_a_cell_further_south() {
+        // The original's bug (0x4ad94c): the row read is (y·(W+8) + x) div (H+2). On a 10×10
+        // map, (5, 2) reads row 41 div 12 = 3.
+        let mut g = bay((4, 2), &[(5, 2), (6, 2)]);
+        assert!(!g.world.landing_terrain_is_land((5, 2)), "(5, 3) is water");
+        assert!(!g.world.landing_terrain_is_land((5, 8)), "row 149 div 12 = 12: past the map, water (guess)");
+        // So he is not stopped on the shore: he steps onto the land, which takes him off the
+        // sea without parking the ship (it is lost), and walks on.
+        assert!(g.set_destination((6, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (6, 2));
+        assert_eq!(g.ship, None, "the ship is lost");
+        // The other way round: land read under water stops him on the water.
+        let mut g = bay((3, 2), &[(5, 3)]);
+        assert!(g.world.landing_terrain_is_land((5, 2)));
+        assert!(g.set_destination((7, 2)));
+        assert!(g.path.contains(&(5, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (5, 2), "stopped on the water as if landing");
+        assert!(g.aboard(), "the water there puts him at sea again");
     }
 
     #[test]
@@ -452,21 +530,27 @@ mod tests {
         assert!(g.world.armies[0].hostile() && g.world.armies[0].sails());
         assert!(!g.world.armies[1].hostile(), "merchants never attack");
         assert!(g.world.armies[0].patrols && g.world.armies[0].patrol_radius == SHIP_PATROL);
-        // The ships cruise, on water only.
+        // The ships cruise, on water only; nobody attacks a waiting hero.
         let before: Vec<_> = g.world.armies.iter().map(|a| a.pos).collect();
         g.wait(24);
+        assert!(g.foe.is_none());
         for a in &g.world.armies {
             assert!(g.world.is_sea(a.tile(&g.world.map)), "army {} left the water", a.id);
         }
         assert_ne!(before, g.world.armies.iter().map(|a| a.pos).collect::<Vec<_>>(), "they moved");
-        // Out at sea, the pirates come for the hero.
+        // Out at sea, the pirates come for the hero as he sails up and down.
         g.world.armies.retain(|a| a.id == 1);
         g.world.armies[0].pos = g.world.map.center((15, 1));
         g.world.armies[0].path.clear();
         g.rent_ship().unwrap();
-        g.set_destination((14, 5));
-        let events = walk_until_stopped(&mut g);
-        let events = if g.foe.is_none() { g.wait(4) } else { events };
+        let mut events = Vec::new();
+        for target in [(14, 5), (11, 5), (14, 5), (11, 5), (14, 5), (11, 5)] {
+            if g.foe.is_some() {
+                break;
+            }
+            g.set_destination(target);
+            events.extend(walk_until_stopped(&mut g));
+        }
         assert!(matches!(events.last(), Some(Event::Encounter(0))), "{events:?}");
         assert_eq!(g.foe, Some(Foe::Army(0)));
         assert!(g.world.is_sea(g.world.armies[0].tile(&g.world.map)));
@@ -475,11 +559,7 @@ mod tests {
     #[test]
     fn ship_state_survives_a_save() {
         let s = strait();
-        let mut g = at_yard(&s);
-        g.rent_ship().unwrap();
-        g.set_destination((14, 5));
-        walk_until_stopped(&mut g);
-        assert!(g.aboard());
+        let g = at_sea(&s, 14);
         let json = serde_json::to_string(&g).unwrap();
         let mut h: Game = serde_json::from_str(&json).unwrap();
         h.content = g.content.clone();
@@ -488,7 +568,7 @@ mod tests {
         assert!(h.world.is_sea((14, 5)));
         assert!(h.set_destination((25, 5)));
         walk_until_stopped(&mut h);
-        assert_eq!(h.tile(), (25, 5));
+        assert_eq!(h.tile(), (20, 5));
         // Older saves have no ship.
         let old = json.replace(&format!(",\"ship\":{}", serde_json::to_string(&g.ship).unwrap()), "");
         assert_ne!(old, json);
@@ -608,8 +688,9 @@ mod real_maps {
                 g.set_destination(entry);
             }
         }
-        assert_eq!(g.location, Some(target));
-        assert!(events.contains(&Event::Arrived(target)) || g.foe.is_some());
+        // In it, or met by its garrison at its gate.
+        assert!(g.location == Some(target) || g.foe.is_some(), "{:?} {:?}", g.tile(), g.foe);
+        assert!(events.contains(&Event::Arrived(target)));
         assert!(g.ship.is_none_or(|s| !s.aboard), "landed: the ship waits, not boarded");
     }
 }

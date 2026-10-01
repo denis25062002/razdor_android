@@ -255,7 +255,7 @@ impl Game {
     /// What casting `spell` costs this hero: see [`cast_cost`]. The `Caster` bonus counts
     /// when any living unit of the army has it.
     pub fn cast_cost(&self, spell: &SpellDef) -> CastCost {
-        let archmage = self.hero_class() == Some(HeroClass::Archmage);
+        let archmage = self.start_class() == HeroClass::Archmage;
         cast_cost(spell, archmage, self.squad_has(&Bonus::parse(CASTER_BONUS)))
     }
 
@@ -347,10 +347,8 @@ impl Game {
         while left > 0.0 {
             let slice = left.min(STEP_MINUTES);
             left -= slice;
+            // AI armies never attack while he casts (world.md §4.3); an event may set a battle.
             self.pass_time(slice, &mut events);
-            if let Some(e) = self.contact() {
-                self.meet(e, &mut events);
-            }
             if self.foe.is_some() {
                 return Ok(Cast { outcome: CastOutcome::Interrupted, events });
             }
@@ -785,31 +783,32 @@ mod tests {
     }
 
     #[test]
-    fn an_enemy_reaching_the_hero_over_his_book_loses_the_spell() {
+    fn an_enemy_reaching_the_hero_over_his_book_does_not_attack() {
+        // AI armies attack only right after a step of his (world.md §4.3): over his book he
+        // is left alone, and the spell lands.
         let mut g = game(HeroClass::Knight);
         with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
         g.world.armies.last_mut().unwrap().ai.aggression = 100;
-        let mana = g.mana;
         assert_eq!(g.begin_cast(2, CastTarget::Own), Ok(None));
         let events = read_out(&mut g);
-        assert!(events.iter().any(|e| matches!(e, Event::Encounter(_))));
-        assert!(events.iter().any(|e| matches!(e, Event::SpellCast { outcome: CastOutcome::Interrupted, .. })), "{events:?}");
-        assert_eq!(g.mana, mana);
-        assert!(g.active_spells().is_empty() && g.reading().is_none());
+        assert!(!events.iter().any(|e| matches!(e, Event::Encounter(_))), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::SpellCast { outcome: CastOutcome::Done { .. }, .. })), "{events:?}");
+        assert!(g.foe.is_none() && g.reading().is_none());
     }
 
     #[test]
-    fn an_enemy_reaching_the_hero_interrupts_the_cast() {
+    fn an_enemy_reaching_the_hero_does_not_interrupt_the_cast() {
         let mut g = game(HeroClass::Knight);
         with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
         // Bold enough to attack a stronger hero (the AI attacks only battles it wins).
         g.world.armies.last_mut().unwrap().ai.aggression = 100;
         let mana = g.mana;
         let cast = g.cast(2, CastTarget::Own).unwrap();
-        assert_eq!(cast.outcome, CastOutcome::Interrupted);
-        assert!(cast.events.iter().any(|e| matches!(e, Event::Encounter(_))));
-        assert_eq!(g.mana, mana, "the mana is taken only when the spell completes");
-        assert!(g.active_spells().is_empty());
+        assert!(matches!(cast.outcome, CastOutcome::Done { .. }), "{:?}", cast.outcome);
+        assert!(!cast.events.iter().any(|e| matches!(e, Event::Encounter(_))));
+        assert!(g.mana < mana, "the spell completed and was paid");
+        let a = g.world.armies.last().unwrap().tile(&g.world.map);
+        assert!((a.0 - g.tile().0).abs() <= 1 && (a.1 - g.tile().1).abs() <= 1, "it came next to him: {a:?}");
     }
 
     #[test]

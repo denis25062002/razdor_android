@@ -904,13 +904,8 @@ Explored cells stay explored; there is no "seen before" state (the video).
   game starts (9 on the 15 shipped maps). A radius `r` (cells, capped at 24) explores the same
   kind of disc. `Game::reveal(x, y, r)` lights one later; `fog::lantern(scenario, point_id)`
   gives an event's lantern cell and radius.
-- **Movement**: unexplored cells are impassable to the hero's pathfinder (world.md §3; the AI
-  ignores the fog). *(Razdor's handling of such clicks)*: a click on an explored cell walks
-  there over explored ground. A click into the dark (or on an explored cell cut off by dark)
-  walks to the explored cell reachable over explored ground whose centre is nearest the
-  target; the target is kept (`Game::goal`) and whenever the walk reveals new ground, or the
-  route runs out, the route is planned again. So the hero feels his way through the fog and
-  stops when no explored way gets closer.
+- **Movement**: unexplored cells are impassable to the hero's planner and no target for a
+  click (world.md §1.3, §3; the AI ignores the fog): a click into the dark does nothing.
 - **Armies** move in the dark as before (the original AI ignores the fog; chases are not
   changed); they are only hidden, and so are their tooltips. Map objects and buildings with no
   explored cell within two cells of them are not drawn; nearer ones show faded through the
@@ -1030,16 +1025,19 @@ Explored cells stay explored; there is no "seen before" state (the video).
 - **Water** (world.md §1): terrain codes 0–2. Shallows (2) and coastal water (1) are sailed
   and never walked; deep sea blocks ships too. The hero's sea is that water outside building
   footprints; AI ships sail the original's SHIP map (that water, plus every footprint as road).
-- **Renting**: a friendly shipyard's "Ships" tab rents a ship for `ShipCost` gold. It
-  waits at the water next to the land nearest the shipyard on foot, within 24 steps
-  *(guess)*; a new rent replaces the old ship (one at a time).
-- **Sailing**: one route plans walking, boarding, sailing and landing: a step from land
-  onto water is allowed only onto the waiting ship, a step from the ship onto any walkable
-  cell lands. Clicking water sails there (boarding first), clicking land while at sea
-  lands. No speed of its own: a step at sea takes the water's cost × the hero's speed
-  (coastal 5 minutes, shallows 10; the ranger 4 and 8). Planned at sea, land costs 5× and
-  footprints 6 (the MIXED map), and bridges are closed. **On landing the ship waits** on the last water cell, where the
-  hero stepped ashore, and he boards it again by walking onto it (as in the original).
+- **Buying** (world.md §8): a friendly shipyard's "Ships" tab sells a ship for `ShipCost`
+  gold. As in the original no ship appears: the hero's planner switches to the MIXED map
+  (water at its cost, land 5×, footprints 6), so from the shipyard he routes onto the water
+  next to it; stepping out onto the water puts him at sea, leaving on land loses the
+  purchase. A new purchase loses the old ship (one at a time).
+- **Sailing**: at sea every route is planned on MIXED. No speed of its own: a step at sea
+  takes the cost of the cell left × the hero's speed (coastal 5 minutes, shallows 10, a
+  footprint 30; the ranger 4, 8 and 24). Bridges close to him only when he clicks land or
+  stands on a bridge, and a bridge is no target at sea. **Landing**: land or a building
+  (not a bridge) ahead ends the route on it and the ship is parked on the water he left; a
+  click on it (a target although water costs nothing on foot) takes him aboard again. The
+  original's land test reads a cell further south (its bug, kept): he is sometimes stopped
+  on open water, or steps ashore without parking the ship and loses it.
 - **Start at sea**: a preset on the water ("Тихая пристань") starts the hero aboard a ship
   *(guess)*.
 - **Fog**: the hero sees as far at sea as on land; routes need explored water as they need

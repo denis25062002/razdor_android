@@ -1192,21 +1192,17 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             // A click on the building the party stands in opens it again.
             *message = None;
             reopened = Some(screen);
-        } else if let Some(t) = hovered {
-            // Water is sailed to with a ship; otherwise a click next to open ground means it.
-            let target = if game.can_sail_to(t) {
-                t
-            } else {
-                game.world.map.nearest_passable(t, 1).filter(|_| game.world.location_covering(t).is_none()).unwrap_or(t)
-            };
-            // The first click shows the route; a second one on the same spot (a double
-            // click, or a later click) sets off.
+        } else if let Some(target) = hovered.filter(|&t| game.can_target(t)) {
+            // Only a target cell counts (explored, open on his map, or his ship): a click
+            // anywhere else does nothing, as in the original. The first click shows the
+            // route; a second one on the same spot (a double click, or a later click) sets
+            // off.
             if target != game.tile() {
                 if view.preview.as_ref().is_some_and(|p| p.0 == target) {
                     view.preview = None;
                     if game.set_destination(target) {
                         razdor::diag::play(&game.clock.label(), &format!("WALK from {:?} to {:?}: {} steps, {:.0} min", game.tile(), target, game.path.len(), game.minutes_left()));
-                    } else {
+                    } else if game.route_to(target).is_empty() {
                         *message = Some(tr("No way through.").into());
                     }
                 } else {

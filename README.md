@@ -213,11 +213,11 @@ can read them, and time stands still while one is open. Questions have **Yes** /
 Accepted quests go into the **Journal** (bottom bar, key J) with their texts, and finished
 ones are marked there; the main hall lists the building's quests and the rumours on offer
 (10 gold each). The scenario's victory or defeat event ends the game. The fog of war hides what the hero
-has not seen yet (unexplored ground is black and cannot be walked; a click into the dark
-makes the hero feel his way towards it); M or the spiral "map" button of the bottom bar opens the minimap of the
-explored land, and a click on it moves the camera. A **shipyard** rents a ship for
-`ShipCost` gold (250): click the water to board it and sail, click the shore to land; the
-ship waits where you left it until you walk back onto it (one ship at a time). Pirate
+has not seen yet (unexplored ground is black, cannot be walked and cannot be clicked); M or the spiral "map" button of the bottom bar opens the minimap of the
+explored land, and a click on it moves the camera. A **shipyard** sells a ship for
+`ShipCost` gold (250): click the water next to it to sail out, click the shore to land; the
+ship waits where you left it until you walk back onto it (one ship at a time; leaving the
+shipyard on foot loses it). Pirate
 ships sail and attack like hostile armies, merchant ships never attack. Villages offer,
 once a day and instead of the tribute, the priest's healing, paying off the unpaid, a long
 blessing, furs worth more gold, or a magic ritual for mana. The hero starts in the preset's

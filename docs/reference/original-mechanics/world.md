@@ -492,25 +492,25 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 |---|---|---|---|
 | Grid, weights | squares, 8 neighbours, weight 2/3, diagonal ×1.5 | same | none |
 | Terrain and object values | `surface_value`, `object_effect` as §1.1 | same | none |
-| Hill overlap | later in file order wins | later in row-major cell scan wins | small: order of overlapping hills |
-| Plants / massifs on water | plant value added to the water cost; ships can sail | the cell is blocked for ships too | **fix** in `TileMap::from_codes` |
+| Hill overlap | later in the row-by-row cell scan wins (`TileMap::from_codes`) | later in row-major cell scan wins | Matches |
+| Plants / massifs on water | a plant, mountain or rock in the water blocks ships | the cell is blocked for ships too | Matches |
 | Massif at west/north edge | clipped | wraps / writes out of the map | keep clipping (document) |
 | Buildings on the maps | road on LAND and SHIP, 6 at sea | same | none |
-| Planner algorithm | A* from the hero, pricing the cell **entered** | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | **fix** for identical routes (`TileMap::search`, `path_cost`) |
-| Click into the dark | walks towards the nearest explored cell, re-plans as ground appears | not a valid target, nothing happens | Razdor extra (keep or drop) |
+| Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, cell (0,0) quirk (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | Matches (hero) |
+| Click into the dark | not a target, nothing happens (`Game::can_target`) | not a valid target, nothing happens | Matches |
 | First / second click | first click shows the route, second click walks (`world_view.rs`) | same | none |
 | Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
-| Mask: buildings | castles/forts with attitude ≤ 0, ruins not his, **and any other hostile building** | castles/forts with attitude ≤ 0, ruins not his only | Razdor extra (`Location::bars_hero`) |
-| Mask: bridges at sea | always closed at sea | only when clicking land or standing in a bridge | small |
+| Mask: buildings | castles/forts with attitude ≤ 0, ruins not his (`Location::bars_hero`) | castles/forts with attitude ≤ 0, ruins not his only | Matches |
+| Mask: bridges at sea | closed only when clicking land or standing on a bridge; a bridge is no target at sea | only when clicking land or standing in a bridge | Matches |
 | Hero step time | cost of the cell left × speed, ×1.5 diagonal | same | none |
-| AI step time | cost of the cell **entered** (`step_army`) | cost of the cell **left** | **fix** |
-| AI never enters the hero's cells | not modelled | waits in place, then contact | add |
-| Stationary guards' clock | bank like everyone | skipped | small |
+| AI step time | cost of the cell **left** (`step_army`) | cost of the cell **left** | Matches |
+| AI never enters the hero's cells | a step onto his cell or the one he steps from spends its time, the army stays | waits in place, then contact | Matches |
+| Stationary guards' clock | skipped (no bank) | skipped | Matches |
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
-| Contact on the hero's step | adjacency after the step (`contact`, distance ≤ 1) | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | different trigger; outcome close |
-| Village crossed on the way | not captured | an unguarded village is captured when crossed | **fix** |
-| Building entered when crossed | only the clicked/last one | entered when 2+ footprint cells are crossed (events may fire), window only at the end | small |
-| Friendly meeting | once while nearby, again when clicked (`met`, `MEET_AGAIN_DISTANCE`) | talk counters, −500 after each meeting, grow per AI step | approximation |
+| Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
+| Village crossed on the way | an unguarded village stepped on is his | an unguarded village is captured when crossed | Matches |
+| Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
+| Friendly meeting | talk counter per army: +1 per step, + relation + 1 next to him, greets above 0, then −500 | talk counters, −500 after each meeting, grow per AI step | Matches |
 | Sight radii | 9/8/10 cells | same | none |
 | Explored edge | Euclid `r + 0.6` | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | **fix** `fog::EDGE` (or port the rule) |
 | Start reveal | instant | grows over ~0.4 s, camera on the hero | cosmetic |
@@ -523,17 +523,17 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | F4 endless wait | not present (`hotkeys.rs`: F5 is quick save) | Community: F4 waits until F5 | Community extra, optional |
 | Casting time | wait ticks | same | none |
 | Heal / resurrect time | none for the player | none | none |
-| Ship purchase | rented ship waits at a mooring (guess) | no ship object; planner switches to MIXED in the shipyard | Razdor guess |
-| Landing | lands on any walkable cell next to water; ship waits at the last water cell | same, but the landing test reads a cell further south (bug); building cells also land | bug not reproduced |
-| Ship lost by walking out on land | no | yes | small |
+| Ship purchase | no ship object; planner switches to MIXED in the shipyard; leaving it on land loses it | no ship object; planner switches to MIXED in the shipyard | Matches |
+| Landing | land or a building ahead ends the route on it, the ship parked on the water left; the land test reads the misplaced row (the bug); rows past the buffer read as water *(guess)* | same, but the landing test reads a cell further south (bug); building cells also land | Matches |
+| Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
 | Move army to hero | first passable non-building neighbour, army activated *(guess)*, home kept (`script.rs`) | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | small |
 | Event lantern radius 0 | 5 cells (`LANTERN_RADIUS`) | nothing revealed (radius 0 skipped) | small |
-| AI attack while waiting | not checked in this pass | never: AI attacks and greetings only in the frame the hero finishes a step | to check |
-| Chase target unreachable | not checked in this pass | chase ends and the hero stops | to check |
+| AI attack while waiting | never: AI attacks and greetings only after a step of his | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
+| Chase target unreachable | chase ends and the hero stops; the new plan keeps the original click's buildings | chase ends and the hero stops | Matches |
 | Show army reveal | 3 cells | 3 cells (6 half-cells), growing | none |
 | Minimap size | 400×400 frame | 200 px under 100 cells wide, else 400 | small |
 | Minimap click | centres the view | clicked cell ~15 cells from the view corner | small |
-| Hero class change by event | speed and sight follow the new unit (`hero_class` from the hero's unit) | sight, speed and cast divisor keep the starting class (Community: an event may set the hero's speed directly) | **fix** for parity |
+| Hero class change by event | sight, speed and cast divisor keep the starting class; a Community speed event sets his speed (`Game::start_class`, `speed_set`) | sight, speed and cast divisor keep the starting class (Community: an event may set the hero's speed directly) | Matches |
 
 ## Unknowns
 

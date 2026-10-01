@@ -343,16 +343,16 @@ impl Location {
         (x0 + self.size.0 / 2, y0 + self.size.1 / 2)
     }
 
-    /// Bars the hero's route (world.md §1): a castle or fort whose attitude to him is at most
-    /// 0, ruins that are not his (not yet cleared), and any other enemy building (attitude
-    /// below 0; bridges excepted). The route goes around it unless it is the building clicked.
-    /// Other buildings are walked through without being entered.
+    /// Closes the hero's route (world.md §1.3, 0x4cc148): a castle or fort whose attitude to
+    /// him is at most 0, and ruins that are not his (the demo's camps as forts until burnt).
+    /// The route goes around it unless it is the building clicked or the one he stands in;
+    /// every other building, ill-disposed or not, is walked through.
     pub fn bars_hero(&self) -> bool {
         match self.kind {
-            LocationKind::Castle | LocationKind::Fort => !self.owned() && self.attitude <= 0,
-            LocationKind::Ruins => !self.owned() && !self.cleared,
-            k if k.is_bridge() => false,
-            _ => self.hostile(),
+            LocationKind::Castle | LocationKind::Fort => self.attitude <= 0,
+            LocationKind::Ruins => !self.owned(),
+            LocationKind::Camp => !self.cleared && self.attitude <= 0,
+            _ => false,
         }
     }
 
@@ -484,8 +484,14 @@ pub struct Army {
     pub chasing: bool,
     /// Game minute until which it leaves the player alone (after a stalemate).
     pub ignore_until: f64,
-    /// Already greeted the player (friendly meeting shown once while nearby).
-    pub met: bool,
+    /// Its talk counter towards the hero (world.md §4.3): it greets him when above 0, then
+    /// it is set to −500; it grows as the army steps.
+    #[serde(default)]
+    pub talk: i32,
+    /// It took (or tried) a step in the last stretch of time: only then does it attack or
+    /// greet the hero (world.md §4.3).
+    #[serde(skip)]
+    pub arrived: bool,
     /// Game minute until which it stands still between patrol legs.
     pub rest_until: f64,
     /// Named character (1-based, the scenario's list) leading it; 0 none.
@@ -844,7 +850,8 @@ impl World {
                 path: Vec::new(),
                 chasing: false,
                 ignore_until: 0.0,
-                met: false,
+                talk: 0,
+                arrived: false,
                 rest_until: 0.0,
                 named: a.named_character,
                 effects: Vec::new(),
@@ -1116,7 +1123,8 @@ impl World {
             path: Vec::new(),
             chasing: false,
             ignore_until: 0.0,
-            met: false,
+            talk: 0,
+            arrived: false,
             rest_until: 0.0,
             named: 0,
             effects: Vec::new(),
@@ -1374,30 +1382,24 @@ mod tests {
     }
 
     #[test]
-    fn ill_disposed_castles_forts_unowned_ruins_and_enemy_buildings_bar_the_way() {
+    fn ill_disposed_castles_forts_and_unowned_ruins_bar_the_way() {
+        // World.md §1.3 (0x4cc148): castles and forts by their attitude alone (a building he
+        // takes gets attitude 3), ruins unless his; nothing else.
         let mut l = Location::new(LocationKind::Fort, "Fort", (0, 0));
         for (attitude, bars) in [(-2, true), (0, true), (1, false)] {
             l.attitude = attitude;
             assert_eq!(l.bars_hero(), bars, "attitude {attitude}");
         }
-        l.attitude = -3;
-        l.owner = Owner::Player;
-        assert!(!l.bars_hero(), "his own");
         let mut r = Location::new(LocationKind::Ruins, "Ruins", (0, 0));
         r.attitude = 3;
         assert!(r.bars_hero(), "ruins not his, whatever their attitude");
-        r.cleared = true;
+        r.owner = Owner::Player;
         assert!(!r.bars_hero());
-        for k in [LocationKind::Town, LocationKind::Village, LocationKind::Church, LocationKind::Tavern, LocationKind::Palace] {
+        for k in [LocationKind::Town, LocationKind::Village, LocationKind::Church, LocationKind::Tavern, LocationKind::Palace, LocationKind::StoneBridge] {
             let mut t = Location::new(k, "", (0, 0));
             t.attitude = -3;
-            assert!(t.bars_hero(), "an enemy {k:?}: the route goes around it");
-            t.attitude = 0;
-            assert!(!t.bars_hero(), "a neutral {k:?} is walked through");
+            assert!(!t.bars_hero(), "an enemy {k:?} is walked through");
         }
-        let mut b = Location::new(LocationKind::StoneBridge, "", (0, 0));
-        b.attitude = -3;
-        assert!(!b.bars_hero(), "bridges never bar the way");
     }
 
     #[test]
@@ -1532,6 +1534,7 @@ mod real_maps {
         Some((dt, c))
     }
 
+
     /// Non-bridge buildings whose entry the hero of `class` can walk to from his start.
     fn reachable_entries(w: &World, start: Tile) -> (usize, usize) {
         let reach = w.map.reachable(start);
@@ -1650,15 +1653,8 @@ mod real_maps {
             let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;
-            assert!(g.set_destination(target), "{prefix}");
             let start = g.clock.total_minutes();
-            let mut events = Vec::new();
-            for _ in 0..20_000 {
-                if !g.moving() || g.foe.is_some() {
-                    break;
-                }
-                events.extend(g.tick(0.05));
-            }
+            let events = g.walk_through_fog(target);
             assert!(!g.moving() || g.foe.is_some(), "{prefix}: the walk ends");
             assert!(g.clock.total_minutes() > start);
             let arrived = events.contains(&Event::Arrived(village)) && g.location == Some(village);

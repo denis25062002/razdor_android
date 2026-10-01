@@ -1075,7 +1075,11 @@ impl Game {
     fn at_goal(&self, i: usize, t: Tile, target: Tile) -> bool {
         let goal = self.world.armies[i].mind.goal;
         let map = &self.world.map;
-        if goal.army().is_some() || matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
+        if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
+            // It heads for his very cell, which it never enters (world.md §5): it keeps
+            // trying the last step, standing next to him, and is in contact after each try.
+            t == target
+        } else if goal.army().is_some() {
             map.distance(t, target) <= CONTACT
         } else if let Some(l) = goal.building() {
             self.world.location_at(t) == Some(l)
@@ -1103,6 +1107,7 @@ impl Game {
         }
         let chases = goal.army().is_some() || matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer);
         let fresh = match end {
+            Some(e) if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) => e == target,
             Some(e) if chases => self.world.map.distance(e, target) <= 1,
             Some(e) => self.at_goal(i, e, target),
             None => false,
