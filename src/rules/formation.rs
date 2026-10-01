@@ -141,6 +141,18 @@ impl Formation {
         out.into_iter().map(|c| c as u8).collect()
     }
 
+    /// Where the original puts a unit added to an army, or one left without a cell after a
+    /// battle (495ce0, 495fac, 4988c0): the first free cell of the reserve, then the back row,
+    /// then the front row, columns in the preferred order, whatever the unit's role.
+    pub fn new_unit_slot(&self, occupied: &[Slot]) -> Option<Slot> {
+        let order = self.col_order();
+        [Row::Reserve, Row::Back, Row::Front]
+            .into_iter()
+            .filter(|r| self.rows().contains(r))
+            .flat_map(|row| order.iter().map(move |&col| Slot { row, col }))
+            .find(|s| self.contains(*s) && !occupied.contains(s))
+    }
+
     /// First free cell: the preferred row first, then the other fighting row, then the reserve.
     pub fn free_slot(&self, occupied: &[Slot], preferred: Row) -> Option<Slot> {
         let mut rows = vec![preferred];
@@ -205,6 +217,23 @@ mod tests {
         let v = Formation::VANILLA;
         assert_eq!(v.display_lines(), 3);
         assert_eq!(v.at_display(2, 1), Some(Slot::new(Row::Reserve, 1)));
+    }
+
+    #[test]
+    fn a_new_unit_fills_the_reserve_then_the_back_then_the_front() {
+        // 495ce0: reserve column 4, then 3 (1-based), then the back row 4, 3, 5, 2.
+        let w = Formation::WIDE;
+        let mut taken = Vec::new();
+        let mut order = Vec::new();
+        while let Some(s) = w.new_unit_slot(&taken) {
+            taken.push(s);
+            order.push(s);
+        }
+        assert_eq!(order.len(), 12);
+        assert_eq!(&order[..6], &[Slot::new(Row::Reserve, 3), Slot::new(Row::Reserve, 2), Slot::new(Row::Back, 3), Slot::new(Row::Back, 2), Slot::new(Row::Back, 4), Slot::new(Row::Back, 1)]);
+        assert_eq!(order[6], Slot::new(Row::Front, 3));
+        let v = Formation::VANILLA;
+        assert_eq!(v.new_unit_slot(&[]), Some(Slot::new(Row::Reserve, 2)), "4 columns: reserve column 3 first");
     }
 
     #[test]

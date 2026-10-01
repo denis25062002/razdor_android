@@ -852,8 +852,8 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 18 | Battle start | At `begin()` (after Razdor's deployment) only the player's back row moves into an empty front row; it persists | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | Matches |
 | 19 | Reserve collapse | Reserve to row 1, actions 0 | Same | 2 | Matches |
 | 20 | Wide formation | Per-side battle grid: the enemy's has the blocks, the player's none (the screen still offers only the formation's 12 cells); a collapse copies a row's blocks forward and opens the row left | Same, but the player's battle grid has no blocks (4d2233) and a collapse moves the blocks between rows | 6, 2 | Matches (what the screen shows for opened cells is unknown) |
-| 21 | Enemy formation | The stored troop slots | **Auto-arranged** every battle (483b3c) and written back to the army; off-screen both sides | 9, 10 | **Differs** |
-| 22 | Who fights | The player's unpaid units always sit out; enemies all fight | The **attacker's** unpaid units sit out, the defender's fight | 9 | **Differs** |
+| 21 | Enemy formation | Auto-arranged every battle (`Battle::auto_arrange`); off-screen both sides. Not written back to the enemy's troops: a beaten army or garrison is gone and a lost battle ends the game, so it shows nowhere | **Auto-arranged** every battle (483b3c) and written back to the army; off-screen both sides | 9, 10 | Matches (write-back: no effect) |
+| 22 | Who fights | The attacker's unpaid units sit out, the defender's fight (AI troops have no unpaid units). Who attacks is Razdor's: walking into a garrison is the player's attack, an army contact the army's | The **attacker's** unpaid units sit out, the defender's fight | 9 | Matches (who attacks: world.md) |
 | 23 | Deployment | A deployment phase before the first turn (`move_card`) | None seen; the battle starts from the army formation | 9 | Razdor extra (**unknown** in the original) |
 | 24 | Turn order | Threshold scan from 75, ties to the player, cursor by index | Same | 8 | Matches |
 | 25 | Attacker +1 initiative | Side 1 (the player; the attacker off-screen) | Same | 8 | Matches |
@@ -877,10 +877,11 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 42a | AI Elemental scoring | Main and alternative per side, cells scanned row by row; front-row haste scaled by hits-to-kill; the ÷10 rule with its exceptions; strike whenever a slow is impossible, slow + strike with a spare action; ×10 with an all-Ghost side; the turn's mean initiative | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | Matches |
 | 42b | AI Death scoring | As section 4 on the strike power; the self-target passes when no self-cast is offered; a threat of no damage is the role's minimum; blessings weigh the target's actions | Same, except the self-target: the original picks its own cell even with no self-cast on offer (a pass) | 4 | Matches |
 | 43 | Pre-simulation | Not played | A full AI-vs-AI copy before every battle; keeps only each side's simulated damage taken for the XP | 4, 9 | **Differs** (XP only) |
-| 44 | Off-screen battle | `set_simulation` (no Splash, simple AI), stored formations | Same flags; auto-arranged formations; attacker paid only | 10 | Partly |
-| 45 | AI target-scoring battle (`ai::simulate`) | Interactive settings (Splash on, normal AI) | Same engine as the off-screen battle: mode 0, no Splash | 10 | **Differs** |
+| 44 | Off-screen battle | `set_simulation` (no Splash, AI mode 0), both sides auto-arranged with the wide blocks, attacker paid only | Same flags; auto-arranged formations; attacker paid only | 10 | Matches |
+| 45 | AI target-scoring battle (`ai::simulate`) | Mode 0, no Splash, both sides auto-arranged, the defending player with all his living units | Same engine as the off-screen battle: mode 0, no Splash | 10 | Matches |
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
 | 47 | New unit's formation cell | Preferred row by role (front for warriors), then the other fighting row, then the reserve | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | **Differs** |
+| 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
 
 ## Unknowns and open points
 - **Wide-row quirks on screen.** What the screen shows when the player's side uses a cell that is

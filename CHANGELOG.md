@@ -58,6 +58,14 @@ old id, and their versions give both.
   haste by the blows needed to kill the enemies facing it, and a nearly dead Death mage with
   no spell for itself passes. The halving for a single action counts only for back-row mages,
   and a unit the AI counts as a warrior never steps back.
+- The enemy is arranged anew for every battle as the original does it: its strongest front
+  fighter in front, its shooters and mages behind, the rest by strength. Battles between AI
+  armies arrange both sides, and the AI's practice battles play by the same rules (no
+  Splash, the simple kill test).
+- Unpaid units sit out only the battles their side starts: an army that attacks the player
+  meets his whole army.
+- After a battle the army keeps the cells its units ended on; units that did not fight, then
+  the fallen, take free cells from the reserve forward.
 
 ## 0.2.2 — 2026-10-01
 

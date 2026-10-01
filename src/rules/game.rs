@@ -1155,7 +1155,9 @@ impl Game {
             None => (Vec::new(), Team::Player, 0),
         };
         let enemies: Vec<Unit> = enemies;
-        let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && !u.unpaid)).collect();
+        // The attacker brings only its paid units, the defender all its living ones (49855c):
+        // the player's unpaid units sit out only when he attacks.
+        let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && (attacker != Team::Player || !u.unpaid))).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
         b.set_xp_correction(correction);
@@ -1188,6 +1190,8 @@ impl Game {
         if let Some(own) = here.map(|l| &self.world.locations[l]).filter(|l| (l.owned() || l.attitude > 0) && l.garrison_defence > 0) {
             b.set_building_defence(Team::Player, own.garrison_defence);
         }
+        // The player fights in his army's formation; the enemy is arranged anew (483b3c).
+        b.auto_arrange(Team::Enemy);
         self.play_battle_start(&b);
         b
     }
@@ -1257,10 +1261,33 @@ impl Game {
     }
 
     fn settle_battle(&mut self, battle: &Battle) -> BattleResult {
+        // The army's formation is rebuilt from the battle grid (4988c0): the survivors keep
+        // the cells they ended on (a cell outside the formation is lost); those left without
+        // one, the units that did not fight first, then the dead, take free cells, reserve
+        // first.
+        let formation = self.content.formation;
+        let mut placed = vec![false; self.squad.len()];
+        let mut dead = vec![false; self.squad.len()];
+        let mut taken: Vec<Slot> = Vec::new();
         for r in battle.player_results() {
             let u = &mut self.squad[r.squad_index];
             u.hp = r.hp;
-            u.slot = r.slot;
+            // The hero's 1 HP comes after the formation is rebuilt (4906a0).
+            let alive = battle.fighters.iter().any(|f| f.squad_index == Some(r.squad_index) && f.alive());
+            dead[r.squad_index] = !alive;
+            if alive && formation.contains(r.slot) && !taken.contains(&r.slot) {
+                u.slot = r.slot;
+                taken.push(r.slot);
+                placed[r.squad_index] = true;
+            }
+        }
+        let dead_now = |i: usize| dead[i] || !self.squad[i].alive();
+        let rest: Vec<usize> = (0..self.squad.len()).filter(|&i| !placed[i] && !dead_now(i)).chain((0..self.squad.len()).filter(|&i| !placed[i] && dead_now(i))).collect();
+        for i in rest {
+            if let Some(s) = formation.new_unit_slot(&taken) {
+                self.squad[i].slot = s;
+                taken.push(s);
+            }
         }
         let mut level_ups = Vec::new();
         let c = self.content.clone();
@@ -1676,6 +1703,41 @@ mod tests {
         let b = g.start_battle();
         assert!(b.fighters.iter().all(|f| f.unit != spear));
         assert_eq!(b.attacker, Team::Player, "walking into a camp is an attack");
+        // Attacked, the player defends with all his living units, the unpaid too (49855c).
+        let mut g = new_game(HeroClass::Knight, 1);
+        g.hire(spear).unwrap();
+        g.squad[1].unpaid = true;
+        g.foe = Some(Foe::Army(0));
+        let b = g.start_battle();
+        assert_eq!(b.attacker, Team::Enemy);
+        assert!(b.fighters.iter().any(|f| f.unit == spear));
+    }
+
+    #[test]
+    fn after_a_battle_the_formation_is_the_battle_grid() {
+        let mut g = quiet_game(HeroClass::Knight);
+        let spear = unit(&g, "spearman");
+        g.hire(spear).unwrap();
+        g.hire(spear).unwrap();
+        g.squad[2].unpaid = true;
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        let mut b = g.start_battle();
+        b.begin();
+        // The hero falls, the first spearman ends the battle on a cell of his own choosing.
+        let hero = b.fighters.iter().position(|f| f.squad_index == Some(0)).unwrap();
+        let first = b.fighters.iter().position(|f| f.squad_index == Some(1)).unwrap();
+        b.fighters[hero].hp = 0;
+        b.fighters[first].slot = Slot::new(crate::rules::formation::Row::Front, 0);
+        wipe_enemies(&mut b);
+        g.settle_battle(&b);
+        assert_eq!(g.squad[1].slot, Slot::new(crate::rules::formation::Row::Front, 0), "the cell it ended on");
+        // Those without a cell take free ones, reserve first: the spearman who sat out, then
+        // the fallen hero (back at 1 HP).
+        let f = g.content.formation;
+        let first_free = f.new_unit_slot(&[Slot::new(crate::rules::formation::Row::Front, 0)]).unwrap();
+        assert_eq!(g.squad[2].slot, first_free);
+        assert_eq!(g.squad[0].slot, f.new_unit_slot(&[Slot::new(crate::rules::formation::Row::Front, 0), first_free]).unwrap());
+        assert_eq!(g.squad[0].hp, 1);
     }
 
     #[test]

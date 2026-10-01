@@ -1238,7 +1238,7 @@ fn hero_survives_while_his_army_lives() {
 }
 
 #[test]
-fn deployment_is_kept_after_the_battle() {
+fn the_battle_grid_is_kept_after_the_battle() {
     let c = content_with(vec![], Formation::WIDE);
     let squad = [Unit::new(&c, UnitId(10), f(2)), Unit::new(&c, UnitId(11), b(2))];
     let p: Vec<_> = squad.iter().enumerate().collect();
@@ -1250,9 +1250,10 @@ fn deployment_is_kept_after_the_battle() {
     assert_eq!(bt.move_card(f(0), f(1)), Err(ActionError::InvalidTarget));
     bt.begin();
     assert_eq!(bt.move_card(f(5), f(4)), Err(ActionError::NotDeploying));
-    bt.fighters[0].slot = f(0); // pushed around during the fight
+    bt.fighters[0].slot = f(0); // moved during the fight
+    // The formation after the battle is the battle grid as it ended (4988c0).
     let res = bt.player_results();
-    assert_eq!((res[0].slot, res[1].slot), (b(2), f(5)));
+    assert_eq!((res[0].slot, res[1].slot), (f(0), f(5)));
 }
 
 /// The player: warrior 10 in front, shooter 11 behind; the enemy: four punching bags in
@@ -1892,4 +1893,42 @@ fn row42b_a_nearly_dead_death_mage_passes_without_a_self_cast() {
     // Its best strike is 30 × 20% = 6 ≤ 30 / 5, with 10 HP of 50: its own cell, a pass.
     bt.fighters[1].hp = 10;
     assert_eq!(bt.ai_step(), Some(Step::Wait { actor: 1 }));
+}
+
+#[test]
+fn row21_the_enemy_is_auto_arranged() {
+    let c = content_with(vec![], Formation::WIDE);
+    // Stored cells are ignored. Front values: the warrior HP 50 × (30 + 5 + 5) + 1 = 2001 ties
+    // the bag's 200 × 10 + 1 and wins by list order; the shooter and the mage (non-warriors)
+    // go to the back row, the bag (a warrior) to the front.
+    let mut bt = prepared(&c, &[(10, f(2))], &[(11, r(2)), (10, r(3)), (12, b(1)), (18, b(4))], Team::Player);
+    bt.auto_arrange(Team::Enemy);
+    assert_eq!((bt.fighters[2].slot, bt.fighters[4].slot), (f(3), f(2)));
+    let mut back = vec![bt.fighters[1].slot, bt.fighters[3].slot];
+    back.sort_by_key(|s| s.col);
+    assert_eq!(back, vec![b(2), b(3)]);
+    assert_eq!(bt.fighters[0].slot, f(2), "the player keeps his formation");
+}
+
+#[test]
+fn row21_a_full_back_row_sends_non_warriors_to_the_reserve_then_the_front() {
+    let c = content_with(vec![], Formation::WIDE);
+    let mut enemies = vec![(10, f(0))];
+    enemies.extend((0..7).map(|k| (11, f(k % 6))));
+    let mut bt = prepared(&c, &[(10, f(2))], &enemies, Team::Player);
+    bt.auto_arrange(Team::Enemy);
+    let slots: Vec<Slot> = bt.fighters[1..].iter().map(|f| f.slot).collect();
+    // Four shooters fill the back row (the fifth try finds it full), then two take the
+    // reserve and the last one the front.
+    assert_eq!(slots, vec![f(3), b(3), b(2), b(4), b(1), r(3), r(2), f(2)]);
+}
+
+#[test]
+fn row44_off_screen_both_sides_are_auto_arranged_with_the_wide_blocks() {
+    let c = content_with(vec![], Formation::WIDE);
+    let mut bt = prepared(&c, &[(11, f(0)), (10, b(1))], &[(10, f(2))], Team::Player);
+    bt.set_simulation();
+    bt.auto_arrange(Team::Player);
+    assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (b(3), f(3)));
+    assert!(!bt.is_open(Team::Player, b(0)), "side 1 gets the blocks of an auto-arranged grid");
 }

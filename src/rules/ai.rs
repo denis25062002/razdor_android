@@ -507,9 +507,14 @@ pub struct SimResult {
 pub fn simulate(c: &Arc<Content>, mine: &[Unit], theirs: &[Unit], defence: i32) -> SimResult {
     let side: Vec<(usize, &Unit)> = mine.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
     let mut b = Battle::new(c.clone(), &side, theirs, Team::Player);
+    // The same engine as the off-screen battle (4a0710): AI mode 0, no Splash, both sides
+    // auto-arranged. Its pre-simulation only predicts the XP, unused here, so it is not run.
+    b.set_simulation();
     if defence > 0 {
         b.set_building_defence(Team::Enemy, defence);
     }
+    b.auto_arrange(Team::Player);
+    b.auto_arrange(Team::Enemy);
     b.begin();
     let mut steps = 0;
     while b.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
@@ -960,7 +965,8 @@ impl Game {
         let day = self.clock.day_index();
         let wander = self.wander_points(i);
         let hero = self.hero_target();
-        let squad: Vec<Unit> = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || (u.alive() && !u.unpaid)).map(|(_, u)| u.clone()).collect();
+        // The player defends there: all his living units fight, the unpaid ones too.
+        let squad: Vec<Unit> = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
         let mut sims = std::mem::take(&mut self.sims);
         let out = choose(&self.world, &self.content, i, hero.map(|h| (h, squad.as_slice())), now, day, &wander, &mut sims);
         self.sims = sims;
@@ -1492,6 +1498,9 @@ impl Game {
         if defence > 0 {
             b.set_building_defence(Team::Enemy, defence);
         }
+        // Both sides are auto-arranged (4a0710).
+        b.auto_arrange(Team::Player);
+        b.auto_arrange(Team::Enemy);
         b.begin();
         let mut steps = 0;
         while b.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {

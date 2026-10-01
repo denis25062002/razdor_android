@@ -261,8 +261,6 @@ pub struct Fighter {
     pub useful: i32,
     pub taken: i32,
     pub lost: i32,
-    /// Cell after deployment; written back to the squad.
-    deployed: Slot,
     ai_power: i32,
     ai_role: AiRole,
 }
@@ -306,7 +304,6 @@ impl Fighter {
             useful: 0,
             taken: 0,
             lost: 0,
-            deployed: unit.slot,
             ai_power: 0,
             ai_role: AiRole::Warrior,
         }
@@ -596,7 +593,6 @@ impl Battle {
                 };
                 if let Some(s) = slot {
                     self.fighters[i].slot = s;
-                    self.fighters[i].deployed = s;
                     taken.push(s);
                 }
             }
@@ -620,6 +616,100 @@ impl Battle {
     /// killable when its actions left can do it.
     pub fn set_improved_ai(&mut self, on: bool) {
         self.ai_level = if on { 2 } else { 1 };
+    }
+
+    /// The original's auto-arrange of a side (483b3c), for the enemy of a battle on screen
+    /// and both sides off screen. The side's grid gets the wide row's blocks (48395c), then:
+    /// the unit with the highest "front value" goes to the front row; up to 5 times the
+    /// strongest unplaced non-warrior to the back row; then the rest, strongest first, a
+    /// warrior to the front, else the reserve, else the back row, anyone else to the back,
+    /// else the reserve, else the front. Each row fills its first free cell in the preferred
+    /// column order; ties go to list order. The strength is the unit's tactical value, the
+    /// roles and values are those of the side as built, its Garrison doubling included. Call
+    /// after the building defence is set.
+    pub fn auto_arrange(&mut self, team: Team) {
+        let formation = self.formation;
+        let side = &mut self.cells[team.index()];
+        for (r, &row) in [Row::Front, Row::Back, Row::Reserve].iter().enumerate() {
+            for c in 0..formation.cols.min(6) {
+                side[r][c as usize] = formation.contains(Slot::new(row, c));
+            }
+        }
+        let building = self.building_defence[team.index()];
+        let ids = self.living_ids(team);
+        let built: Vec<Stats> = ids
+            .iter()
+            .map(|&i| {
+                let f = &self.fighters[i];
+                let mut s = f.base.clone();
+                s[Stat::MagicPower] = f.power;
+                if f.has(Bonus::Garrison) && building >= 10 {
+                    for st in [Stat::AttackBlow, Stat::DefenceBlow, Stat::DefenceShot] {
+                        s[st] *= 2;
+                    }
+                }
+                s
+            })
+            .collect();
+        let roles: Vec<AiRole> = built.iter().map(|s| ai_power_role(s).1).collect();
+        let strength: Vec<i64> = ids.iter().map(|&i| experience::tactical(&self.content, self.fighters[i].unit, &self.fighters[i].base, building) as i64).collect();
+        let mut cell: Vec<Option<Slot>> = vec![None; ids.len()];
+        let order = formation.col_order();
+        let place = |cell: &mut Vec<Option<Slot>>, k: usize, row: Row, open: &dyn Fn(Slot) -> bool| -> bool {
+            let free = order.iter().map(|&c| Slot::new(row, c)).find(|&s| open(s) && !cell.contains(&Some(s)));
+            if let Some(s) = free {
+                cell[k] = Some(s);
+            }
+            free.is_some()
+        };
+        let open = |s: Slot| self.is_open(team, s);
+        // Step 1: the front value, `HP × (Manevres × AB + DB, + DS for a warrior, ÷3 for a
+        // shooter, ÷5 for a mage) + 1`; a Ghost's is 6 − Manevres.
+        let front = |k: usize| {
+            let (s, f) = (&built[k], &self.fighters[ids[k]]);
+            let mut v = (s[Stat::Manevres] * s[Stat::AttackBlow] + s[Stat::DefenceBlow]) as i64;
+            match roles[k] {
+                AiRole::Warrior => v += s[Stat::DefenceShot] as i64,
+                AiRole::Shooter => v /= 3,
+                AiRole::Mage => v /= 5,
+            }
+            if f.has(Bonus::Ghost) { 6 - s[Stat::Manevres] as i64 } else { f.hp as i64 * v + 1 }
+        };
+        let best = |cell: &Vec<Option<Slot>>, value: &dyn Fn(usize) -> i64, ok: &dyn Fn(usize) -> bool| {
+            let mut top: Option<(i64, usize)> = None;
+            for (k, c) in cell.iter().enumerate() {
+                let v = value(k);
+                if c.is_none() && ok(k) && v > top.map_or(0, |t| t.0) {
+                    top = Some((v, k));
+                }
+            }
+            top.map(|t| t.1)
+        };
+        if let Some(k) = best(&cell, &front, &|_| true) {
+            place(&mut cell, k, Row::Front, &open);
+        }
+        // Step 2: up to 5 tries, the strongest non-warrior to the back row (a try that finds
+        // the back row full places nobody).
+        for _ in 0..5 {
+            if cell.iter().all(Option::is_some) {
+                break;
+            }
+            if let Some(k) = best(&cell, &|k| strength[k], &|k| roles[k] != AiRole::Warrior) {
+                place(&mut cell, k, Row::Back, &open);
+            }
+        }
+        // Step 3: everyone else, strongest first.
+        while let Some(k) = best(&cell, &|k| strength[k], &|_| true) {
+            let rows = if roles[k] == AiRole::Warrior { [Row::Front, Row::Reserve, Row::Back] } else { [Row::Back, Row::Reserve, Row::Front] };
+            if !rows.iter().any(|&row| place(&mut cell, k, row, &open)) {
+                break;
+            }
+        }
+        for (k, &i) in ids.iter().enumerate() {
+            if let Some(s) = cell[k] {
+                self.fighters[i].slot = s;
+            }
+        }
     }
 
     /// Both sides as the battle began.
@@ -725,23 +815,6 @@ impl Battle {
         for f in &mut self.fighters {
             f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.building_defence[f.team.index()]);
             f.role = experience::role(&f.base);
-            let s = &f.base;
-            let (ab, sh, mp) = (s[Stat::AttackBlow], s[Stat::AttackShot], s[Stat::MagicPower]);
-            let top = ab.max(sh).max(mp);
-            let mut power = top + (ab + sh + mp - top) / 3;
-            power += [(Bonus::GodAnger, 10), (Bonus::ArmorIgnore, 15), (Bonus::GodStrike, 20), (Bonus::Counterblow, ab), (Bonus::FlankStrike, 10)]
-                .iter()
-                .filter(|(b, _)| s.has(b))
-                .map(|(_, v)| v)
-                .sum::<i32>();
-            f.ai_power = power;
-            f.ai_role = if 3 * mp >= 2 * power && s.is_mage() {
-                AiRole::Mage
-            } else if 3 * sh >= 2 * power && sh > 0 {
-                AiRole::Shooter
-            } else {
-                AiRole::Warrior
-            };
         }
         for team in Team::BOTH {
             let side: Vec<&Fighter> = self.fighters.iter().filter(|f| f.team == team && f.alive()).collect();
@@ -754,7 +827,6 @@ impl Battle {
         for i in 0..self.fighters.len() {
             let building = self.building_defence[self.fighters[i].team.index()];
             let f = &mut self.fighters[i];
-            f.deployed = f.slot;
             // Garrison in a strong building: AB, DB and DS ×2; not AS (49861d).
             if f.has(Bonus::Garrison) && building >= 10 {
                 for st in [Stat::AttackBlow, Stat::DefenceBlow, Stat::DefenceShot] {
@@ -765,6 +837,8 @@ impl Battle {
             if f.team == Team::Player {
                 f.base[Stat::Initiative] += 1;
             }
+            // The battle AI's roles, from the setup's stats (483ecc → 4836cc).
+            (f.ai_power, f.ai_role) = ai_power_role(&f.base);
         }
         self.hunger_seen = self.fighters.iter().filter(|f| f.alive()).count();
         self.start_turn();
@@ -2531,7 +2605,9 @@ impl Battle {
     }
 
     /// Final state of the player's fighters. The hero cannot die while a unit of his army
-    /// survives: he comes back with 1 HP (4906a0). Slots are the deployed ones.
+    /// survives: he comes back with 1 HP (4906a0). Slots are where they stand at the end:
+    /// the army's formation is rebuilt from the battle grid (4988c0, see
+    /// `Game::settle_battle` for the units without a cell).
     pub fn player_results(&self) -> Vec<FighterResult> {
         let survivors = self.living(Team::Player).next().is_some();
         self.fighters
@@ -2539,10 +2615,30 @@ impl Battle {
             .filter_map(|f| {
                 let squad_index = f.squad_index?;
                 let hp = if f.is_hero && !f.alive() && survivors { 1 } else { f.hp.max(0) };
-                Some(FighterResult { squad_index, hp, slot: if self.deploying { f.slot } else { f.deployed } })
+                Some(FighterResult { squad_index, hp, slot: f.slot })
             })
             .collect()
     }
+}
+
+/// The battle AI's strength and role of a unit (4836cc): the best of AB, AS and MP plus a
+/// third of the other two, with the bonus additions; a mage if its MP reaches two thirds of
+/// that, else a shooter if its AS does, else a warrior (no attack at all makes a mage).
+fn ai_power_role(s: &Stats) -> (i32, AiRole) {
+    let (ab, sh, mp) = (s[Stat::AttackBlow], s[Stat::AttackShot], s[Stat::MagicPower]);
+    let top = ab.max(sh).max(mp);
+    let mut power = top + (ab + sh + mp - top) / 3;
+    power += [(Bonus::GodAnger, 10), (Bonus::ArmorIgnore, 15), (Bonus::GodStrike, 20), (Bonus::Counterblow, ab), (Bonus::FlankStrike, 10)]
+        .iter()
+        .filter(|(b, _)| s.has(b))
+        .map(|(_, v)| v)
+        .sum::<i32>();
+    let role = match experience::role(s) {
+        Role::Mage => AiRole::Mage,
+        Role::Shooter => AiRole::Shooter,
+        Role::Melee => AiRole::Warrior,
+    };
+    (power, role)
 }
 
 /// Community `Berserk`: the attack modifier is `AB × 75% × (maxHP − HP) / maxHP`.
