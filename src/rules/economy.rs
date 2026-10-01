@@ -538,11 +538,14 @@ impl Game {
         match o {
             VillageOffer::Innkeeper => {
                 let unpaid = self.squad.iter().filter(|u| u.unpaid).count();
-                2 * unpaid >= n && self.gold - self.daily_wages() + self.daily_income() < 0
+                unpaid >= n / 2 && self.gold - self.daily_wages() + self.daily_income() < 0
             }
             VillageOffer::Priest => {
-                let hurt: Vec<i32> = self.squad.iter().filter(|u| u.alive()).map(|u| u.max_hp(c) - u.hp).collect();
-                self.spell(PRIEST_SPELL).is_some() && hurt.iter().sum::<i32>() > 50 && 2 * hurt.iter().filter(|&&h| h > 0).count() >= n
+                // The original's second test counts the *living* units (HP above 0), not the
+                // wounded ones, against the army size div 2 (0x4bba40; kept).
+                let living: Vec<&Unit> = self.squad.iter().filter(|u| u.alive()).collect();
+                let missing: i32 = living.iter().map(|u| u.max_hp(c) - u.hp).sum();
+                self.spell(PRIEST_SPELL).is_some() && missing > 50 && living.len() >= n / 2
             }
             VillageOffer::Blessing => BLESSING_SPELLS.iter().any(|&s| self.spell(s).is_some()) && self.good_spells_on_units() <= n,
             VillageOffer::Furs => {
@@ -554,9 +557,11 @@ impl Game {
     }
 
     /// Entering building `l`: a village whose gold stock is above 0 and which did not make
-    /// the last offer rolls for one (economy.md §3): innkeeper 1/2, priest 1/3, then blessing,
-    /// furs and witch 1/6 each, in that order, each with its conditions; the first that
-    /// passes is offered. The kind offered last time is never offered again next.
+    /// the last offer rolls for one (economy.md §3, 0x4bba40): innkeeper 1/2, priest 1/3,
+    /// then blessing, furs and witch 1/6 each, in that order, each with its conditions; the
+    /// first that passes is offered. Every roll is drawn until one passes, also for the kind
+    /// offered last time, which cannot pass. "Last" then becomes what was offered, or none
+    /// when nothing was, so a kind can come back after an empty visit.
     pub(crate) fn visit_village(&mut self, l: usize) {
         self.offer = None;
         let v = &self.world.locations[l];
@@ -564,16 +569,17 @@ impl Game {
             return;
         }
         use VillageOffer::*;
+        let mut picked = None;
         for (o, n) in [(Innkeeper, 2), (Priest, 3), (Blessing, 6), (Furs, 6), (Witch, 6)] {
-            if self.last_offer == Some(o) {
-                continue;
+            if self.rng.random(n) == 0 && self.offer_fits(o) && self.last_offer != Some(o) {
+                picked = Some(o);
+                break;
             }
-            if self.rng.random(n) == 0 && self.offer_fits(o) {
-                self.offer = Some((l, o));
-                self.offered_at = Some(l);
-                self.last_offer = Some(o);
-                return;
-            }
+        }
+        self.last_offer = picked;
+        if let Some(o) = picked {
+            self.offer = Some((l, o));
+            self.offered_at = Some(l);
         }
     }
 

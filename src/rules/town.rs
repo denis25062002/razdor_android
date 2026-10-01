@@ -847,18 +847,89 @@ mod tests {
         }
         assert!(g.collect_tribute().is_some());
         g.pass_time(24.0 * 60.0, &mut Vec::new());
-        let mut again = Vec::new();
+        // Visit by visit: a kind is never offered on the very next visit after it, but an
+        // empty visit in between clears "last" (the original's behaviour).
+        let mut visits = vec![Some(first)];
         for _ in 0..60 {
             g.visit_village(0);
-            if let Some(o) = g.village_offer() {
-                again.push(o);
+            let o = g.village_offer();
+            visits.push(o);
+            if o.is_some() {
                 g.collect_tribute();
                 g.pass_time(24.0 * 60.0, &mut Vec::new());
             }
         }
-        assert!(again.first().is_some_and(|&o| o != first), "never the same kind twice in a row: {first:?} then {again:?}");
-        assert!(again.windows(2).all(|w| w[0] != w[1]));
+        assert!(visits.windows(2).all(|w| w[0].is_none() || w[0] != w[1]), "{visits:?}");
+        assert!(visits.windows(3).any(|w| w[1].is_none() && w[0].is_some() && w[0] == w[2]), "a kind back after an empty visit: {visits:?}");
         let _ = VillageOffer::Witch;
+    }
+
+    #[test]
+    fn a_village_rolls_every_offer_and_forgets_the_last_after_an_empty_visit() {
+        use crate::rules::economy::VillageOffer;
+        use crate::rules::rng::Rng;
+        // No one unpaid or hurt and two spells known: only the blessing and the furs can
+        // pass. The blessing was the last offer, so its roll is drawn but cannot pass.
+        let last = |g: &mut Game| g.last_offer = Some(VillageOffer::Blessing);
+        let (mut blessed, mut empty) = (false, false);
+        for seed in 0..200 {
+            let g = visit_village(40, 5, seed, &last);
+            let mut r = Rng::new(seed);
+            r.random(2);
+            r.random(3);
+            blessed |= r.random(6) == 0;
+            let furs = r.random(6) == 0;
+            if !furs {
+                r.random(6);
+            }
+            assert_eq!(g.rng.state(), r.state(), "seed {seed}: every roll up to the first that passes");
+            let want = furs.then_some(VillageOffer::Furs);
+            assert_eq!(g.village_offer(), want, "seed {seed}");
+            // "Last" becomes the offer, or none after an empty visit.
+            assert_eq!(g.last_offer, want);
+            empty |= want.is_none();
+        }
+        assert!(blessed && empty);
+        // After the empty visit the blessing may come again.
+        let seed = (0..200).find(|&s| visit_village(40, 5, s, &|_| {}).village_offer() == Some(VillageOffer::Blessing)).unwrap();
+        let none = |g: &mut Game| g.last_offer = None;
+        assert_eq!(visit_village(40, 5, seed, &none).village_offer(), Some(VillageOffer::Blessing));
+    }
+
+    #[test]
+    fn the_innkeeper_and_the_priest_compare_with_the_army_size_div_2() {
+        use crate::rules::economy::VillageOffer;
+        use crate::rules::rng::Rng;
+        // An army of 3: one unpaid unit is enough (3 div 2 = 1).
+        let seed = (0..200).find(|&s| Rng::new(s).random(2) == 0).unwrap();
+        let broke = |g: &mut Game| {
+            g.gold = 0;
+            g.squad.truncate(3);
+            g.squad.iter_mut().for_each(|u| u.unpaid = false);
+            g.squad[2].unpaid = true;
+        };
+        let g = visit_village(40, 5, seed, &broke);
+        assert_eq!(g.squad.len(), 3);
+        assert_eq!(g.village_offer(), Some(VillageOffer::Innkeeper));
+        // The priest counts the living (not the wounded) against the size div 2: in an
+        // army of 7, three wounded units missing over 50 HP in all are enough (7 div 2 = 3),
+        // though they are fewer than half.
+        let seed = (0..200).find(|&s| {
+            let mut r = Rng::new(s);
+            r.random(2) != 0 && r.random(3) == 0
+        });
+        let seed = seed.unwrap();
+        let hurt = |g: &mut Game| {
+            g.squad.truncate(2);
+            while g.squad.len() < 7 {
+                g.squad.push(g.squad[1].clone());
+            }
+            (1..4).for_each(|k| g.squad[k].hp = 1);
+        };
+        let g = visit_village(40, 5, seed, &hurt);
+        let missing: i32 = g.squad.iter().map(|u| u.max_hp(&g.content) - u.hp).sum();
+        assert!(missing > 50 && g.squad.iter().filter(|u| u.hp < u.max_hp(&g.content)).count() == 3);
+        assert_eq!(g.village_offer(), Some(VillageOffer::Priest));
     }
 
     #[test]

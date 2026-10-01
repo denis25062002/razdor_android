@@ -24,6 +24,12 @@ old id, and their versions give both.
   box (or on the whole map), not only on cells they can walk to.
 - The Community events' random flag (opcode 18) uses the Community's own generator,
   including its slip in the retry loop.
+- Village offers roll as in the original: every roll is drawn until one is offered, also
+  the one for the kind offered last time, and a visit with no offer lets that kind come
+  back. The innkeeper and the priest compare with half the army rounded down, and the
+  priest counts the living units, not only the wounded ones.
+- A save load seeds the random numbers from the plants of the original's wider cell
+  array (8 columns past the map's edge), as the original does.
 
 ## 0.2.2 — 2026-10-01
 

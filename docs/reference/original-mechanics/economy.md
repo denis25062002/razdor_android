@@ -369,8 +369,8 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
   villages (0x671d14):
   1. **5 innkeeper**: `Rand(2) = 0`; unpaid units ≥ army size div 2; gold − wage bill + stored
      income < 0; last ≠ 5.
-  2. **2 priest**: `Rand(3) = 0`; total missing HP of the living > 50; wounded units ≥ army size
-     div 2; last ≠ 2.
+  2. **2 priest**: `Rand(3) = 0`; total missing HP of the living > 50; living units (HP above 0,
+     wounded or not) ≥ army size div 2; last ≠ 2.
   3. **1 long blessing**: `Rand(6) = 0`; number of own-army spells in effect on the units ≤ army
      size; last ≠ 1.
   4. **3 furs**: (only if 3 failed) `Rand(6) = 0`; fewer than 25 pack entries; at most 2 furs in
@@ -531,7 +531,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Dismiss / Bury | One click, no confirmation; worn items go to the pack, refused when the pack is full | A confirm step; no refund; **worn items are lost**; the pack is untouched; only the hero is protected | **No** |
 | Hire timing | Immediate | The unit, gold and slot count change when the card slide ends | Yes (no visible difference) |
 | Market display | Prices as charged; sell list shows the whole pack with "not for sale" rows; no red prices; Buy also needs pack space | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Partly |
-| Village offers | Rolls and conditions as the original; a kind already offered last is skipped without rolling; "last" kept after an empty visit | Rolls every step; "last" becomes none after an empty visit; all options are questions | Partly |
+| Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
 | Village tribute | Refused from a hostile village | No attitude test (entering captures the village) | **No** |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
 | AI-vs-AI loot | `MinVictoryGold` threshold both ways; no wage bill | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | **No** |
