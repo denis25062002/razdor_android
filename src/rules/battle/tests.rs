@@ -464,14 +464,23 @@ fn row12_a_voluntary_move_collapses_only_after_the_movers_last_action() {
 }
 
 #[test]
-fn row12_an_empty_front_row_is_filled_when_the_battle_starts() {
-    // The player's observation of the original; the notes read the collapse only after a
-    // death or a unit's last action.
-    let bt = battle(&[(11, b(2)), (11, b(3))], &[(18, f(2))]);
+fn row18_the_players_back_row_fills_an_empty_front_when_the_battle_starts() {
+    // The battle window's fix of the player's formation (4d2141): the back row moves up at
+    // once, and stays there after the battle.
+    let mut bt = battle(&[(11, b(2)), (11, b(3))], &[(18, f(2))]);
     assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (f(2), f(3)), "the back row steps forward at once");
-    let c = content_with(vec![], Formation::VANILLA);
-    let bt = battle_in(&c, &[(11, r(1))], &[(18, f(1)), (11, r(2))]);
-    assert_eq!((bt.fighters[0].slot, bt.fighters[2].slot), (f(1), r(2)), "a reserve alone steps forward; one behind a front row stays");
+    win(&mut bt);
+    assert_eq!(bt.player_results().iter().map(|r| r.slot).collect::<Vec<_>>(), vec![f(2), f(3)]);
+    // The reserve does not move, nor does the enemy: there is no collapse at the start.
+    let c = content_with(vec![acts(132, 2, shooter(132, 20))], Formation::VANILLA);
+    let mut bt = battle_in(&c, &[(132, r(1))], &[(18, f(1)), (11, r(2))]);
+    assert_eq!((bt.fighters[0].slot, bt.fighters[2].slot), (r(1), r(2)));
+    // The lone reserve unit steps up only once it has used its last action (48b5ac).
+    turn_of(&mut bt, 0);
+    bt.pass();
+    assert_eq!(bt.fighters[0].slot, r(1));
+    bt.pass();
+    assert_eq!(bt.fighters[0].slot, f(1));
 }
 
 #[test]
@@ -1724,4 +1733,45 @@ fn row13_a_ghost_casts_on_the_power_s_low_byte_whatever_its_direction() {
     assert!(bt.options(0, 5).is_empty(), "only the three front cells opposite");
     assert!(bt.options(1, 4).is_empty(), "200 is −56 as a signed byte");
     assert_eq!(bt.options(2, 4), vec![ActionKind::Curse], "300 is 44 in its low byte");
+}
+
+#[test]
+fn row17_no_collapse_at_a_turn_start() {
+    // A reserve unit that never acts (initiative 0) is never moved up: the collapse runs
+    // after a death or the side's actor's last action, not when turns start.
+    let c = content_with(vec![], Formation::VANILLA);
+    let mut bt = prepared(&c, &[(11, r(1))], &[(18, f(1))], Team::Player);
+    bt.fighters[0].base[Stat::Initiative] = -1; // 0 with the player's +1
+    bt.begin();
+    to_round(&mut bt, 3);
+    assert_eq!(bt.fighters[0].slot, r(1));
+}
+
+#[test]
+fn row20_a_collapse_carries_the_wide_rows_blocks_forward() {
+    let c = content_with(vec![], Formation::WIDE);
+    let mut bt = battle_in(&c, &[(10, f(3)), (12, f(1))], &[(18, f(3)), (18, b(3)), (18, b(4))]);
+    assert!(bt.is_open(Team::Player, b(0)) && bt.is_open(Team::Player, r(0)), "the player's grid has no blocks");
+    assert!(!bt.is_open(Team::Enemy, b(0)) && !bt.is_open(Team::Enemy, r(4)));
+    assert_eq!(bt.targets(1), vec![2, 3, 4], "the mage in column 2 sees a clear front");
+    bt.fighters[2].hp = 30;
+    turn_of(&mut bt, 0);
+    assert!(bt.act(2).unwrap().killed);
+    assert_eq!((bt.fighters[3].slot, bt.fighters[4].slot), (f(3), f(4)));
+    // The back row's blocks are now the front row's, and the back row is all open.
+    assert!(!bt.is_open(Team::Enemy, f(0)) && !bt.is_open(Team::Enemy, f(5)));
+    assert!(bt.is_open(Team::Enemy, b(0)) && bt.is_open(Team::Enemy, b(5)));
+    // A blocked cell is not empty: the front opposite column 2 is no longer clear.
+    assert!(bt.targets(1).is_empty());
+}
+
+#[test]
+fn row46_berserk_at_a_turn_start_reads_the_hp_before_the_poison() {
+    let berserk = bonus(134, Bonus::Berserk, warrior(134, 30, 0));
+    let mut bt = with(vec![berserk], &[(10, f(2))], &[(134, f(2))]);
+    bt.fighters[1].hp = 25;
+    bt.fighters[1].regen = -20;
+    to_round(&mut bt, 2);
+    // 30·75·25/50/100 = 11 from the 25 HP it had, then the poison takes 10.
+    assert_eq!((bt.fighters[1].hp, bt.fighters[1].stats[Stat::AttackBlow]), (15, 41));
 }

@@ -848,10 +848,10 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 14 | Undead caster drain | Caster gains the full drain; only the target's loss is capped | Caster gains the full drain; only the target's loss is capped | 3 | Matches |
 | 15 | Vampirism | Melee and long strike only; Death strikes | **Melee and long strike only**; Death strikes | 8 | Matches |
 | 16 | Into the reserve | Front or back row, one reserve transition per turn | Same | 2 | Matches |
-| 17 | Collapse timing | After a death and after the actor's last action, **plus** at `begin()` and every `start_turn()` | Only after a death and after the actor's last action; never at a turn start | 2 | **Differs** (rarely visible) |
-| 18 | Battle start | Both sides collapse at `begin()` (reserve too) | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | **Differs** |
+| 17 | Collapse timing | Only after a death and after the actor's last action | Only after a death and after the actor's last action; never at a turn start | 2 | Matches |
+| 18 | Battle start | At `begin()` (after Razdor's deployment) only the player's back row moves into an empty front row; it persists | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | Matches |
 | 19 | Reserve collapse | Reserve to row 1, actions 0 | Same | 2 | Matches |
-| 20 | Wide formation | Front 6, back 4, reserve 2, blocks fixed | Same, but the player's battle grid has no blocks (4d2233) and a collapse moves the blocks between rows | 6, 2 | Partly (quirks not modelled) |
+| 20 | Wide formation | Per-side battle grid: the enemy's has the blocks, the player's none (the screen still offers only the formation's 12 cells); a collapse copies a row's blocks forward and opens the row left | Same, but the player's battle grid has no blocks (4d2233) and a collapse moves the blocks between rows | 6, 2 | Matches (what the screen shows for opened cells is unknown) |
 | 21 | Enemy formation | The stored troop slots | **Auto-arranged** every battle (483b3c) and written back to the army; off-screen both sides | 9, 10 | **Differs** |
 | 22 | Who fights | The player's unpaid units always sit out; enemies all fight | The **attacker's** unpaid units sit out, the defender's fight | 9 | **Differs** |
 | 23 | Deployment | A deployment phase before the first turn (`move_card`) | None seen; the battle starts from the army formation | 9 | Razdor extra (**unknown** in the original) |
@@ -879,7 +879,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 43 | Pre-simulation | Not played | A full AI-vs-AI copy before every battle; keeps only each side's simulated damage taken for the XP | 4, 9 | **Differs** (XP only) |
 | 44 | Off-screen battle | `set_simulation` (no Splash, simple AI), stored formations | Same flags; auto-arranged formations; attacker paid only | 10 | Partly |
 | 45 | AI target-scoring battle (`ai::simulate`) | Interactive settings (Splash on, normal AI) | Same engine as the off-screen battle: mode 0, no Splash | 10 | **Differs** |
-| 46 | Community bonuses (Hunger … FateGift) | As section 7 | Same | 7 | Matches, except Berserk at a turn start reads the HP after regeneration (the original reads it before) |
+| 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
 | 47 | New unit's formation cell | Preferred row by role (front for warriors), then the other fighting row, then the reserve | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | **Differs** |
 
 ## Unknowns and open points

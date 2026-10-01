@@ -439,6 +439,14 @@ pub struct Battle {
     /// A side whose army's first unit is of the Knight type (49855c): it takes
     /// [`KNIGHT_PERCENT`] of physical damage, an AI lord's army as well as the player's.
     knight: [bool; 2],
+    /// Each side's grid cells that exist (not blocked, −1 in the original), by row and
+    /// column. The enemy keeps the wide row's blocks (48395c); the player's grid is rebuilt
+    /// from his army's formation, which turns its blocked cells into open ones (4d2233). A
+    /// collapse copies a row's blocks forward with its units (48a170).
+    cells: [[[bool; 6]; 3]; 2],
+    /// Mean base initiative of each side at the start of this turn (1 when 0), for the
+    /// Elemental AI (4840ec).
+    mean_initiative: [f64; 2],
     deploying: bool,
     /// Ended by the turn limit or a surrender (a wiped-out side needs no flag).
     ended: Option<EndReason>,
@@ -533,6 +541,16 @@ impl Battle {
         fighters.extend(enemies.iter().map(|u| Fighter::new(&content, u, Team::Enemy, None)));
         let knight_led = |u: Option<&Unit>| u.is_some_and(|u| HeroClass::of_unit(u.def) == Some(HeroClass::Knight));
         let knight = [knight_led(player.first().map(|p| p.1)), knight_led(enemies.first())];
+        let formation = content.formation;
+        let mut cells = [[[false; 6]; 3]; 2];
+        for (t, side) in cells.iter_mut().enumerate() {
+            for (r, &row) in [Row::Front, Row::Back, Row::Reserve].iter().enumerate() {
+                for c in 0..formation.cols.min(6) {
+                    let open = formation.rows().contains(&row);
+                    side[r][c as usize] = open && (t == Team::Player.index() || formation.contains(Slot::new(row, c)));
+                }
+            }
+        }
         let mut b = Battle {
             formation: content.formation,
             content,
@@ -542,6 +560,8 @@ impl Battle {
             attacker,
             building_defence: [0; 2],
             knight,
+            cells,
+            mean_initiative: [1.0; 2],
             deploying: true,
             ended: None,
             threshold: 0,
@@ -688,10 +708,14 @@ impl Battle {
             return;
         }
         self.deploying = false;
-        // A side with nobody in front steps forward before the first turn, as it would the
-        // moment its front row fell (the deployment may leave it empty).
-        for team in Team::BOTH {
-            self.collapse(team);
+        // The battle window's fix of the player's formation (4d2141): with nobody in front,
+        // his back row moves into the front row, same columns, and stays there after the
+        // battle. The reserve does not move, and the enemy needs no fix. There is no other
+        // collapse before the first action.
+        if !self.row_occupied(Team::Player, Row::Front) {
+            for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == Team::Player && f.slot.row == Row::Back) {
+                f.slot.row = Row::Front;
+            }
         }
         for f in &mut self.fighters {
             f.at_start = f.stats.clone();
@@ -828,37 +852,48 @@ impl Battle {
     // Turns (4840ec, 489ca0)
     // ------------------------------------------------------------------------------------
 
-    /// Starts the next battle turn: modifiers and flags reset, actions refilled, then from
-    /// turn 2 magic drain, regeneration and poison, then the Community turn-start bonuses.
+    /// Starts the next battle turn (4840ec). Unit by unit in list order, the player's side
+    /// first: modifiers, actions, initiative and the reserve move reset, the turn-1 bonuses,
+    /// the Community turn-start bonuses, the blessed and cursed flags cleared, then from
+    /// turn 2 the magic drain and the regeneration or poison, which can kill the unit (and
+    /// collapse its rows) before the next unit's bonuses. No collapse runs otherwise.
     fn start_turn(&mut self) {
-        // No turn starts with an empty front row while someone stands behind it.
-        for team in Team::BOTH {
-            self.collapse(team);
-        }
         self.round += 1;
         let round = self.round;
         self.threshold = if round == 1 { TURN_ONE_THRESHOLD } else { self.first_threshold };
         self.first_threshold = 0;
         self.cursor = (0, 0);
         self.log.push(crate::trf!("-- Turn {round} --", round));
-        for f in self.fighters.iter_mut().filter(|f| f.alive()) {
+        let mut initiative = [0.0f64; 2];
+        for i in 0..self.fighters.len() {
+            if !self.fighters[i].alive() {
+                continue;
+            }
+            let f = &mut self.fighters[i];
+            // The side's mean initiative sums the base initiatives, skipping a term that
+            // would leave the sum at 0 or below.
+            let sum = &mut initiative[f.team.index()];
+            if *sum + f.base[Stat::Initiative] as f64 > 0.0 {
+                *sum += f.base[Stat::Initiative] as f64;
+            }
             f.mods = Buff::default();
+            f.reserve_move = true;
+            f.actions = f.base[Stat::Manevres] + i32::from(round == 1 && f.base.has_any(&FAST_START));
+            self.turn_bonus(i);
+            let f = &mut self.fighters[i];
             f.blessed = false;
             f.cursed = false;
-            f.reserve_move = true;
-            f.actions = f.base[Stat::Manevres]
-                + i32::from(round == 1 && f.base.has_any(&FAST_START))
-                + i32::from(round <= 2 && f.has(Bonus::FasterAttack));
-        }
-        if round >= 2 {
-            for i in 0..self.fighters.len() {
-                if self.fighters[i].alive() {
-                    self.drain(i);
-                    self.regenerate(i);
-                }
+            if round >= 2 {
+                self.drain(i);
+                self.refresh(i);
+                self.regenerate(i);
             }
         }
-        self.turn_bonuses();
+        for team in Team::BOTH {
+            let n = self.living(team).count();
+            let mean = if n > 0 { initiative[team.index()] / n as f64 } else { initiative[team.index()] };
+            self.mean_initiative[team.index()] = if mean == 0.0 { 1.0 } else { mean };
+        }
         for i in 0..self.fighters.len() {
             self.refresh(i);
         }
@@ -908,58 +943,58 @@ impl Battle {
         }
     }
 
-    /// Community turn-start bonuses (the hook chain in 4840ec).
-    fn turn_bonuses(&mut self) {
+    /// The turn-1 initiative bonuses and the Community turn-start bonuses of unit `i` (the
+    /// hook chain in 4840ec), before its own regeneration: Berserk reads the HP the unit has
+    /// before this turn's regeneration or poison.
+    fn turn_bonus(&mut self, i: usize) {
         let round = self.round as i32;
         let living = self.fighters.iter().filter(|f| f.alive()).count();
         let starts = [self.start[0].count, self.start[1].count];
-        for i in 0..self.fighters.len() {
-            if !self.fighters[i].alive() {
-                continue;
+        let team = self.fighters[i].team;
+        let own_building = self.building_defence[team.index()];
+        let their_building = self.building_defence[team.other().index()];
+        let f = &mut self.fighters[i];
+        if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
+            f.mods.initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
+        }
+        // Hunger: the unit count changed since the last look: healed to full.
+        if round >= 2 && f.has(Bonus::Hunger) && living != self.hunger_seen {
+            self.hunger_seen = living;
+            f.hp = f.base.max_hp();
+        }
+        if f.has(Bonus::Berserk) {
+            f.mods.attack = berserk(f);
+        }
+        if round >= 2 && f.has(Bonus::Fortify) {
+            f.mods.defence += (f.base[Stat::DefenceBlow] * FORTIFY_PERCENT / 100).max(1) * (round - 1).min(FORTIFY_TURNS);
+        }
+        // The Community Garrison fix: +AttackShot to the attack modifier.
+        if f.has(Bonus::Garrison) && own_building == 10 {
+            f.mods.attack += f.base[Stat::AttackShot];
+        }
+        // Bastion doubles its attacks and defences every turn, with no building check.
+        if f.has(Bonus::Bastion) {
+            for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
+                f.base[st] *= 2;
             }
-            let team = self.fighters[i].team;
-            let own_building = self.building_defence[team.index()];
-            let their_building = self.building_defence[team.other().index()];
-            let f = &mut self.fighters[i];
-            // Hunger: the unit count changed since the last look: healed to full.
-            if round >= 2 && f.has(Bonus::Hunger) && living != self.hunger_seen {
-                self.hunger_seen = living;
-                f.hp = f.base.max_hp();
+        }
+        if round <= 2 && f.has(Bonus::FasterAttack) {
+            f.actions += 1;
+        }
+        if round == 1 && f.has(Bonus::Assault) && their_building >= 10 {
+            for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
+                f.base[st] *= 2;
             }
-            if f.has(Bonus::Berserk) {
-                f.mods.attack = berserk(f);
-            }
-            if round >= 2 && f.has(Bonus::Fortify) {
-                f.mods.defence += (f.base[Stat::DefenceBlow] * FORTIFY_PERCENT / 100).max(1) * (round - 1).min(FORTIFY_TURNS);
-            }
-            // The Community Garrison fix: +AttackShot to the attack modifier.
-            if f.has(Bonus::Garrison) && own_building == 10 {
-                f.mods.attack += f.base[Stat::AttackShot];
-            }
-            if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
-                f.mods.initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
-            }
-            // Bastion doubles its attacks and defences every turn, with no building check.
-            if f.has(Bonus::Bastion) {
-                for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-                    f.base[st] *= 2;
-                }
-            }
-            if round == 1 && f.has(Bonus::Assault) && their_building >= 10 {
-                for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-                    f.base[st] *= 2;
-                }
-            }
-            if f.has(Bonus::Flock) {
-                let (own, other) = (starts[team.index()], starts[team.other().index()]);
-                let of = if f.base[Stat::AttackBlow] > 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
-                let step = of * FLOCK_PERCENT / 100;
-                f.mods.attack += match own.cmp(&other) {
-                    std::cmp::Ordering::Greater => step,
-                    std::cmp::Ordering::Less => -step,
-                    std::cmp::Ordering::Equal => 0,
-                };
-            }
+        }
+        if f.has(Bonus::Flock) {
+            let (own, other) = (starts[team.index()], starts[team.other().index()]);
+            let of = if f.base[Stat::AttackBlow] > 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
+            let step = of * FLOCK_PERCENT / 100;
+            f.mods.attack += match own.cmp(&other) {
+                std::cmp::Ordering::Greater => step,
+                std::cmp::Ordering::Less => -step,
+                std::cmp::Ordering::Equal => 0,
+            };
         }
     }
 
@@ -1043,6 +1078,15 @@ impl Battle {
         }
         let back = self.row_occupied(team, Row::Back);
         let from = if back { Row::Back } else { Row::Reserve };
+        if !back && !self.row_occupied(team, from) {
+            return;
+        }
+        // The whole grid row is copied, its blocked cells too, and the row left behind is
+        // all open: the wide row's blocks move forward (48a170).
+        let side = &mut self.cells[team.index()];
+        let r = (from.number() - 1) as usize;
+        side[0] = side[r];
+        side[r] = [true; 6];
         let mut moved = false;
         for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team && f.slot.row == from) {
             f.slot.row = Row::Front;
@@ -1117,9 +1161,27 @@ impl Battle {
     }
 
     /// The enemy front row is "clear" opposite `col` (484ac8): the cells c−1, c and c+1 all
-    /// exist and are empty. So a unit in the first or last column never has a clear front.
+    /// exist and are empty; a blocked cell is not empty. So a unit in the first or last
+    /// column never has a clear front.
     fn front_clear(&self, team: Team, col: u8) -> bool {
-        col > 0 && col + 1 < self.formation.cols && self.front_near(team, col).is_empty()
+        col > 0
+            && col + 1 < self.formation.cols
+            && self.front_near(team, col).is_empty()
+            && (col - 1..=col + 1).all(|c| self.is_open(team, Slot::new(Row::Front, c)))
+    }
+
+    /// The cell exists on `team`'s grid (it is not blocked).
+    pub fn is_open(&self, team: Team, s: Slot) -> bool {
+        s.col < self.formation.cols && self.cells[team.index()][(s.row.number() - 1) as usize][s.col as usize]
+    }
+
+    /// The cells of `team`'s grid that exist, row by row.
+    fn grid(&self, team: Team) -> impl Iterator<Item = Slot> + '_ {
+        let cols = self.formation.cols;
+        [Row::Front, Row::Back, Row::Reserve]
+            .into_iter()
+            .flat_map(move |row| (0..cols).map(move |col| Slot::new(row, col)))
+            .filter(move |&s| self.is_open(team, s))
     }
 
     /// What `id`, standing on `from`, would do to `target`: one action per cell, as in the
@@ -1230,8 +1292,7 @@ impl Battle {
             return Vec::new();
         }
         let from = f.slot;
-        self.formation
-            .slots()
+        self.grid(f.team)
             .filter(|&s| s != from && self.at(f.team, s).is_none())
             .filter(|s| match (from.row, s.row) {
                 (Row::Reserve, Row::Reserve) => false,

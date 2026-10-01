@@ -45,6 +45,13 @@ old id, and their versions give both.
 - A flying shooter or mage strikes in melee at the three front cells opposite instead of
   shooting or casting there. A Ghost casts at them whatever its magic direction, as long as
   the low byte of its power is positive.
+- Rows collapse only after a death or a unit's last action, as in the original, never when
+  a battle or a turn starts. When a battle starts with nobody in the player's front row, his
+  back row moves up (and stays there); his reserve and the enemy do not move.
+- The wide row's blocked cells move forward with a collapsing row, and a blocked cell spoils
+  a "clear" front; the player's own battle grid has no blocked cells, as in the original.
+- A turn starts unit by unit: each unit's turn-start bonuses come before its own
+  regeneration or poison (Berserk reads the hit points it had before).
 
 ## 0.2.2 — 2026-10-01
 
