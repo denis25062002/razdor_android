@@ -59,6 +59,9 @@ const MAX_BATTLE_STEPS: usize = 20_000;
 const WANDER_POINTS: usize = 4;
 /// A building or an army it may not go for.
 const FORBIDDEN: i32 = -100_000;
+/// The respawn time of a beaten army that never comes back by itself (no home, no delay,
+/// or a feudal lord owning none of its buildings): it stays destroyed off the map.
+pub const NEVER: f64 = f64::MAX;
 /// Pair scores tripled at a sheltered neighbour stop here.
 const TRIPLED_CAP: i32 = 10_000;
 /// Armies closer than this (octile) close their cell to an ignored army's plan and the other
@@ -2788,15 +2791,23 @@ impl Game {
     /// Army `i` lost a battle (or a spell destroyed it): it leaves the map and is recorded as
     /// beaten (ai.md §12). Beaten by the player, its record keeps only its leader unless it
     /// respawns whole (byte 83); beaten by the AI it keeps every unit, dead, so the whole army
-    /// comes back. With a home and a respawn delay it waits for its respawn.
+    /// comes back. With a home and a respawn delay it waits for its respawn; without, it
+    /// waits for good ([`NEVER`]), where an event's activation can still bring it back.
     pub(crate) fn army_beaten(&mut self, i: usize, by: Beaten) {
         let now = self.clock.total_minutes();
         let mut a = self.remove_army(i);
         if a.id != 0 {
+            // One "beaten by" mark, the last winner's (0x496834 overwrites it).
             match by {
-                Beaten::ByPlayer => self.beaten_armies.insert(a.id),
-                Beaten::ByAi => self.ai_beaten.insert(a.id),
-            };
+                Beaten::ByPlayer => {
+                    self.beaten_armies.insert(a.id);
+                    self.ai_beaten.remove(&a.id);
+                }
+                Beaten::ByAi => {
+                    self.ai_beaten.insert(a.id);
+                    self.beaten_armies.remove(&a.id);
+                }
+            }
         }
         if !a.ai.enabled {
             return;
@@ -2809,8 +2820,8 @@ impl Game {
         if by == Beaten::ByPlayer && !a.ai.respawn_all {
             a.troops.truncate(1);
         }
-        if a.home.is_some() && a.ai.respawn_days > 0 && !a.troops.is_empty() {
-            let due = now + (a.ai.respawn_days as u64 * MINUTES_PER_DAY) as f64;
+        if !a.troops.is_empty() {
+            let due = if a.home.is_some() && a.ai.respawn_days > 0 { now + (a.ai.respawn_days as u64 * MINUTES_PER_DAY) as f64 } else { NEVER };
             self.world.respawns.push(Respawn { due, army: a });
         }
     }
@@ -2835,7 +2846,13 @@ impl Game {
                 let pick = [LocationKind::Town, LocationKind::Castle, LocationKind::Fort].iter().find_map(|&kind| (0..self.world.locations.len()).find(|&l| own(&self.world, l) && self.world.locations[l].kind == kind));
                 match pick {
                     Some(l) => l,
-                    None => continue,
+                    None => {
+                        // Its delay set to 0: it never respawns by itself again.
+                        army.ai.respawn_days = 0;
+                        self.world.respawns.insert(k, Respawn { due: NEVER, army });
+                        k += 1;
+                        continue;
+                    }
                 }
             } else {
                 if army.ai.style != Style::Feudal && matches!(self.world.locations[home].kind, LocationKind::Village | LocationKind::Shipyard | LocationKind::Altar | LocationKind::Ruins) {
@@ -2862,6 +2879,10 @@ impl Game {
             army.path.clear();
             army.pos = self.world.map.center(self.world.locations[at].tile);
             army.gold += army.ai.respawn_days as i32 * army.ai.extra_income;
+            // Back on the map: no longer destroyed, its "beaten by" mark cleared (0x4a28d0),
+            // so the events' "beaten" conditions no longer hold for it.
+            self.beaten_armies.remove(&army.id);
+            self.ai_beaten.remove(&army.id);
             let uid = army.uid;
             self.insert_army(army);
             self.mark_dirty(uid);

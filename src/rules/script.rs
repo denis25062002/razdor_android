@@ -252,10 +252,27 @@ impl Game {
         if let Some(i) = self.army_index(id) {
             return Some(i);
         }
-        let k = self.world.inactive.iter().position(|a| a.id == id)?;
-        let mut a = self.world.inactive[k].clone();
+        // A waiting army, or a beaten one waiting for its respawn: 0x4969b8 brings back any
+        // army off the map, clearing its destroyed and "beaten by" marks.
+        let (mut a, respawning) = match self.world.inactive.iter().position(|a| a.id == id) {
+            Some(k) => (self.world.inactive[k].clone(), None),
+            None => {
+                let k = self.world.respawns.iter().position(|r| r.army.id == id)?;
+                (self.world.respawns[k].army.clone(), Some(k))
+            }
+        };
         let tile = self.world.placement(&a)?;
-        self.world.inactive.remove(k);
+        match respawning {
+            Some(k) => {
+                self.world.respawns.remove(k);
+                self.beaten_armies.remove(&id);
+                self.ai_beaten.remove(&id);
+            }
+            None => {
+                let k = self.world.inactive.iter().position(|a| a.id == id)?;
+                self.world.inactive.remove(k);
+            }
+        }
         a.pos = self.world.map.center(tile);
         a.path.clear();
         a.chasing = false;
@@ -553,6 +570,12 @@ impl EventWorld for Game {
             let mut a = self.take_army(i);
             a.path.clear();
             a.chasing = false;
+            self.world.inactive.push(a);
+        } else if let Some(k) = self.world.respawns.iter().position(|r| r.army.id == army) {
+            // A beaten army waiting for its respawn is no longer destroyed (0x496900): it
+            // never comes back by itself, only an activation brings it (its "beaten by"
+            // mark stays).
+            let a = self.world.respawns.remove(k).army;
             self.world.inactive.push(a);
         }
     }
@@ -1214,6 +1237,25 @@ mod tests {
         assert_ne!(g.rng.state(), draws.state(), "the wander points drawn");
         assert!(!g.world.armies[0].mind.clean.contains(&3), "its pairs dirty");
         assert_eq!(g.world.locations[0].owner, crate::rules::world::Owner::Army(3));
+    }
+
+    #[test]
+    fn an_event_brings_back_a_beaten_army_and_stops_one_from_respawning() {
+        // 0x4969b8 brings back any army off the map, a destroyed one too (its marks cleared);
+        // 0x496900 on a destroyed army clears that flag, so it never respawns by itself.
+        let mut s = world(Vec::new());
+        s.armies = vec![army(3, 10, 8, -2, &[troop(4, 0, 2)])];
+        let mut g = start(&s);
+        Game::army_beaten(&mut g, 0, crate::rules::ai::Beaten::ByAi);
+        assert!(EventWorld::army_beaten(&g, 3) && g.world.armies.is_empty(), "no home: it stays destroyed");
+        EventWorld::activate_army(&mut g, 3);
+        assert!(g.world.armies.iter().any(|a| a.id == 3) && g.world.respawns.is_empty());
+        assert!(!EventWorld::army_beaten(&g, 3), "its mark cleared");
+        Game::army_beaten(&mut g, 0, crate::rules::ai::Beaten::ByPlayer);
+        g.world.respawns[0].due = 0.0;
+        EventWorld::deactivate_army(&mut g, 3);
+        assert!(g.world.respawns.is_empty() && g.world.inactive.iter().any(|a| a.id == 3));
+        assert!(EventWorld::player_defeated(&g, 3), "the mark stays");
     }
 
     #[test]

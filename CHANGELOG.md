@@ -230,6 +230,10 @@ old id, and their versions give both.
 - An AI army beaten in a fight of its own step goes on with the rest of that step as the
   original's record does: it may attack the next enemy with nobody and lose again, take a
   village's gold, buy, heal or hire, and it comes back with all that when it respawns.
+- A beaten army that comes back (by its respawn or an event) is no longer "beaten" for the
+  events, and an army beaten by the player and then by an AI army counts as beaten by that
+  army only, as the original keeps one mark. An event can bring back a beaten army, even
+  one that would never respawn, and an event that removes a beaten army stops its respawn.
 
 ## 0.2.2 — 2026-10-01
 

@@ -488,7 +488,11 @@ remainder is lost. **code** (0x4a473c)
   leader unless the respawn-whole-army flag is set; beaten by an AI army or a garrison, the
   record keeps all its (dead) units, so the **whole army** returns whatever the flag, but
   without its items.
-- An army removed by an event (deactivated) is not "destroyed" and never respawns.
+- An army removed by an event (deactivated) is not "destroyed" and never respawns; that holds
+  for a beaten army waiting for its respawn too (0x496900 clears its "destroyed" flag), while
+  an activation brings back any army off the map, a destroyed one included, and clears its
+  "destroyed" flag and "beaten by" mark (0x4969b8). A respawn clears both as well, so the
+  events' "beaten" conditions no longer hold for an army that came back.
 - There is no retreat of a beaten lord into his castle (none found).
 
 ## 13. Ships
@@ -563,6 +567,7 @@ after the parity pass.
 | Leader survival | Leader at 1 HP when its side survives; it, and a unit resurrected, keep the first time of death (cleared only by a respawn or an activation) | Leader at 1 HP when its side survives (§10); the time of death is written only when it is 0 | Matches |
 | Lord retreat | None | No retreat; only the respawn rule (§12) | Matches |
 | Respawn content | Beaten by the player: the leader only unless byte 83; beaten by the AI: the whole record, its dead raised | Byte 83 only when the player beat it; beaten by the AI → whole army (§12) | Matches |
+| Beaten mark | One "beaten by" mark, the last winner's; cleared at a respawn and at an activation; an army that never respawns stays destroyed off the map, where an activation brings it back and a deactivation stops its respawn | One mark at +0x16a7, overwritten by 0x496834, cleared by 0x4a28d0 and 0x4969b8; 0x496900 clears "destroyed" (§12) | Matches |
 | Respawn takeover | Village, shipyard, altar, ruins, from anyone | Village, shipyard, altar, **ruins** (§12) | Matches |
 | Promotion slots | The loader moves the options as the original (`normalise_upgrade_slots`): two always in slots 1 and 3 | Two options move to slots 1 and 3 (§11) | Matches |
 | Noon | At its first arrival after 12:00; its base income, its castles' and forts' stock and its linked villages'; today's income with the castles' income; feudal wages (the player's Rear Service too); others all paid | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14) | Matches |

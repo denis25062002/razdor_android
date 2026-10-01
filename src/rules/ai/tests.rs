@@ -529,7 +529,7 @@ fn ai_battle_loot_is_asymmetric() {
     (g.world.armies[0].gold, g.world.armies[1].gold) = (0, 20);
     assert!(g.ai_battle(0, Defender::Army(1)));
     assert_eq!(g.world.armies[0].gold, wages + 10);
-    assert_eq!(g.world.respawns.len(), 0, "no home: no respawn");
+    assert_eq!(g.world.respawns[0].due, NEVER, "no home: no respawn, it stays destroyed");
     // The defender wins: the attacker's wage bill (it is feudal) and all its gold below 25.
     let mut g = start(&s);
     let wages = g.army_totals(1).wages;
@@ -957,7 +957,9 @@ fn where_a_beaten_army_comes_back() {
     g.world.locations[2].owner = Owner::Neutral;
     g.army_beaten(0, Beaten::ByAi);
     back(&mut g);
-    assert!(g.world.armies.is_empty() && g.world.respawns.is_empty(), "owning none, never");
+    assert!(g.world.armies.is_empty(), "owning none, never");
+    let r = &g.world.respawns[0];
+    assert_eq!((r.due, r.army.ai.respawn_days), (NEVER, 0), "its delay set to 0, it stays destroyed");
     // A rogue takes over its home when it is a village, shipyard, altar or ruins, from
     // anyone, the player included.
     for (kind, taken) in [(BuildingType::Ruins, true), (BuildingType::Village, true), (BuildingType::DungeonEntrance, false)] {
@@ -1407,4 +1409,30 @@ fn an_army_beaten_in_its_own_arrival_goes_on_with_its_record() {
     assert_eq!(by_id(3), gold3, "beaten again with nobody: no gold or wages left");
     assert_eq!(g.world.locations[0].tribute_gold, 0);
     assert_eq!(g.world.respawns[0].army.gold, 40, "the village's gold, collected after its defeat");
+}
+
+#[test]
+fn a_respawn_clears_the_beaten_mark_and_the_last_winner_holds_it() {
+    // 0x496834 overwrites the one "beaten by" mark; 0x4a28d0 clears it at the respawn.
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 40, 10, (1, 1));
+    fort.faction = 4;
+    fort.owner_army = 1;
+    s.buildings = vec![fort];
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    a.home_building = 1;
+    a.respawn_days = 1;
+    s.armies = vec![a];
+    let mut g = start(&s);
+    g.army_beaten(0, Beaten::ByPlayer);
+    assert!(g.beaten_armies.contains(&1) && g.army_beaten_by_anyone(1));
+    let due = g.world.respawns[0].due;
+    g.ai_respawns(due + 1.0);
+    assert!(!g.army_beaten_by_anyone(1), "back: the mark cleared");
+    g.army_beaten(0, Beaten::ByAi);
+    assert!(g.ai_beaten.contains(&1) && !g.beaten_armies.contains(&1));
+    g.world.respawns.clear();
+    g.world.armies.push(g.world.inactive.first().cloned().unwrap_or_else(|| start(&s).world.armies[0].clone()));
+    g.army_beaten(0, Beaten::ByPlayer);
+    assert!(g.beaten_armies.contains(&1) && !g.ai_beaten.contains(&1), "the last winner's mark");
 }
