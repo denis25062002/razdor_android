@@ -559,6 +559,7 @@ after the parity pass.
 | Greeting / talk | Talk counters per pair (+1 per arrival at a distance, + relation + 1 when friendly), −500 on both sides after a greeting, talk seed `800 − c + Talking`, `c div 100` below 1 | Talk counters (+1 per arrival, + relation + 1), −500 after a greeting, talk seed `800 − c + Talking` (§7.2, §8) | Matches |
 | Messenger | Falls out of the seed rule (a 0 for the player becomes 1) and the greeting | Falls out of the seed rule (value 0 → 1) and the greeting (§7.2) | Matches |
 | AI vs AI loot | Asymmetric: `MinVictoryGold` only when the attacker loses, wage bills by style, a garrison's gold; worn items pooled and handed out by tactical gain to the side with more HP, the rest packed dearest first | Asymmetric (§10): MinVictoryGold only when the attacker loses; wage totals; pooled items to the side with more HP, best-gain wearing | Matches |
+| Beaten in its own arrival | Off the map, the rest of the arrival runs with its record (another fight with nobody, village gold, shopping, healing, hiring), then it leaves | The arrival goes on with the beaten record (0x4a548c) | Matches |
 | Leader survival | Leader at 1 HP when its side survives; it, and a unit resurrected, keep the first time of death (cleared only by a respawn or an activation) | Leader at 1 HP when its side survives (§10); the time of death is written only when it is 0 | Matches |
 | Lord retreat | None | No retreat; only the respawn rule (§12) | Matches |
 | Respawn content | Beaten by the player: the leader only unless byte 83; beaten by the AI: the whole record, its dead raised | Byte 83 only when the player beat it; beaten by the AI → whole army (§12) | Matches |
@@ -569,9 +570,9 @@ after the parity pass.
 | Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
 | Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
 
-Left out for now: an army beaten in a fight of its own arrival ends that arrival (the
-original goes on with the dead army's record, which can fight again or collect village
-gold); the Community's mana bill taken from the player's mana at every AI noon, and its
+Left out for now: what an army beaten in its own arrival then does to the hero (an attack
+or a greeting) is dropped, where the original would open a battle or a meeting with the
+beaten army; the Community's mana bill taken from the player's mana at every AI noon, and its
 short-mana flag (economy.md §1); an army takes all the steps of a slice before the next one
 moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
 and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,

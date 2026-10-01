@@ -243,6 +243,10 @@ pub struct AiMind {
     /// What its last arrival did to the hero, read after his step ([`Game::ai_contact`]).
     #[serde(skip)]
     pub contact: Option<Contact>,
+    /// Beaten in a battle of its own arrival: off the map, but the rest of that arrival runs
+    /// with its record, as the original's does; it leaves at the arrival's end.
+    #[serde(skip)]
+    pub fallen: bool,
     /// Tests walk it along the path they give it: it never plans.
     #[cfg(test)]
     #[serde(skip)]
@@ -858,7 +862,8 @@ impl Game {
     /// The managed armies' indices with the hero first: the order of the original's loops
     /// over army records 0..N.
     fn parties(&self) -> Vec<Party> {
-        std::iter::once(Party::Hero).chain((0..self.world.armies.len()).filter(|&j| managed(&self.world.armies[j])).map(Party::Army)).collect()
+        let on_map = |a: &Army| managed(a) && !a.mind.fallen;
+        std::iter::once(Party::Hero).chain((0..self.world.armies.len()).filter(|&j| on_map(&self.world.armies[j])).map(Party::Army)).collect()
     }
 
     /// Faction and attitudes: the hero is faction 1 with the header's first row.
@@ -1031,7 +1036,8 @@ impl Game {
         let w = &self.world;
         let a = &w.armies[i];
         let b = &w.locations[l];
-        if b.kind.is_bridge() {
+        // Bridges score 0, and so does every building for an army off the map.
+        if b.kind.is_bridge() || a.mind.fallen {
             return 0;
         }
         let pr = Priorities::of(o, a.ai.model);
@@ -1705,9 +1711,24 @@ impl Game {
     /// 3. in a building: assault and capture, village gold, shopping, healing, resurrection,
     ///    hiring, garrison buying and reshuffle; the building's stored score is zeroed.
     ///
-    /// Returns what it did to the hero. An army beaten in its own fight stops there (the
-    /// original goes on with the dead army's record).
+    /// Returns what it did to the hero. An army beaten in a fight of its own arrival is off
+    /// the map, but the arrival goes on with its record as the original's does (0x4a548c):
+    /// it may fight again with nobody (and lose again, its gold and wage bill to the winner),
+    /// collect a village's gold, hire, heal or raise its dead; it leaves the map at the end,
+    /// and what it did to the hero then is dropped *(guess: the original would open a
+    /// battle or a meeting with the beaten army)*.
     pub(crate) fn ai_arrive(&mut self, uid: u32) -> Option<Contact> {
+        let result = self.ai_arrive_rules(uid);
+        let i = self.army_by_uid(uid)?;
+        if self.world.armies[i].mind.fallen {
+            self.world.armies[i].mind.fallen = false;
+            self.army_beaten(i, Beaten::ByAi);
+            return None;
+        }
+        result
+    }
+
+    fn ai_arrive_rules(&mut self, uid: u32) -> Option<Contact> {
         let now = self.clock.total_minutes();
         let i = self.army_by_uid(uid)?;
         let mut result = None;
@@ -2717,8 +2738,12 @@ impl Game {
             _ => {}
         }
         if a_beaten {
+            // Off the map; the rest of its arrival still runs with its record, and it leaves
+            // at the end of it ([`Game::ai_arrive`]).
             if let Some(i) = self.army_by_uid(att_uid) {
-                self.army_beaten(i, Beaten::ByAi);
+                let m = &mut self.world.armies[i].mind;
+                m.fallen = true;
+                m.standing = None;
             }
         }
         if b_beaten {

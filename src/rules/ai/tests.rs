@@ -1371,3 +1371,40 @@ fn a_unit_raised_again_keeps_its_first_time_of_death() {
     let t = g.world.armies[0].troops[1];
     assert!(t.alive() && t.kept_death == Some(now - 5), "raised, the time kept");
 }
+
+#[test]
+fn an_army_beaten_in_its_own_arrival_goes_on_with_its_record() {
+    // 0x4a548c goes on after the arriving army is wiped out: it attacks the next hostile
+    // neighbour with nobody and loses again (its wage bill, of the living, is 0 by then),
+    // and still takes the gold of the village it stands in; then it leaves the map.
+    let mut s = map();
+    let mut village = building(BuildingType::Village, 30, 10, (1, 1));
+    village.faction = 4;
+    village.relations = [0, 0, 0, 1];
+    let mut fort = building(BuildingType::Fort, 50, 5, (1, 1));
+    fort.faction = 4;
+    fort.owner_army = 1;
+    s.buildings = vec![village, fort];
+    let mut weak = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    weak.home_building = 2;
+    weak.respawn_days = 1;
+    s.armies = vec![weak, army(2, (31, 10), 2, ALLY, 0, &[troop(6, 2, 3)]), army(3, (29, 10), 2, ALLY, 0, &[troop(6, 2, 3)])];
+    let mut g = start(&s);
+    let wages = g.army_totals(0).wages;
+    assert!(wages > 0);
+    g.world.locations[0].tribute_gold = 40;
+    let a = &mut g.world.armies[0];
+    a.gold = 20;
+    a.mind.scores.insert(2, 5);
+    a.mind.scores.insert(3, 5);
+    let (gold2, gold3) = (g.world.armies[1].gold, g.world.armies[2].gold);
+    let battles = g.ai_stats.battles;
+    arrive(&mut g, 1);
+    assert_eq!(g.ai_stats.battles, battles + 2, "it fought both");
+    assert!(g.world.armies.iter().all(|a| a.id != 1), "off the map at the end");
+    let by_id = |id: u8| g.world.armies.iter().find(|a| a.id == id).unwrap().gold;
+    assert_eq!(by_id(2), gold2 + wages + 20, "the first winner: its wage bill and its gold below 25");
+    assert_eq!(by_id(3), gold3, "beaten again with nobody: no gold or wages left");
+    assert_eq!(g.world.locations[0].tribute_gold, 0);
+    assert_eq!(g.world.respawns[0].army.gold, 40, "the village's gold, collected after its defeat");
+}

@@ -227,6 +227,9 @@ old id, and their versions give both.
   cap to 8 units early; a slot's stock is the one that goes down.
 - An AI unit raised again (a leader left at 1 hit point, a resurrection) keeps its first time
   of death, as in the original: if it falls again, its corpse is dropped that much sooner.
+- An AI army beaten in a fight of its own step goes on with the rest of that step as the
+  original's record does: it may attack the next enemy with nobody and lose again, take a
+  village's gold, buy, heal or hire, and it comes back with all that when it respawns.
 
 ## 0.2.2 — 2026-10-01
 
