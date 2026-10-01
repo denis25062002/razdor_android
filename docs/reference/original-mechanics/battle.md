@@ -837,16 +837,16 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 3 | Bless and curse sizes | `bless_effect` / `curse_effect` with the ini divisors, Life curse ⌊2·CM/3⌋ and 10 | Same | 1 | Matches |
 | 4 | EternalGift | Base stats, stacks, Life blessing lowers defences | Same | 1 | Matches |
 | 5 | Magic drain | `max(MP − drain, floor)` if MP > 0, Undead Death floor +25, Concentration adds | Same | 1 | Matches |
-| 6 | Hostile power rounding | Integer `(P·(100 − prot) + 50) / 100`, half up | Floating-point product, Delphi round half to even | 0 | **Differs** (ties only) |
-| 7 | Strike with power 0 | 0 damage, no GodAnger/GodStrike | GodAnger/GodStrike still added when the caster has MP | 0 | **Differs** |
+| 6 | Hostile power rounding | `P·(100 − prot) / 100` rounded half to even (the product taken as exact; the FPU precision is unknown, engine.md) | Floating-point product, Delphi round half to even | 0 | Matches |
+| 7 | Strike with power 0 | GodAnger/GodStrike added whenever the caster has MP | GodAnger/GodStrike still added when the caster has MP | 0 | Matches |
 | 8 | Hostile mage action | Curse if no negative modifier, else strike; one action per cell | Same | 3 | Matches |
 | 9 | Friendly mage | Heal if wounded and heal > 0, else bless; reserve casters tend the reserve | Same | 3 | Matches |
 | 10 | Own-cell self-cast and the space key | Own card: self-cast if offered, else pass one action. Space: **skips all** remaining actions | Own cell and space are the same thing: **one** action, pass or self-cast | 2, 3 | **Differs** (space) |
 | 11 | Edge columns | A front-row shooter or mage is blocked only by an enemy at c±1 | Columns 1 and last are never "clear": front-row shooters there hit only c±1, front-row mages there cannot cast | 3 | **Differs** |
 | 12 | Map priority | Melee, then shot, then magic, later wins | Same | 3 | Matches |
 | 13 | Ghost casters | Reach the opposite front cells from any row | Same, and with no direction test | 3 | Matches (direction edge not modelled) |
-| 14 | Undead caster drain | Caster gains the drain capped at the target's HP | Caster gains the full drain; only the target's loss is capped | 3 | **Differs** (small) |
-| 15 | Vampirism | Every physical hit, shots included; Death strikes | **Melee and long strike only**; Death strikes | 8 | **Differs** |
+| 14 | Undead caster drain | Caster gains the full drain; only the target's loss is capped | Caster gains the full drain; only the target's loss is capped | 3 | Matches |
+| 15 | Vampirism | Melee and long strike only; Death strikes | **Melee and long strike only**; Death strikes | 8 | Matches |
 | 16 | Into the reserve | Front or back row, one reserve transition per turn | Same | 2 | Matches |
 | 17 | Collapse timing | After a death and after the actor's last action, **plus** at `begin()` and every `start_turn()` | Only after a death and after the actor's last action; never at a turn start | 2 | **Differs** (rarely visible) |
 | 18 | Battle start | Both sides collapse at `begin()` (reserve too) | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | **Differs** |
@@ -860,12 +860,12 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 26 | Artillery | +30 (+60 with building defence ≥ 10) on turn 1; pierces shots | Same | 0, 8 | Matches |
 | 27 | Piercing set | Melee: ArmorIgnore, PoisonArmorIgnore, both vampire gifts; shots: ArmorIgnore, PoisonArmorIgnore, Artillery | Same | 0 | Matches |
 | 28 | Defence order | SpearDefense, piercing, long strike, then building (+Row2Def for shots) | Same | 0 | Matches |
-| 29 | Knight | Only the player's army with a Knight hero | Any army whose first unit is of the Knight type, AI lords included | 0 | **Differs** for AI lords |
+| 29 | Knight | Any side whose first unit is of the Knight type, AI lords included | Any army whose first unit is of the Knight type, AI lords included | 0 | Matches |
 | 30 | Counterblow | Any Counterblow unit, after melee or a long strike | Same | 8 | Matches |
 | 31 | Ghost | Killer dies if ProtectDeath < 30 × Manevres | Same | 8 | Matches |
 | 32 | Garrison | ×2 AB, DB, DS (≥ 10); Community +AS at exactly 10 | Same | 8, 7 | Matches |
 | 33 | Regen and poison | `round(maxHP × regen/100)`, half to even, no minimum | Same | 8 | Matches |
-| 34 | Damage-taken counters | Counter blows, preventive strikes and poison count in `lost` | Not counted in the side's damage taken | 8 | **Differs** (XP only) |
+| 34 | Damage-taken counters | Only the damage routine's wounds and a cursed killer's HP count in `lost`; counter blows, preventive strikes, poison, bleeding and the Community side effects do not | Not counted in the side's damage taken | 8 | Matches |
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
 | 36 | Surrender | Whole side gives up; Surrender sum as mana | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |

@@ -255,7 +255,9 @@ pub struct Fighter {
     /// Role in the side's strength sum, set at the start.
     pub role: Role,
     /// For the XP share: attacks and spells made, all actions taken (moves and passes too)
-    /// and hit points lost.
+    /// and hit points lost through the damage routine (48a354): counter blows, preventive
+    /// strikes, poison, bleeding and the Community side effects write the HP directly and do
+    /// not count, as in the original.
     pub useful: i32,
     pub taken: i32,
     pub lost: i32,
@@ -434,6 +436,9 @@ pub struct Battle {
     /// whoever attacks, so this is for information only.
     pub attacker: Team,
     building_defence: [i32; 2],
+    /// A side whose army's first unit is of the Knight type (49855c): it takes
+    /// [`KNIGHT_PERCENT`] of physical damage, an AI lord's army as well as the player's.
+    knight: [bool; 2],
     deploying: bool,
     /// Ended by the turn limit or a surrender (a wiped-out side needs no flag).
     ended: Option<EndReason>,
@@ -526,6 +531,8 @@ impl Battle {
         let mut fighters: Vec<Fighter> =
             player.iter().map(|&(idx, u)| Fighter::new(&content, u, Team::Player, Some(idx))).collect();
         fighters.extend(enemies.iter().map(|u| Fighter::new(&content, u, Team::Enemy, None)));
+        let knight_led = |u: Option<&Unit>| u.is_some_and(|u| HeroClass::of_unit(u.def) == Some(HeroClass::Knight));
+        let knight = [knight_led(player.first().map(|p| p.1)), knight_led(enemies.first())];
         let mut b = Battle {
             formation: content.formation,
             content,
@@ -534,6 +541,7 @@ impl Battle {
             log: Vec::new(),
             attacker,
             building_defence: [0; 2],
+            knight,
             deploying: true,
             ended: None,
             threshold: 0,
@@ -889,7 +897,6 @@ impl Battle {
         let change = new - f.hp;
         f.hp = new;
         if change < 0 {
-            f.lost -= change;
             let msg = crate::trf!("{name} loses {loss} to poison", name = f.name, loss = -change);
             self.log.push(msg);
             if !self.fighters[i].alive() {
@@ -1220,7 +1227,7 @@ impl Battle {
     // ------------------------------------------------------------------------------------
 
     fn has_knight(&self, team: Team) -> bool {
-        self.fighters.iter().any(|f| f.team == team && f.is_hero && HeroClass::of_unit(f.unit) == Some(HeroClass::Knight))
+        self.knight[team.index()]
     }
 
     fn splash_pct(&self, a: usize) -> i32 {
@@ -1305,7 +1312,9 @@ impl Battle {
             return p;
         }
         let prot = self.fighters[t].stats.protection(self.school(a)).clamp(0, 100);
-        (p * (100 - prot) + 50) / 100
+        // `Round(P × (1 − prot/100))` on the FPU: Delphi's Round, half to even (485b84). The
+        // FPU precision is unknown (engine.md), so the product is taken as exact.
+        round_even(p as i64 * (100 - prot) as i64, 100) as i32
     }
 
     /// The power `a` casts with at `pct`% (Splash).
@@ -1325,10 +1334,12 @@ impl Battle {
             (MagicSchool::Elemental, _) | (_, Nature::Elemental) => p * 3 / 4,
             _ => p,
         };
-        if dmg > 0 {
+        // GodAnger and GodStrike are added whenever the caster has magic power, even to a
+        // strike whose power the protection or the nature took to 0 (485b3c).
+        if self.fighters[a].power > 0 {
             dmg + god_bonus(&self.fighters[a].stats)
         } else {
-            0
+            dmg
         }
     }
 
@@ -1420,7 +1431,6 @@ impl Battle {
             let loss = ((f.base[Stat::AttackBlow] + f.base[Stat::AttackShot] + f.power) * f.bleed / 100).clamp(0, f.hp);
             if loss > 0 {
                 f.hp -= loss;
-                f.lost += loss;
                 let msg = crate::trf!("{name} bleeds for {loss}", name = f.name, loss);
                 self.log.push(msg);
                 if !self.fighters[id].alive() {
@@ -1511,7 +1521,6 @@ impl Battle {
             // Suicide: gone after any hostile action of its own.
             if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].has(Bonus::Suicide) {
                 let f = &mut self.fighters[id];
-                f.lost += f.hp;
                 f.hp = 0;
                 let msg = crate::trf!("{name} gives its life", name = f.name);
                 self.log.push(msg);
@@ -1538,7 +1547,7 @@ impl Battle {
         };
         let Some(answer) = answer else { return true };
         let dmg = self.physical_damage_at(target, id, answer, 100).min(self.fighters[id].hp);
-        self.wound(id, dmg);
+        self.fighters[id].hp -= dmg;
         hit.counter = Some(dmg);
         self.log.push(crate::trf!("{name} strikes first for {dmg}", name = self.fighters[target].name, dmg));
         !self.check_death(id, Some(target), false)
@@ -1566,7 +1575,7 @@ impl Battle {
         let t = &self.fighters[target];
         if kind.is_melee() && t.alive() && t.has(Bonus::Counterblow) && self.fighters[id].alive() && !self.fighters[id].has(Bonus::Suicide) {
             let dmg = self.physical_damage_at(target, id, ActionKind::Melee, 100).min(self.fighters[id].hp);
-            self.wound(id, dmg);
+            self.fighters[id].hp -= dmg;
             hit.counter = Some(dmg);
             self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
             self.check_death(id, Some(target), false);
@@ -1621,9 +1630,10 @@ impl Battle {
                 t.regen = STRONG_POISON_REGEN;
             }
         }
-        // Vampirism on the uncapped damage, not from undead or elementals.
+        // Vampirism on the uncapped damage, not from undead or elementals; after a melee or
+        // long strike only: the shot path never reaches it (48b3ce).
         let vamp = self.fighters[id].stats[Stat::Vampirizm];
-        if vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
+        if kind.is_melee() && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
             let f = &mut self.fighters[id];
             f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
         }
@@ -1689,9 +1699,12 @@ impl Battle {
             self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = buff.describe()));
             // An undead caster's Elemental or Death curse drains life to it.
             if self.fighters[id].base.nature == Nature::Undead && school != MagicSchool::Life {
-                let drain = (p / self.opt().curse_main_spell.max(1) / 2 + 1).min(self.fighters[target].hp);
-                self.wound(target, drain);
-                dealt += drain;
+                // The target's loss is capped at its HP, but the caster gains the whole
+                // amount (48afce, 48b100).
+                let drain = p / self.opt().curse_main_spell.max(1) / 2 + 1;
+                let loss = drain.min(self.fighters[target].hp);
+                self.wound(target, loss);
+                dealt += loss;
                 let f = &mut self.fighters[id];
                 f.hp = (f.hp + drain).min(f.max_hp());
             }
@@ -1699,7 +1712,7 @@ impl Battle {
         let a = self.fighters[id].base.clone();
         let dry = self.drying(id, target).min(self.fighters[target].hp);
         if dry > 0 {
-            self.wound(target, dry);
+            self.fighters[target].hp -= dry;
             dealt += dry;
         }
         // Poison works for mages whose power after protection is above 15.
@@ -1808,7 +1821,6 @@ impl Battle {
                 t.base[Stat::DefenceShot] = t.base[Stat::DefenceShot] * 3 / 4;
             }
             if a.has(&Bonus::KillingStrike) && t.alive() && t.hp * 100 <= t.base.max_hp() * KILLING_STRIKE_PERCENT {
-                t.lost += t.hp;
                 t.hp = 0;
                 self.log.push(finish);
             }
@@ -1824,7 +1836,8 @@ impl Battle {
         self.refresh(target);
     }
 
-    /// `i` loses `amount` hit points (already capped at its HP).
+    /// `i` loses `amount` hit points (already capped at its HP) through the damage routine
+    /// (48a354): they count in its side's damage taken.
     fn wound(&mut self, i: usize, amount: i32) {
         let f = &mut self.fighters[i];
         f.hp -= amount;

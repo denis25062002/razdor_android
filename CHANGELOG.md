@@ -30,6 +30,14 @@ old id, and their versions give both.
   priest counts the living units, not only the wounded ones.
 - A save load seeds the random numbers from the plants of the original's wider cell
   array (8 columns past the map's edge), as the original does.
+- Battle magic as in the original: the target's protection rounds the power half to even,
+  and a strike the protection takes to nothing still deals the GodAnger or GodStrike bonus.
+  An undead caster's draining curse heals it by the whole amount, even when the target had
+  less left.
+- Vampirism heals only after melee and long strikes, never after a shot.
+- Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
+- Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
+  for the battle XP.
 
 ## 0.2.2 — 2026-10-01
 

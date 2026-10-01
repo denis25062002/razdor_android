@@ -1599,3 +1599,68 @@ fn a_piercing_blow_on_the_invulnerable_is_one_hit() {
         assert_eq!((bt.physical_damage(0, 1, ActionKind::Melee), bt.physical_damage(0, 2, ActionKind::Melee)), (1, 1), "{god:?}");
     }
 }
+
+// --- the original's rules and slips, row by row of the spec's table ---------------------------
+
+#[test]
+fn row6_hostile_power_rounds_half_to_even() {
+    let warded = UnitDef { protect_life: 50, hits: 100, ..warrior(120, 20, 0) };
+    let bt = with(vec![warded], &[(15, b(1))], &[(120, f(0))]);
+    // 5 × 0.5 = 2.5 → 2 and 15 × 0.5 = 7.5 → 8: Delphi's Round, not half up.
+    assert_eq!([bt.hostile_power_of(0, 1, 5), bt.hostile_power_of(0, 1, 7), bt.hostile_power_of(0, 1, 15)], [2, 4, 8]);
+}
+
+#[test]
+fn row7_a_strike_of_power_0_still_gets_god_anger_and_god_strike() {
+    let warded = UnitDef { protect_life: 100, hits: 100, ..warrior(121, 20, 0) };
+    let angry = bonus(122, Bonus::GodAnger, mage(122, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+    let struck = bonus(123, Bonus::GodStrike, mage(123, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+    let bt = with(vec![warded, angry, struck], &[(122, b(1)), (123, b(2)), (15, b(3))], &[(121, f(0))]);
+    assert_eq!([bt.magic_strike(0, 3), bt.magic_strike(1, 3), bt.magic_strike(2, 3)], [10, 20, 0]);
+}
+
+#[test]
+fn row14_an_undead_caster_gains_the_whole_drain() {
+    let lich = UnitDef { nature: Nature::Undead, ..mage(124, 30, MagicSchool::Death, MagicDirection::ToEnemy) };
+    let mut bt = with(vec![lich], &[(124, b(2)), (10, f(0))], &[(18, f(2)), (18, f(3))]);
+    bt.fighters[0].hp = 10;
+    bt.fighters[2].hp = 2;
+    // The drain is (30 / 5) / 2 + 1 = 4: the target has only 2 to lose, the caster gains 4.
+    let hit = bt.act(2).unwrap();
+    assert_eq!((hit.amount, bt.fighters[2].hp, bt.fighters[0].hp), (2, 0, 14));
+}
+
+#[test]
+fn row15_shots_never_heal_by_vampirism() {
+    let leech = UnitDef { vampirism: 50, ..shooter(125, 20) };
+    let mut bt = with(vec![leech], &[(125, b(2))], &[(18, f(2))]);
+    bt.fighters[0].hp = 10;
+    bt.act(1).unwrap();
+    assert_eq!(bt.fighters[0].hp, 10);
+}
+
+#[test]
+fn row29_any_army_led_by_a_knight_type_unit_takes_80_percent() {
+    // The enemy's first unit is of the Knight type (an AI lord): its army is protected too.
+    let bt = battle(&[(10, f(2))], &[(1, f(2)), (18, f(3))]);
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 24);
+    // A Knight-type unit further down the list does not count.
+    let bt = battle(&[(10, f(2))], &[(18, f(3)), (1, f(2))]);
+    assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30);
+}
+
+#[test]
+fn row34_counter_blows_and_poison_are_not_damage_taken() {
+    let chief = bonus(126, Bonus::Counterblow, UnitDef { hits: 100, ..warrior(126, 25, 0) });
+    let mut bt = with(vec![chief], &[(10, f(2))], &[(126, f(2))]);
+    let hit = bt.act(1).unwrap();
+    assert_eq!(hit.counter, Some(20));
+    assert_eq!((bt.fighters[0].lost, bt.fighters[1].lost), (0, 30), "the counter blow is not counted");
+    let viper = bonus(127, Bonus::Poison, warrior(127, 30, 0));
+    let mut bt = with(vec![viper], &[(127, f(2))], &[(18, f(2)), (18, f(3))]);
+    bt.act(1).unwrap();
+    let lost = bt.fighters[1].lost;
+    to_round(&mut bt, 2);
+    assert!(bt.fighters[1].hp < 200 - lost, "poisoned");
+    assert_eq!(bt.fighters[1].lost, lost, "the poison's loss is not counted");
+}
