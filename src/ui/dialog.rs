@@ -141,7 +141,7 @@ impl Dialog {
             d.text.push(tr("Grateful for your mercy, the surrendered troops pray for you.").into());
         }
         if *lost > 0 {
-            d.text.push(trf!("{lost} of your units fell. Their bodies can be raised in a town or church within a week.", lost));
+            d.text.push(trf!("{lost} of your units fell. Their bodies can be raised in a town or church.", lost));
         }
         for &(i, level) in level_ups {
             d.text.push(trf!("{name} reaches level {level}.", name = game.squad[i].name(&game.content), level));

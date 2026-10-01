@@ -2,11 +2,11 @@
 //! each tab does (mechanics.md 1.6, 3.1, 4, 5.3): hiring, paid healing and resurrection,
 //! garrisons, the market, the sanctuary (spell shop) and village tribute.
 //!
-//! Only the building the hero stands in can be used. An ill-disposed building (attitude
-//! below 0) still trades and heals, dearer at its market (see `Game::relation_markup`), but
-//! does not hire or pay tribute.
+//! Only the building the hero stands in can be used. There is no attitude test anywhere
+//! (economy.md §7): an ill-disposed building trades, hires and heals, dearer at its market
+//! (see `economy::relation_price`).
 
-use super::content::SpellDef;
+use super::content::{Content, SpellDef};
 use super::formation::Slot;
 use super::game::{Event, Game, Price, PACK_SIZE, SPELL_BOOK_SIZE};
 use super::units::Stats;
@@ -39,8 +39,6 @@ pub enum ServiceError {
     CannotAfford,
     NotWounded,
     NotDead,
-    /// The body is past `MaxTimeResurection`.
-    TooLate,
     /// The dead cannot be left in a garrison.
     Dead,
     SquadFull,
@@ -53,21 +51,23 @@ pub enum ServiceError {
     NoSuchUnit,
 }
 
-/// The tabs location `l` shows the player, in the original's order (mechanics.md 5.3):
-/// - every building: the main hall;
-/// - towns, castles, forts, churches: the barracks (hire and heal; towns and churches also
-///   resurrect); villages and altars hire for the AI only;
+/// The tabs location `l` shows the player, in the original's order (economy.md §7,
+/// 0x4bbc84), with no attitude test:
+/// - every building with a window: the main hall;
+/// - the hire tab ([`Location::hires`]), where healing and (towns, churches) resurrection
+///   live too;
 /// - the player's castles and forts: the garrison;
-/// - a building with goods: the market; with spells: the sanctuary;
+/// - a building with goods (only towns, markets and churches keep them): the market; with
+///   spells: the sanctuary;
 /// - villages: the tribute; friendly shipyards: ships for rent.
 ///
-/// Bridges, the demo's camps and a garrison still to be beaten have none.
-pub fn tabs(l: &Location) -> Vec<Tab> {
-    if l.kind.is_bridge() || l.kind == LocationKind::Camp || l.defended() {
+/// Bridges, the obelisk, the demo's camps and a garrison still to be beaten have none.
+pub fn tabs(l: &Location, c: &Content) -> Vec<Tab> {
+    if l.kind.is_bridge() || matches!(l.kind, LocationKind::Obelisk | LocationKind::Camp) || l.defended() {
         return Vec::new();
     }
     let mut tabs = vec![Tab::MainHall];
-    if l.hires() {
+    if l.hires(c) {
         tabs.push(Tab::Barracks);
     }
     if l.takes_garrison() {
@@ -90,8 +90,8 @@ pub fn tabs(l: &Location) -> Vec<Tab> {
 
 /// The tab a building window opens on: a village's tribute, a shipyard's ships, else the
 /// main hall.
-pub fn first_tab(l: &Location) -> Option<Tab> {
-    let t = tabs(l);
+pub fn first_tab(l: &Location, c: &Content) -> Option<Tab> {
+    let t = tabs(l, c);
     t.iter().copied().find(|&t| matches!(t, Tab::Tribute | Tab::Shipyard)).or_else(|| t.first().copied())
 }
 
@@ -102,7 +102,7 @@ impl Game {
 
     /// Tabs of the building the hero stands in.
     pub fn tabs_here(&self) -> Vec<Tab> {
-        self.here().map_or_else(Vec::new, tabs)
+        self.here().map_or_else(Vec::new, |l| tabs(l, &self.content))
     }
 
     fn offers(&self, tab: Tab) -> bool {
@@ -116,14 +116,34 @@ impl Game {
         self.location.map_or_else(Vec::new, |l| self.world.local_events(l))
     }
 
-    /// Paid healing is possible here: a friendly town, castle, fort or church.
+    /// Paid healing is possible here: wherever the hire tab is shown.
     pub fn heals_here(&self) -> bool {
-        self.offers(Tab::Barracks) && self.here().is_some_and(Location::heals)
+        self.offers(Tab::Barracks)
     }
 
-    /// Resurrection is possible here: a friendly town or church.
+    /// Resurrection is possible here: the hire tab of a town or church.
     pub fn resurrects_here(&self) -> bool {
-        self.offers(Tab::Barracks) && self.here().is_some_and(Location::resurrects)
+        self.offers(Tab::Barracks) && self.here().is_some_and(|l| matches!(l.kind, LocationKind::Town | LocationKind::Church))
+    }
+
+    /// Whether the heal or raise button of squad member `i` is enabled: its price against
+    /// the gold, or the mana for an elemental's resurrection only (0xc260c5); the heal
+    /// button compares even an elemental's price with the gold.
+    pub fn can_pay_service(&self, i: usize, price: Price) -> bool {
+        let elemental = self.squad.get(i).is_some_and(|u| self.content.paid_in_mana(u.def));
+        if elemental && self.squad.get(i).is_some_and(|u| !u.alive()) {
+            self.mana >= price.amount
+        } else {
+            self.gold >= price.amount
+        }
+    }
+
+    /// Pays a heal or a resurrection in `price`'s currency, clamped at 0 (0x4ab150).
+    fn pay_service(&mut self, price: Price) {
+        match price.currency {
+            super::game::Currency::Gold => self.gold = (self.gold - price.amount).max(0),
+            super::game::Currency::Mana => self.mana = (self.mana - price.amount).max(0),
+        }
     }
 
     /// Heals squad member `i` to full HP for [`Game::heal_price`], paid at once. No game
@@ -138,24 +158,18 @@ impl Game {
             return Err(ServiceError::NotWounded);
         }
         let price = self.heal_price(i).ok_or(ServiceError::NotWounded)?;
-        if !self.spend(price) {
+        if !self.can_pay_service(i, price) {
             return Err(ServiceError::CannotAfford);
         }
+        self.pay_service(price);
         let c = self.content.clone();
         self.squad[i].heal_full(&c);
         Ok(Vec::new())
     }
 
-    /// Minutes left to resurrect squad member `i`, if it is a corpse that can still be raised.
-    pub fn resurrection_minutes_left(&self, i: usize) -> Option<u64> {
-        let u = self.squad.get(i)?;
-        let died = u.died_at.filter(|_| !u.alive())?;
-        let end = died + self.content.options.max_time_resurection.max(0) as u64;
-        end.checked_sub(self.clock.total_minutes() as u64)
-    }
-
-    /// Raises the corpse of squad member `i` in a town or church, within `MaxTimeResurection`
-    /// of its death, for [`Game::resurrect_price`]. It comes back at once with full HP.
+    /// Raises the corpse of squad member `i` in a town or church for
+    /// [`Game::resurrect_price`], with no time limit (`MaxTimeResurection` is the AI's). It
+    /// comes back at once with full HP, marked paid (its last pay unchanged).
     pub fn resurrect(&mut self, i: usize) -> Result<Vec<Event>, ServiceError> {
         if !self.resurrects_here() {
             return Err(ServiceError::NotHere);
@@ -164,13 +178,15 @@ impl Game {
         if u.alive() {
             return Err(ServiceError::NotDead);
         }
-        let price = self.resurrect_price(i).ok_or(ServiceError::TooLate)?;
-        if !self.spend(price) {
+        let price = self.resurrect_price(i).ok_or(ServiceError::NotDead)?;
+        if !self.can_pay_service(i, price) {
             return Err(ServiceError::CannotAfford);
         }
+        self.pay_service(price);
         let c = self.content.clone();
         let u = &mut self.squad[i];
         u.died_at = None;
+        u.unpaid = false;
         u.heal_full(&c);
         Ok(Vec::new())
     }
@@ -357,6 +373,13 @@ mod tests {
         b
     }
 
+    /// [`town`] with a barracks slot (militia, none left): the hire tab, where healing is.
+    fn hall(kind: BuildingType, x: u16, y: u16, attitude: i8) -> crate::dt::dtm::Building {
+        let mut b = town(kind, x, y, attitude);
+        b.barracks[0] = RecruitSlot { unit: 4, start_count: 0, max_count: 0 };
+        b
+    }
+
     /// A game standing in building 0 of `s`.
     fn inside(s: &Scenario) -> Game {
         let mut g = start(s);
@@ -373,38 +396,48 @@ mod tests {
         t.spells_for_sale[0] = 1;
         let mut castle = town(BuildingType::Castle, 8, 5, 3);
         castle.faction = 1;
-        let fort = town(BuildingType::Fort, 11, 5, 1);
+        let mut fort = town(BuildingType::Fort, 11, 5, -2);
+        fort.barracks[2] = RecruitSlot { unit: 5, start_count: 1, max_count: 1 };
+        fort.random_artifacts_for_sale = 4; // wiped at load: only towns, markets, churches sell
         let village = town(BuildingType::Village, 14, 5, 1);
         let mut church = town(BuildingType::Church, 17, 5, 1);
         church.spells_for_sale[0] = 2;
-        let tavern = town(BuildingType::Tavern, 20, 5, 1);
+        let mut tavern = town(BuildingType::Tavern, 20, 5, 1);
+        tavern.barracks[0] = RecruitSlot { unit: 4, start_count: 1, max_count: 1 };
+        tavern.barracks[1] = RecruitSlot { unit: 9, start_count: 1, max_count: 1 };
         let mut market = town(BuildingType::Market, 22, 5, 1);
         market.random_artifacts_for_sale = 5;
         let mut hostile = town(BuildingType::Town, 5, 7, -2);
         hostile.random_artifacts_for_sale = 3;
         hostile.garrison[0] = troop(4, 0, 1);
         let bridge = town(BuildingType::StoneBridge, 3, 7, 1);
-        s.buildings = vec![t, castle, fort, village, church, tavern, market, hostile, bridge];
+        let mut altar = town(BuildingType::Altar, 7, 7, 1);
+        altar.barracks[0] = RecruitSlot { unit: 9, start_count: 1, max_count: 1 };
+        altar.recruit_all_types = 1;
+        altar.random_artifacts_for_sale = 2;
+        let obelisk = town(BuildingType::Obelisk, 9, 7, 1);
+        s.buildings = vec![t, castle, fort, village, church, tavern, market, hostile, bridge, altar, obelisk];
         let g = start(&s);
-        let tabs: Vec<Vec<Tab>> = g.world.locations.iter().map(tabs).collect();
+        let c = g.content.clone();
+        let tabs: Vec<Vec<Tab>> = g.world.locations.iter().map(|l| tabs(l, &c)).collect();
         use Tab::*;
         assert_eq!(tabs[0], [MainHall, Barracks, Market, Sanctuary]);
-        assert_eq!(tabs[1], [MainHall, Barracks, Garrison], "the player's castle");
-        assert_eq!(tabs[2], [MainHall, Barracks], "a friendly fort: hire and heal only");
+        assert_eq!(tabs[1], [MainHall, Garrison], "the player's castle: no barracks slot, no hire tab");
+        assert_eq!(tabs[2], [MainHall, Barracks], "an ill-disposed fort still hires: no attitude test");
         assert_eq!(tabs[3], [MainHall, Tribute]);
-        assert_eq!(tabs[4], [MainHall, Barracks, Sanctuary]);
-        assert_eq!(tabs[5], [MainHall]);
+        assert_eq!(tabs[4], [MainHall, Sanctuary]);
+        assert_eq!(tabs[5], [MainHall], "a rogue in the barracks closes the hire tab");
         assert_eq!(tabs[6], [MainHall, Market]);
-        assert_eq!(tabs[7], [MainHall, Barracks, Market], "an ill-disposed town trades (its garrison is AI-only)");
+        assert_eq!(tabs[7], [MainHall, Market], "an ill-disposed town trades (its garrison is AI-only)");
         assert!(tabs[8].is_empty());
-        let l = &g.world.locations;
-        assert!(l[0].heals() && l[0].resurrects() && l[1].heals() && !l[1].resurrects() && l[4].resurrects());
+        assert_eq!(tabs[9], [MainHall, Barracks], "the all-types byte opens it; an altar keeps no goods");
+        assert!(tabs[10].is_empty(), "the obelisk has no window");
     }
 
     #[test]
     fn heal_costs_a_share_of_the_unit_cost_over_f_and_no_time() {
         let mut s = map();
-        s.buildings = vec![town(BuildingType::Town, 2, 2, 1)];
+        s.buildings = vec![hall(BuildingType::Town, 2, 2, 1)];
         let mut g = inside(&s);
         assert_eq!(g.difficulty(), 120, "no impossible difficulty");
         assert_eq!(g.heal_price(1), None, "unhurt");
@@ -426,7 +459,7 @@ mod tests {
     #[test]
     fn healing_and_resurrection_take_no_time_even_before_noon() {
         let mut s = map();
-        s.buildings = vec![town(BuildingType::Church, 2, 2, 1)];
+        s.buildings = vec![hall(BuildingType::Church, 2, 2, 1)];
         let mut g = inside(&s);
         g.pass_time(2.5 * 60.0, &mut Vec::new()); // 09:00 -> 11:30
         g.squad[1].hp = 1;
@@ -436,9 +469,9 @@ mod tests {
     }
 
     #[test]
-    fn no_healing_in_taverns_or_villages() {
+    fn no_healing_without_a_hire_tab() {
         let mut s = map();
-        s.buildings = vec![town(BuildingType::Tavern, 6, 2, 1), town(BuildingType::Village, 9, 2, 1), town(BuildingType::Church, 12, 2, -2)];
+        s.buildings = vec![town(BuildingType::Tavern, 6, 2, 1), town(BuildingType::Village, 9, 2, 1), hall(BuildingType::Church, 12, 2, -2)];
         let mut g = inside(&s);
         g.squad[1].hp = 1;
         for l in 0..2 {
@@ -470,9 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn the_dead_stay_as_corpses_and_can_be_raised_in_a_town_within_a_week() {
+    fn the_dead_stay_as_corpses_and_can_be_raised_in_a_town() {
         let mut s = map();
-        s.buildings = vec![town(BuildingType::Town, 2, 2, 1), town(BuildingType::Castle, 6, 2, 2)];
+        s.buildings = vec![hall(BuildingType::Town, 2, 2, 1), hall(BuildingType::Castle, 6, 2, 2)];
         let mut g = inside(&s);
         g.squad[1].items[0] = Some(ItemId(20));
         lose_unit_in_battle(&mut g, 1);
@@ -483,7 +516,6 @@ mod tests {
         assert_eq!(g.heal_price(1), None);
         // Resurrection: Round(Cost × 300% × 100 / F) = 50 × 3 / 1.2.
         assert_eq!(g.resurrect_price(1), Some(Price::gold(125)));
-        assert_eq!(g.resurrection_minutes_left(1), Some(10_080));
         g.location = Some(1);
         assert_eq!(g.resurrect(1), Err(ServiceError::NotHere), "castles heal but do not resurrect");
         g.location = Some(0);
@@ -499,16 +531,45 @@ mod tests {
     }
 
     #[test]
-    fn corpses_past_the_window_are_buried() {
+    fn the_players_corpses_are_never_buried_and_raised_paid() {
         let mut s = map();
-        s.buildings = vec![town(BuildingType::Church, 2, 2, 1)];
+        s.buildings = vec![hall(BuildingType::Church, 2, 2, 1)];
         let mut g = inside(&s);
+        g.mana = 1000;
         lose_unit_in_battle(&mut g, 1);
-        g.pass_time(7.0 * 24.0 * 60.0, &mut Vec::new());
-        assert_eq!(g.resurrection_minutes_left(1), Some(0), "exactly the last minute");
+        g.squad[1].unpaid = true;
+        // `MaxTimeResurection` is the AI's: a month later the body is still there.
+        g.pass_time(30.0 * 24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.squad.len(), 3);
         assert!(g.resurrect_price(1).is_some());
-        g.pass_time(1.0, &mut Vec::new());
-        assert_eq!(g.squad.len(), 2, "buried");
+        let last_paid = g.squad[1].last_paid;
+        g.gold = 1000;
+        g.resurrect(1).unwrap();
+        assert!(g.squad[1].alive() && !g.squad[1].unpaid, "raised and marked paid");
+        assert_eq!(g.squad[1].last_paid, last_paid, "its last pay unchanged");
+    }
+
+    #[test]
+    fn a_cost_of_2_mod_256_is_resurrected_for_mana_after_a_gold_check() {
+        let mut c = content();
+        c.units.iter_mut().find(|u| u.id == 4).unwrap().cost = 2050; // as unit 56
+        let mut s = map();
+        s.buildings = vec![hall(BuildingType::Town, 2, 2, 1)];
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
+        g.location = Some(0);
+        g.squad[1].hp = 0;
+        // Round(2050 × 300% × 100 / 120) = 5125, in mana (the Cost's low byte reads as 2).
+        assert_eq!(g.resurrect_price(1), Some(Price { amount: 5125, currency: Currency::Mana }));
+        (g.gold, g.mana) = (5000, 9000);
+        assert_eq!(g.resurrect(1), Err(ServiceError::CannotAfford), "the button checks the gold");
+        g.gold = 6000;
+        g.resurrect(1).unwrap();
+        assert_eq!((g.gold, g.mana), (6000, 9000 - 5125));
+        // Paid in mana, clamped at 0.
+        g.squad[2].hp = 0;
+        g.mana = 100;
+        g.resurrect(2).unwrap();
+        assert_eq!((g.gold, g.mana), (6000, 0));
     }
 
     #[test]
@@ -545,6 +606,7 @@ mod tests {
         let mut s = map();
         let mut t = town(BuildingType::Town, 2, 2, 1);
         t.barracks[0] = RecruitSlot { unit: 8, start_count: 3, max_count: 3 };
+        t.recruit_all_types = 1; // an elemental is not of ordinary Nature
         s.buildings = vec![t];
         let mut g = inside(&s);
         assert_eq!(g.hire_price(UnitId(8)), Price { amount: 80, currency: Currency::Mana });
@@ -1234,7 +1296,8 @@ mod tests {
     }
 
     #[test]
-    fn ill_disposed_buildings_trade_but_do_not_hire_or_pay_tribute() {
+    fn ill_disposed_buildings_trade_hire_and_pay_tribute() {
+        // No attitude test anywhere (economy.md §7, §3).
         let g = inside(&shop_town(-1));
         assert_eq!(g.market_here().map(<[ItemId]>::len), Some(3));
         let mut s = map();
@@ -1244,9 +1307,9 @@ mod tests {
         v.gold_per_day = 20;
         s.buildings = vec![t, v];
         let mut g = inside(&s);
-        assert!(g.recruits_here().is_empty());
+        assert_eq!(g.recruits_here(), vec![UnitId(4)]);
         g.location = Some(1);
-        assert_eq!(g.tribute_available(), None);
+        assert_eq!(g.tribute_available(), Some(20));
     }
 
     #[test]
@@ -1352,7 +1415,7 @@ mod tests {
         assert!(matches!(r, BattleResult::Victory { reward: 30, mana: 20, captured: Some(0), .. }), "{r:?}");
         assert_eq!((g.gold, g.mana), (gold + 30, mana + 20));
         assert_eq!(g.daily_income(), 36, "its income (× F/100) counts at once");
-        assert_eq!(g.tabs_here(), vec![Tab::MainHall, Tab::Barracks, Tab::Garrison]);
+        assert_eq!(g.tabs_here(), vec![Tab::MainHall, Tab::Garrison], "no barracks slot, no hire tab");
     }
 }
 
@@ -1405,7 +1468,7 @@ mod real_maps {
         // Walk into the nearest friendly building that hires.
         let (l, _) = g
             .world
-            .nearest_location(g.tile(), |l| l.hires() && !l.hostile() && !l.owned() && l.kind != LocationKind::Castle)
+            .nearest_location(g.tile(), |l| l.hires(&g.content) && !l.hostile() && !l.owned() && l.kind != LocationKind::Castle)
             .expect("a friendly town or church");
         walk_into(&mut g, l);
         let b = &s.buildings[l];

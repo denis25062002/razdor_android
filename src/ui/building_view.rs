@@ -9,7 +9,7 @@ use macroquad::prelude::*;
 use razdor::i18n::{n_, tr};
 use razdor::rules::battle::Team;
 use razdor::trf;
-use razdor::rules::clock::{duration_label, MINUTES_PER_DAY};
+use razdor::rules::clock::MINUTES_PER_DAY;
 use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
 use razdor::rules::game::{Currency, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
@@ -83,7 +83,6 @@ pub fn service_error(e: ServiceError) -> String {
         ServiceError::CannotAfford => tr("You cannot afford it.").into(),
         ServiceError::NotWounded => tr("Not wounded.").into(),
         ServiceError::NotDead => tr("Alive and well.").into(),
-        ServiceError::TooLate => tr("Too late: the body can only be buried.").into(),
         ServiceError::Dead => tr("The dead cannot stand guard.").into(),
         ServiceError::SquadFull => tr("Your army is full.").into(),
         ServiceError::GarrisonFull => tr("The garrison is full.").into(),
@@ -336,7 +335,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     let k = chrome::k();
     let c = game.content.clone();
     let recruits = game.world.locations[l].recruits.clone();
-    let hires = game.world.locations[l].hires();
+    let hires = game.world.locations[l].hires(&c);
     // The interior behind the recruits and the counters.
     let back = at(f, 250.0, 28.0, 584.0, 270.0);
     let interior = match game.world.locations[l].kind {
@@ -435,7 +434,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
             (Some(label), Some(pr)) => {
                 chrome::surface(strip, chrome::Skin::Strip);
                 let pill = Rect::new(strip.x + 4.0 * k, strip.y + 3.0 * k, strip.w - 8.0 * k, 17.0 * k);
-                if chrome::pill_button(pill, &label, game.can_afford(pr), false) {
+                if chrome::pill_button(pill, &label, game.can_pay_service(i, pr), false) {
                     action = Some((i, raise));
                 }
                 let cost = trf!("Price {price}", price = pr.amount);
@@ -461,10 +460,6 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
             chrome::glow_frame(sq, Color::new(0.35, 0.55, 1.0, 0.9), false);
             hover_lines = vec![(u.name(&c).to_string(), ACCENT)];
             hover_lines.extend(unit_stat_lines(&c, &u, game.wage(i)).into_iter().map(|s| (s, INK)));
-            if !u.alive() {
-                let left = game.resurrection_minutes_left(i).map_or(tr("to be buried").into(), |m| duration_label(m as f64));
-                hover_lines.push((left, DIM));
-            }
         }
     }
     let cells: Vec<(Slot, Rect)> = form.slots().map(|s| (s, Rect::new(cell_at(s).x, cell_at(s).y, card.x, card.y))).collect();

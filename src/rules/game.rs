@@ -637,7 +637,7 @@ impl Game {
     /// fort or church, with stock left).
     pub fn recruits_here(&self) -> Vec<UnitId> {
         match self.location.map(|l| &self.world.locations[l]) {
-            Some(l) if !l.hostile() && l.hires() => l.recruits.iter().filter(|r| r.stock != Some(0)).map(|r| r.unit).collect(),
+            Some(l) if l.hires(&self.content) => l.recruits.iter().filter(|r| r.stock != Some(0)).map(|r| r.unit).collect(),
             _ => Vec::new(),
         }
     }
@@ -1135,7 +1135,6 @@ impl Game {
     /// (0x4b4388); the AI's armies keep theirs.
     fn pass_slice(&mut self, minutes: f32, events: &mut Vec<Event>) {
         let ticks = self.clock.advance(minutes as f64);
-        self.bury_old_corpses();
         self.expire_spells();
         self.move_armies(minutes, events);
         for tick in ticks {
@@ -1173,21 +1172,6 @@ impl Game {
         // (economy.md), then the AI's night (world.md §6).
         self.economy_midnight();
         self.ai_midnight();
-    }
-
-    /// Corpses past `MaxTimeResurection` can no longer be raised and are buried.
-    fn bury_old_corpses(&mut self) {
-        let now = self.clock.total_minutes() as u64;
-        let window = self.content.options.max_time_resurection.max(0) as u64;
-        let mut i = 1;
-        while i < self.squad.len() {
-            match self.squad[i].died_at {
-                Some(t) if !self.squad[i].alive() && now > t + window => {
-                    self.squad.remove(i);
-                }
-                _ => i += 1,
-            }
-        }
     }
 
     /// The hero's noon (0x4abfbc, economy.md §1): a Ranger heals 15%; with a gold bill or

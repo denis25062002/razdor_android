@@ -103,7 +103,6 @@ Not offered here. = Здесь этого не предлагают.
 You cannot afford it. = Вам это не по карману.
 Not wounded. = Не ранен.
 Alive and well. = Жив и здоров.
-Too late: the body can only be buried. = Поздно: тело остаётся лишь похоронить.
 The dead cannot stand guard. = Мёртвые не несут стражу.
 Your army is full. = Ваша армия полна.
 The garrison is full. = Гарнизон полон.
@@ -142,7 +141,6 @@ Hire = Нанять
 always = всегда
 Heal = Лечить
 Raise = Воскресить
-to be buried = к погребению
 {name} rises again. = {name}: воскрешён.
 {name} is healed. = {name}: исцелён.
 

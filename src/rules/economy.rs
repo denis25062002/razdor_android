@@ -504,27 +504,33 @@ impl Game {
         Some(Price::for_unit(&self.content, u.def, amount as i32))
     }
 
-    /// Price to resurrect squad member `i`: `Round(Cost × ResurectConst% × 100 / F)`. `None`
-    /// if it is alive or past the window.
+    /// Price to resurrect squad member `i`: `Round(Cost × ResurectConst% × 100 / F)`, no
+    /// minimum. `None` if it is alive. The Community's slip (0xc2606c): the "pay in mana"
+    /// test reads the low byte of the unit's `Cost` instead of its Nature, so a unit whose
+    /// Cost is 2 more than a multiple of 256 (unit 56, Cost 2050) pays in mana, while the
+    /// button compares the price with the gold ([`Game::can_pay_service`]).
     pub fn resurrect_price(&self, i: usize) -> Option<Price> {
-        self.resurrection_minutes_left(i)?;
-        let u = &self.squad[i];
-        let cost = self.content.unit(u.def).cost.max(0) as i64;
-        let amount = round_ratio(cost * self.content.options.resurect_const.max(0) as i64, self.difficulty() as i64);
-        Some(Price::for_unit(&self.content, u.def, amount as i32))
+        let u = self.squad.get(i).filter(|u| !u.alive())?;
+        let cost = self.content.unit(u.def).cost;
+        let amount = round_ratio(cost.max(0) as i64 * self.content.options.resurect_const.max(0) as i64, self.difficulty() as i64) as i32;
+        if cost & 0xff == 2 || self.content.paid_in_mana(u.def) {
+            Some(Price { amount, currency: Currency::Mana })
+        } else {
+            Some(Price::gold(amount))
+        }
     }
 
     // ---------------------------------------------------------------------------------------
     // Villages
     // ---------------------------------------------------------------------------------------
 
-    /// The village here, if it pays: not ill-disposed, with something waiting, and the hero
-    /// not a Rogue (a Rogue gets nothing from villages).
+    /// The village here, if it pays: something waiting, and the hero not a Rogue (a Rogue
+    /// gets nothing from villages). No attitude test (0x4c6000): entering captures it.
     fn village_ready(&self) -> Option<usize> {
         let l = self.location?;
         let v = &self.world.locations[l];
         let rogue = self.content.unit(self.hero().def).nature == Nature::Rogue;
-        (v.kind == LocationKind::Village && (v.tribute_gold > 0 || v.tribute_mana > 0) && !v.hostile() && !rogue).then_some(l)
+        (v.kind == LocationKind::Village && (v.tribute_gold > 0 || v.tribute_mana > 0) && !rogue).then_some(l)
     }
 
     /// Tribute (gold) the village here would pay now, if any is waiting.

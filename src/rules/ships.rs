@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(g.rent_ship(), Err(ShipError::NoShipyard), "not in a shipyard");
         let mut g2 = at_yard(&s);
         use crate::rules::town::{first_tab, Tab};
-        assert_eq!(first_tab(&g2.world.locations[0]), Some(Tab::Shipyard));
+        assert_eq!(first_tab(&g2.world.locations[0], &g2.content), Some(Tab::Shipyard));
         assert_eq!(g2.ship_price(), 250);
         g2.gold = 249;
         assert_eq!(g2.rent_ship(), Err(ShipError::NotEnoughGold));

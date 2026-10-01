@@ -964,7 +964,7 @@ fn reopen_here(game: &mut Game, t: Tile) -> Option<Screen> {
         game.foe = Some(Foe::Garrison(l));
         return Some(saves::battle(game));
     }
-    first_tab(loc).map(|first| Screen::Building(BuildingView::new(first)))
+    first_tab(loc, &game.content).map(|first| Screen::Building(BuildingView::new(first)))
 }
 
 
@@ -1031,7 +1031,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             Event::Encounter(_) => {}
             Event::Arrived(l) => {
                 if game.foe.is_some() {
-                } else if let Some(first) = first_tab(&game.world.locations[l]) {
+                } else if let Some(first) = first_tab(&game.world.locations[l], &game.content) {
                     *message = None;
                     next = Some(Screen::Building(BuildingView::new(first)));
                 }

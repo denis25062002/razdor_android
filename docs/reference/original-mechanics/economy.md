@@ -519,24 +519,24 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight; a dead medic counts | Same (a dead medic counts) | Matches |
 | Relation factor | Exact table, half to even | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
 | Buy / sell / spells / hire / ship prices | As the original | §2 | Yes |
-| Market buildings | Any building with goods (altars included) | Towns, markets, churches only | **No** |
+| Market buildings | Towns, markets, churches only: the map load drops every other building's goods | Towns, markets, churches only | Matches |
 | Market stock | Uniform draw in the window, potions `count/5+1` then 4/5 chance of 96/97/114/115, sorted by price | Bands walking down the window, n − 1 healing potions + one of 95/96/97/114/115 when R > 6 remains, type and school rules, 1/n widening, no overwrite of a full list, not sorted | **No** |
 | Barracks regrowth | `1/(10 div max)` | Same | Yes |
 | Heal price | As the original, exact rational | Same formula in floating point | Yes |
-| Where to heal / hire | Towns, castles, forts, churches (by type) | Any building whose hire tab shows (ordinary barracks or byte 356); no attitude test | **No** |
-| Resurrection | Town or church, within `MaxTimeResurection`; old corpses buried | Town or church, **no time limit** for the player; corpses are never buried automatically (only by hand, Bury) | **No** |
-| Resurrection currency bug | Not modelled | Cost ≡ 2 (mod 256) pays in mana (unit 56) | **No** |
+| Where to heal / hire | Any building whose hire tab shows (a barracks unit, all of ordinary Nature or the all-types byte); no attitude test (`Location::hires`) | Any building whose hire tab shows (ordinary barracks or byte 356); no attitude test | Matches |
+| Resurrection | Town or church, no time limit for the player; corpses stay until raised or buried by hand; raised paid, last pay kept | Town or church, **no time limit** for the player; corpses are never buried automatically (only by hand, Bury) | Matches |
+| Resurrection currency bug | Cost ≡ 2 (mod 256) pays in mana, clamped at 0, after a gold check (`resurrect_price`, `can_pay_service`) | Cost ≡ 2 (mod 256) pays in mana (unit 56) | Matches |
 | Garrison take-back | Free | Unpaid units cost one day's wage (into an empty cell) | **No** |
 | Garrison moves | Leave and take only; the hero is refused, corpses cannot be left; named units can be left; no swap | Hero and named units refused; corpses move both ways; a cross-grid swap exchanges records with no price (unpaid stays unpaid) and is the only way into a full army | **No** |
 | Dismiss / Bury | One click, no confirmation; worn items go to the pack, refused when the pack is full | A confirm step; no refund; **worn items are lost**; the pack is untouched; only the hero is protected | **No** |
 | Hire timing | Immediate | The unit, gold and slot count change when the card slide ends | Yes (no visible difference) |
 | Market display | Prices as charged; sell list shows the whole pack with "not for sale" rows; no red prices; Buy also needs pack space | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Partly |
 | Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
-| Village tribute | Refused from a hostile village | No attitude test (entering captures the village) | **No** |
+| Village tribute | No attitude test | No attitude test (entering captures the village) | Matches |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
 | AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |
 | Castle capture gold | Stock + income (garrisons carry no gold) | Stock + garrison gold + income | Yes |
-| Ruins treasure | All of the map's goods | The first 5 | **No** |
+| Ruins treasure | The first 5 goods | The first 5 | Matches |
 | Displays | Report and hire tab show the nominal income of towns, castles and forts ×F/100 and the bill without Rear Service; the report shows the gold before the payment and warns when gold + income < wages; no report when there is neither | Nominal incomes (towns included) and the bill without Rear Service | Matches |
 
 ## Unknowns

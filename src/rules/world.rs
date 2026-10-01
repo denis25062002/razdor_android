@@ -11,7 +11,7 @@ use crate::i18n::{n_, tr};
 use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 
 use super::clock::Clock;
-use super::content::{Content, HeroClass, ItemId, UnitId, WageKind};
+use super::content::{Content, HeroClass, ItemId, Nature, UnitId, WageKind};
 use super::formation::{Row, Slot};
 use super::ai::{AiMind, AiProfile, Respawn};
 use super::magic::ActiveSpell;
@@ -440,28 +440,21 @@ impl Location {
         self.kind.defends() && self.hostile() && !self.cleared && !self.garrison.is_empty()
     }
 
-    /// Paid healing (mechanics.md 1.6): towns, castles, forts and churches.
-    pub fn heals(&self) -> bool {
-        use LocationKind::*;
-        matches!(self.kind, Palace | Town | Castle | Fort | Church)
-    }
-
-    /// Resurrection: only towns and churches.
-    pub fn resurrects(&self) -> bool {
-        use LocationKind::*;
-        matches!(self.kind, Palace | Town | Church)
-    }
-
     /// The player may leave troops here: his own castles and forts.
     pub fn takes_garrison(&self) -> bool {
         self.owned() && self.kind.capturable()
     }
 
-    /// Hiring for the player: towns, castles, forts and churches; villages and altars hire
-    /// for the AI only (mechanics.md 5.3).
-    pub fn hires(&self) -> bool {
+    /// The player's hire tab (0x4bbc84, economy.md §7): some barracks slot holds a unit,
+    /// and every slot's unit is of ordinary Nature or the "all types" byte is set. No
+    /// attitude or type test, beyond the types with no building window (villages and
+    /// shipyards have their own; bridges and the obelisk none).
+    pub fn hires(&self, c: &Content) -> bool {
         use LocationKind::*;
-        matches!(self.kind, Palace | Town | Castle | Fort | Church)
+        let ordinary = |r: &Recruit| c.try_unit(r.unit).is_some_and(|d| matches!(d.nature, Nature::Normal | Nature::People));
+        !matches!(self.kind, Village | Shipyard | StoneBridge | WoodenBridge | Obelisk | Camp)
+            && !self.recruits.is_empty()
+            && (self.recruit_all_types || self.recruits.iter().all(ordinary))
     }
 
     /// Income the owner receives each day (villages pay tribute instead).
@@ -862,11 +855,15 @@ impl World {
                     .collect();
             }
             l.recruit_all_types = b.recruit_all_types != 0;
-            let items = artifact_ids(content, b.artifacts().map(u32::from));
+            // A market has 12 places; ruins keep their first 5 goods as treasure; the map load
+            // wipes the goods of every other type, altars included (0x4b5600 area).
+            let goods = |n: usize| artifact_ids(content, b.artifact_slots[..n].iter().filter(|&&x| x != 0).map(|&x| u32::from(x)));
+            let market = matches!(kind, LocationKind::Town | LocationKind::Market | LocationKind::Church);
+            let items = goods(12);
             if kind == LocationKind::Ruins {
-                l.treasure = items;
+                l.treasure = goods(5);
                 l.treasure_gold = b.price_max as i32;
-            } else if !items.is_empty() || b.random_artifacts_for_sale > 0 {
+            } else if market && (!items.is_empty() || b.random_artifacts_for_sale > 0) {
                 l.shop = Some(Shop {
                     fixed: items,
                     random: b.random_artifacts_for_sale as usize,
@@ -1453,6 +1450,7 @@ mod tests {
         castle.random_artifacts_for_sale = 2;
         let mut ruins = building(BuildingType::Ruins, 8, 2, (1, 1));
         ruins.artifact_slots[0] = 9;
+        ruins.artifact_slots[5] = 10; // only the first 5 goods are treasure
         ruins.price_max = 300;
         ruins.relations = [-3, 0, 0, 0];
         ruins.garrison[0] = troop(4, 0, 1);
@@ -1479,7 +1477,7 @@ mod tests {
         assert_eq!(c.garrison.iter().map(|t| (t.unit.0, t.level)).collect::<Vec<_>>(), [(4, 1), (4, 1), (5, 2)]);
         assert_eq!(c.garrison[2].slot.row, Row::Back, "the shooter stands behind");
         assert_eq!(c.recruits, vec![Recruit { unit: UnitId(4), stock: Some(3), max: 9, progress: 0, slot: 0 }]);
-        assert_eq!(c.shop.as_ref().map(|s| (s.fixed.clone(), s.random)), Some((vec![ItemId(7)], 2)));
+        assert!(c.shop.is_none(), "a castle's goods are wiped at load: only towns, markets and churches sell");
 
         let r = &w.locations[1];
         assert_eq!((r.kind, r.tile, r.treasure.clone(), r.treasure_gold), (LocationKind::Ruins, (8, 2), vec![ItemId(9)], 300));

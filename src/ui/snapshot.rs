@@ -145,7 +145,7 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         "building" => {
             let l = n()?;
             let loc = game.world.locations.get(l).ok_or("no such building")?;
-            let mut tab = first_tab(loc).ok_or("the building has no window")?;
+            let mut tab = first_tab(loc, &game.content).ok_or("the building has no window")?;
             // `building:<map>:<n>:barracks`: that tab.
             match parts.next() {
                 Some("barracks") => tab = razdor::rules::town::Tab::Barracks,

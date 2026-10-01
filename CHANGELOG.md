@@ -251,6 +251,16 @@ old id, and their versions give both.
   bill and the gold before the payment, warns when they do not cover the wages, and is not
   shown when there are neither wages nor income. A Ranger heals 20% more when it is shown;
   a dead Medic still heals at midnight. Saves of the previous format still load.
+- Building tabs as in the original, with no attitude test: any building with a barracks
+  unit hires and heals (a tavern or altar too, an ill-disposed one too), unless a barracks
+  unit is not of ordinary Nature and the building lacks the "all types" flag; castles with
+  no barracks no longer heal. Only towns, markets and churches sell items; the obelisk has
+  no window. An ill-disposed village pays its tribute.
+- The player's dead are never buried by time: they can be raised in a town or church any
+  time, and come back paid. A unit whose Cost is 2 more than a multiple of 256 is raised
+  for mana after a gold check, the Community's slip; an elemental's healing is checked
+  against the gold and paid in mana.
+- Ruins keep only their first five goods as treasure.
 
 ## 0.2.2 — 2026-10-01
 
