@@ -27,10 +27,15 @@ use super::clock::Clock;
 use super::content::{Content, ItemId, UnitId};
 use super::events::EventEngine;
 use super::game::Game;
+use super::rng::{self, EventRng, Rng};
 use super::world::World;
 
-/// Bumped when the saved state changes shape; older saves are refused.
-pub const FORMAT_VERSION: u32 = 1;
+/// Bumped when the saved state changes shape. 2: the random generator is no longer saved
+/// (as in the original, a load starts it afresh); version 1 saves still load, their saved
+/// generator ignored.
+pub const FORMAT_VERSION: u32 = 2;
+/// The oldest format still read.
+pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";
 /// Overrides the save folder (tests, portable installs).
 pub const DIR_ENV: &str = "RAZDOR_SAVE_DIR";
@@ -194,7 +199,7 @@ fn unpack(bytes: &[u8]) -> Result<Vec<u8>, SaveError> {
 }
 
 fn check_version(meta: &SaveMeta) -> Result<(), SaveError> {
-    if meta.version != FORMAT_VERSION {
+    if !(OLDEST_VERSION..=FORMAT_VERSION).contains(&meta.version) {
         return Err(SaveError::Version(meta.version));
     }
     Ok(())
@@ -330,10 +335,15 @@ pub fn load(path: &Path, demo: Arc<Content>, install: Option<&Install>) -> Resul
 /// very file the game was saved with).
 pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Option<&Install>) -> Result<Game, SaveError> {
     check_version(meta)?;
-    let (content, fresh, engine) = match &meta.scenario {
+    // What the load sequence draws from (`rng::Rng::save_load`): the plant layer and the
+    // number of armies of the map file.
+    let (content, fresh, engine, plants, armies) = match &meta.scenario {
         ScenarioRef::Demo => {
             let world = World::standard(&demo);
-            (demo, world, None)
+            let m = &world.map;
+            let plants = rng::plant_layer(m.w, m.h, m.objects.iter().map(|o| (o.tile.0, o.tile.1, o.class, o.sprite)));
+            let armies = world.armies.len() + world.inactive.len();
+            (demo, world, None, plants, armies)
         }
         ScenarioRef::Map { file, hash } => {
             let install = install.ok_or(SaveError::NoInstall)?;
@@ -345,7 +355,9 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
             }
             let scenario = Scenario::from_file_bytes(&bytes).map_err(|e| SaveError::Mismatch(e.to_string()))?;
             let world = World::from_scenario(&scenario, &install.content);
-            (install.content.clone(), world, Some(EventEngine::new(&scenario)))
+            let (w, h) = (scenario.header.width as i32, scenario.header.height as i32);
+            let plants = rng::plant_layer(w, h, scenario.objects.iter().map(|o| (o.x as i32, o.y as i32, o.class, o.sprite)));
+            (install.content.clone(), world, Some(EventEngine::new(&scenario)), plants, scenario.armies.len())
         }
     };
     if (game.fog.w, game.fog.h) != (fresh.map.w, fresh.map.h) {
@@ -357,6 +369,8 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
         (None, _) => {}
         (Some(_), None) => return Err(SaveError::Mismatch(tr("events saved for the demo").into())),
     }
+    game.rng = Rng::save_load(game.world.map.w, &plants, armies);
+    game.event_rng = EventRng::from_clock();
     game.content = content;
     game.origin = Some(meta.scenario.clone());
     // Saves from before the last-pay minute count everyone as paid now.
@@ -482,7 +496,7 @@ pub(crate) mod tests {
     #[test]
     fn demo_roundtrip_after_walking_and_a_battle() {
         let c = demo();
-        let mut g = Game::new(c.clone(), HeroClass::Archmage, 7);
+        let mut g = Game::new(c.clone(), HeroClass::Archmage);
         roundtrip(&g, c.clone(), None);
         g.hire(crate::rules::world::demo_unit(&g.content, "spearman")).unwrap();
         g.set_destination(g.world.locations[g.world.index_of("Millbrook")].tile);
@@ -492,8 +506,12 @@ pub(crate) mod tests {
         fight(&mut g);
         g.gold += 5;
         let loaded = roundtrip(&g, c.clone(), None);
-        // The loaded game goes on exactly like the original.
+        // The generator is not saved: every load of the save starts it the same way, from
+        // the load sequence. With that state, the loaded game goes on exactly like the
+        // original.
+        assert_eq!(roundtrip(&g, c.clone(), None).rng.state(), loaded.rng.state());
         let (mut a, mut b) = (g, loaded);
+        a.rng = b.rng.clone();
         for g in [&mut a, &mut b] {
             g.wait(30);
         }
@@ -504,7 +522,7 @@ pub(crate) mod tests {
     fn saves_are_written_listed_and_read_back() {
         let dir = temp_dir("list");
         let c = demo();
-        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        let mut g = Game::new(c.clone(), HeroClass::Knight);
         let p = write(&dir, SaveKind::Manual, "First", &g).unwrap();
         assert!(p.starts_with(dir.join("manual")));
         g.gold = 999;
@@ -529,7 +547,7 @@ pub(crate) mod tests {
     fn a_quick_save_replaces_the_last_and_is_found_again() {
         let dir = temp_dir("quick");
         let c = demo();
-        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        let mut g = Game::new(c.clone(), HeroClass::Knight);
         assert_eq!(quick_save_path(&dir), None);
         write(&dir, SaveKind::Manual, "Mine", &g).unwrap();
         let first = quick_save(&dir, &g).unwrap();
@@ -549,7 +567,7 @@ pub(crate) mod tests {
     fn the_journal_history_survives_a_save_and_old_saves_load_without_one() {
         use crate::rules::journal::EntryKind;
         let c = demo();
-        let mut g = Game::new(c.clone(), HeroClass::Knight, 3);
+        let mut g = Game::new(c.clone(), HeroClass::Knight);
         g.journal.record(EntryKind::Quest, 2, 100, "A quest", "Its text");
         g.journal.record(EntryKind::Rumour, 5, 160, "A rumour", "Whispers");
         g.journal.next_chapter();
@@ -567,7 +585,7 @@ pub(crate) mod tests {
     #[test]
     fn autosaves_rotate() {
         let dir = temp_dir("auto");
-        let g = Game::new(demo(), HeroClass::Ranger, 3);
+        let g = Game::new(demo(), HeroClass::Ranger);
         for k in 0..AUTOSAVES_KEPT + 4 {
             write(&dir, SaveKind::Auto, &format!("auto {k}"), &g).unwrap();
         }
@@ -582,7 +600,7 @@ pub(crate) mod tests {
 
     #[test]
     fn noon_asks_for_an_autosave_named_by_the_date() {
-        let mut g = Game::new(demo(), HeroClass::Knight, 3);
+        let mut g = Game::new(demo(), HeroClass::Knight);
         g.world.armies.clear();
         g.wait(3);
         assert_eq!(g.autosave_due, None);
@@ -592,13 +610,32 @@ pub(crate) mod tests {
 
     #[test]
     fn a_save_of_another_version_or_without_a_scenario_is_refused() {
-        let mut g = Game::new(demo(), HeroClass::Knight, 3);
+        let mut g = Game::new(demo(), HeroClass::Knight);
         let mut meta = meta_of(&g, SaveKind::Manual, "x").unwrap();
         meta.version = 99;
         let bytes = encode(&meta, &g).unwrap();
         assert!(matches!(decode(&bytes), Err(SaveError::Version(99))));
         g.origin = None;
         assert!(matches!(meta_of(&g, SaveKind::Manual, "x"), Err(SaveError::NoScenario)));
+    }
+
+    #[test]
+    fn a_version_1_save_with_its_generator_still_loads() {
+        let c = demo();
+        let g = Game::new(c.clone(), HeroClass::Knight);
+        let mut meta = meta_of(&g, SaveKind::Manual, "old").unwrap();
+        meta.version = 1;
+        let mut game = serde_json::to_value(&g).unwrap();
+        game.as_object_mut().unwrap().insert("rng".into(), serde_json::json!(123_456_789u64));
+        let bytes = serde_json::to_vec(&serde_json::json!({ "meta": meta, "game": game })).unwrap();
+        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+        enc.write_all(&bytes).unwrap();
+        let (m, loaded) = decode(&enc.finish().unwrap()).unwrap();
+        let loaded = restore(&m, loaded, c, None).unwrap();
+        assert_eq!(json(&loaded), json(&g));
+        let fresh = World::standard(&loaded.content);
+        let plants = rng::plant_layer(fresh.map.w, fresh.map.h, fresh.map.objects.iter().map(|o| (o.tile.0, o.tile.1, o.class, o.sprite)));
+        assert_eq!(loaded.rng.state(), Rng::save_load(fresh.map.w, &plants, fresh.armies.len() + fresh.inactive.len()).state(), "the old saved generator is ignored");
     }
 
     #[test]
@@ -614,7 +651,7 @@ pub(crate) mod tests {
         std::fs::write(&path, s.to_payload()).unwrap();
         let content = Arc::new(tk::content());
         let scenario = Scenario::load(&path).unwrap();
-        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight, 1);
+        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight);
         g.set_origin(ScenarioRef::of_map(&path, "Test").unwrap());
         g.set_destination((10, 3));
         walk(&mut g, 200);
@@ -646,7 +683,7 @@ pub(crate) mod tests {
         let Some((dt, entry)) = rk1() else { return };
         let content = Arc::new(Content::from_dt(&dt));
         let scenario = entry.load().unwrap();
-        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight, 11);
+        let mut g = Game::from_scenario(content.clone(), &scenario, HeroClass::Knight);
         g.set_origin(ScenarioRef::of_map(&entry.path, &entry.name).unwrap());
         g.drain_events();
         let install = Install { dir: &dt.dir, content: content.clone() };
@@ -672,7 +709,12 @@ pub(crate) mod tests {
         g.foe = None;
         assert!(g.battles > 0 && g.clock.total_minutes() > scenario.header.start_time as f64, "walked and fought");
         let loaded = roundtrip(&g, demo(), Some(&install));
+        // The load starts the generator from the map's last plant and its armies.
+        let plants = rng::plant_layer(g.world.map.w, g.world.map.h, scenario.objects.iter().map(|o| (o.x as i32, o.y as i32, o.class, o.sprite)));
+        assert!(plants.iter().any(|&p| (9..=11).contains(&(p >> 8))), "РК1 has plants");
+        assert_eq!(loaded.rng.state(), Rng::save_load(g.world.map.w, &plants, scenario.armies.len()).state());
         let (mut a, mut b) = (g, loaded);
+        a.rng = b.rng.clone();
         for g in [&mut a, &mut b] {
             g.wait(12);
         }

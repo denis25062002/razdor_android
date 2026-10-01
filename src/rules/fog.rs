@@ -497,7 +497,7 @@ mod real_maps {
         for prefix in ["РК1", "РК3"] {
             let s = dt.maps.iter().find(|m| m.name.starts_with(prefix)).unwrap().load().unwrap();
             for class in HeroClass::ALL {
-                let g = Game::from_scenario(c.clone(), &s, class, 1);
+                let g = Game::from_scenario(c.clone(), &s, class);
                 let (w, h) = (g.world.map.w, g.world.map.h);
                 let here = g.tile();
                 let n = g.fog.explored_count();
@@ -520,7 +520,7 @@ mod real_maps {
         let Some((dt, c)) = install() else { return };
         for prefix in ["РК1", "РК3"] {
             let s = dt.maps.iter().find(|m| m.name.starts_with(prefix)).unwrap().load().unwrap();
-            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 7);
+            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
             g.world.armies.clear();
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;

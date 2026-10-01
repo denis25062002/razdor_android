@@ -736,7 +736,8 @@ pub fn choose(w: &World, c: &Arc<Content>, i: usize, hero: Option<(Tile, &[Unit]
         }
     }
     // Wandering its patrol (unless it takes no random targets), or going back to its post
-    // when it is outside its patrol box.
+    // when it is outside its patrol box. The original also seeds the wander points of an
+    // army that does not patrol (ai.md §7.2); Razdor's goal scoring does not yet.
     let box_radius = if a.patrols { a.patrol_radius } else { 0 };
     let away = g.distance(here, a.post) > box_radius + 1;
     if away && w.same_region(here, a.post) {
@@ -1014,25 +1015,33 @@ impl Game {
         }
     }
 
-    /// Random cells of army `i`'s patrol box it can walk to, not in a building (world.md §5:
-    /// four points seeded with the `Random` priority). None when it does not wander.
+    /// The four wander points of army `i` (ai.md §7.2, engine.md §3.4, 0x4a2550): x then y
+    /// for each, inside its patrol box (its post ± radius, clamped to the map) when it
+    /// patrols, anywhere on the map when it does not. There is no passability test. A point
+    /// on its own cell is dropped, and so is one in column 0: the original's user skips every
+    /// point whose x is not above 0 (kept). A stationary guard never plans, so never draws.
     fn wander_points(&mut self, i: usize) -> Vec<Tile> {
-        let (post, r, here, wanders) = {
+        let (w, h) = (self.world.map.w, self.world.map.h);
+        let (post, r, here, patrols) = {
             let a = &self.world.armies[i];
-            (a.post, a.patrol_radius, a.tile(&self.world.map), a.patrols && a.patrol_radius > 0 && !a.ai.no_random)
+            (a.post, a.patrol_radius, a.tile(&self.world.map), a.patrols)
         };
-        let mut out = Vec::new();
-        if !wanders {
-            return out;
+        if patrols && r <= 0 {
+            return Vec::new();
         }
-        for _ in 0..WANDER_POINTS * 2 {
-            let t = (post.0 + self.rng.range(-r, r), post.1 + self.rng.range(-r, r));
-            let w = &self.world;
-            if w.map.passable(t) && w.location_at(t).is_none() && t != here && w.same_region(here, t) {
+        let mut out = Vec::new();
+        for _ in 0..WANDER_POINTS {
+            let t = if patrols {
+                let (x0, x1) = ((post.0 - r).max(0), (post.0 + r).min(w - 1));
+                let (y0, y1) = ((post.1 - r).max(0), (post.1 + r).min(h - 1));
+                let x = x0 + self.rng.random(x1 + 1 - x0);
+                (x, y0 + self.rng.random(y1 + 1 - y0))
+            } else {
+                let x = self.rng.random(w);
+                (x, self.rng.random(h))
+            };
+            if t != here && t.0 > 0 {
                 out.push(t);
-                if out.len() == WANDER_POINTS {
-                    break;
-                }
             }
         }
         out
@@ -1354,7 +1363,7 @@ impl Game {
             return 0;
         }
         let x = x.min(i32::MAX as i64 / 2) as i32;
-        self.rng.range(0, x - 1) + x / 2
+        self.rng.random(x) + x / 2
     }
 
     /// Army `i` walks into building `l`, which has no defenders: it is its.
@@ -1884,21 +1893,21 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
     }
     let pick = match t.unit.0 {
         4 => {
-            if rng.range(0, 2) == 0 {
+            if rng.random(3) == 0 {
                 1
             } else {
                 3
             }
         }
         8 => {
-            if rng.range(0, 2) == 0 {
+            if rng.random(3) == 0 {
                 3
             } else {
                 1
             }
         }
         _ => loop {
-            let n = rng.range(1, 3) as usize;
+            let n = rng.random(3) as usize + 1;
             if slots[n - 1].is_some() {
                 break n;
             }

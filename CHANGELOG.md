@@ -12,6 +12,19 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Changed
+- **Random numbers as in the original**: one generator, the original's (the C runtime's
+  `rand()`), started at 1 on every new map, so a fresh map's markets and every roll after
+  them come out the same each time. It is no longer saved: loading a save starts it the way
+  the original does (from the map's plants and its armies), so loading the same save twice
+  replays the same rolls. Saves of the previous format still load.
+- Midnight rolls building by building, each market's new goods before its barracks; a
+  barracks slot always rolls, even when it is certain to grow.
+- AI armies draw their four wander points as the original does: anywhere in their patrol
+  box (or on the whole map), not only on cells they can walk to.
+- The Community events' random flag (opcode 18) uses the Community's own generator,
+  including its slip in the retry loop.
+
 ## 0.2.2 — 2026-10-01
 
 Commit `b01b492` (tag `v0.2.2`).

@@ -119,15 +119,16 @@ pub(crate) struct NoonPay {
     pub deserted: Vec<super::content::UnitId>,
 }
 
-/// One barracks slot at midnight: +1 with chance `1 / (days div max)`; when that divisor is 0
-/// it always grows. `roll(n)` draws `0..n`.
+/// One barracks slot at midnight: +1 when `Random(days div max)` is 0, so with chance
+/// `1 / (days div max)`, always when that divisor is 0 or 1. Every slot with a unit, a
+/// maximum and room draws once, whatever the divisor (the stream counts the draw).
+/// `roll(n)` is the original's `Random(n)`.
 pub fn regrow(r: &mut Recruit, days: i32, roll: &mut dyn FnMut(i32) -> i32) {
     let Some(stock) = r.stock.as_mut() else { return };
     if *stock >= r.max || r.max <= 0 {
         return;
     }
-    let n = days.max(0) / r.max;
-    if n <= 1 || roll(n) == 0 {
+    if roll(days / r.max) == 0 {
         *stock += 1;
     }
 }
@@ -290,22 +291,24 @@ impl Game {
         }
     }
 
-    /// Midnight for every building and army: barracks regrow by chance, village stocks
-    /// grow, markets draw new random goods, garrisons heal `GarrisonAutoHeal`% and every army
-    /// with a Medic [`MEDIC_PERCENT`]%.
+    /// Midnight for every building and army: markets draw new random goods, barracks regrow
+    /// by chance, village stocks grow, garrisons heal `GarrisonAutoHeal`% and every army
+    /// with a Medic [`MEDIC_PERCENT`]%. The draws go building by building, as in the original
+    /// (engine.md §3.4): its market restock first, then its barracks slots.
     pub(crate) fn economy_midnight(&mut self) {
         let days = self.content.options.max_day_count_for_new_unit;
-        let Game { world, rng, .. } = self;
-        for l in world.locations.iter_mut() {
-            for r in l.recruits.iter_mut() {
-                regrow(r, days, &mut |n| rng.range(0, n - 1));
+        for l in 0..self.world.locations.len() {
+            self.restock_market(l);
+            let Game { world, rng, .. } = self;
+            let loc = &mut world.locations[l];
+            for r in loc.recruits.iter_mut() {
+                regrow(r, days, &mut |n| rng.random(n));
             }
-            if l.kind == LocationKind::Village {
-                l.tribute_gold = grow_stock(l.tribute_gold, l.gold_income, l.gold_max);
-                l.tribute_mana = grow_stock(l.tribute_mana, l.mana_income, l.mana_max);
+            if loc.kind == LocationKind::Village {
+                loc.tribute_gold = grow_stock(loc.tribute_gold, loc.gold_income, loc.gold_max);
+                loc.tribute_mana = grow_stock(loc.tribute_mana, loc.mana_income, loc.mana_max);
             }
         }
-        self.restock_markets();
         let c = self.content.clone();
         let garrison = c.options.garrison_auto_heal;
         for l in self.world.locations.iter_mut() {
@@ -371,60 +374,65 @@ impl Game {
     /// potions; the rest are market items priced within the window, at most twice the same
     /// (once when the window's top is above 500); then all sorted by price.
     pub(crate) fn restock_markets(&mut self) {
+        for l in 0..self.world.locations.len() {
+            self.restock_market(l);
+        }
+    }
+
+    /// The restock of building `l` (nothing when it has no shop).
+    pub(crate) fn restock_market(&mut self, l: usize) {
         let market = self.content.items_from(Source::Market);
         let demo = self.world.demo;
-        for l in 0..self.world.locations.len() {
-            let kind = self.world.locations[l].kind;
-            let Some(shop) = &self.world.locations[l].shop else { continue };
-            let (count, (lo, hi)) = (shop.random, shop.price);
-            let fixed = shop.fixed.clone();
-            let mut left = count.saturating_sub(if demo { 0 } else { fixed.len() });
-            let (lo, hi) = if hi <= 0 && lo <= 0 {
-                (i32::MIN, i32::MAX)
-            } else {
-                let mut hi = hi.min(PRICE_CAP);
-                if self.rng.range(0, 4) == 0 {
-                    hi += 1;
-                }
-                (lo.max(5).min(hi), hi)
-            };
-            let exists = |id: u32| self.content.try_item(ItemId(id)).is_some();
-            let mut random: Vec<ItemId> = Vec::new();
-            if kind == LocationKind::Town && !demo {
-                let potions: Vec<u32> = TOWN_POTIONS.into_iter().filter(|&i| exists(i)).collect();
-                if !potions.is_empty() {
-                    for _ in 0..(count / 5 + 1).min(left) {
-                        random.push(ItemId(potions[self.rng.range(0, potions.len() as i32 - 1) as usize]));
-                        left -= 1;
-                    }
-                }
-                let extras: Vec<u32> = TOWN_EXTRAS.into_iter().filter(|&i| exists(i)).collect();
-                if left > 6 && !extras.is_empty() && self.rng.range(0, 4) != 0 {
-                    random.push(ItemId(extras[self.rng.range(0, extras.len() as i32 - 1) as usize]));
+        let kind = self.world.locations[l].kind;
+        let Some(shop) = &self.world.locations[l].shop else { return };
+        let (count, (lo, hi)) = (shop.random, shop.price);
+        let fixed = shop.fixed.clone();
+        let mut left = count.saturating_sub(if demo { 0 } else { fixed.len() });
+        let (lo, hi) = if hi <= 0 && lo <= 0 {
+            (i32::MIN, i32::MAX)
+        } else {
+            let mut hi = hi.min(PRICE_CAP);
+            if self.rng.random(5) == 0 {
+                hi += 1;
+            }
+            (lo.max(5).min(hi), hi)
+        };
+        let exists = |id: u32| self.content.try_item(ItemId(id)).is_some();
+        let mut random: Vec<ItemId> = Vec::new();
+        if kind == LocationKind::Town && !demo {
+            let potions: Vec<u32> = TOWN_POTIONS.into_iter().filter(|&i| exists(i)).collect();
+            if !potions.is_empty() {
+                for _ in 0..(count / 5 + 1).min(left) {
+                    random.push(ItemId(potions[self.rng.random(potions.len() as i32) as usize]));
                     left -= 1;
                 }
             }
-            let pool: Vec<ItemId> = market.iter().copied().filter(|&i| (lo..=hi).contains(&self.content.item(i).cost)).collect();
-            let most = if hi > 500 { 1 } else { 2 };
-            for _ in 0..left {
-                if pool.is_empty() {
+            let extras: Vec<u32> = TOWN_EXTRAS.into_iter().filter(|&i| exists(i)).collect();
+            if left > 6 && !extras.is_empty() && self.rng.random(5) != 0 {
+                random.push(ItemId(extras[self.rng.random(extras.len() as i32) as usize]));
+                left -= 1;
+            }
+        }
+        let pool: Vec<ItemId> = market.iter().copied().filter(|&i| (lo..=hi).contains(&self.content.item(i).cost)).collect();
+        let most = if hi > 500 { 1 } else { 2 };
+        for _ in 0..left {
+            if pool.is_empty() {
+                break;
+            }
+            for _ in 0..STOCK_TRIES {
+                let i = pool[self.rng.random(pool.len() as i32) as usize];
+                if random.iter().filter(|&&x| x == i).count() < most {
+                    random.push(i);
                     break;
                 }
-                for _ in 0..STOCK_TRIES {
-                    let i = pool[self.rng.range(0, pool.len() as i32 - 1) as usize];
-                    if random.iter().filter(|&&x| x == i).count() < most {
-                        random.push(i);
-                        break;
-                    }
-                }
             }
-            let mut stock = fixed;
-            stock.extend(random);
-            stock.retain(|&i| self.content.try_item(i).is_some());
-            stock.sort_by_key(|&i| self.content.item(i).cost);
-            if let Some(shop) = &mut self.world.locations[l].shop {
-                shop.stock = stock;
-            }
+        }
+        let mut stock = fixed;
+        stock.extend(random);
+        stock.retain(|&i| self.content.try_item(i).is_some());
+        stock.sort_by_key(|&i| self.content.item(i).cost);
+        if let Some(shop) = &mut self.world.locations[l].shop {
+            shop.stock = stock;
         }
     }
 
@@ -560,7 +568,7 @@ impl Game {
             if self.last_offer == Some(o) {
                 continue;
             }
-            if self.rng.range(0, n - 1) == 0 && self.offer_fits(o) {
+            if self.rng.random(n) == 0 && self.offer_fits(o) {
                 self.offer = Some((l, o));
                 self.offered_at = Some(l);
                 self.last_offer = Some(o);
@@ -608,7 +616,7 @@ impl Game {
             }
             VillageOffer::Blessing => {
                 let known: Vec<u32> = BLESSING_SPELLS.into_iter().filter(|&s| self.spell(s).is_some()).collect();
-                let id = known[self.rng.range(0, known.len() as i32 - 1) as usize];
+                let id = known[self.rng.random(known.len() as i32) as usize];
                 let spell = self.spell(id)?.clone();
                 self.apply_spell_to_army_ext(&spell, true);
                 OfferResult::Blessing(id)
@@ -618,7 +626,7 @@ impl Game {
                 OfferResult::Furs(ItemId(FURS_ITEM))
             }
             VillageOffer::Witch => {
-                let mana = 300 + 50 * self.rng.range(0, 4);
+                let mana = 300 + 50 * self.rng.random(5);
                 self.mana += mana;
                 OfferResult::Mana(mana)
             }
@@ -674,6 +682,7 @@ fn army_has(c: &super::content::Content, a: &Army, b: &Bonus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::rng::Rng;
 
     #[test]
     fn delphi_rounding_goes_to_even() {
@@ -715,14 +724,33 @@ mod tests {
         assert_eq!(r.stock, Some(0));
         regrow(&mut r, 10, &mut |_| 0);
         assert_eq!(r.stock, Some(1));
-        let mut big = Recruit::new(super::super::content::UnitId(1), 0, 20);
-        regrow(&mut big, 10, &mut |_| panic!("divisor 0: always grows"));
-        assert_eq!(big.stock, Some(1));
         let mut one = Recruit::new(super::super::content::UnitId(1), 0, 1);
         regrow(&mut one, 10, &mut |n| {
             assert_eq!(n, 10, "1 in 10 a day");
             0
         });
         assert_eq!(one.stock, Some(1));
+        let mut full = Recruit::new(super::super::content::UnitId(1), 1, 1);
+        regrow(&mut full, 10, &mut |_| panic!("a full slot does not draw"));
+    }
+
+    #[test]
+    fn a_barracks_slot_draws_even_when_it_must_grow() {
+        // 10 div 20 = 0 and 10 div 10 = 1: Random(0) and Random(1) are 0, but they are
+        // drawn.
+        let mut drawn = Vec::new();
+        for max in [20, 10] {
+            let mut r = Recruit::new(super::super::content::UnitId(1), 0, max);
+            let mut rng = Rng::new(1);
+            regrow(&mut r, 10, &mut |n| {
+                drawn.push(n);
+                rng.random(n)
+            });
+            assert_eq!(r.stock, Some(1));
+            let mut once = Rng::new(1);
+            once.random(0);
+            assert_eq!(rng.state(), once.state(), "one draw");
+        }
+        assert_eq!(drawn, [0, 1]);
     }
 }

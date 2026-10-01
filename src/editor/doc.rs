@@ -1377,7 +1377,7 @@ mod tests {
         let mut d = doc();
         d.apply(Command::PlaceBuilding { x: 12, y: 12, kind: 3, picture_type: 3, variant: 0, size: (2, 2) }).unwrap();
         let content = std::sync::Arc::new(crate::rules::content::Content::builtin());
-        let g = crate::rules::game::Game::from_scenario(content, &d.scenario, crate::rules::content::HeroClass::Knight, 1);
+        let g = crate::rules::game::Game::from_scenario(content, &d.scenario, crate::rules::content::HeroClass::Knight);
         assert_eq!(g.world.locations.len(), 1);
         assert_eq!(g.tile(), (10, 10));
     }

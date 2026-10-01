@@ -347,7 +347,7 @@ mod tests {
     }
 
     fn start(s: &Scenario) -> Game {
-        Game::from_scenario(Arc::new(content()), s, HeroClass::Knight, 3)
+        Game::from_scenario(Arc::new(content()), s, HeroClass::Knight)
     }
 
     fn town(kind: BuildingType, x: u16, y: u16, attitude: i8) -> crate::dt::dtm::Building {
@@ -719,7 +719,7 @@ mod tests {
 
     /// The hero walks from (2, 2) into a village at (8, 2) holding 40 gold and 5 mana, with
     /// `rng` seed `seed`. Returns the game, the events of the walk, and his mana before it.
-    fn walk_into_village(seed: u64, attitude: i8) -> (Game, Vec<Event>, i32) {
+    fn walk_into_village(seed: u32, attitude: i8) -> (Game, Vec<Event>, i32) {
         let mut s = map();
         let mut v = town(BuildingType::Village, 8, 2, attitude);
         (v.gold_per_day, v.gold_max, v.mana_per_day, v.mana_max) = (40, 40, 5, 5);
@@ -770,7 +770,7 @@ mod tests {
     }
 
     /// A village with `gold`/`mana` waiting, the hero entering it with `rng` seed `seed`.
-    fn visit_village(gold: u16, mana: u8, seed: u64, setup: &dyn Fn(&mut Game)) -> Game {
+    fn visit_village(gold: u16, mana: u8, seed: u32, setup: &dyn Fn(&mut Game)) -> Game {
         let mut s = map();
         let mut v = town(BuildingType::Village, 2, 2, 1);
         (v.gold_per_day, v.gold_max, v.mana_per_day, v.mana_max) = (gold, gold, mana, mana);
@@ -944,6 +944,45 @@ mod tests {
     }
 
     #[test]
+    fn a_map_load_starts_the_generator_at_1_so_fresh_markets_are_always_the_same() {
+        let s = shop_town(2);
+        let (a, b) = (start(&s), start(&s));
+        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().stock, b.world.locations[0].shop.as_ref().unwrap().stock);
+        // State 1, the restock, then the world music's Random(90000).
+        let mut want = start(&s);
+        want.rng = crate::rules::rng::Rng::new(1);
+        want.restock_markets();
+        want.rng.random(90_000);
+        assert_eq!(a.rng.state(), want.rng.state());
+        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().stock, want.world.locations[0].shop.as_ref().unwrap().stock);
+    }
+
+    #[test]
+    fn midnight_draws_building_by_building_its_market_then_its_barracks() {
+        // Building 0 a market, building 1 a castle whose militia (max 5) grow when
+        // Random(10 div 5) is 0: that draw comes after the market's restock.
+        let mut s = shop_town(2);
+        let mut castle = town(BuildingType::Castle, 10, 2, 1);
+        castle.barracks[0] = RecruitSlot { unit: 4, start_count: 0, max_count: 5 };
+        s.buildings.push(castle);
+        let mut order_shows = false;
+        for state in 1..100 {
+            let mut g = start(&s);
+            g.rng = crate::rules::rng::Rng::new(state);
+            g.economy_midnight();
+            let mut want = start(&s);
+            want.rng = crate::rules::rng::Rng::new(state);
+            want.restock_market(0);
+            want.restock_market(1);
+            let grows = want.rng.random(2) == 0;
+            assert_eq!(g.world.locations[1].recruits[0].stock, Some(if grows { 1 } else { 0 }), "state {state}");
+            assert_eq!(g.rng.state(), want.rng.state());
+            order_shows |= grows != (crate::rules::rng::Rng::new(state).random(2) == 0);
+        }
+        assert!(order_shows, "some states grow only in one order");
+    }
+
+    #[test]
     fn markets_stock_fixed_goods_and_random_items_in_their_price_range() {
         let g = inside(&shop_town(2));
         let stock = g.market_here().unwrap().to_vec();
@@ -983,7 +1022,7 @@ mod tests {
         t.random_artifacts_for_sale = 10;
         (t.price_min, t.price_max) = (1000, 2000);
         s.buildings = vec![t];
-        let g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight, 3);
+        let g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
         let stock = g.world.locations[0].shop.as_ref().unwrap().stock.clone();
         // 10 div 5 + 1 = 3 potions; the rest from the price window (the amulet, once: > 500).
         let potions = stock.iter().filter(|i| (98..=100).contains(&i.0)).count();
@@ -1148,7 +1187,7 @@ mod real_maps {
         let dt = DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
         let c = Arc::new(Content::from_dt(&dt));
         let s = dt.maps.iter().find(|m| m.name.starts_with("РК1")).unwrap().load().unwrap();
-        let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 11);
+        let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
         g.world.armies.clear();
 
         // Walking onto another building on the way enters it and ends the walk: walk on.

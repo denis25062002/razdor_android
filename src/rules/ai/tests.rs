@@ -49,7 +49,7 @@ fn start(s: &Scenario) -> Game {
 }
 
 fn start_with(s: &Scenario, c: Content) -> Game {
-    let mut g = Game::from_scenario(Arc::new(c), s, HeroClass::Knight, 7);
+    let mut g = Game::from_scenario(Arc::new(c), s, HeroClass::Knight);
     g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
     g
 }
@@ -119,6 +119,42 @@ fn patrolling_armies_take_targets_only_inside_their_box() {
     assert!(matches!(goal(&mut g, 0), Goal::Wander(_)), "the enemy is outside 30 ± 3");
     g.world.armies[1].pos = g.world.map.center((33, 10));
     assert_eq!(goal(&mut g, 0), Goal::AttackArmy(2));
+}
+
+#[test]
+fn wander_points_are_drawn_x_then_y_in_the_box_or_over_the_map() {
+    let mut s = map();
+    let mut lord = army(1, (2, 10), 2, ALLY, 0, &[troop(6, 0, 3)]);
+    lord.patrols = 1;
+    lord.patrol_radius = 3;
+    let mut guard = army(3, (40, 5), 2, ALLY, 0, &[troop(4, 0, 1)]);
+    guard.patrols = 1;
+    guard.patrol_radius = 0;
+    s.armies = vec![lord, army(2, (50, 10), 2, ALLY, 0, &[troop(4, 0, 1)]), guard];
+    let mut g = start(&s);
+    // The patrol box of (2, 10) ± 3 is clamped to columns 0..5 and rows 7..13.
+    g.rng = Rng::new(1);
+    let mut r = Rng::new(1);
+    let drawn: Vec<Tile> = (0..4).map(|_| (r.random(6), 7 + r.random(7))).collect();
+    assert_eq!(drawn[3].0, 0, "11478 mod 6");
+    // The point in column 0 is lost, as in the original.
+    assert_eq!(g.wander_points(0), drawn[..3]);
+    assert_eq!(g.rng.state(), r.state(), "eight draws");
+    // Not patrolling: anywhere on the 60 × 20 map, no passability test.
+    let mut r = g.rng.clone();
+    let drawn: Vec<Tile> = (0..4).map(|_| (r.random(60), r.random(20))).collect();
+    assert_eq!(g.wander_points(1), drawn.into_iter().filter(|&t| t != (50, 10) && t.0 > 0).collect::<Vec<_>>());
+    // A point on the army's own cell is dropped: from state 1 the first is (41 mod 60,
+    // 18467 mod 20).
+    g.rng = Rng::new(1);
+    g.world.armies[1].pos = g.world.map.center((41, 7));
+    let points = g.wander_points(1);
+    assert_eq!(points.len(), 3);
+    assert!(!points.contains(&(41, 7)));
+    // A stationary guard never plans, so it draws nothing.
+    let before = g.rng.state();
+    assert!(g.wander_points(2).is_empty());
+    assert_eq!(g.rng.state(), before);
 }
 
 #[test]

@@ -17,7 +17,7 @@ use super::magic::{self, ActiveSpell};
 use super::save::ScenarioRef;
 use super::ships::Ship;
 use super::map::{step_minutes, Tile, TileMap, ROAD};
-use super::rng::Rng;
+use super::rng::{EventRng, Rng, WORLD_MUSIC_DRAW};
 use super::units::{PromoteError, Stats, Unit};
 use super::world::{Army, LocationKind, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
 
@@ -220,7 +220,13 @@ pub struct Game {
     /// Where the player clicked: the walk is planned again towards it as the fog lifts.
     pub goal: Option<Tile>,
     pub(crate) start_day: u64,
+    /// The original's one generator (`rules::rng`): not saved; a map load sets it to 1, a
+    /// save load starts it from the load sequence (`rules::save`).
+    #[serde(skip)]
     pub(crate) rng: Rng,
+    /// The Community event generator (opcode 18), seeded from the clock at every load.
+    #[serde(skip)]
+    pub(crate) event_rng: EventRng,
     pub(crate) battles: u64,
     /// The scenario's event engine (`None` in the demo). Taken out while it runs.
     pub(crate) script: Option<Box<EventEngine>>,
@@ -323,7 +329,7 @@ fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>) {
 }
 
 impl Game {
-    fn with_world(content: Arc<Content>, world: World, squad: Vec<Unit>, tile: Tile, seed: u64) -> Game {
+    fn with_world(content: Arc<Content>, world: World, squad: Vec<Unit>, tile: Tile) -> Game {
         let clock = world.start;
         let mut g = Game {
             squad,
@@ -341,7 +347,8 @@ impl Game {
             fog: Fog::disabled(0, 0),
             goal: None,
             start_day: clock.day_index(),
-            rng: Rng::new(seed ^ 0x9e37_79b9),
+            rng: Rng::map_load(),
+            event_rng: EventRng::from_clock(),
             battles: 0,
             script: None,
             pending: Vec::new(),
@@ -383,20 +390,23 @@ impl Game {
             let troops = std::mem::take(&mut l.garrison);
             l.stationed.extend(troops.iter().map(|t| Stationed { unit: troop_unit(&c, t), since }));
         }
+        // The map load's draws (engine.md §3.2): the state is 1, the markets are stocked,
+        // then the world music draws its first change time.
         g.restock_markets();
+        g.rng.random(WORLD_MUSIC_DRAW);
         g.fog = Fog::disabled(g.world.map.w, g.world.map.h);
         g
     }
 
     /// A new demo game. `content` must hold the demo units (see [`World::standard`]).
-    pub fn new(content: Arc<Content>, hero: HeroClass, seed: u64) -> Self {
+    pub fn new(content: Arc<Content>, hero: HeroClass) -> Self {
         let world = World::standard(&content);
         let home = world.locations[0].tile;
         let id = hero.unit();
         let slot = content.formation.free_slot(&[], Stats::of_level(&content, id, 1).preferred_row()).expect("empty formation");
         let squad = vec![Unit::new(&content, id, slot)];
         let gold = content.start_gold(hero);
-        let mut g = Game::with_world(content, world, squad, home, seed);
+        let mut g = Game::with_world(content, world, squad, home);
         g.gold = gold;
         g.spells = g.content.start_spells(hero);
         g.archetype = archetype_of(hero);
@@ -410,8 +420,8 @@ impl Game {
     }
 
     /// A new game on an original scenario, with the hero preset of `hero`.
-    pub fn from_scenario(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
-        let mut g = Game::unstarted(content, scenario, hero, seed);
+    pub fn from_scenario(content: Arc<Content>, scenario: &Scenario, hero: HeroClass) -> Self {
+        let mut g = Game::unstarted(content, scenario, hero);
         g.start_script();
         g
     }
@@ -423,7 +433,7 @@ impl Game {
     }
 
     /// A game on a scenario whose opening events have not run yet.
-    pub(crate) fn unstarted(content: Arc<Content>, scenario: &Scenario, hero: HeroClass, seed: u64) -> Self {
+    pub(crate) fn unstarted(content: Arc<Content>, scenario: &Scenario, hero: HeroClass) -> Self {
         let mut world = World::from_scenario(scenario, &content);
         let start = world.hero_start(scenario, &content, hero);
         for &l in &start.owned {
@@ -433,7 +443,7 @@ impl Game {
         leader.heal_full(&content);
         let mut squad = vec![leader];
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
-        let mut g = Game::with_world(content, world, squad, start.tile, seed);
+        let mut g = Game::with_world(content, world, squad, start.tile);
         // A preset on the water ("Тихая пристань") puts him there, at sea: aboard a ship
         // *(guess: the original plans on its MIXED map while he is on water)*.
         if g.world.is_sea(start.tile) {
@@ -1496,8 +1506,12 @@ mod tests {
         Arc::new(Content::builtin())
     }
 
-    fn new_game(hero: HeroClass, seed: u64) -> Game {
-        Game::new(content(), hero, seed)
+    /// A new demo game whose generator then stands at `seed` (a new map always starts it
+    /// at 1; tests vary it).
+    fn new_game(hero: HeroClass, seed: u32) -> Game {
+        let mut g = Game::new(content(), hero);
+        g.rng = Rng::new(seed);
+        g
     }
 
     /// A game with no gangs on the map, for tests about travel and time.
@@ -1562,7 +1576,10 @@ mod tests {
         assert!(g.set_destination(tile_of_location(&g, "Millbrook")));
         assert_eq!(g.location, None);
         let events = walk_until_stopped(&mut g);
-        assert_eq!(events.last(), Some(&Event::Arrived(millbrook)));
+        // The village makes no offer on this stream, so its tribute is taken on arrival.
+        let n = events.len();
+        assert_eq!(events[n - 2], Event::Arrived(millbrook));
+        assert!(matches!(events[n - 1], Event::Tribute { at, .. } if at == millbrook), "{events:?}");
         assert_eq!(g.location, Some(millbrook));
         assert!(g.clock.total_minutes() > Clock::demo_start().total_minutes() + 60.0);
     }
@@ -1665,13 +1682,9 @@ mod tests {
     fn village_serves_once_per_day() {
         let mut g = quiet_game(HeroClass::Knight);
         g.set_destination(tile_of_location(&g, "Millbrook"));
-        walk_until_stopped(&mut g);
-        let gold = g.gold;
-        match g.collect_tribute() {
-            Some(Tribute::Gold(10)) => assert_eq!(g.gold, gold + 10),
-            Some(Tribute::Item(item)) => assert_eq!(g.pack, vec![item]),
-            other => panic!("{other:?}"),
-        }
+        let events = walk_until_stopped(&mut g);
+        // No offer on this stream: the tribute (an item) is taken on arrival.
+        assert!(events.iter().any(|e| matches!(e, Event::Tribute { paid: Tribute::Item(_), .. })), "{events:?}");
         assert_eq!(g.collect_tribute(), None, "already collected");
         let mut events = Vec::new();
         g.pass_time(24.0 * 60.0, &mut events);
@@ -1891,7 +1904,7 @@ mod tests {
 
     #[test]
     fn a_quick_battle_resolves_exactly_like_a_played_one() {
-        let setup = |seed: u64, lair: bool| {
+        let setup = |seed: u32, lair: bool| {
             let mut g = new_game(HeroClass::Knight, seed);
             g.world.armies.clear();
             g.hire(unit(&g, "spearman")).unwrap();
@@ -2179,7 +2192,7 @@ mod tests {
     }
 
     fn start(s: &Scenario) -> Game {
-        Game::from_scenario(Arc::new(tk::content()), s, HeroClass::Knight, 5)
+        Game::from_scenario(Arc::new(tk::content()), s, HeroClass::Knight)
     }
 
     fn wipe_enemies(b: &mut Battle) {
@@ -2407,7 +2420,7 @@ mod tests {
         g.world.armies.clear();
         // The knight sees 9 cells.
         assert!(g.fog.enabled && g.fog.explored((2, 2)) && g.fog.explored((11, 2)) && !g.fog.explored((12, 2)));
-        assert!(!Game::new(content(), HeroClass::Knight, 1).fog.enabled, "the demo has no fog");
+        assert!(!Game::new(content(), HeroClass::Knight).fog.enabled, "the demo has no fog");
         assert!(g.set_destination((22, 3)), "a click into the dark walks towards it");
         assert!(g.path.iter().all(|&t| g.fog.explored(t)), "over explored ground only");
         for _ in 0..10_000 {
@@ -2511,7 +2524,7 @@ mod tests {
         assert_eq!(g.step_time((4, 2), (5, 3)), 37.5);
         let mut s = strip();
         s.header.heroes[2] = s.header.heroes[0].clone();
-        let r = Game::from_scenario(Arc::new(tk::content()), &s, HeroClass::Ranger, 5);
+        let r = Game::from_scenario(Arc::new(tk::content()), &s, HeroClass::Ranger);
         assert_eq!((r.hero_speed(), r.step_time((4, 2), (5, 2)), r.step_time((4, 2), (5, 3))), (4, 20.0, 30.0));
         assert_eq!(r.sight_radius(), 10);
     }

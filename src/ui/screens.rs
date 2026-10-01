@@ -51,13 +51,6 @@ fn name_field(name: &str, x: f32, y: f32, w: f32) {
     }
 }
 
-pub(super) fn seed() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1)
-}
-
 /// The attack line of a card: melee `A`, ranged `S` or magic `Pwr` with the school.
 pub(super) fn attack_line(s: &Stats) -> String {
     let mut parts = Vec::new();
@@ -151,7 +144,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
 pub(super) fn start_game(demo: &Arc<Content>, scenario: Option<(&ScenarioEntry, &Arc<Content>)>, hero: HeroClass, name: &str) -> Game {
     let mut g = match scenario {
         Some((e, c)) => {
-            let mut g = Game::from_scenario(c.clone(), &e.scenario, hero, seed());
+            let mut g = Game::from_scenario(c.clone(), &e.scenario, hero);
             // Saves name the map file and a hash of its bytes.
             match ScenarioRef::of_map(&e.path, &e.file) {
                 Ok(origin) => g.set_origin(origin),
@@ -159,7 +152,7 @@ pub(super) fn start_game(demo: &Arc<Content>, scenario: Option<(&ScenarioEntry, 
             }
             g
         }
-        None => Game::new(demo.clone(), hero, seed()),
+        None => Game::new(demo.clone(), hero),
     };
     g.set_hero_name(name);
     razdor::diag::play(&g.clock.label(), &super::play_game_line(&g, "new game"));
@@ -340,7 +333,7 @@ pub fn victory(game: &mut Option<Game>, scenarios: &[ScenarioEntry], content: Op
     if let (Some(prev), Some(e), Some(c)) = (next, entry, content) {
         if button(screen_width() / 2.0 - 160.0, 450.0, 320.0, 50.0, &trf!("Next map: {title}", title = e.scenario.title), true) {
             cue(Cue::MenuPress);
-            let mut g = Game::from_campaign(c, &e.scenario, &prev, seed());
+            let mut g = Game::from_campaign(c, &e.scenario, &prev);
             match ScenarioRef::of_map(&e.path, &e.file) {
                 Ok(origin) => g.set_origin(origin),
                 Err(err) => razdor::diag!("{}: {err}; this game cannot be saved", e.file),

@@ -275,7 +275,7 @@ mod tests {
     }
 
     fn start(s: &Scenario) -> Game {
-        let mut g = Game::from_scenario(Arc::new(tk::content()), s, HeroClass::Knight, 5);
+        let mut g = Game::from_scenario(Arc::new(tk::content()), s, HeroClass::Knight);
         // No fog: these tests are about the ship.
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
         g
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!((r.tile, r.location, r.owned.clone()), ((15, 15), Some(1), vec![1]));
         let m = w.hero_start(&s, &ct, HeroClass::Archmage);
         assert_eq!((m.tile, m.owned.clone()), ((2, 17), vec![2]), "a flagged building anywhere is his");
-        let g = Game::from_scenario(Arc::new(ct), &s, HeroClass::Knight, 1);
+        let g = Game::from_scenario(Arc::new(ct), &s, HeroClass::Knight);
         assert_eq!((g.tile(), g.location), ((18, 1), None));
         let castle = &g.world.locations[0];
         assert!(castle.owned() && castle.faction == 1 && castle.attitude == 3, "his start building is his");
@@ -581,7 +581,7 @@ mod real_maps {
         let dt = DtInstall::load(std::path::Path::new(&dir)).unwrap();
         let c = Arc::new(Content::from_dt(&dt));
         let s = dt.maps.iter().find(|m| m.name.starts_with("ДС1")).unwrap().load().unwrap();
-        let mut g = Game::from_scenario(c, &s, HeroClass::Knight, 3);
+        let mut g = Game::from_scenario(c, &s, HeroClass::Knight);
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
         g.world.armies.clear();
         let foot = g.world.map.reachable(g.tile());

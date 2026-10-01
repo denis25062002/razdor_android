@@ -30,9 +30,9 @@ fn quick_battles_against_real_armies() {
     let mut fought = 0;
     for m in &dt.maps {
         let s = m.load().unwrap();
-        let g0 = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 5);
+        let g0 = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
         for i in 0..g0.world.armies.len().min(4) {
-            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 5);
+            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
             g.drain_events();
             g.foe = Some(Foe::Army(i));
             let mut b = g.start_battle();
@@ -61,7 +61,7 @@ fn thirty_days_on_every_map() {
     for m in &dt.maps {
         let s = m.load().unwrap();
         let t0 = Instant::now();
-        let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 11);
+        let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
         let end = g.clock.total_minutes() + (DAYS * MINUTES_PER_DAY) as f64;
         let armies = g.world.armies.len();
         let mut player_battles = 0;

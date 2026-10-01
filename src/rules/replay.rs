@@ -142,7 +142,7 @@ impl Driver {
     pub fn new(dt: &DtInstall, content: &Arc<Content>, prefix: &str, class: HeroClass) -> Driver {
         let m = dt.maps.iter().find(|m| m.name.starts_with(prefix)).expect("map");
         let s = m.load().unwrap();
-        let mut g = Game::from_scenario(content.clone(), &s, class, 7);
+        let mut g = Game::from_scenario(content.clone(), &s, class);
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
         let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: BTreeSet::new(), verbose: std::env::var_os("RAZDOR_REPLAY_LOG").is_some(), met_log: Vec::new() };
         let opening = d.g.drain_events();
@@ -374,7 +374,7 @@ impl Driver {
         let stem = next.name.trim().trim_end_matches(".DTm").to_string();
         let m = dt.maps.iter().find(|m| m.name == stem).expect("the next map is installed");
         let s = m.load().unwrap();
-        let mut g = Game::from_campaign(content.clone(), &s, &next, 7);
+        let mut g = Game::from_campaign(content.clone(), &s, &next);
         g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
         let mut d = Driver { g, s, fired: Vec::new(), asked: Vec::new(), ended: None, battles: 0, no_to: self.no_to.clone(), verbose: self.verbose, met_log: Vec::new() };
         let opening = d.g.drain_events();
@@ -409,6 +409,8 @@ fn play_rk1(d: &mut Driver) {
         d.reach_army(a);
     }
     d.enter(5);
+    // The suzerain gives his errand (he no longer happens to cross the hero's way here).
+    d.reach_army(1);
     d.enter(11);
     d.step("ruins B11", &[54]);
     d.enter(8);

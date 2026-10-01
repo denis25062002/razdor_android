@@ -225,7 +225,7 @@ impl App {
                 self.screen = Screen::MainMenu;
             }
             editor::EditorAction::TestPlay { scenario, content, class } => {
-                let mut game = Game::from_scenario(content, &scenario, class, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64));
+                let mut game = Game::from_scenario(content, &scenario, class);
                 game.set_hero_name("");
                 self.dialogs.clear();
                 self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());

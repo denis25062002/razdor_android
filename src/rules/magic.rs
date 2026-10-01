@@ -578,7 +578,7 @@ mod tests {
         let mut s = scenario(24, 6);
         s.header.heroes[0] = hero(2, 2, 200, &[troop(4, 0, 2)]);
         s.header.heroes[1] = hero(2, 2, 200, &[troop(4, 0, 2)]);
-        let mut g = Game::from_scenario(content(), &s, class, 5);
+        let mut g = Game::from_scenario(content(), &s, class);
         g.mana = 1000;
         g.spells = (1..=6).collect();
         g

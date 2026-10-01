@@ -444,14 +444,14 @@ silent.
 
 | Topic | Razdor now | Original | Status |
 |---|---|---|---|
-| Generator | xorshift64 per game (`rules/rng.rs`), seeded from the new-game seed XOR a constant, saved with the game; `range(lo, hi)` inclusive | MSVC-style LCG `S×214013+2531011`, 15-bit output `mod n`, cap 32767; one global state | differs: replace `Rng` with the LCG and `Random(n)` semantics (draw even for n = 0) |
-| Seeding | random seed per new game | 0 at start, **1 at every map load** (before the markets), not saved; after a load it comes from the plant hash | differs |
-| Draw order | each rule draws when it runs | fixed order at load (§3.2) and at midnight (restock, then barracks, per building) | differs: Razdor regrows every barracks first, then restocks (`economy_midnight`) |
-| Barracks roll | no draw when `D div max ≤ 1` (`economy::regrow`) | always one draw per qualifying slot | differs in the stream only (same outcome) |
-| Wander points | 4 cells within ±radius of the post, retried up to 8 times, passable and not in a building (`ai::wander_points`) | 4 points uniform over the whole map (non-patrol) or the patrol box, no passability test, own cell dropped | differs |
-| AI promotion | 1/3 rolls for Militia and Infantry, rejection loop for others (`ai_promote`) | same | matches (generator aside) |
-| Hire XP | `range(0, X−1) + X/2` | `Random(X) + X div 2` | matches (generator aside) |
-| Plant jitter and sway | not drawn | per-plant offsets from the trig hash; triangle sway 3.57 s | missing |
+| Generator | the LCG `S×214013+2531011`, `random(n)` = 15 bits `mod n`, drawn even for n = 0, one state per game, not saved (`rules/rng.rs`); Razdor's own rolls use `range(lo, hi)` = one `Random(hi − lo + 1)`; the Community event generator (`EventRng`) with its retry slip, seeded from the clock at every load | MSVC-style LCG `S×214013+2531011`, 15-bit output `mod n`, cap 32767; one global state | Matches |
+| Seeding | 1 at every new game and campaign map (`Game::with_world`), not saved (save format 2; format 1 saves load, their generator ignored); a save load runs the load sequence: plant hash of the map's last plant, `Random(3000)` per army of the map file, `Random(90000)` for the world music (`Rng::save_load`) | 0 at start, **1 at every map load** (before the markets), not saved; after a load it comes from the plant hash | Matches (a map without plants starts from 0, not from the last session's state; the plant hash uses f64 sin/cos, see §11) |
+| Draw order | map load: 1, the markets, the music's draw; save load as above; midnight building by building, its market restock then its barracks slots (`economy_midnight`) | fixed order at load (§3.2) and at midnight (restock, then barracks, per building) | Matches (the music rotation's real-time draws, the event-window sounds' `Random(3)` and the idle patrollers' `Random(3000)` when the hero stops are not drawn) |
+| Barracks roll | one `Random(D div max)` per slot with a unit, a maximum and room, also when the divisor is 0 or 1 (`economy::regrow`) | always one draw per qualifying slot | Matches |
+| Wander points | 4 points, x then y: `xmin + Random(xmax + 1 − xmin)` in the patrol box (post ± radius, clamped), else `Random(W)`, `Random(H)` over the map; no passability test; the own cell and column 0 dropped; guards draw nothing (`ai::wander_points`) | 4 points uniform over the whole map (non-patrol) or the patrol box, no passability test, own cell dropped | Matches (drawing; Razdor's goal scoring still seeds only patrollers' points and has no obstacle map, ai.md) |
+| AI promotion | `Random(3)` for Militia and Infantry, `Random(3) + 1` rejection loop for others (`ai_promote`) | same | Matches |
+| Hire XP | `Random(X) + X div 2` | `Random(X) + X div 2` | Matches |
+| Plant jitter and sway | the draws are made at a save load for the stream (`Rng::jitter_plants`); offsets and sway not drawn on the map | per-plant offsets from the trig hash; triangle sway 3.57 s | partly (the picture is left for later) |
 | Frame pacing | macroquad `next_frame`, variable window size, game time from frame time | vsync flip, no fixed tick, all timers on a millisecond clock | equivalent in spirit |
 | Clock pause on focus loss | not modelled | Now freezes while inactive (walks, waits, music, fades stop) | missing |
 | Hero walk frames | 8 frames at 10 per second while moving (`world_view::draw_figure`) | frames 3–6 at half the WalkDelay (75 ms default); AI walk frames by game time; land idle 20 × 250 ms | differs |

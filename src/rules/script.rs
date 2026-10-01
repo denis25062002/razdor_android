@@ -770,7 +770,7 @@ impl EventWorld for Game {
     }
 
     fn random(&mut self, lo: i64, hi: i64) -> i64 {
-        self.rng.range(lo.clamp(i32::MIN as i64, i32::MAX as i64) as i32, hi.clamp(i32::MIN as i64, i32::MAX as i64) as i32) as i64
+        self.event_rng.range(lo.clamp(i32::MIN as i64, i32::MAX as i64) as i32, hi.clamp(i32::MIN as i64, i32::MAX as i64) as i32) as i64
     }
 
     /// The army's post moves to the cell and, on the map, it sets off there (its patrol
@@ -906,8 +906,8 @@ impl Game {
     /// The next map of a campaign, started with what the last one carries over
     /// ([`Game::apply_carry_over`]) before its opening events run: they may look for the
     /// carried army (РК2 checks the herald at once) or the last map's flags.
-    pub fn from_campaign(content: std::sync::Arc<crate::rules::content::Content>, scenario: &crate::dt::dtm::Scenario, prev: &NextMap, seed: u64) -> Game {
-        let mut g = Game::unstarted(content, scenario, prev.class, seed);
+    pub fn from_campaign(content: std::sync::Arc<crate::rules::content::Content>, scenario: &crate::dt::dtm::Scenario, prev: &NextMap) -> Game {
+        let mut g = Game::unstarted(content, scenario, prev.class);
         g.apply_carry_over(prev);
         g.start_script();
         g
@@ -1020,7 +1020,7 @@ mod tests {
     }
 
     fn start(s: &Scenario) -> Game {
-        Game::from_scenario(Arc::new(content()), s, HeroClass::Knight, 1)
+        Game::from_scenario(Arc::new(content()), s, HeroClass::Knight)
     }
 
     fn fired(events: &[Event]) -> Vec<EventId> {
@@ -1054,7 +1054,7 @@ mod tests {
         // Spell 1: +10 hits at once, +2 initiative for 5 hours.
         let spell = crate::rules::content::SpellDef { time_work: Some(5), add: StatMods::from([(Stat::Initiative, 2)]), ..ck::spell(1, 0) };
         let c = Content::new(base.units.clone(), base.items.clone(), vec![spell], base.options.clone(), base.formation);
-        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight, 1);
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
         let now = g.clock.total_minutes() as u64;
         assert_eq!(fired(&g.drain_events()), vec![1]);
         // An event's spell lasts TimeWork × 10 (5 h → 50 h).
@@ -1612,7 +1612,7 @@ mod tests {
         s.next_map = "Next.DTm".into();
         s.header.carry_over = [1, 1, 1, 1, 1, 1, 1];
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Herald".into() }];
-        let g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage, 1);
+        let g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage);
         let next = g.next_map().expect("a victory with a next map");
         assert_eq!(next.flags, vec!["Band1".to_string()]);
         assert_eq!(next.class, HeroClass::Archmage);
@@ -1627,7 +1627,7 @@ mod tests {
         let mut s2 = world(vec![died, reward]);
         s2.header.defeat_event = 1;
         s2.named_characters = s.named_characters.clone();
-        let mut g2 = Game::from_campaign(Arc::new(content()), &s2, &next, 1);
+        let mut g2 = Game::from_campaign(Arc::new(content()), &s2, &next);
         assert_eq!(fired(&g2.drain_events()), vec![2], "the herald came along; the band's flag holds");
         assert_eq!(g2.script_end(), None);
         assert!(g2.script().unwrap().flag("Band"));
@@ -1720,7 +1720,7 @@ mod real_maps {
         let c = Arc::new(Content::from_dt(&dt));
         let s = dt.maps.iter().find(|m| m.name.starts_with("РК1")).unwrap().load().unwrap();
         for class in HeroClass::ALL {
-            let mut g = Game::from_scenario(c.clone(), &s, class, 3);
+            let mut g = Game::from_scenario(c.clone(), &s, class);
             let mut messages = 0;
             let opening = g.drain_events();
             settle(&mut g, opening, &mut messages);

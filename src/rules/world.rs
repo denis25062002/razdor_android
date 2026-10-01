@@ -1504,7 +1504,7 @@ mod tests {
         assert!(k.troops.iter().all(|t| t.slot != k.hero_slot));
         let m = w.hero_start(&s, &c, HeroClass::Archmage);
         assert_eq!((m.tile, m.gold, m.location, m.owned.clone()), ((6, 5), 500, Some(0), vec![0]));
-        let g = Game::from_scenario(std::sync::Arc::new(c), &s, HeroClass::Archmage, 1);
+        let g = Game::from_scenario(std::sync::Arc::new(c), &s, HeroClass::Archmage);
         let f = &g.world.locations[0];
         assert_eq!((g.tile(), g.location, f.owner, f.faction, f.attitude), ((6, 5), Some(0), Owner::Player, 1, 3));
     }
@@ -1555,7 +1555,7 @@ mod real_maps {
                 let (ok, n) = reachable_entries(&w, h.tile);
                 totals.0 += ok;
                 totals.1 += n;
-                let g = Game::from_scenario(c.clone(), &s, class, 1);
+                let g = Game::from_scenario(c.clone(), &s, class);
                 // Opening events may change the preset (a companion joins, gold is given).
                 if g.script().is_some_and(|e| e.total_fired() == 0) {
                     assert_eq!(g.squad.len(), 1 + h.troops.len());
@@ -1640,7 +1640,7 @@ mod real_maps {
         let Some((dt, c)) = install() else { return };
         for prefix in ["РК1", "РК3"] {
             let s = dt.maps.iter().find(|m| m.name.starts_with(prefix)).unwrap().load().unwrap();
-            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight, 7);
+            let mut g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;
             assert!(g.set_destination(target), "{prefix}");

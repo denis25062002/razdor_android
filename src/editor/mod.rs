@@ -96,7 +96,7 @@ mod real_maps {
             let s = crate::dt::dtm::Scenario::from_file_bytes(&bytes).unwrap();
             assert_eq!(s.events, d.scenario.events, "{}", m.name);
             // The event engine runs the edited map.
-            let mut g = crate::rules::game::Game::from_scenario(content.clone(), &s, crate::rules::content::HeroClass::Knight, 1);
+            let mut g = crate::rules::game::Game::from_scenario(content.clone(), &s, crate::rules::content::HeroClass::Knight);
             for _ in 0..6 {
                 g.drain_events();
                 for _ in 0..8 {
@@ -127,7 +127,7 @@ mod real_maps {
         let s = crate::dt::dtm::Scenario::from_file_bytes(&bytes).unwrap();
         assert_eq!(s.armies.len() + 1, EditorDoc::open(&m.path, None).unwrap().scenario.armies.len());
         let content = std::sync::Arc::new(Content::from_dt(&dt));
-        let g = crate::rules::game::Game::from_scenario(content, &s, crate::rules::content::HeroClass::Knight, 1);
+        let g = crate::rules::game::Game::from_scenario(content, &s, crate::rules::content::HeroClass::Knight);
         assert_eq!(g.world.locations.len(), s.buildings.len());
     }
 }

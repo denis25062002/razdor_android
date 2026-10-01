@@ -1538,7 +1538,7 @@ fn real_fort_battle_pays_the_videos_xp() {
     let c = Arc::new(Content::from_dt(&dt));
     assert_eq!(c.options.hero_experience_modificator, 100);
     let map = dt.maps.iter().find(|m| m.name.starts_with("РК3")).expect("РК3").load().expect("loads");
-    let mut g = crate::rules::game::Game::from_scenario(c.clone(), &map, crate::rules::content::HeroClass::Archmage, 1);
+    let mut g = crate::rules::game::Game::from_scenario(c.clone(), &map, crate::rules::content::HeroClass::Archmage);
     let l = g.world.locations.iter().position(|l| l.name == "Форт в Трясине").expect("the fort");
     g.foe = Some(crate::rules::game::Foe::Garrison(l));
     let mut b = g.start_battle();
