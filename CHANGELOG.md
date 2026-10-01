@@ -216,6 +216,12 @@ old id, and their versions give both.
 - The AI rescores its battles against a feudal army after that army's noon, and against the
   hero after his noon, an event that took effect and a visit to a building, as the original.
 - An army placed on water inside a building's footprint other than a bridge is a ship.
+- An AI army standing still that the hero's cell bars counts an idle plan or a step as the
+  original's path index says (an army that planned nothing in mid-path, or has no path at
+  all, counts it idle).
+- An army an event brings onto the map comes back with its dead raised and everyone paid,
+  takes its place among the armies in their order (it moves in its turn, not last), draws
+  its wander points, gets its home back when it stands in it, and the AI rescores it.
 
 ## 0.2.2 — 2026-10-01
 

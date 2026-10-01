@@ -259,8 +259,41 @@ impl Game {
         a.pos = self.world.map.center(tile);
         a.path.clear();
         a.chasing = false;
-        self.world.armies.push(a);
-        Some(self.world.armies.len() - 1)
+        if !super::ai::managed(&a) {
+            self.world.armies.push(a);
+            return Some(self.world.armies.len() - 1);
+        }
+        // The AI's record as 0x4969b8 sets it: every unit alive (the wounded keep their hit
+        // points) and paid now, no path, standing in the building under it with its defence;
+        // its home under it is its own again. It takes its place among the armies in their
+        // order, its pairs are to be rescored and it draws four wander points.
+        let now = self.clock.total_minutes() as u64;
+        for t in a.troops.iter_mut() {
+            if !t.alive() {
+                t.hurt = 0;
+            }
+            t.died_at = None;
+            t.unpaid = false;
+            t.last_paid = now;
+        }
+        a.mind.walked = 0;
+        a.mind.no_path = true;
+        let here = self.world.location_covering(tile);
+        a.mind.standing = here;
+        if let Some(l) = here {
+            a.mind.defence = self.world.locations[l].garrison_defence;
+            if a.home == Some(l) {
+                let loc = &mut self.world.locations[l];
+                loc.owner = super::world::Owner::Army(a.id);
+                loc.take_sides(a.faction, a.ai.relations);
+            }
+        }
+        let uid = a.uid;
+        self.insert_army(a);
+        self.mark_dirty(uid);
+        let i = self.army_index(id)?;
+        self.ai_wander(i);
+        Some(i)
     }
 
     /// A text of the scenario with its escapes filled in: `#HERONAME` becomes the hero's
@@ -1149,6 +1182,37 @@ mod tests {
         assert_eq!(g.spells, vec![4]);
         assert!(g.world.armies.iter().any(|a| a.id == 3) && g.world.inactive.is_empty());
         assert!(g.drain_events().is_empty());
+    }
+
+    #[test]
+    fn an_activated_army_comes_in_its_place_alive_paid_and_with_wander_points() {
+        // 0x4969b8: its units revived and paid, no path, its home under it its own, its pairs
+        // dirty, four wander points drawn; it acts in its index order among the armies.
+        let mut s = world(Vec::new());
+        let mut home = building(BuildingType::Village, 10, 8, (1, 1));
+        home.faction = 2;
+        s.buildings = vec![home];
+        let mut sleeper = army(3, 10, 8, -2, &[troop(4, 0, 2)]);
+        sleeper.inactive = 1;
+        sleeper.home_building = 1;
+        s.armies = vec![army(1, 2, 9, 0, &[troop(4, 0, 1)]), sleeper, army(5, 14, 2, 0, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.drain_events();
+        let k = g.world.inactive.iter().position(|a| a.id == 3).unwrap();
+        g.world.inactive[k].troops[0].died_at = Some(1);
+        g.world.inactive[k].troops[0].hurt = 5;
+        g.world.inactive[k].troops[1].unpaid = true;
+        g.world.armies[0].mind.clean.insert(3);
+        let draws = g.rng.clone();
+        EventWorld::activate_army(&mut g, 3);
+        assert_eq!(g.world.armies.iter().map(|a| a.id).collect::<Vec<_>>(), [1, 3, 5]);
+        let a = &g.world.armies[1];
+        assert!(a.troops.iter().all(|t| t.alive() && t.hurt == 0 && !t.unpaid));
+        assert!(a.mind.no_path && a.mind.standing == Some(0));
+        assert_ne!(a.mind.wander, [(0, 0); 4]);
+        assert_ne!(g.rng.state(), draws.state(), "the wander points drawn");
+        assert!(!g.world.armies[0].mind.clean.contains(&3), "its pairs dirty");
+        assert_eq!(g.world.locations[0].owner, crate::rules::world::Owner::Army(3));
     }
 
     #[test]

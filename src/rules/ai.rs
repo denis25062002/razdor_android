@@ -215,6 +215,11 @@ pub struct AiMind {
     pub wander: [Tile; WANDER_POINTS],
     /// Came back from a respawn and has not finished a path since: it seeds no armies.
     pub just_respawned: bool,
+    /// The original's place on its path: the steps taken since the path was read (its path
+    /// index), and whether it has no path at all (length 0: a fresh record, a respawn, an
+    /// activation). Only a step in place that the hero's cell bars tells them apart.
+    pub walked: i32,
+    pub no_path: bool,
     /// Healing keeps it standing until this minute.
     pub busy_until: f64,
     /// Game minute of its next noon.
@@ -836,7 +841,7 @@ impl Game {
 
     /// Puts an army back on the map among the others in id order, keeping the pending foe
     /// pointing at the right army.
-    fn insert_army(&mut self, a: Army) {
+    pub(crate) fn insert_army(&mut self, a: Army) {
         let k = self.world.armies.iter().position(|b| b.id > a.id).unwrap_or(self.world.armies.len());
         if let Some(Foe::Army(j)) = self.foe {
             if j >= k {
@@ -1226,6 +1231,9 @@ impl Game {
                 let m = &mut a.mind;
                 m.defence = defence;
                 m.idle = 0;
+                // A fresh record has no path.
+                m.walked = 0;
+                m.no_path = true;
                 a.budget = 0.0;
                 let mut noon = (now / day).floor() * day + day / 2.0;
                 if noon < now {
@@ -1251,7 +1259,7 @@ impl Game {
                 if noon < now {
                     noon += day;
                 }
-                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], ..AiMind::default() };
+                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, ..AiMind::default() };
             }
         }
         let incomes: Vec<(u8, i32)> = self.world.locations.iter().filter(|l| l.kind.capturable()).filter_map(|l| match l.owner {
@@ -1387,8 +1395,14 @@ impl Game {
         let map = &self.world.map;
         let a = &mut self.world.armies[i];
         a.arrived = true;
+        // The original's path index moves on with a real step; it is still on its path when
+        // that index is below the path's length.
+        let on_path = next.is_some() || (!moves && !a.mind.no_path && a.mind.walked == 0);
+        if moves {
+            a.mind.walked += 1;
+        }
         let renew = match next {
-            Some(t) => {
+            Some(t) if on_path => {
                 if moves {
                     a.pos = map.center(t);
                     a.path.remove(0);
@@ -1399,21 +1413,25 @@ impl Game {
                 a.mind.idle = 0;
                 a.path.is_empty() || next_closed
             }
-            None if moves => {
-                a.mind.just_respawned = false;
-                a.mind.idle += 1;
-                true
-            }
-            None => {
-                // Standing, its own cell barred by the hero's: the original's path index
+            None if on_path => {
+                // Standing on a one-cell path, its own cell barred by the hero's: the index
                 // stays on its only cell, so it counts as a step that reached the end.
                 a.mind.countdown -= 1;
                 a.mind.idle = 0;
                 true
             }
+            _ => {
+                // Past the end of its path (a step in place, or one the hero's cell barred
+                // when the index had already moved on along a path planned away, or with no
+                // path at all): an idle plan.
+                a.mind.just_respawned = false;
+                a.mind.idle += 1;
+                true
+            }
         };
         if renew {
             a.mind.countdown = 0;
+            a.mind.walked = 0;
             a.path.clear();
             self.ai_wander(i);
         }
@@ -1422,7 +1440,7 @@ impl Game {
     /// The four wander points of army `i` (0x4a2550): x then y for each, inside its patrol
     /// box (its centre ± radius, clamped to the map) when it patrols, anywhere on the map when
     /// it does not; a point on its own cell gets x = 0, which no plan seeds.
-    fn ai_wander(&mut self, i: usize) {
+    pub(crate) fn ai_wander(&mut self, i: usize) {
         let (w, h) = (self.world.map.w, self.world.map.h);
         let (c, r, here, patrols) = {
             let a = &self.world.armies[i];
@@ -1643,10 +1661,14 @@ impl Game {
         let path = (field.kept > 0).then(|| world.map.descend(&field, here));
 
         let a = &mut self.world.armies[i];
+        // A path read puts its index back at its start; with no seed the path is one cell
+        // long and the index stays where it was (0x4a2d88).
+        a.mind.no_path = false;
         match path {
             Some(path) => {
                 a.path = path;
                 a.mind.countdown = reach;
+                a.mind.walked = 0;
             }
             None => a.path.clear(),
         }
@@ -2800,6 +2822,8 @@ impl Game {
             m.wander = [(0, 0); WANDER_POINTS];
             m.wander[0] = army.post;
             m.just_respawned = true;
+            m.walked = 0;
+            m.no_path = true;
             army.path.clear();
             army.pos = self.world.map.center(self.world.locations[at].tile);
             army.gold += army.ai.respawn_days as i32 * army.ai.extra_income;

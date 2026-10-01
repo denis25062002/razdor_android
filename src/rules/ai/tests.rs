@@ -396,6 +396,44 @@ fn an_army_with_nothing_to_do_steps_in_place() {
 }
 
 #[test]
+fn a_step_in_place_barred_by_the_hero_follows_the_originals_path_index() {
+    // 0x4a399c: a step the hero's cell bars leaves the path index where it is. On a one-cell
+    // path read at index 0 that is a step (the countdown −1, no idle plan); with no path at
+    // all, or after a plan with no seed once the index had moved on, it is past the end: an
+    // idle plan.
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let uid = g.world.armies[0].uid;
+    let barred = HeroCells { cells: [Some((30, 10)), None], at: (30, 10) };
+    let step = |g: &mut Game, walked: i32, no_path: bool| {
+        let m = &mut g.world.armies[0].mind;
+        (m.scripted, m.idle, m.countdown, m.walked, m.no_path) = (true, 3, 4, walked, no_path);
+        g.world.armies[0].path.clear();
+        g.world.armies[0].budget = 25.0;
+        g.ai_walk(uid, &barred);
+        let m = &g.world.armies[0].mind;
+        (m.idle, m.walked)
+    };
+    assert_eq!(step(&mut g, 0, false), (0, 0), "a one-cell path at index 0: a step");
+    assert_eq!(step(&mut g, 2, false), (4, 0), "the index moved on: past the end");
+    assert_eq!(step(&mut g, 0, true), (4, 0), "no path at all (map load, respawn)");
+    // A plan that reads a path puts the index back to 0; one with no seed leaves it.
+    let mut g = start(&s);
+    assert!(g.world.armies[0].mind.no_path, "a fresh record has no path");
+    let m = &mut g.world.armies[0].mind;
+    (m.walked, m.wander) = (3, [(0, 0); 4]);
+    g.world.armies[0].ai.no_buildings = true;
+    g.world.armies[0].ai.no_random = true;
+    plan(&mut g, 0);
+    assert_eq!((g.world.armies[0].mind.walked, g.world.armies[0].mind.no_path), (3, false), "no seed");
+    g.world.armies[0].ai.no_random = false;
+    g.world.armies[0].mind.wander = [(40, 10), (0, 0), (0, 0), (0, 0)];
+    plan(&mut g, 0);
+    assert_eq!(g.world.armies[0].mind.walked, 0, "a path read");
+}
+
+#[test]
 fn a_step_costs_the_cell_left_and_the_countdown_runs_out() {
     // AIGetPathDistance 5: after a plan, five steps then a plan again (nobody near).
     let mut s = map();
