@@ -1436,3 +1436,32 @@ fn a_respawn_clears_the_beaten_mark_and_the_last_winner_holds_it() {
     g.army_beaten(0, Beaten::ByPlayer);
     assert!(g.beaten_armies.contains(&1) && !g.ai_beaten.contains(&1), "the last winner's mark");
 }
+
+#[test]
+fn a_respawned_army_arrives_at_once_its_first_step_free() {
+    // 0x4a28d0 sets the stored step cost to 0 and the path to none: the first step costs
+    // nothing, and that arrival is past the end of no path (an idle plan, the respawn flag
+    // cleared).
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 40, 10, (1, 1));
+    fort.faction = 4;
+    fort.owner_army = 1;
+    s.buildings = vec![fort];
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    a.home_building = 1;
+    a.respawn_days = 1;
+    s.armies = vec![a];
+    let mut g = start(&s);
+    g.army_beaten(0, Beaten::ByAi);
+    let due = g.world.respawns[0].due;
+    g.ai_respawns(due + 1.0);
+    let a = &mut g.world.armies[0];
+    (a.budget, a.mind.idle) = (0.0, 0);
+    assert!(a.mind.just_respawned && a.mind.free_step);
+    let plans = g.ai_stats.paths;
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    g.ai_walk(1, &hero);
+    let a = &g.world.armies[0];
+    assert_eq!((a.mind.idle, a.mind.just_respawned, a.mind.free_step), (1, false, false));
+    assert_eq!(g.ai_stats.paths, plans + 1, "it planned");
+}

@@ -296,6 +296,7 @@ impl Game {
         }
         a.mind.walked = 0;
         a.mind.no_path = true;
+        a.mind.free_step = true;
         let here = self.world.location_covering(tile);
         a.mind.standing = here;
         if let Some(l) = here {
@@ -1232,7 +1233,7 @@ mod tests {
         assert_eq!(g.world.armies.iter().map(|a| a.id).collect::<Vec<_>>(), [1, 3, 5]);
         let a = &g.world.armies[1];
         assert!(a.troops.iter().all(|t| t.alive() && t.hurt == 0 && !t.unpaid));
-        assert!(a.mind.no_path && a.mind.standing == Some(0));
+        assert!(a.mind.no_path && a.mind.free_step && a.mind.standing == Some(0), "no path, its first step free");
         assert_ne!(a.mind.wander, [(0, 0); 4]);
         assert_ne!(g.rng.state(), draws.state(), "the wander points drawn");
         assert!(!g.world.armies[0].mind.clean.contains(&3), "its pairs dirty");

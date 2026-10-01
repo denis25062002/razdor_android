@@ -482,7 +482,8 @@ remainder is lost. **code** (0x4a473c)
   and peasants always use their home, and if it is a village, shipyard, altar or **ruins** they
   take it over (owner, faction, attitudes), from whoever holds it, the player included.
 - It appears at the centre of that building's footprint with every unit in its record at full
-  HP and paid, gold + (delay in days) × daily income, the "just respawned" flag set (no army
+  HP and paid, no path and a stored step cost of 0 (so it arrives again at once, an idle
+  plan), gold + (delay in days) × daily income, the "just respawned" flag set (no army
   targets until it finishes a path) and its first wander point at its start cell.
 - **Who comes back** depends on who beat it: beaten by the player, the record keeps only the
   leader unless the respawn-whole-army flag is set; beaten by an AI army or a garrison, the
@@ -546,7 +547,7 @@ after the parity pass.
 |---|---|---|---|
 | Thinking cadence | Re-plans at an arrival when its countdown of `AIGetPathDistance` steps ran out or any party is within that distance; one flood from every seed at once, in the original's pass order (`TileMap::flood_maps`), path by steepest descent (`Game::ai_plan`) | Re-plans on arrival every `AIGetPathDistance` steps, or every step while anything is within `AIGetPathDistance`; one flood from the targets, path by descent (§2, §7.5) | Matches |
 | Goal memory | No goal kept; a visited building's stored score is zeroed until its next rescoring | No goal kept; the flood decides each time; a visited building's score is zeroed until rescoring (§9.7) | Matches |
-| Step cost | Cost of the cell left; a step into the hero's cell (or the one ahead of him) waits; an army with no path steps in place on its own cell's cost, each an arrival; a step in place the hero bars counts as a step or an idle plan by the original's path index and length | Cost of the cell left; a step into the player's cell (or next cell) waits (§2) | Matches |
+| Step cost | Cost of the cell left; a step into the hero's cell (or the one ahead of him) waits; an army with no path steps in place on its own cell's cost, each an arrival; a step in place the hero bars counts as a step or an idle plan by the original's path index and length; after a respawn or an activation the first step is free (its stored cost 0) | Cost of the cell left; a step into the player's cell (or next cell) waits (§2) | Matches |
 | Stationary guards | Never bank, step, plan, arrive or get a noon | Never step, plan, arrive or get a noon (§2) | Matches |
 | Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
 | Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |

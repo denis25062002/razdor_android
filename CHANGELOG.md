@@ -234,6 +234,8 @@ old id, and their versions give both.
   events, and an army beaten by the player and then by an AI army counts as beaten by that
   army only, as the original keeps one mark. An event can bring back a beaten army, even
   one that would never respawn, and an event that removes a beaten army stops its respawn.
+- An army that respawns or that an event brings back takes its first step at once, for
+  free, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

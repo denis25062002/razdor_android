@@ -223,6 +223,9 @@ pub struct AiMind {
     /// activation). Only a step in place that the hero's cell bars tells them apart.
     pub walked: i32,
     pub no_path: bool,
+    /// Its stored step cost is 0 (a respawn or an activation sets it so): its next step costs
+    /// nothing, so it arrives at once (0x4a399c charges the stored cost).
+    pub free_step: bool,
     /// Healing keeps it standing until this minute.
     pub busy_until: f64,
     /// Game minute of its next noon.
@@ -1365,6 +1368,7 @@ impl Game {
                 let to = next.unwrap_or(here);
                 let left = self.ai_cost(a, here);
                 let need = match next {
+                    _ if a.mind.free_step => 0.0,
                     Some(t) => step_minutes(map.grid, here, t, left, a.speed.max(1)),
                     None => left as f32 * a.speed.max(1) as f32,
                 };
@@ -1374,6 +1378,7 @@ impl Game {
                 return;
             }
             self.world.armies[i].budget -= need;
+            self.world.armies[i].mind.free_step = false;
             self.ai_stepped(i, next, moves, need);
             self.ai_arrival(uid, hero);
             // A cell of no cost would step forever: once per slice.
@@ -2876,6 +2881,7 @@ impl Game {
             m.just_respawned = true;
             m.walked = 0;
             m.no_path = true;
+            m.free_step = true;
             army.path.clear();
             army.pos = self.world.map.center(self.world.locations[at].tile);
             army.gold += army.ai.respawn_days as i32 * army.ai.extra_income;
