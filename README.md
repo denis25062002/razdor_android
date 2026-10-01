@@ -121,8 +121,9 @@ cargo test                                      # also checks the readers agains
 
 The install is found, in order: `RAZDOR_DT_DIR` (also read from a `.env` file in the current
 folder or next to the program, `RAZDOR_DT_DIR="/path/to/Discord Times"`); the program's own
-folder, so `Razdor.exe` (Windows) or `razdor` (Linux) copied next to `DiscordTimes.exe` plays
-that copy; the folder remembered from an earlier run; a search of `~/Games`, `~/Downloads` and
+folder, so `Razdor.exe` (Windows), `razdor` (Linux) or `razdor-macos` (macOS) copied next to
+`DiscordTimes.exe` plays that copy (on a Mac, in the game folder of a Wine or CrossOver
+bottle); the folder remembered from an earlier run; a search of `~/Games`, `~/Downloads` and
 the home folder. Made for the Community Update 1.2 (game 1.8.1).
 
 `scripts/dist.sh` builds both programs into `dist/`: `razdor` for Linux and `Razdor.exe` for
@@ -137,9 +138,19 @@ workflow), and publishes the release with the changelog section and the SHA-256.
 depends on the system it is linked on (its C library and linker): the pipeline builds it on
 Ubuntu 22.04, which makes it run on older distributions too, so releases take it from there.
 
+`scripts/dist-macos.sh` builds `razdor-macos` on a Mac (it needs Apple's SDK, from Xcode or
+its Command Line Tools): one universal program for Apple Silicon and Intel, macOS 11 and
+later, added to `dist/SHA256SUMS`. The pipeline builds it on GitHub's macOS 15 runner; it
+depends on that runner's Xcode, so it is not rebuilt bit for bit elsewhere. It is not signed
+by a developer, so macOS blocks it once downloaded: run
+`xattr -d com.apple.quarantine razdor-macos` (or right click → Open in Finder) before the
+first start. Started by a double click, it opens in Terminal. Running the pipeline by hand
+(Actions → Release → Run workflow) builds the three programs of a commit as the run's
+artifacts without publishing anything.
+
 **When it fails to start or play**: every start writes `razdor.log` (`%APPDATA%\razdor\` on
-Windows, `~/.local/share/razdor/` on Linux; the one before is `razdor.previous.log`): the
-version and commit, the system, the program and working folders, the `RAZDOR_*` variables and
+Windows, `~/.local/share/razdor/` on Linux, `~/Library/Application Support/razdor/` on macOS;
+the one before is `razdor.previous.log`): the version and commit, the system, the program and working folders, the `RAZDOR_*` variables and
 `.env` files, how the install was found or why a folder is not one, the OpenGL version, then
 each step of the start, so the last line shows where it stopped. A panic (with its backtrace)
 or a crash is written there too and, on Windows, shown in a message box. Started without a
@@ -389,8 +400,8 @@ equipped or drunk (by type) and gold coming in.
 - `RAZDOR_NO_AUDIO=1` turns sound off; `RAZDOR_AUDIO_LOG=1` prints each sound as it plays.
   The demo (no install) is silent.
 - On Linux the sound goes through ALSA (`libasound.so.2`, present on any desktop; PipeWire
-  and PulseAudio provide the `default` device). `cargo build --no-default-features` builds
-  without sound.
+  and PulseAudio provide the `default` device); on macOS through Core Audio.
+  `cargo build --no-default-features` builds without sound.
 
 ## Map editor
 Razdor has a scenario editor that writes `.DTm` maps the original game and Razdor both load.

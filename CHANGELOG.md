@@ -12,6 +12,13 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### New
+- **A macOS program**, `razdor-macos`: one universal file for Apple Silicon and Intel Macs
+  (macOS 11 and later), built by the release pipeline on a Mac (`scripts/dist-macos.sh`) and
+  published with the Linux and Windows programs. It is not signed by a developer: lift the
+  quarantine once (`xattr -d com.apple.quarantine razdor-macos`) after downloading it.
+- The release pipeline can be run by hand, to build a commit's programs without publishing.
+
 ## 0.2.0 — 2026-09-30
 
 Commit `610a898` (tag `v0.2.0`); its programs show `85b063f`, the id before the history

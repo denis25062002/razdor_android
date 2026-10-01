@@ -1,10 +1,14 @@
 # The release pipeline: pushing a tag vX.Y.Z builds razdor (Linux) and Razdor.exe (Windows)
-# with scripts/dist.sh and publishes them as the GitHub release vX.Y.Z, with that version's
-# section of CHANGELOG.md and the programs' SHA-256 as its notes.
+# with scripts/dist.sh, razdor-macos (macOS, universal) with scripts/dist-macos.sh on a Mac,
+# and publishes them as the GitHub release vX.Y.Z, with that version's section of
+# CHANGELOG.md and the programs' SHA-256 as its notes.
 #
 #   1. Set `version` in Cargo.toml and turn "Unreleased" in CHANGELOG.md into
 #      "## X.Y.Z — date"; commit.
 #   2. git tag vX.Y.Z && git push origin vX.Y.Z
+#
+# Run by hand (Actions → Release → Run workflow), it builds the programs of that commit as
+# the run's artifacts and publishes nothing.
 #
 # The tools are pinned (Rust in rust-toolchain.toml, llvm-mingw below) so a local
 # scripts/dist.sh of the same commit builds the same Razdor.exe.
@@ -13,6 +17,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -22,12 +27,35 @@ env:
   LLVM_MINGW_NAME: llvm-mingw-20260922-ucrt-ubuntu-22.04-x86_64
 
 jobs:
+  macos:
+    # The macOS SDK comes with Xcode, so the Mac program is built on a Mac.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust (rust-toolchain.toml)
+        run: rustup show active-toolchain
+
+      - name: Tests
+        run: cargo test
+
+      - name: Build razdor-macos
+        run: sh scripts/dist-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: razdor-macos
+          path: dist/razdor-macos
+          if-no-files-found: error
+
   release:
+    needs: macos
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
 
       - name: The tag matches the version and the changelog
+        if: github.ref_type == 'tag'
         run: |
           version="${GITHUB_REF_NAME#v}"
           grep -qx "version = \"$version\"" Cargo.toml || { echo "Cargo.toml is not version $version"; exit 1; }
@@ -52,15 +80,39 @@ jobs:
       - name: Build razdor and Razdor.exe
         run: sh scripts/dist.sh
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: razdor-macos
+          path: dist
+
+      - name: SHA-256 of all three
+        run: |
+          chmod +x dist/razdor-macos
+          (cd dist && sha256sum razdor Razdor.exe razdor-macos > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: The programs of a run by hand
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: razdor-${{ github.sha }}
+          path: |
+            dist/razdor
+            dist/Razdor.exe
+            dist/razdor-macos
+            dist/SHA256SUMS
+
       - name: Release notes from CHANGELOG.md
+        if: github.ref_type == 'tag'
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '$0 ~ "^## "v" " {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
           {
             echo
             echo "## Downloads"
-            echo "- **Razdor.exe**: Windows (x86_64). **razdor**: Linux (x86_64). **SHA256SUMS**: their checksums."
+            echo "- **Razdor.exe**: Windows (x86_64). **razdor**: Linux (x86_64). **razdor-macos**: macOS 11+ (Apple Silicon and Intel). **SHA256SUMS**: their checksums."
             echo "- Put the program next to \`DiscordTimes.exe\` in your game folder and start it."
+            echo "- macOS: the program is not signed by a developer; once downloaded, run \`xattr -d com.apple.quarantine razdor-macos\` (or right click → Open) before the first start."
             echo
             echo "## SHA-256"
             echo "Built from commit ${GITHUB_SHA::7}."
@@ -73,8 +125,9 @@ jobs:
           cat notes.md
 
       - name: Publish the release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --title "Razdor ${GITHUB_REF_NAME#v}" --notes-file notes.md \
-            dist/Razdor.exe dist/razdor dist/SHA256SUMS
+            dist/Razdor.exe dist/razdor dist/razdor-macos dist/SHA256SUMS
