@@ -1983,3 +1983,28 @@ fn row43_the_largest_loss_in_one_turn_counts_in_the_pool() {
     win(&mut bt);
     assert_eq!(bt.pool(Team::Player), crate::rules::experience::round_half_even(pred * q + 21.0));
 }
+
+#[test]
+fn row38_ai_moves_follow_the_original() {
+    // A front-row unit with nothing to do keeps its cell when it scores best: 2·4 for the
+    // enemy opposite, against 2·3 one column off. It passes.
+    let idle = acts(144, 1, warrior(144, 0, 0));
+    let mut bt = with(vec![idle], &[(10, f(2))], &[(144, f(2)), (18, f(5))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_step(), Some(Step::Wait { actor: 1 }));
+    // A pure warrior behind steps forward to the column with the most support: 3·|MP| + AS
+    // of the own back-row unit there (3·30 beats 50).
+    let gunner = UnitDef { attack_shot: 50, ..shooter(145, 50) };
+    let mut bt = with(vec![gunner], &[(10, f(5))], &[(10, b(2)), (14, b(1)), (145, b(3)), (18, f(4))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_step(), Some(Step::Move { actor: 1, from: b(2), to: f(1) }));
+}
+
+#[test]
+fn row38_a_reserve_unit_only_moves_even_a_ghost_that_could_cast() {
+    let ghost = bonus(146, Bonus::Ghost, mage(146, 30, MagicSchool::Death, MagicDirection::ToEnemy));
+    let mut bt = with(vec![ghost], &[(10, f(2))], &[(146, r(2)), (18, f(4))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.options(1, 0), vec![ActionKind::Curse], "it could cast from there");
+    assert_eq!(bt.ai_step(), Some(Step::Move { actor: 1, from: r(2), to: b(2) }), "the nearest back-row cell");
+}

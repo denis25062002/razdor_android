@@ -2171,6 +2171,10 @@ impl Battle {
     fn ai_plan(&self) -> Option<Plan> {
         let id = self.active()?;
         let opts = self.all_options(id);
+        // A reserve unit goes straight to the moves (4864e0), a Ghost's cast included.
+        if self.fighters[id].slot.row == Row::Reserve {
+            return Some(self.ai_move(id, &opts));
+        }
         if let Some(to) = self.ai_retreat(id) {
             return Some(Plan::Move(to));
         }
@@ -2234,7 +2238,7 @@ impl Battle {
         if let Some(plan) = self.ai_magic(id, &opts) {
             return Some(plan);
         }
-        Some(self.ai_move(id, &opts).unwrap_or(Plan::Pass))
+        Some(self.ai_move(id, &opts))
     }
 
     /// A front-row unit that is not a warrior, with more than one action and an AttackBlow
@@ -2503,43 +2507,75 @@ impl Battle {
         main[side].1.filter(|_| main[side].0 > 0)
     }
 
-    /// Moves when nothing else scored (489549). The AI never moves into the reserve.
-    fn ai_move(&self, id: usize, opts: &[(usize, ActionKind)]) -> Option<Plan> {
+    /// The AI's own-cell action: a self-cast when its cell offers one, else a pass.
+    fn own_cell_plan(&self, id: usize) -> Plan {
+        match self.options(id, id).first() {
+            Some(&kind) => Plan::Act(id, kind),
+            None => Plan::Pass,
+        }
+    }
+
+    /// Moves when nothing else scored, and everything a reserve unit does (489549). The AI
+    /// never moves into the reserve; with nothing better it takes its own cell.
+    fn ai_move(&self, id: usize, opts: &[(usize, ActionKind)]) -> Plan {
         let f = &self.fighters[id];
+        let (team, from) = (f.team, f.slot);
         let moves = self.moves(id);
-        let enemy_front: Vec<u8> = self.living(f.team.other()).filter(|e| e.slot.row == Row::Front).map(|e| e.slot.col).collect();
-        let enemy_back: Vec<u8> = self.living(f.team.other()).filter(|e| e.slot.row == Row::Back).map(|e| e.slot.col).collect();
-        let best = match f.slot.row {
+        let enemy_at = |row: Row, c: u8| self.at(team.other(), Slot::new(row, c)).is_some();
+        let cols = self.formation.cols;
+        let best = match from.row {
+            // A pure warrior behind steps forward: `3·|MP| + AS` of the own back-row unit in
+            // that column (another column than its own), +2 facing an enemy, +1.
             Row::Back if f.base[Stat::AttackShot] == 0 && f.power == 0 => self.pick(moves.iter().filter(|m| m.row == Row::Front).map(|&m| {
-                let behind = self.at(f.team, Slot::new(Row::Back, m.col)).filter(|&o| o != id);
-                let support = behind.map_or(0, |o| self.fighters[o].power.abs() + self.fighters[o].base[Stat::AttackShot]);
-                let facing = if enemy_front.contains(&m.col) { 2 } else { 0 };
-                (m, (1 + support + facing) as f64, m)
+                let behind = self.at(team, Slot::new(Row::Back, m.col)).filter(|_| m.col != from.col);
+                let support = behind.map_or(0, |o| 3 * self.fighters[o].power.abs() + self.fighters[o].base[Stat::AttackShot]);
+                let facing = if enemy_at(Row::Front, m.col) { 2 } else { 0 };
+                (m, (support + facing + 1) as f64, Some(m))
             })),
-            Row::Front => self.pick(moves.iter().filter(|m| m.row == Row::Front).map(|&m| {
-                let pull = |cols: &[u8], k: i32| cols.iter().map(|&c| (k * (4 - c.abs_diff(m.col) as i32)).max(0)).sum::<i32>();
-                (m, (pull(&enemy_front, 2) + pull(&enemy_back, 1)) as f64, m)
-            })),
-            Row::Reserve => {
-                let heal = self.pick_target(opts.iter().filter(|o| o.1 == ActionKind::Heal).map(|o| (o.0, (self.fighters[o.0].max_hp() - self.fighters[o.0].hp) as f64)));
-                if let Some((_, t)) = heal {
-                    return Some(Plan::Act(t, ActionKind::Heal));
-                }
-                let skip_edge = self.formation.cols == 6;
-                self.pick(moves.iter().filter(|m| m.row.is_active() && !(skip_edge && m.col == 0)).map(|&m| {
-                    let s = if f.is_warrior() {
-                        if m.row == Row::Front { 2 } else { 1 }
-                    } else if m.row == Row::Back {
-                        3 - m.col.abs_diff(f.slot.col) as i32
-                    } else {
-                        0
-                    };
-                    (m, s as f64, m)
-                }))
-            }
+            // Any other back-row unit looks for a cell code that is never written.
             Row::Back => None,
+            // Front row: `2·(4 − |d|)` per enemy front unit at d columns and `4 − |d|` per enemy
+            // back unit, negative far away (no floor); the own cell counts too (a pass or a
+            // self-cast), the cells it cannot step to do not.
+            Row::Front => {
+                let score = |c: u8| {
+                    (0..cols)
+                        .map(|e| {
+                            let d = c.abs_diff(e) as i32;
+                            i32::from(enemy_at(Row::Front, e)) * 2 * (4 - d) + i32::from(enemy_at(Row::Back, e)) * (4 - d)
+                        })
+                        .sum::<i32>()
+                };
+                let cells = moves.iter().filter(|m| m.row == Row::Front).map(|&m| (m, Some(m))).chain(std::iter::once((from, None)));
+                self.pick(cells.map(|(s, m)| (s, score(s.col) as f64, m)))
+            }
+            Row::Reserve => {
+                // A mage tends the most wounded reserve unit it can target.
+                if f.ai_role == AiRole::Mage {
+                    let tend = opts.iter().filter(|o| matches!(o.1, ActionKind::Heal | ActionKind::Bless) && self.fighters[o.0].slot.row == Row::Reserve);
+                    let heal = self.pick(tend.map(|&(t, k)| {
+                        let tf = &self.fighters[t];
+                        (tf.slot, (tf.max_hp() - tf.hp) as f64, (t, k))
+                    }));
+                    if let Some((_, (t, k))) = heal {
+                        return Plan::Act(t, k);
+                    }
+                }
+                if f.ai_role == AiRole::Warrior {
+                    // 2 for the front row, 1 for the back row.
+                    self.pick(moves.iter().filter(|m| m.row.is_active()).map(|&m| (m, (3 - m.row.number()) as f64, Some(m))))
+                } else {
+                    // The nearest back-row cell; with 6 columns the Community starts the scan at
+                    // the second column (c26c7e).
+                    let skip_first = cols == 6;
+                    self.pick(moves.iter().filter(|m| m.row == Row::Back && !(skip_first && m.col == 0)).map(|&m| (m, (3 - m.col.abs_diff(from.col) as i32) as f64, Some(m))))
+                }
+            }
         };
-        best.map(|(_, m)| Plan::Move(m))
+        match best {
+            Some((_, Some(m))) => Plan::Move(m),
+            _ => self.own_cell_plan(id),
+        }
     }
 
     /// The action the AI would take with the active fighter, if it attacks or casts.

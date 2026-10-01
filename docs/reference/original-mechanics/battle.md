@@ -869,7 +869,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
 | 36 | Surrender | Whole side gives up; Surrender sum as mana | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
-| 38 | AI framework and melee/shot scores | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score | Same | 4 | Matches |
+| 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
 | 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role | Also needs a non-warrior role | 4 | Matches |
 | 41 | AI "killable" (normal level, off-screen) | Reads the own unit with the target's list index (an empty record past the list: HP 0) | Reads the own unit with the target's index (bug) | 4 | Matches |

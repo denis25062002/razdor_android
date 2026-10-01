@@ -58,6 +58,9 @@ old id, and their versions give both.
   haste by the blows needed to kill the enemies facing it, and a nearly dead Death mage with
   no spell for itself passes. The halving for a single action counts only for back-row mages,
   and a unit the AI counts as a warrior never steps back.
+- The battle AI moves as the original's: units in the reserve only move (or tend the
+  reserve), a front-row unit may keep its cell when that is where it scores best, and a unit
+  with nothing to do casts on itself when its own cell offers a spell.
 - The enemy is arranged anew for every battle as the original does it: its strongest front
   fighter in front, its shooters and mages behind, the rest by strength. Battles between AI
   armies arrange both sides, and the AI's practice battles play by the same rules (no
