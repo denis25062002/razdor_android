@@ -2091,7 +2091,8 @@ impl Game {
                 let a = &mut self.world.armies[i];
                 if p < a.gold {
                     a.gold -= p;
-                    a.troops[k].died_at = None;
+                    // Raised, it keeps its time of death (the original's).
+                    a.troops[k].kept_death = a.troops[k].died_at.take();
                     a.troops[k].hurt = 0;
                     a.mind.busy_until = now + o.healing_time as f64;
                     done = true;
@@ -2823,6 +2824,7 @@ impl Game {
             for t in army.troops.iter_mut() {
                 t.hurt = 0;
                 t.died_at = None;
+                t.kept_death = None;
                 t.unpaid = false;
                 t.last_paid = stamp;
             }
@@ -2954,11 +2956,12 @@ impl Game {
 }
 
 /// Writes a fighter's end HP `hp` into troop `t`: dead (the time of death now, unless it was
-/// already dead), or the HP it lacks against its maximum.
+/// already dead or keeps one from an earlier death: 0x4a4c68 sets it only when it is 0), or
+/// the HP it lacks against its maximum.
 fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     if hp <= 0 {
         if t.died_at.is_none() {
-            t.died_at = Some(now);
+            t.died_at = Some(t.kept_death.take().unwrap_or(now));
         }
         return;
     }
@@ -2966,10 +2969,10 @@ fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     t.hurt = (max - hp).max(0);
 }
 
-/// A side that survived keeps its leader (unit 1) with 1 HP.
+/// A side that survived keeps its leader (unit 1) with 1 HP; its time of death stays.
 fn revive_leader(c: &Content, troops: &mut [Troop]) {
     if let Some(t) = troops.first_mut().filter(|t| !t.alive()) {
-        t.died_at = None;
+        t.kept_death = t.died_at.take();
         t.hurt = troop_max_hp(c, t) - 1;
     }
 }

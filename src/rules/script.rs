@@ -273,6 +273,7 @@ impl Game {
                 t.hurt = 0;
             }
             t.died_at = None;
+            t.kept_death = None;
             t.unpaid = false;
             t.last_paid = now;
         }

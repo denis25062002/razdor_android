@@ -51,6 +51,11 @@ pub struct Troop {
     /// comes back with a respawn) until the AI drops it (ai.md §9).
     #[serde(default)]
     pub died_at: Option<u64>,
+    /// The time of death a unit raised again keeps (a surviving side's leader set to 1 HP, a
+    /// resurrection): the original clears it only at a respawn or an activation, so a unit
+    /// that falls again counts from its first death (ai.md §9, §10).
+    #[serde(default)]
+    pub kept_death: Option<u64>,
     /// Missed a payday: it stays out of the battles its army starts (economy.md §1).
     #[serde(default)]
     pub unpaid: bool,
@@ -69,7 +74,7 @@ fn recruit() -> WageKind {
 impl Troop {
     /// A troop at full health, a recruit.
     pub fn new(unit: UnitId, level: i32, slot: Slot) -> Troop {
-        Troop { unit, level, slot, hurt: 0, xp: 0, worn: [None; crate::rules::items::SLOTS], died_at: None, unpaid: false, last_paid: 0, kind: WageKind::Recruit }
+        Troop { unit, level, slot, hurt: 0, xp: 0, worn: [None; crate::rules::items::SLOTS], died_at: None, kept_death: None, unpaid: false, last_paid: 0, kind: WageKind::Recruit }
     }
 
     pub fn alive(&self) -> bool {

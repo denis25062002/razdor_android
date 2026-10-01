@@ -1349,3 +1349,25 @@ fn a_load_puts_the_barracks_slots_back() {
     loaded.restore_statics(fresh).unwrap();
     assert_eq!(loaded.locations[0].recruits.iter().map(|r| r.slot).collect::<Vec<_>>(), [2, 5]);
 }
+
+#[test]
+fn a_unit_raised_again_keeps_its_first_time_of_death() {
+    // 0x4a4c68 writes the time of death only when it is 0, and neither the leader set to
+    // 1 HP nor a resurrection clears it: a unit that falls again counts from its first
+    // death. A respawn clears it.
+    let c = content();
+    let mut troops = vec![Troop::new(UnitId(6), 1, slot(0))];
+    write_hp(&c, &mut troops[0], 0, 100);
+    revive_leader(&c, &mut troops);
+    assert!(troops[0].alive());
+    write_hp(&c, &mut troops[0], 0, 900);
+    assert_eq!(troops[0].died_at, Some(100));
+    let mut g = at_church(&[troop(4, 0, 1)]);
+    let now = g.clock.total_minutes() as u64;
+    let a = &mut g.world.armies[0];
+    a.gold = 1000;
+    a.troops[1].died_at = Some(now - 5);
+    arrive(&mut g, 1);
+    let t = g.world.armies[0].troops[1];
+    assert!(t.alive() && t.kept_death == Some(now - 5), "raised, the time kept");
+}

@@ -225,6 +225,8 @@ old id, and their versions give both.
 - AI hiring scans a building's six barracks slots with their empty ones, as the original:
   a unit hired from the sixth slot moves the scan on to the next role, which can lower the
   cap to 8 units early; a slot's stock is the one that goes down.
+- An AI unit raised again (a leader left at 1 hit point, a resurrection) keeps its first time
+  of death, as in the original: if it falls again, its corpse is dropped that much sooner.
 
 ## 0.2.2 — 2026-10-01
 

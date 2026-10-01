@@ -559,7 +559,7 @@ after the parity pass.
 | Greeting / talk | Talk counters per pair (+1 per arrival at a distance, + relation + 1 when friendly), −500 on both sides after a greeting, talk seed `800 − c + Talking`, `c div 100` below 1 | Talk counters (+1 per arrival, + relation + 1), −500 after a greeting, talk seed `800 − c + Talking` (§7.2, §8) | Matches |
 | Messenger | Falls out of the seed rule (a 0 for the player becomes 1) and the greeting | Falls out of the seed rule (value 0 → 1) and the greeting (§7.2) | Matches |
 | AI vs AI loot | Asymmetric: `MinVictoryGold` only when the attacker loses, wage bills by style, a garrison's gold; worn items pooled and handed out by tactical gain to the side with more HP, the rest packed dearest first | Asymmetric (§10): MinVictoryGold only when the attacker loses; wage totals; pooled items to the side with more HP, best-gain wearing | Matches |
-| Leader survival | Leader at 1 HP when its side survives | Leader at 1 HP when its side survives (§10) | Matches |
+| Leader survival | Leader at 1 HP when its side survives; it, and a unit resurrected, keep the first time of death (cleared only by a respawn or an activation) | Leader at 1 HP when its side survives (§10); the time of death is written only when it is 0 | Matches |
 | Lord retreat | None | No retreat; only the respawn rule (§12) | Matches |
 | Respawn content | Beaten by the player: the leader only unless byte 83; beaten by the AI: the whole record, its dead raised | Byte 83 only when the player beat it; beaten by the AI → whole army (§12) | Matches |
 | Respawn takeover | Village, shipyard, altar, ruins, from anyone | Village, shipyard, altar, **ruins** (§12) | Matches |

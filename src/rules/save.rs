@@ -36,7 +36,8 @@ use super::world::World;
 /// bought and an event's speed; older saves load with none. 4: the AI's own state (unit
 /// records with worn items, deaths and pay; scores, talk counters, wander points, noon;
 /// buildings' attitudes to every faction); older saves load with the AI set up afresh. 5: an
-/// AI army's place on its path (the original's path index); older saves load at its start.
+/// AI army's place on its path (the original's path index), and the time of death a unit
+/// raised again keeps; older saves load at the path's start, with none kept.
 pub const FORMAT_VERSION: u32 = 5;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
