@@ -123,17 +123,17 @@ pub enum BattleResult {
 pub struct DayReport {
     /// Absolute day index (see [`Clock::day_index`]).
     pub day: u64,
-    /// Gold and mana from the player's buildings.
+    /// The nominal income of the player's towns, castles and forts ×F/100 (not what the
+    /// noon pays: economy.md §9).
     pub income: i32,
-    pub mana: i32,
-    /// Wages paid in gold, and in mana (elementals).
+    /// The gold wage bill without Rear Service, and the mana paid to elementals.
     pub wages: i32,
     pub mana_wages: i32,
     /// Units that could not be paid: they sit out battles until paid.
     pub unpaid: usize,
     /// Units that left after going unpaid for `MaxTimeNotUpkeep`.
     pub deserted: Vec<UnitId>,
-    /// Balance after the report.
+    /// Gold and mana when the report opened, before the payment.
     pub gold: i32,
     pub mana_total: i32,
 }
@@ -143,14 +143,6 @@ pub struct DayReport {
 pub struct Shown {
     pub at: Tile,
     pub cells: Vec<Tile>,
-}
-
-impl DayReport {
-    /// Nothing came in or went out: no income, no wages, nobody unpaid or gone. The report
-    /// window is then not shown.
-    pub fn is_empty(&self) -> bool {
-        self.income == 0 && self.mana == 0 && self.wages == 0 && self.mana_wages == 0 && self.unpaid == 0 && self.deserted.is_empty()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -308,6 +300,15 @@ pub struct Game {
     pub(crate) offered_at: Option<usize>,
     #[serde(default)]
     pub(crate) last_offer: Option<VillageOffer>,
+    /// The player's stored income (+0x16e4): his castles' and forts' `income` plus the
+    /// village stocks of his last noon (economy.md §1 step 5). Rear Service and the
+    /// innkeeper read it.
+    #[serde(default)]
+    pub(crate) stored_income: i32,
+    /// The Community mana-short flag (0xc25eeb): up when the player's mana is 0 or below at
+    /// any army's noon, down only at a short-gold noon (economy.md §1 steps 8–10).
+    #[serde(default)]
+    pub(crate) mana_short: bool,
     /// Real seconds into the step (or wait tick) under way ([`STEP_SECONDS`] each).
     #[serde(skip)]
     pub(crate) step_elapsed: f32,
@@ -433,6 +434,8 @@ impl Game {
             offer: None,
             offered_at: None,
             last_offer: None,
+            stored_income: 0,
+            mana_short: false,
             step_elapsed: 0.0,
             wait_ticks: 0,
             reading: None,
@@ -522,6 +525,10 @@ impl Game {
         g.archetype = archetype_of(hero);
         g.script = Some(Box::new(EventEngine::new(scenario)));
         g.ai_init(false);
+        // The AI's set-up adds the player's castles' and forts' income to his stored income
+        // too (0x4a1ff0). The original seems to add it again on top of a saved value after a
+        // load (economy.md, Unknowns); Razdor adds it at the map's start only.
+        g.stored_income = g.world.locations.iter().filter(|l| l.kind.capturable() && l.owned()).map(|l| l.gold_income).sum();
         g
     }
 
@@ -1151,8 +1158,9 @@ impl Game {
             // The next noon is the day after now (0x4a41d8): a noon paid late, after
             // midnight, skips that day's own noon (the original's behaviour).
             self.noon_from = Some(self.clock.day_index() + 1);
-            let report = self.new_day(day);
-            events.push(Event::NewDay(report));
+            if let Some(report) = self.new_day(day) {
+                events.push(Event::NewDay(report));
+            }
             // The original autosaves every day at 12:00, named by the date.
             self.autosave_due = Some(super::save::date_name(&self.clock));
         }
@@ -1182,12 +1190,20 @@ impl Game {
         }
     }
 
-    /// The noon report: the player's income and wages (`Game::pay_noon`: a unit that
-    /// cannot be paid sits out battles; on a short day units long unpaid leave), then the
-    /// Ranger's daily heal.
-    fn new_day(&mut self, day: u64) -> DayReport {
+    /// The hero's noon (0x4abfbc, economy.md §1): a Ranger heals 15%; with a gold bill or
+    /// a nominal income the noon report opens and the payment ([`Game::pay_noon`]) runs when
+    /// it is closed, after which a Ranger heals another 20%; else the payment runs at once
+    /// and no report is shown. The report shows the gold and mana before the payment, the
+    /// nominal income and the bill without Rear Service.
+    fn new_day(&mut self, day: u64) -> Option<DayReport> {
+        self.ranger_heal(super::economy::RANGER_PERCENT);
+        let (income, wages) = (self.daily_income(), self.daily_wages());
+        let shown = wages != 0 || income != 0;
+        let (gold, mana_total) = (self.gold, self.mana);
         let pay = self.pay_noon();
-        self.noon_heal();
+        if shown {
+            self.ranger_heal(super::economy::RANGER_REPORT_PERCENT);
+        }
         let n = day.saturating_sub(self.start_day); // the game's first noon is day 1
         if self.world.demo && n.is_multiple_of(SPAWN_EVERY_DAYS) {
             let camps: Vec<_> = self.world.camps().filter(|(_, l)| !l.cleared).map(|(i, l)| (i, l.tile)).collect();
@@ -1197,8 +1213,8 @@ impl Game {
                 }
             }
         }
-        let super::economy::NoonPay { income, mana, wages, mana_wages, unpaid, deserted } = pay;
-        DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
+        let super::economy::NoonPay { mana_wages, unpaid, deserted } = pay;
+        shown.then_some(DayReport { day, income, wages, mana_wages, unpaid, deserted, gold, mana_total })
     }
 
     /// Armies move for `minutes` (world.md §2): the AI's armies by its step clock and
@@ -1869,6 +1885,9 @@ mod tests {
         g.hire(unit(&g, "archer")).unwrap();
         g.gold = 0;
         g.squad[1].hp = 1;
+        // Oakford pays its stock at noon; it grows only at midnight, so give it a day's.
+        let oak = g.world.index_of("Oakford");
+        g.world.locations[oak].tribute_gold = 20;
         let day = g.clock.day_index();
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events); // 08:00 -> 11:00
@@ -1878,7 +1897,6 @@ mod tests {
         let report = |day, wages, unpaid, gold| DayReport {
             day,
             income: 20,
-            mana: 0,
             wages,
             mana_wages: 0,
             unpaid,
@@ -1886,13 +1904,15 @@ mod tests {
             gold,
             mana_total: 0,
         };
-        assert_eq!(events, vec![Event::NewDay(report(day, 11, 0, 9))]);
+        // The report shows the gold before the payment.
+        assert_eq!(events, vec![Event::NewDay(report(day, 11, 0, 0))]);
         assert_eq!(g.gold, 9);
 
-        g.gold = -20; // broke: 0 after income
+        g.gold = -20; // broke: still short after the stock (20 again since midnight)
         events.clear();
         g.pass_time(24.0 * 60.0, &mut events);
-        assert_eq!(events, vec![Event::NewDay(report(day + 1, 0, 2, 0))]);
+        assert_eq!(events, vec![Event::NewDay(report(day + 1, 11, 2, -20))]);
+        assert_eq!(g.gold, 0);
         assert!(g.squad[1].unpaid && g.squad[2].unpaid);
     }
 
@@ -1992,7 +2012,18 @@ mod tests {
         g.squad[0].hp = 10;
         let mut events = Vec::new();
         g.pass_time(4.0 * 60.0, &mut events); // noon
-        assert_eq!(g.hero().hp, 10 + 55 * 15 / 100, "15% at noon");
+        assert_eq!(g.hero().hp, 10 + 55 * 15 / 100 + 55 * 20 / 100, "15% at noon, 20% more as the report is shown");
+        // No wages and no income: no report, so only the 15%.
+        let mut r = quiet_game(HeroClass::Ranger);
+        r.first_noon_today();
+        for l in r.world.locations.iter_mut().filter(|l| l.owned()) {
+            l.owner = crate::rules::world::Owner::Neutral;
+        }
+        r.squad[0].hp = 10;
+        let mut quiet = Vec::new();
+        r.pass_time(4.0 * 60.0, &mut quiet);
+        assert!(quiet.iter().all(|e| !matches!(e, Event::NewDay(_))), "{quiet:?}");
+        assert_eq!(r.hero().hp, 10 + 55 * 15 / 100);
         let mut k = quiet_game(HeroClass::Knight);
         k.squad[0].hp = 10;
         k.pass_time(4.0 * 60.0, &mut events);
@@ -2066,6 +2097,7 @@ mod tests {
     fn castle_healing_is_paid() {
         let mut g = quiet_game(HeroClass::Knight);
         g.first_noon_today();
+        g.gold = 1000;
         g.squad[0].hp = 5;
         g.set_destination(tile_of_location(&g, "Millbrook"));
         walk_until_stopped(&mut g);
@@ -2945,14 +2977,16 @@ mod tests {
         assert!(matches!(g.resolve_battle(&b), BattleResult::Victory { captured: Some(0), .. }));
         let fort = &g.world.locations[0];
         assert!(fort.owned() && !fort.defended() && fort.garrison.is_empty());
-        // Income ×F/100 for the player (F = 120 without "impossible difficulty").
-        assert_eq!((g.daily_income(), g.daily_mana()), (48, 5));
-        let (gold, mana) = (g.gold, g.mana);
+        // The shown income ×F/100 for the player (F = 120 without "impossible difficulty").
+        // With no maximum its stock never grows, so the noon pays nothing from it, and no
+        // building pays mana at noon (economy.md §1, §3).
+        assert_eq!(g.daily_income(), 48);
+        let (gold, mana, wages) = (g.gold, g.mana, g.daily_wages());
         let mut events = Vec::new();
         g.pass_time(24.0 * 60.0, &mut events);
-        assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 48, mana: 5, .. })]), "{events:?}");
-        assert_eq!(g.mana, mana + 5);
-        assert!(g.gold >= gold + 48 - g.daily_wages());
+        assert!(matches!(events.as_slice(), [Event::NewDay(DayReport { income: 48, .. })]), "{events:?}");
+        assert_eq!(g.mana, mana);
+        assert_eq!(g.gold, (gold - wages).max(0));
     }
 
     #[test]
@@ -3211,16 +3245,6 @@ mod tests {
         // Moved by other means since: drawn where it is.
         g.world.armies[0].pos = (1.0, 1.0);
         assert_eq!(at(&mut g, 0.5), (1.0, 1.0));
-    }
-
-    #[test]
-    fn a_noon_with_no_money_moving_is_empty() {
-        let quiet = DayReport { day: 3, income: 0, mana: 0, wages: 0, mana_wages: 0, unpaid: 0, deserted: vec![], gold: 150, mana_total: 7 };
-        assert!(quiet.is_empty(), "the balance alone does not count");
-        assert!(!DayReport { income: 10, ..quiet.clone() }.is_empty());
-        assert!(!DayReport { mana_wages: 2, ..quiet.clone() }.is_empty());
-        assert!(!DayReport { unpaid: 1, ..quiet.clone() }.is_empty(), "the unpaid are news");
-        assert!(!DayReport { deserted: vec![UnitId(4)], ..quiet }.is_empty());
     }
 
     #[test]

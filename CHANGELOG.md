@@ -236,6 +236,21 @@ old id, and their versions give both.
   one that would never respawn, and an event that removes a beaten army stops its respawn.
 - An army that respawns or that an event brings back takes its first step at once, for
   free, as in the original.
+- **The noon payment as in the original.** Castles and forts pay the gold stock they have
+  grown since the last noon (×F/100), not a fixed income, and towns pay nothing; every
+  building with a maximum grows its stock at midnight. No building pays mana at noon, and
+  villages linked to the player's buildings give him their gold only.
+- Corpses draw no wage. Rear Service cuts the whole wage bill once at noon (by the player's
+  stored income, also for the AI's armies), and the wages shown are the full bill. A short
+  noon refunds full wages, cheapest first, a corpse's too, never an elemental's; deserters
+  leave with their worn items.
+- With no mana at a noon (any army's), the Community's mana-short flag goes up and stays up
+  until a short-gold noon: meanwhile a unit left unpaid stays unpaid though its wage is
+  paid, as in the original.
+- The noon report shows the nominal income of the player's towns, castles and forts, the
+  bill and the gold before the payment, warns when they do not cover the wages, and is not
+  shown when there are neither wages nor income. A Ranger heals 20% more when it is shown;
+  a dead Medic still heals at midnight. Saves of the previous format still load.
 
 ## 0.2.2 — 2026-10-01
 

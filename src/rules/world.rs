@@ -843,7 +843,8 @@ impl World {
             l.gold_max = b.gold_max as i32;
             l.mana_income = b.mana_per_day as i32;
             l.mana_max = b.mana_max as i32;
-            // A village starts with one day's tribute *(guess)*.
+            // A village starts with one day's income in both stocks; every other building
+            // at 0 (0x4b55f0).
             l.tribute_gold = if kind == LocationKind::Village { l.gold_income } else { 0 };
             l.tribute_mana = if kind == LocationKind::Village { l.mana_income } else { 0 };
             let (mut garrison, dropped) = place_troops(content, &[], &dt_entries(&b.garrison));
@@ -1052,6 +1053,8 @@ impl World {
         oakford.faction = 1;
         oakford.attitude = 3;
         oakford.gold_income = 20;
+        // A castle pays its stock, which grows only up to a maximum (economy.md §3).
+        oakford.gold_max = 20;
         oakford.recruits = recruits(vec![spearman, archer, healer]);
         oakford.shop = shop();
         let mut greywall = Location::new(LocationKind::Castle, tr("Greywall"), tile('G'));

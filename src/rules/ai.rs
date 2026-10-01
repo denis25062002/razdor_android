@@ -34,7 +34,7 @@ use crate::dt::dtm::Army as DtArmy;
 use super::battle::{Battle, Outcome, Team};
 use super::clock::MINUTES_PER_DAY;
 use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, SpellDef, UnitId, WageKind};
-use super::economy::{delphi_round, relation_price, REAR_SERVICE};
+use super::economy::{delphi_round, rear_service, relation_price};
 use super::events::ArmyId;
 use super::fog;
 use super::game::{troop_unit, Event, Foe, Game, HeroCells, TALKED};
@@ -2945,24 +2945,39 @@ impl Game {
     }
 
     /// A feudal army pays its gold wage bill (economy.md §1), cut by the player's Rear
-    /// Service (the original reads the player's flag and income even here). With the gold
-    /// not below 0 everyone is paid; else the paid units of kind 1 or 2, not Elementals, with
-    /// the lowest full wage (the earliest of equals, corpses included) are refunded and go
-    /// unpaid until it is not, the gold is set to 0, and every unit last paid more than
-    /// `MaxTimeNotUpkeep` ago leaves.
+    /// Service (the original reads the player's flag and stored income even here), and its
+    /// elementals' mana bill out of the *player's* mana (raising the mana-short flag when he
+    /// has none). With the gold not below 0 everyone is paid (with the flag up the
+    /// elementals go unpaid and the others keep their mark); else the paid units of kind 1
+    /// or 2, not Elementals, with the lowest full wage (the earliest of equals, corpses
+    /// included) are refunded and go unpaid until it is not, the gold is set to 0, and
+    /// every unit last paid more than `MaxTimeNotUpkeep` ago leaves.
     fn ai_pay_wages(&mut self, i: usize, now: u64) {
         let c = self.content.clone();
         let mut bill = self.army_totals(i).wages;
-        if self.squad_has(&Bonus::AddPayment) {
-            let k = if self.daily_income() != 0 { REAR_SERVICE.0 } else { REAR_SERVICE.1 };
-            bill = bill * k / 256;
+        if self.squad_has_any(&Bonus::AddPayment) {
+            bill = rear_service(bill, self.stored_income);
         }
+        // The mana bill is one global in the original, rebuilt by every army's totals; this
+        // army's own (dormant: no shipped unit is an Elemental).
+        let mana_bill: i32 = self.world.armies[i]
+            .troops
+            .iter()
+            .filter(|t| t.alive() && t.kind == WageKind::Recruit && c.paid_in_mana(t.unit))
+            .map(|t| c.wage_for(t.unit, t.kind))
+            .sum();
+        self.pay_mana_bill(mana_bill);
+        let mut flag = self.mana_short;
         let a = &mut self.world.armies[i];
         a.gold -= bill;
         if a.gold >= 0 {
             for t in a.troops.iter_mut() {
-                t.unpaid = false;
                 t.last_paid = now;
+                if !flag {
+                    t.unpaid = false;
+                } else if c.paid_in_mana(t.unit) {
+                    t.unpaid = true;
+                }
             }
             return;
         }
@@ -2976,6 +2991,12 @@ impl Game {
                     !t.unpaid && t.kind.is_paid() && !c.paid_in_mana(t.unit)
                 })
                 .min_by_key(|&k| (c.wage_for(a.troops[k].unit, a.troops[k].kind), k));
+            if flag {
+                for t in a.troops.iter_mut().take(11).filter(|t| c.paid_in_mana(t.unit)) {
+                    t.unpaid = true;
+                }
+                flag = false;
+            }
             let Some(k) = pick else {
                 a.gold += FULL;
                 break;
@@ -2989,6 +3010,7 @@ impl Game {
         a.gold = 0;
         let limit = c.options.max_time_not_upkeep.max(0) as u64;
         a.troops.retain(|t| t.last_paid + limit >= now);
+        self.mana_short = flag;
     }
 
     /// The AI's midnight (0x4a1998, ai.md §14): every army's village average becomes

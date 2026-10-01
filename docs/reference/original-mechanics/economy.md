@@ -506,17 +506,17 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 |---|---|---|---|
 | Wage kinds | Hero and AI leaders free, event units free, the rest recruits; AI hires kind 2 in foreign buildings | Same for the player; AI kind 2 in foreign buildings | Yes |
 | Wage formulas | Brackets and divisors as the original | §1 | Yes |
-| Corpses' wages | Billed | Not billed; may still be picked for a refund | **No** |
-| Rear Service | Per unit `w × 178/256` (or 78), shown in the displayed wages; income test on Razdor's daily income | On the whole bill, truncated once; not in the displayed bill; tests the stored income; also cuts AI wages | **No** (rounding, display, AI) |
-| Short gold | Refunds the cheapest (with Rear Service applied), skips free units | Refunds full wages, cheapest first, corpses included, never Elementals | Partly |
-| Mana short | Mana below 0 | Mana 0 **or below** at any army's noon raises the flag; it sticks across noons; while up, enough-gold noons leave every unit's paid mark as it was (Elementals unpaid); the player's mana pays every army's elemental bill | **No** (the flag is live with shipped data) |
+| Corpses' wages | Not billed; may be picked for a refund (`Game::bills`, `pay_noon`) | Not billed; may still be picked for a refund | Matches |
+| Rear Service | On the whole bill at noon, truncated once, testing the player's stored income; not in the displayed bill; also cuts AI wages (`rear_service`) | On the whole bill, truncated once; not in the displayed bill; tests the stored income; also cuts AI wages | Matches |
+| Short gold | Refunds full wages, cheapest first (earliest of equals), corpses included, never Elementals | Refunds full wages, cheapest first, corpses included, never Elementals | Matches |
+| Mana short | The player's mana pays every army's elemental bill; 0 or below raises the saved flag; while up, enough-gold noons leave the marks as they were (Elementals unpaid); only a short noon clears it (`Game::mana_short`) | Mana 0 **or below** at any army's noon raises the flag; it sticks across noons; while up, enough-gold noons leave every unit's paid mark as it was (Elementals unpaid); the player's mana pays every army's elemental bill | Matches |
 | Desertion | Short noons, `last paid + MaxTimeNotUpkeep < now` | Same | Yes |
-| Castle/fort income | Every owned non-village building pays its `income × F/100` at noon, towns included | Castles and forts pay their √-grown **stock** ×F/100; towns pay nothing | **No** |
-| Building mana income | Owned buildings and linked villages give mana at noon | No mana at noon at all | **No** |
-| Linked villages | Gold and mana stocks to the owner | Gold only | **No** |
-| Stock growth | Villages only | Every building with a max > 0; byte wrap for mana | **No** |
-| Ranger heal | 15% at noon | 15%, plus 20% when the report is shown | **No** |
-| Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight | Same (a dead medic counts) | Yes |
+| Castle/fort income | Castles and forts pay their gold stock ×F/100 (truncated); towns nothing | Castles and forts pay their √-grown **stock** ×F/100; towns pay nothing | Matches |
+| Building mana income | No mana at noon | No mana at noon at all | Matches |
+| Linked villages | Gold only, to the owner of the linked building | Gold only | Matches |
+| Stock growth | Every building with a maximum; the mana sum wraps on a byte (`grow_mana`) | Every building with a max > 0; byte wrap for mana | Matches |
+| Ranger heal | 15% at noon, 20% more when the report is shown | 15%, plus 20% when the report is shown | Matches |
+| Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight; a dead medic counts | Same (a dead medic counts) | Matches |
 | Relation factor | Exact table, half to even | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
 | Buy / sell / spells / hire / ship prices | As the original | §2 | Yes |
 | Market buildings | Any building with goods (altars included) | Towns, markets, churches only | **No** |
@@ -537,7 +537,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |
 | Castle capture gold | Stock + income (garrisons carry no gold) | Stock + garrison gold + income | Yes |
 | Ruins treasure | All of the map's goods | The first 5 | **No** |
-| Displays | Report and hire tab show Razdor's computed income and wages | Nominal incomes (towns included) and the bill without Rear Service | **No** |
+| Displays | Report and hire tab show the nominal income of towns, castles and forts ×F/100 and the bill without Rear Service; the report shows the gold before the payment and warns when gold + income < wages; no report when there is neither | Nominal incomes (towns included) and the bill without Rear Service | Matches |
 
 ## Unknowns
 

@@ -12,7 +12,7 @@ use super::content::{Bonus, HeroClass, ItemId, Nature, Source, WageKind};
 use super::game::{Currency, Event, Game, Price, Tribute, PACK_SIZE};
 use super::magic;
 use super::units::{Stats, Unit};
-use super::world::{Army, LocationKind, Recruit};
+use super::world::{Army, Location, LocationKind, Recruit};
 
 /// Delphi's `Round`: halves go to the even neighbour (2.5 → 2, 3.5 → 4).
 pub fn delphi_round(x: f64) -> i64 {
@@ -50,13 +50,22 @@ pub fn merchant_price(price: i32) -> i32 {
     price - price * 30 / 100
 }
 
-/// Rear Service (`AddPayment`, Community): the gold wage bill ×178/256, or ×78/256 when the
-/// player's daily income is exactly 0 (a quirk of the Community exe, kept as it is).
+/// Rear Service (`AddPayment`, Community): the whole gold bill ×178/256, or ×78/256 when the
+/// player's stored income is exactly 0 (a quirk of the Community exe, kept as it is).
 pub const REAR_SERVICE: (i32, i32) = (178, 78);
 
-/// Daily heals: a Medic in any army at midnight, the Ranger hero at noon (percent of max HP).
+/// The gold bill as Rear Service cuts it (0xc250e4): the whole bill times 178 (or 78 when
+/// the player's stored income is 0) div 256, truncated once.
+pub fn rear_service(bill: i32, stored_income: i32) -> i32 {
+    let k = if stored_income != 0 { REAR_SERVICE.0 } else { REAR_SERVICE.1 };
+    bill * k / 256
+}
+
+/// Daily heals: a Medic in any army at midnight, the Ranger hero at noon and again when the
+/// noon report is shown (percent of max HP).
 pub const MEDIC_PERCENT: i32 = 10;
 pub const RANGER_PERCENT: i32 = 15;
+pub const RANGER_REPORT_PERCENT: i32 = 20;
 
 /// Towns stock healing potions (these item ids) first, then maybe one of the others.
 pub const TOWN_POTIONS: [u32; 3] = [98, 99, 100];
@@ -70,7 +79,7 @@ pub const PRIEST_SPELL: u32 = 1;
 pub const BLESSING_SPELLS: [u32; 5] = [3, 5, 7, 9, 11];
 pub const FURS_ITEM: u32 = 135;
 
-/// Stock growth of a village (or a building with a maximum): `income × √(1 − stock/max)`,
+/// Gold stock growth of any building with a maximum (0x4a1998): `income × √(1 − stock/max)`,
 /// rounded, capped at the maximum. No maximum: no growth.
 pub fn grow_stock(stock: i32, income: i32, max: i32) -> i32 {
     if max <= 0 {
@@ -81,6 +90,20 @@ pub fn grow_stock(stock: i32, income: i32, max: i32) -> i32 {
         return stock;
     }
     (stock as i64 + delphi_round(income as f64 * room.sqrt())).clamp(0, max as i64) as i32
+}
+
+/// Mana stock growth: [`grow_stock`]'s rule, but the original adds on a byte, so a sum above
+/// 255 wraps before the cap (only possible with a maximum near 255).
+pub fn grow_mana(stock: i32, income: i32, max: i32) -> i32 {
+    if max <= 0 {
+        return stock;
+    }
+    let room = 1.0 - stock as f64 / max as f64;
+    if room <= 0.0 {
+        return stock;
+    }
+    let sum = (stock as i64 + delphi_round(income as f64 * room.sqrt())) as u8 as i32;
+    sum.min(max)
 }
 
 /// The one thing a village may offer on a visit besides its tribute (economy.md §3), with the
@@ -111,9 +134,6 @@ pub enum OfferResult {
 
 /// What the noon payment did.
 pub(crate) struct NoonPay {
-    pub income: i32,
-    pub mana: i32,
-    pub wages: i32,
     pub mana_wages: i32,
     pub unpaid: usize,
     pub deserted: Vec<super::content::UnitId>,
@@ -140,33 +160,28 @@ impl Game {
     }
 
     /// Wage of unit `u` for a day, in its currency: kind 1 by the cost brackets, kind 2
-    /// `Cost / CostMercenaryDiv`, kinds 0 and 3 nothing. Corpses are billed too. A kind-1
-    /// elemental is paid in mana (Community). Rear Service scales gold wages
-    /// ([`REAR_SERVICE`], per unit, truncated).
+    /// `Cost / CostMercenaryDiv`, kinds 0 and 3 nothing. A kind-1 elemental is paid in mana
+    /// (Community). This is the full wage: Rear Service cuts only the whole bill at noon.
     pub fn unit_wage(&self, u: &Unit) -> Price {
         let w = self.content.wage_for(u.def, u.wage_kind);
-        let mana = u.wage_kind == WageKind::Recruit && self.content.paid_in_mana(u.def);
-        if mana {
-            return Price { amount: w, currency: Currency::Mana };
-        }
-        let w = if w > 0 && self.squad_has(&Bonus::AddPayment) {
-            let k = if self.daily_income() != 0 { REAR_SERVICE.0 } else { REAR_SERVICE.1 };
-            w * k / 256
+        if u.wage_kind == WageKind::Recruit && self.content.paid_in_mana(u.def) {
+            Price { amount: w, currency: Currency::Mana }
         } else {
-            w
-        };
-        Price::gold(w)
+            Price::gold(w)
+        }
     }
 
-    /// Daily wage of squad member `i` (the hero is free), in its currency.
+    /// Daily wage of squad member `i` (the hero is free), in its currency; a corpse is not
+    /// billed.
     pub fn wage(&self, i: usize) -> i32 {
-        self.squad.get(i).map_or(0, |u| self.unit_wage(u).amount)
+        self.squad.get(i).filter(|u| u.alive()).map_or(0, |u| self.unit_wage(u).amount)
     }
 
-    /// Gold and mana wages due at the next noon (the squad only: garrisons are never paid).
-    fn wages_due(&self) -> (i32, i32) {
+    /// The army's gold and mana bills (0x4a16d4): the wages of its living units; a corpse
+    /// goes to the resurrection bill instead. Garrisons are never paid.
+    fn bills(&self) -> (i32, i32) {
         let (mut gold, mut mana) = (0, 0);
-        for u in &self.squad {
+        for u in self.squad.iter().filter(|u| u.alive()) {
             let p = self.unit_wage(u);
             match p.currency {
                 Currency::Gold => gold += p.amount,
@@ -176,128 +191,160 @@ impl Game {
         (gold, mana)
     }
 
-    /// Gold wages due at the next report.
+    /// The gold wage bill, as the hire tab and the noon report show it (no Rear Service).
     pub fn daily_wages(&self) -> i32 {
-        self.wages_due().0
+        self.bills().0
     }
 
-    /// Mana wages due at the next report (elementals).
+    /// Mana wages due at the next noon (elementals).
     pub fn daily_mana_wages(&self) -> i32 {
-        self.wages_due().1
+        self.bills().1
     }
 
-    /// Villages whose linked castle or fort is the player's: their stock goes into his noon
-    /// income.
-    fn linked_villages(&self) -> impl Iterator<Item = usize> + '_ {
-        let w = &self.world;
-        (0..w.locations.len()).filter(move |&i| {
-            let v = &w.locations[i];
-            v.kind == LocationKind::Village && v.linked.is_some_and(|k| w.locations.get(k).is_some_and(|c| c.owned()))
-        })
-    }
-
-    /// Gold the player receives at the next noon: his buildings' income ×F/100, plus the
-    /// stock of the villages linked to his castles.
+    /// The income the hire tab and the noon report show (0x497308): the `income` of every
+    /// town, castle and fort of the player, each ×F/100. Towns are counted, though they pay
+    /// nothing at noon, and the stocks actually paid are not.
     pub fn daily_income(&self) -> i32 {
         let f = self.difficulty();
-        let own: i32 = self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.gold_income * f / 100).sum();
-        own + self.linked_villages().map(|i| self.world.locations[i].tribute_gold).sum::<i32>()
+        let kinds = [LocationKind::Town, LocationKind::Castle, LocationKind::Fort];
+        self.world.locations.iter().filter(|l| l.owned() && kinds.contains(&l.kind)).map(|l| l.gold_income * f / 100).sum()
     }
 
-    /// Mana the player receives at the next noon.
-    pub fn daily_mana(&self) -> i32 {
-        let own: i32 = self.world.locations.iter().filter(|l| l.owned() && l.pays_income()).map(|l| l.mana_income).sum();
-        own + self.linked_villages().map(|i| self.world.locations[i].tribute_mana).sum::<i32>()
-    }
-
-    /// The player's noon payment (economy.md §1): income in, then all wages out. When the
-    /// gold goes below 0 the cheapest units get their wage back and go unpaid until it is not
-    /// negative, the gold is set to 0, and every unit last paid more than `MaxTimeNotUpkeep`
-    /// ago leaves (its items to the pack). Kind-1 elementals are paid in mana; without enough
-    /// the mana is set to 0 and they all go unpaid.
+    /// The player's noon payment (economy.md §1, 0x4a41d8): his castles and forts pay their
+    /// gold stock ×F/100 and the villages linked to his buildings theirs (no mana, no towns);
+    /// the stored income becomes the castles' and forts' `income` plus the village stocks.
+    /// Then the gold bill goes out (cut by Rear Service) and the mana bill out of his mana;
+    /// mana at 0 or below raises the sticky mana-short flag. With the gold not below 0
+    /// everyone's last pay is now. Else the cheapest paid units get their full wage back
+    /// and go unpaid until it is not, the gold is set to 0, and every unit last paid more
+    /// than `MaxTimeNotUpkeep` ago leaves with its worn items.
     pub(crate) fn pay_noon(&mut self) -> NoonPay {
         let now = self.clock.total_minutes() as u64;
-        let income = self.daily_income();
-        let mana = self.daily_mana();
-        // Wages as of now: Rear Service looks at this day's income.
-        let prices: Vec<Price> = self.squad.iter().map(|u| self.unit_wage(u)).collect();
-        for i in self.linked_villages().collect::<Vec<_>>() {
-            let v = &mut self.world.locations[i];
-            (v.tribute_gold, v.tribute_mana) = (0, 0);
+        let f = self.difficulty();
+        let (mut income, mut stored) = (0, 0); // the player's base income is 0
+        let n = self.world.locations.len();
+        for l in 0..n {
+            let w = &mut self.world.locations;
+            if w[l].owned() && w[l].kind.capturable() {
+                income += w[l].tribute_gold * f / 100;
+                stored += w[l].gold_income;
+                w[l].tribute_gold = 0;
+            }
+            if w[l].kind == LocationKind::Village && w[l].linked.is_some_and(|k| w.get(k).is_some_and(Location::owned)) {
+                income += w[l].tribute_gold;
+                stored += w[l].tribute_gold;
+                w[l].tribute_gold = 0;
+            }
         }
         self.gold += income;
-        self.mana += mana;
-        let gold_bill: i32 = prices.iter().filter(|p| p.currency == Currency::Gold).map(|p| p.amount).sum();
-        let mana_bill: i32 = prices.iter().filter(|p| p.currency == Currency::Mana).map(|p| p.amount).sum();
-        self.gold -= gold_bill;
-        let mut wages = gold_bill;
-        self.mana -= mana_bill;
-        let mana_short = self.mana < 0;
-        let mana_wages = if mana_short { mana_bill + self.mana } else { mana_bill };
-        if mana_short {
-            self.mana = 0;
-        }
+        self.stored_income = stored;
+        let (bill, mana_bill) = self.bills();
+        // Rear Service tests the stored income just rewritten.
+        self.gold -= if self.squad_has_any(&Bonus::AddPayment) { rear_service(bill, self.stored_income) } else { bill };
+        self.pay_mana_bill(mana_bill);
+        let c = self.content.clone();
+        let elemental = |u: &Unit| c.paid_in_mana(u.def);
         let short = self.gold < 0;
-        let mut refunded = vec![false; self.squad.len()];
-        if short {
-            // Refund the cheapest paid units first, until the gold is not negative.
-            let mut order: Vec<usize> = (0..self.squad.len()).filter(|&i| prices[i].currency == Currency::Gold && prices[i].amount > 0).collect();
-            order.sort_by_key(|&i| prices[i].amount);
-            for i in order {
+        let mut deserted = Vec::new();
+        if !short {
+            for u in self.squad.iter_mut() {
+                u.last_paid = now;
+                // The original's slip (0xc25f7d): with the mana-short flag up, the elementals
+                // go unpaid and every other unit keeps its old mark, so a unit left unpaid by an
+                // earlier short noon stays unpaid though its wage was paid. The flag stays up.
+                if !self.mana_short {
+                    u.unpaid = false;
+                } else if elemental(u) {
+                    u.unpaid = true;
+                }
+            }
+        } else {
+            for u in self.squad.iter_mut() {
+                u.unpaid = false;
+            }
+            loop {
+                // The paid unit of kind 1 or 2, not an elemental, with the lowest full wage
+                // (the earliest of equals); a corpse too, though it was not billed.
+                let pick = (0..self.squad.len())
+                    .filter(|&i| {
+                        let u = &self.squad[i];
+                        !u.unpaid && u.wage_kind.is_paid() && !elemental(u)
+                    })
+                    .min_by_key(|&i| (c.wage_for(self.squad[i].def, self.squad[i].wage_kind), i));
+                if self.mana_short {
+                    // Slots 1–11 only, as the original's loop.
+                    for u in self.squad.iter_mut().take(11).filter(|u| elemental(u)) {
+                        u.unpaid = true;
+                    }
+                    self.mana_short = false;
+                }
+                let Some(i) = pick else {
+                    self.gold += 100_000;
+                    break;
+                };
+                let w = c.wage_for(self.squad[i].def, self.squad[i].wage_kind);
+                self.squad[i].unpaid = true;
+                self.gold += w;
                 if self.gold >= 0 {
                     break;
                 }
-                self.gold += prices[i].amount;
-                wages -= prices[i].amount;
-                refunded[i] = true;
             }
-            self.gold = 0;
-        }
-        let mut unpaid = 0;
-        for (i, u) in self.squad.iter_mut().enumerate() {
-            let in_mana = prices[i].currency == Currency::Mana && prices[i].amount > 0;
-            u.unpaid = refunded[i] || (in_mana && mana_short);
-            // An elemental's last pay moves on days the gold covered everyone.
-            if !refunded[i] && (!in_mana || !mana_short || !short) {
+            for u in self.squad.iter_mut().filter(|u| !u.unpaid) {
                 u.last_paid = now;
             }
-            unpaid += usize::from(u.unpaid);
-        }
-        let mut deserted = Vec::new();
-        if short {
-            let limit = self.content.options.max_time_not_upkeep.max(0) as u64;
-            let mut i = 1;
+            self.gold = 0;
+            // Deserters leave with their worn items (Army_RemoveUnit moves nothing to the
+            // pack). The hero is always paid, so he never leaves.
+            let limit = c.options.max_time_not_upkeep.max(0) as u64;
+            let mut i = 0;
             while i < self.squad.len() {
                 if self.squad[i].last_paid + limit < now {
-                    let u = self.squad.remove(i);
-                    unpaid -= usize::from(u.unpaid);
-                    self.take_items(u.items.iter().flatten().copied().collect());
-                    deserted.push(u.def);
+                    deserted.push(self.squad.remove(i).def);
                 } else {
                     i += 1;
                 }
             }
         }
+        let unpaid = self.squad.iter().filter(|u| u.unpaid).count();
         // As every army's wage payment, the hero's ends by marking his pairs with the AI's
         // armies to be rescored (0x4a26e8).
         self.mark_dirty(super::ai::HERO);
-        NoonPay { income, mana, wages, mana_wages, unpaid, deserted }
+        NoonPay { mana_wages: mana_bill, unpaid, deserted }
     }
 
-    /// Noon: the Ranger hero heals every wounded unit of his army [`RANGER_PERCENT`]%.
-    pub(crate) fn noon_heal(&mut self) {
+    /// The mana bill of any army's noon (Community, 0xc25eef) comes out of the *player's*
+    /// mana; at 0 or below it is set to 0 and the mana-short flag goes up (also with a bill
+    /// of 0, so whenever the player has no mana).
+    pub(crate) fn pay_mana_bill(&mut self, bill: i32) {
+        self.mana -= bill;
+        if self.mana <= 0 {
+            self.mana = 0;
+            self.mana_short = true;
+        }
+    }
+
+    /// Any unit of the player's army, dead or alive, has bonus `b` (the original reads the
+    /// unit slots' bonus bytes without an HP test: Rear Service, Medic).
+    pub(crate) fn squad_has_any(&self, b: &Bonus) -> bool {
+        self.squad.iter().any(|u| u.stats(&self.content).has(b))
+    }
+
+    /// The Ranger hero heals every wounded unit of his army `pct`% (truncated): 15 at noon,
+    /// 20 more when the noon report is shown.
+    pub(crate) fn ranger_heal(&mut self, pct: i32) {
         if self.hero_class() == Some(HeroClass::Ranger) {
             let c = self.content.clone();
             for u in self.squad.iter_mut() {
-                heal_percent(&c, u, RANGER_PERCENT);
+                heal_percent(&c, u, pct);
             }
         }
     }
 
-    /// Midnight for every building and army: markets draw new random goods, barracks regrow
-    /// by chance, village stocks grow, garrisons heal `GarrisonAutoHeal`% and every army
-    /// with a Medic [`MEDIC_PERCENT`]%. The draws go building by building, as in the original
-    /// (engine.md §3.4): its market restock first, then its barracks slots.
+    /// Midnight for every building and army (0x4a1998): markets draw new random goods,
+    /// barracks regrow by chance, the gold and mana stocks of every building with a maximum
+    /// grow, garrisons heal `GarrisonAutoHeal`% and every army with a Medic (dead or alive)
+    /// [`MEDIC_PERCENT`]%. The draws go building by building, as in the original (engine.md
+    /// §3.4): its market restock first, then its barracks slots.
     pub(crate) fn economy_midnight(&mut self) {
         let days = self.content.options.max_day_count_for_new_unit;
         for l in 0..self.world.locations.len() {
@@ -307,10 +354,8 @@ impl Game {
             for r in loc.recruits.iter_mut() {
                 regrow(r, days, &mut |n| rng.random(n));
             }
-            if loc.kind == LocationKind::Village {
-                loc.tribute_gold = grow_stock(loc.tribute_gold, loc.gold_income, loc.gold_max);
-                loc.tribute_mana = grow_stock(loc.tribute_mana, loc.mana_income, loc.mana_max);
-            }
+            loc.tribute_gold = grow_stock(loc.tribute_gold, loc.gold_income, loc.gold_max);
+            loc.tribute_mana = grow_mana(loc.tribute_mana, loc.mana_income, loc.mana_max);
         }
         let c = self.content.clone();
         let garrison = c.options.garrison_auto_heal;
@@ -322,7 +367,7 @@ impl Game {
                 heal_troop(&c, t, garrison);
             }
         }
-        if self.squad_has(&Bonus::ArmyMedic) {
+        if self.squad_has_any(&Bonus::ArmyMedic) {
             for u in self.squad.iter_mut() {
                 heal_percent(&c, u, MEDIC_PERCENT);
             }
@@ -541,7 +586,7 @@ impl Game {
         match o {
             VillageOffer::Innkeeper => {
                 let unpaid = self.squad.iter().filter(|u| u.unpaid).count();
-                unpaid >= n / 2 && self.gold - self.daily_wages() + self.daily_income() < 0
+                unpaid >= n / 2 && self.gold - self.daily_wages() + self.stored_income < 0
             }
             VillageOffer::Priest => {
                 // The original's second test counts the *living* units (HP above 0), not the
@@ -720,6 +765,16 @@ mod tests {
         assert_eq!(seen, [30, 54, 73, 86, 90], "slower than 30 a day");
         assert_eq!(grow_stock(90, 30, 90), 90);
         assert_eq!(grow_stock(10, 30, 0), 10, "no maximum: no growth");
+    }
+
+    #[test]
+    fn mana_stock_grows_on_a_byte() {
+        // 200 + Round(255 × √(1 − 200/255)) = 200 + 118 = 318, which wraps to 62 (0x4a1998).
+        assert_eq!(grow_mana(200, 255, 255), 62);
+        assert_eq!(grow_mana(5, 5, 20), 9, "5 × √0.75 = 4.33");
+        assert_eq!(grow_mana(3, 5, 0), 3, "no maximum: no growth");
+        assert_eq!(rear_service(59, 10), 41);
+        assert_eq!(rear_service(59, 0), 17);
     }
 
     #[test]

@@ -98,11 +98,15 @@ impl Dialog {
             (Resource::Income, trf!("Income + {n}", n = r.income)),
             (Resource::Wages, trf!("Wages - {n}", n = r.wages)),
         ];
-        if r.mana > 0 || r.mana_wages > 0 {
-            d.text.push(trf!("Mana today: + {got} from your lands, - {paid} paid to elementals.", got = r.mana, paid = r.mana_wages));
+        // The original warns when the gold and the income do not cover the wages (0x4a9b75).
+        if r.gold + r.income < r.wages {
+            d.add_notice(tr("Your gold and income do not cover the wages."));
+        }
+        if r.mana_wages > 0 {
+            d.text.push(trf!("Mana today: - {paid} paid to elementals.", paid = r.mana_wages));
         }
         if r.unpaid > 0 {
-            d.notice = Some(trf!("{n} unpaid units refuse to fight until they are paid.", n = r.unpaid));
+            d.add_notice(&trf!("{n} unpaid units refuse to fight until they are paid.", n = r.unpaid));
         }
         if !r.deserted.is_empty() {
             let names: Vec<&str> = r.deserted.iter().map(|&u| game.content.unit(u).name.as_str()).collect();

@@ -491,9 +491,9 @@ mod tests {
         g.resurrect(1).unwrap();
         assert_eq!((g.squad[1].hp, g.squad[1].died_at, g.gold), (40, None, gold - 125));
         assert_eq!(g.resurrect(1), Err(ServiceError::NotDead));
-        // Corpses do not fight, but the wage bill counts them.
+        // Corpses do not fight, and the wage bill does not count them (0x4a184a).
         lose_unit_in_battle(&mut g, 2);
-        assert_eq!(g.wage(2), 6);
+        assert_eq!((g.wage(2), g.daily_wages()), (0, 6));
         let b = g.start_battle();
         assert!(b.fighters.iter().all(|f| f.squad_index != Some(2)));
     }
@@ -559,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn noon_pays_recruits_whatever_their_nature_and_reports_the_balance() {
+    fn noon_pays_recruits_whatever_their_nature_and_reports_the_nominal_income() {
         let mut s = map();
         s.header.heroes[0] = hero(2, 2, 100, &[troop(4, 0, 1), troop(9, 0, 1)]);
         let mut fort = town(BuildingType::Fort, 8, 2, 3);
@@ -574,23 +574,39 @@ mod tests {
         // Militia 50/2 × ¼ = 6.25 → 6. The bandit (a rogue) is a recruit too: 55/2 × ½ = 13.75 → 14.
         assert_eq!((g.wage(0), g.wage(1), g.wage(2)), (0, 6, 14));
         assert_eq!(g.squad[0].wage_kind, crate::rules::content::WageKind::Leader);
-        // The fort's 40 × F/100.
-        assert_eq!((g.daily_income(), g.daily_mana(), g.daily_wages()), (48, 7, 20));
+        // The report shows the fort's 40 × F/100, but the noon pays its stock, which a fort
+        // with no maximum never has, and no building pays mana.
+        assert_eq!((g.daily_income(), g.daily_wages()), (48, 20));
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events); // 09:00 -> 12:00
         let day = g.clock.day_index();
-        let want = DayReport {
-            day,
-            income: 48,
-            mana: 7,
-            wages: 20,
-            mana_wages: 0,
-            unpaid: 0,
-            deserted: vec![],
-            gold: 100 + 48 - 20,
-            mana_total: 7,
-        };
-        assert_eq!(events, vec![Event::NewDay(want)]);
+        let want = DayReport { day, income: 48, wages: 20, mana_wages: 0, unpaid: 0, deserted: vec![], gold: 100, mana_total: 0 };
+        assert_eq!(events, vec![Event::NewDay(want)], "the gold before the payment");
+        assert_eq!((g.gold, g.mana), (80, 0));
+        assert_eq!(g.stored_income, 40, "the fort's nominal income, without F");
+    }
+
+    #[test]
+    fn castles_and_forts_pay_their_grown_stock_and_towns_nothing() {
+        let mut s = map();
+        s.header.heroes[0] = hero(2, 2, 100, &[]);
+        let mut fort = town(BuildingType::Fort, 8, 2, 3);
+        (fort.faction, fort.gold_per_day, fort.gold_max, fort.mana_per_day, fort.mana_max) = (1, 30, 90, 5, 20);
+        let mut t = town(BuildingType::Town, 12, 2, 3);
+        (t.faction, t.gold_per_day, t.gold_max) = (1, 50, 100);
+        s.buildings = vec![fort, t];
+        let mut g = start(&s);
+        // Both start at 0 and grow from the first midnight, every building with a maximum.
+        assert_eq!(g.world.locations[0].tribute_gold, 0);
+        g.pass_time(15.0 * 60.0 + 1.0, &mut Vec::new()); // past midnight
+        assert_eq!((g.world.locations[0].tribute_gold, g.world.locations[0].tribute_mana, g.world.locations[1].tribute_gold), (30, 5, 50));
+        let mut events = Vec::new();
+        g.pass_time(12.0 * 60.0, &mut events); // the first noon
+        // The report: 30 + 50 nominal × 1.2; the pay: the fort's stock 30 × 1.2, the town nothing.
+        assert!(matches!(&events[..], [Event::NewDay(DayReport { income: 96, gold: 100, .. })]), "{events:?}");
+        assert_eq!((g.gold, g.mana), (136, 0), "no mana at noon");
+        let l = &g.world.locations;
+        assert_eq!((l[0].tribute_gold, l[0].tribute_mana, l[1].tribute_gold), (0, 5, 50));
     }
 
     #[test]
@@ -604,7 +620,7 @@ mod tests {
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
         let Event::NewDay(r) = &events[0] else { panic!() };
-        assert_eq!((r.wages, r.unpaid, r.gold), (0, 2, 0));
+        assert_eq!((r.wages, r.unpaid, r.gold), (12, 2, 0));
         assert!(g.squad[1].unpaid && g.squad[2].unpaid);
         let b = g.start_battle();
         assert_eq!(b.fighters.iter().filter(|f| f.team == Team::Player).count(), 1, "only the hero fights");
@@ -613,10 +629,11 @@ mod tests {
         events.clear();
         g.pass_time(24.0 * 60.0, &mut events);
         let Event::NewDay(r) = &events[0] else { panic!() };
-        assert_eq!((r.wages, r.unpaid, g.gold), (6, 1, 0));
+        assert_eq!((r.wages, r.unpaid, r.gold, g.gold), (12, 1, 6, 0));
         assert!(g.squad[1].unpaid && !g.squad[2].unpaid);
         // MaxTimeNotUpkeep = 7 days since the last pay: the first militia (last paid at the
-        // start, 09:00) leaves at the 7th noon; his ring stays. The other was paid a day later.
+        // start, 09:00) leaves at the 8th noon, his ring with him (Army_RemoveUnit moves
+        // nothing to the pack). The other was paid a day later.
         events.clear();
         g.pass_time(5.0 * 24.0 * 60.0, &mut events);
         assert_eq!(g.squad.len(), 3, "not yet");
@@ -627,7 +644,7 @@ mod tests {
         }).collect();
         assert_eq!(deserted, vec![UnitId(4)]);
         assert_eq!(g.squad.len(), 2);
-        assert!(g.pack.contains(&ItemId(21)));
+        assert!(!g.pack.contains(&ItemId(21)));
     }
 
     #[test]
@@ -641,9 +658,62 @@ mod tests {
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
         // 30 − 53 = −23: the militia's 6 back (−17), the archer's 22 back (+5): gold set to 0.
+        // The report shows the bill and the gold before the payment.
         let Event::NewDay(r) = &events[0] else { panic!() };
-        assert_eq!((r.wages, r.unpaid, r.gold), (25, 2, 0));
+        assert_eq!((r.wages, r.unpaid, r.gold, g.gold), (53, 2, 30, 0));
         assert!(g.squad[1].unpaid && g.squad[2].unpaid && !g.squad[3].unpaid);
+    }
+
+    #[test]
+    fn the_refunds_are_full_wages_corpses_included_never_elementals() {
+        let mut s = map();
+        // Golem (an elemental, 20 mana), quartermaster 25 (Rear Service), archer 22, militia 6.
+        s.header.heroes[0] = hero(2, 2, 0, &[troop(8, 0, 1), troop(10, 0, 1), troop(5, 0, 1), troop(4, 0, 1)]);
+        let mut g = start(&s);
+        g.first_noon_today();
+        g.mana = 100;
+        g.squad[4].hp = 0; // the militia is a corpse: not billed
+        g.gold = 10;
+        assert_eq!(g.daily_wages(), 47);
+        // No income: 47 × 78 div 256 = 14 is deducted, 10 − 14 = −4. The corpse's full 6 comes
+        // back first, which is enough.
+        g.pass_time(3.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.gold, 0);
+        assert_eq!(g.squad.iter().map(|u| u.unpaid).collect::<Vec<_>>(), [false, false, false, false, true]);
+        assert_eq!(g.mana, 80, "the golem is paid in mana");
+        // 0 − 14: the corpse (6), then the archer (22): the golem is never refunded.
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.squad.iter().map(|u| u.unpaid).collect::<Vec<_>>(), [false, false, false, true, true]);
+    }
+
+    #[test]
+    fn with_no_mana_an_unpaid_unit_stays_unpaid_though_its_wage_is_paid() {
+        let mut s = map();
+        s.header.heroes[0] = hero(2, 2, 0, &[troop(4, 0, 2)]);
+        let mut g = start(&s);
+        g.first_noon_today();
+        // A short noon: both militia refunded and unpaid; it clears the mana-short flag.
+        g.pass_time(3.0 * 60.0, &mut Vec::new());
+        assert!(g.squad[1].unpaid && g.squad[2].unpaid && !g.mana_short);
+        // Enough gold, but no mana: the flag goes up, nobody's mark changes (0xc25f7d), though
+        // the wages are paid and the last pay moves on.
+        g.gold = 100;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.gold, 88);
+        assert!(g.mana_short && g.squad[1].unpaid && g.squad[2].unpaid);
+        let now = g.clock.total_minutes() as u64;
+        assert!(g.squad.iter().all(|u| u.last_paid + 60 > now), "paid now, so nobody deserts");
+        // The flag stays up while the gold lasts; with mana it still stays up.
+        g.mana = 10;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert!(g.mana_short && g.squad[1].unpaid, "the flag is cleared only by a short noon");
+        // A short noon clears it: everyone is marked paid, the cheapest refunded.
+        g.gold = 6;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert!(!g.mana_short && g.squad[1].unpaid && !g.squad[2].unpaid);
+        g.gold = 100;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert!(!g.squad[1].unpaid && !g.squad[2].unpaid, "with mana, an enough-gold noon pays everyone");
     }
 
     #[test]
@@ -660,19 +730,30 @@ mod tests {
     }
 
     #[test]
-    fn rear_service_cuts_the_wage_bill_and_more_without_income() {
+    fn rear_service_cuts_the_whole_bill_and_more_without_stored_income() {
         let mut s = map();
-        s.header.heroes[0] = hero(2, 2, 1000, &[troop(10, 0, 1), troop(5, 0, 1)]);
+        // Quartermaster 25, archer 22, two militia 6: a bill of 59.
+        s.header.heroes[0] = hero(2, 2, 1000, &[troop(10, 0, 1), troop(5, 0, 1), troop(4, 0, 2)]);
         let mut fort = town(BuildingType::Fort, 8, 2, 3);
         fort.faction = 1;
         fort.gold_per_day = 10;
         s.buildings = vec![fort];
         let mut g = start(&s);
-        // 25 and 22 gold: ×178/256 with income, ×78/256 without.
-        assert_eq!((g.wage(1), g.wage(2)), (25 * 178 / 256, 22 * 178 / 256));
+        g.first_noon_today();
+        g.mana = 1000;
+        // The shown wages are the full bill.
+        assert_eq!((g.wage(1), g.daily_wages()), (25, 59));
+        // The fort's nominal income is stored: 59 × 178 div 256 = 41 (per unit it would be 40).
+        g.pass_time(3.0 * 60.0, &mut Vec::new());
+        assert_eq!((g.gold, g.stored_income), (959, 10));
+        // Without it the stored income is 0: 59 × 78 div 256 = 17.
         g.world.locations[0].owner = crate::rules::world::Owner::Neutral;
-        assert_eq!(g.daily_income(), 0);
-        assert_eq!((g.wage(1), g.wage(2)), (25 * 78 / 256, 22 * 78 / 256));
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!((g.gold, g.stored_income), (942, 0));
+        // A dead quartermaster still counts.
+        g.squad[1].hp = 0;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.gold, 942 - 34 * 78 / 256);
     }
 
     #[test]
@@ -690,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn villages_linked_to_the_players_castle_pay_into_his_noon_income() {
+    fn villages_linked_to_the_players_castle_pay_their_gold_into_his_noon() {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 8, 2, 3);
         castle.faction = 1;
@@ -703,11 +784,13 @@ mod tests {
         s.buildings = vec![castle, v];
         let mut g = start(&s);
         g.first_noon_today();
-        assert_eq!((g.daily_income(), g.daily_mana()), (30, 4), "its stock");
+        assert_eq!(g.daily_income(), 0, "the report shows castles, not village stocks");
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
-        assert!(matches!(&events[..], [Event::NewDay(DayReport { income: 30, mana: 4, .. })]), "{events:?}");
-        assert_eq!((g.world.locations[1].tribute_gold, g.world.locations[1].tribute_mana), (0, 0));
+        assert!(matches!(&events[..], [Event::NewDay(DayReport { income: 0, wages: 12, .. })]), "{events:?}");
+        assert_eq!(g.gold, 1000 + 30 - 12);
+        assert_eq!(g.stored_income, 30, "its stock goes into the stored income");
+        assert_eq!((g.world.locations[1].tribute_gold, g.world.locations[1].tribute_mana), (0, 4), "gold only");
     }
 
     #[test]
@@ -720,6 +803,10 @@ mod tests {
         assert_eq!(g.squad[1].hp, 10);
         g.pass_time(60.0, &mut Vec::new());
         assert_eq!(g.squad[1].hp, 14);
+        // A dead medic still counts (0x4a1dca).
+        g.squad[2].hp = 0;
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.squad[1].hp, 18);
     }
 
     /// The hero walks from (2, 2) into a village at (8, 2) holding 40 gold and 5 mana, with

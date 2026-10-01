@@ -983,7 +983,7 @@ fn play_event(game: &Game, event: &Event) {
         Event::Met(i) => format!("MET army {} «{}»", game.world.armies.get(*i).map_or(0, |a| a.id), game.world.armies.get(*i).map_or("", |a| &a.name)),
         Event::Arrived(l) => format!("ARRIVED at building {} «{}»", game.world.locations[*l].id, game.world.locations[*l].name),
         Event::Captured(l) => format!("CAPTURED building {} «{}»", game.world.locations[*l].id, game.world.locations[*l].name),
-        Event::NewDay(r) => format!("NOON income {} mana {} wages {} unpaid {} deserted {} gold {}", r.income, r.mana, r.wages, r.unpaid, r.deserted.len(), r.gold),
+        Event::NewDay(r) => format!("NOON income {} wages {} unpaid {} deserted {} gold {}", r.income, r.wages, r.unpaid, r.deserted.len(), r.gold),
         other => format!("{other:?}"),
     };
     razdor::diag::play(&game.clock.label(), &line);
@@ -1036,8 +1036,6 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
                     next = Some(Screen::Building(BuildingView::new(first)));
                 }
             }
-            // A noon when no money came in or went out has nothing to report.
-            Event::NewDay(r) if r.is_empty() => {}
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
             Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
             Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } | Event::SpellCast { .. } => {}
