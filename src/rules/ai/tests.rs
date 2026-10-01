@@ -802,6 +802,32 @@ fn the_third_role_caps_hiring_at_8_only_before_a_pass() {
     assert_eq!(g.world.armies[0].troops.len(), 10, "9 units, then one more in the pass that set the cap");
 }
 
+#[test]
+fn a_hire_from_the_last_barracks_slot_of_the_second_role_sets_the_cap_of_8() {
+    // The scan reads the six slots, empty ones included (0x4a548c): a warrior hired from the
+    // sixth slot while warriors are the second role moves the scan on into the third role,
+    // which lowers the cap to 8 before the next pass. From the first slot it does not.
+    let hired = |slot: usize| {
+        let mut s = map();
+        let mut castle = building(BuildingType::Castle, 30, 10, (1, 1));
+        castle.faction = 4;
+        castle.owner_army = 1;
+        castle.has_barracks = 1;
+        castle.barracks[slot] = RecruitSlot { unit: 4, start_count: 20, max_count: 20 };
+        s.buildings = vec![castle];
+        // Shooters only: mages first (none), warriors second, shooters third.
+        let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(5, 0, 7)]);
+        a.leader_unit = 5;
+        s.armies = vec![a];
+        let mut g = start(&s);
+        g.world.armies[0].gold = 100_000;
+        arrive(&mut g, 1);
+        g.world.armies[0].troops.len()
+    };
+    assert_eq!(hired(5), 9, "one hire, then the cap of 8 stops it");
+    assert!(hired(0) > 9);
+}
+
 /// Army 1 (leader unit 6 and two unit 4s, garrison level `level`) in its own castle at
 /// (30, 10) with an empty garrison.
 fn at_own_castle(level: u8, gold: i32) -> Game {
@@ -1305,4 +1331,21 @@ fn old_saves_reload_with_the_ai_set_up_again() {
     g.ai_init(false);
     let m = &g.world.armies[0].mind;
     assert!(m.next_noon > 0.0 && m.village_avg == 50, "as at map load");
+}
+
+#[test]
+fn a_load_puts_the_barracks_slots_back() {
+    let mut s = map();
+    let mut castle = building(BuildingType::Castle, 30, 10, (1, 1));
+    castle.has_barracks = 1;
+    castle.barracks[2] = RecruitSlot { unit: 4, start_count: 1, max_count: 1 };
+    castle.barracks[5] = RecruitSlot { unit: 5, start_count: 1, max_count: 1 };
+    s.buildings = vec![castle];
+    let c = content();
+    let fresh = crate::rules::world::World::from_scenario(&s, &c);
+    assert_eq!(fresh.locations[0].recruits.iter().map(|r| r.slot).collect::<Vec<_>>(), [2, 5]);
+    let mut loaded: crate::rules::world::World = serde_json::from_str(&serde_json::to_string(&fresh).unwrap()).unwrap();
+    assert_eq!(loaded.locations[0].recruits.iter().map(|r| r.slot).collect::<Vec<_>>(), [0, 0], "not saved");
+    loaded.restore_statics(fresh).unwrap();
+    assert_eq!(loaded.locations[0].recruits.iter().map(|r| r.slot).collect::<Vec<_>>(), [2, 5]);
 }

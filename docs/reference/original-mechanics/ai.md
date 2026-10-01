@@ -553,7 +553,7 @@ after the parity pass.
 | Healing | The heal seed lowers the stored scores of friendly service buildings; heals priced by the current HP, `HealingTime` busy from the last; the dead raised dearest first in towns and churches | Heal seed lowers existing scores only (§7.2); heal cost uses current HP; busy `HealingTime` once (§9.4) | Matches |
 | Village gold | Feudal, any village it stands on, its mana thrown away; the village part for villages and its own buildings with stock | Feudal, any village it stands on (§9.2); score part for villages and own buildings with stock | Matches |
 | Shopping | Sells the pack at half, then buys by tactical gain above 5 while the spare gold covers it, values not recomputed (a good bought for a unit that can no longer wear it is paid and lost), a good of negative price at its absolute price; markets and churches, or altars for an undead leader | Sell the pack at half, then buy by tactical-cost gain > 5 (§9.3); markets/churches or altars by leader nature | Matches |
-| Hiring | Role order by tactical sums, leader's Nature (unit 74 any non-undead), the cap of 8 set on entering the third role and tested only before a pass; kind 1 at home, 2 abroad; hire XP level by level | Role balancing, leader-Nature match (unit 74 exception), third role caps at 8 (§9.5); kind 1/2 by ownership | Matches |
+| Hiring | Role order by tactical sums, leader's Nature (unit 74 any non-undead), the six barracks slots scanned with their empty ones, the cap of 8 set on entering the third role (also by a hire from the last slot of the second) and tested only before a pass; kind 1 at home, 2 abroad; hire XP level by level | Role balancing, leader-Nature match (unit 74 exception), third role caps at 8 (§9.5); kind 1/2 by ownership | Matches |
 | Garrison | Buying while the spare gold is above a third of the starting gold (the price simply deducted), then the quota reshuffle by byte 82 and the defence | Buying and the quota reshuffle of §9.6, driven by byte 82 and the defence | Matches |
 | Contact | At every arrival: a hostile neighbour in no building, on a bridge or in its own is attacked when the cached score is positive and it is not ignored; in someone else's building both scores are tripled (cap 10000) | On arrival, hostile neighbour with a positive cached score, not ignored; no fight inside someone else's building (§8) | Matches |
 | Greeting / talk | Talk counters per pair (+1 per arrival at a distance, + relation + 1 when friendly), −500 on both sides after a greeting, talk seed `800 − c + Talking`, `c div 100` below 1 | Talk counters (+1 per arrival, + relation + 1), −500 after a greeting, talk seed `800 − c + Talking` (§7.2, §8) | Matches |
@@ -572,9 +572,7 @@ after the parity pass.
 Left out for now: an army beaten in a fight of its own arrival ends that arrival (the
 original goes on with the dead army's record, which can fight again or collect village
 gold); the Community's mana bill taken from the player's mana at every AI noon, and its
-short-mana flag (economy.md §1); the barracks are read as a list without the empty slots
-between units (the original's slot positions only matter for the cap of 8 at the last
-slot); an army takes all the steps of a slice before the next one
+short-mana flag (economy.md §1); an army takes all the steps of a slice before the next one
 moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
 and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,
 "Stock growth").

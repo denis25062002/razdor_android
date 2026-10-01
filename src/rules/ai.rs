@@ -2186,11 +2186,11 @@ impl Game {
             let wanted = |u: UnitId, role: u8| c.try_unit(u).is_some_and(|d| attack_kind(&c, u) == role && (d.nature == nature || (any_living && d.nature != Nature::Undead)));
             let mut scan = Scan::default();
             loop {
-                if let Some(r) = self.world.locations[l].recruits.get(scan.slot).copied() {
+                if let Some((k, r)) = barracks_slot(&self.world.locations[l], scan.slot) {
                     if r.stock.unwrap_or(0) > 0 && wanted(r.unit, order[scan.pref]) {
                         let price = self.ai_price(i, l, c.unit(r.unit).cost);
                         if price <= self.spare_gold(i) {
-                            self.ai_add_hire(i, l, r.unit, price, own, p, now);
+                            self.ai_add_hire(i, l, k, price, own, p, now);
                             hired = true;
                             scan.done = true;
                         }
@@ -2214,11 +2214,11 @@ impl Game {
         hired
     }
 
-    /// Army `i` hires `unit` at building `l` for `price`.
+    /// Army `i` hires the unit of recruit `k` at building `l` for `price`.
     #[allow(clippy::too_many_arguments)]
-    fn ai_add_hire(&mut self, i: usize, l: usize, unit: UnitId, price: i32, own: bool, p: i32, now: u64) {
+    fn ai_add_hire(&mut self, i: usize, l: usize, k: usize, price: i32, own: bool, p: i32, now: u64) {
         let c = self.content.clone();
-        take_stock(&mut self.world.locations[l], unit);
+        let unit = take_stock(&mut self.world.locations[l], k);
         let slot = free_slot(&c, &self.world.armies[i].troops);
         let mut t = Troop::new(unit, 1, slot.unwrap_or(super::formation::Slot::new(super::formation::Row::Reserve, 0)));
         t.kind = if own { WageKind::Recruit } else { WageKind::Mercenary };
@@ -2253,10 +2253,10 @@ impl Game {
             let wanted = |u: UnitId, role: u8| c.try_unit(u).is_some_and(|d| attack_kind(&c, u) == role && d.nature == nature);
             let mut scan = Scan::default();
             loop {
-                if let Some(r) = self.world.locations[l].recruits.get(scan.slot).copied() {
+                if let Some((k, r)) = barracks_slot(&self.world.locations[l], scan.slot) {
                     if r.stock.unwrap_or(0) > 0 && wanted(r.unit, order[scan.pref]) && self.spare_gold(i) > g0 / 3 {
                         let price = self.ai_price(i, l, c.unit(r.unit).cost);
-                        take_stock(&mut self.world.locations[l], r.unit);
+                        take_stock(&mut self.world.locations[l], k);
                         self.world.armies[i].gold -= price;
                         let slot = free_slot(&c, &self.world.locations[l].garrison);
                         let mut t = Troop::new(r.unit, 1, slot.unwrap_or(super::formation::Slot::new(super::formation::Row::Reserve, 0)));
@@ -2450,11 +2450,19 @@ impl Scan {
     }
 }
 
-/// Stock of `unit` at `l` goes down by one.
-fn take_stock(l: &mut Location, unit: UnitId) {
-    if let Some(n) = l.recruits.iter_mut().find(|r| r.unit == unit).and_then(|r| r.stock.as_mut()) {
+/// The recruit in barracks slot `slot` (0–5) of `l`, with its index: an empty slot has
+/// none, but the scan still passes it (0x4a548c reads the six slots).
+fn barracks_slot(l: &Location, slot: usize) -> Option<(usize, super::world::Recruit)> {
+    l.recruits.iter().position(|r| r.slot as usize == slot).map(|k| (k, l.recruits[k]))
+}
+
+/// The stock of recruit `k` at `l` goes down by one. Returns its unit.
+fn take_stock(l: &mut Location, k: usize) -> UnitId {
+    let r = &mut l.recruits[k];
+    if let Some(n) = r.stock.as_mut() {
         *n = (*n - 1).max(0);
     }
+    r.unit
 }
 
 /// Free formation cell for a new unit next to `troops`: the first from the reserve forward,

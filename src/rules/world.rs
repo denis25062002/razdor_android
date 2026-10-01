@@ -213,11 +213,15 @@ pub struct Recruit {
     pub max: i32,
     /// Unused (the regrowth is a daily roll, `rules::economy::regrow`); kept for saves.
     pub progress: i32,
+    /// Its slot in the building's six barracks slots (0–5): the AI's hiring scans the slots,
+    /// empty ones included (ai.md §9.5). Scenario data, restored on load.
+    #[serde(skip)]
+    pub slot: u8,
 }
 
 impl Recruit {
     pub fn new(unit: UnitId, start: i32, max: i32) -> Recruit {
-        Recruit { unit, stock: Some(start.max(0)), max: max.max(start).max(0), progress: 0 }
+        Recruit { unit, stock: Some(start.max(0)), max: max.max(start).max(0), progress: 0, slot: 0 }
     }
 }
 
@@ -846,8 +850,9 @@ impl World {
                 l.recruits = b
                     .barracks
                     .iter()
-                    .filter(|r| r.unit != 0 && content.try_unit(UnitId(r.unit as u32)).is_some())
-                    .map(|r| Recruit::new(UnitId(r.unit as u32), r.start_count as i32, r.max_count as i32))
+                    .enumerate()
+                    .filter(|(_, r)| r.unit != 0 && content.try_unit(UnitId(r.unit as u32)).is_some())
+                    .map(|(k, r)| Recruit { slot: k as u8, ..Recruit::new(UnitId(r.unit as u32), r.start_count as i32, r.max_count as i32) })
                     .collect();
             }
             l.recruit_all_types = b.recruit_all_types != 0;
@@ -1033,7 +1038,7 @@ impl World {
         };
         let t = |unit, row, col| Troop::new(unit, 1, Slot::new(row, col));
         let (f, b) = (Row::Front, Row::Back);
-        let recruits = |units: Vec<UnitId>| units.into_iter().map(|unit| Recruit { unit, stock: None, max: 0, progress: 0 }).collect();
+        let recruits = |units: Vec<UnitId>| units.into_iter().enumerate().map(|(k, unit)| Recruit { unit, stock: None, max: 0, progress: 0, slot: k as u8 }).collect();
         let shop = || Some(Shop { fixed: Vec::new(), random: 6, price: (0, 0), stock: Vec::new() });
 
         let mut oakford = Location::new(LocationKind::Castle, tr("Oakford"), tile('C'));
@@ -1122,6 +1127,9 @@ impl World {
             l.owner_name.clone_from(&f.owner_name);
             l.description.clone_from(&f.description);
             l.services = f.services;
+            for (r, fr) in l.recruits.iter_mut().zip(&f.recruits) {
+                r.slot = fr.slot;
+            }
             if l.relations == UNKNOWN_RELATIONS {
                 l.relations = [l.attitude, f.relations[1], f.relations[2], f.relations[3]];
             }
@@ -1462,7 +1470,7 @@ mod tests {
         assert!(c.hostile() && c.defended() && c.bars_hero());
         assert_eq!(c.garrison.iter().map(|t| (t.unit.0, t.level)).collect::<Vec<_>>(), [(4, 1), (4, 1), (5, 2)]);
         assert_eq!(c.garrison[2].slot.row, Row::Back, "the shooter stands behind");
-        assert_eq!(c.recruits, vec![Recruit { unit: UnitId(4), stock: Some(3), max: 9, progress: 0 }]);
+        assert_eq!(c.recruits, vec![Recruit { unit: UnitId(4), stock: Some(3), max: 9, progress: 0, slot: 0 }]);
         assert_eq!(c.shop.as_ref().map(|s| (s.fixed.clone(), s.random)), Some((vec![ItemId(7)], 2)));
 
         let r = &w.locations[1];

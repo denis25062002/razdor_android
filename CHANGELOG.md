@@ -222,6 +222,9 @@ old id, and their versions give both.
 - An army an event brings onto the map comes back with its dead raised and everyone paid,
   takes its place among the armies in their order (it moves in its turn, not last), draws
   its wander points, gets its home back when it stands in it, and the AI rescores it.
+- AI hiring scans a building's six barracks slots with their empty ones, as the original:
+  a unit hired from the sixth slot moves the scan on to the next role, which can lower the
+  cap to 8 units early; a slot's stock is the one that goes down.
 
 ## 0.2.2 — 2026-10-01
 
