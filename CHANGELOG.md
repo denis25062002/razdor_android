@@ -38,6 +38,13 @@ old id, and their versions give both.
 - Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
 - Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
   for the battle XP.
+- The space key in battle does what a click on the unit's own card does: one action, a
+  spell on itself when it can cast one, else a pass. It no longer skips the whole turn.
+- A front-row shooter or mage in the first or last column never sees a clear front, as in
+  the original: the shooter hits only the enemies next to it, the mage cannot cast.
+- A flying shooter or mage strikes in melee at the three front cells opposite instead of
+  shooting or casting there. A Ghost casts at them whatever its magic direction, as long as
+  the low byte of its power is positive.
 
 ## 0.2.2 — 2026-10-01
 

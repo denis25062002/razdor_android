@@ -398,14 +398,14 @@ impl BattleView {
     }
 
     fn player_input(&mut self, l: &Layout, active: usize) {
-        if key(KeyCode::Space) {
-            self.battle.skip();
+        // The space key does what a click on the active unit's own card does (4c4f8c): one
+        // action, a self-cast or a pass.
+        let space = key(KeyCode::Space);
+        if !space && !clicked() {
             return;
         }
-        if !clicked() {
-            return;
-        }
-        if let Some(t) = self.fighter_under_mouse(l) {
+        let under = if space { Some(active) } else { self.fighter_under_mouse(l) };
+        if let Some(t) = under {
             let opts = self.battle.options(active, t);
             if let Some(&kind) = opts.first() {
                 if let Ok(hit) = self.battle.act_with(t, kind) {
@@ -563,7 +563,7 @@ impl BattleView {
                     return (own.unwrap_or_else(|| tr("To leave the battle, press ESC").to_string()), GOLD);
                 }
                 (true, false) => tr("Nothing in reach: step to a lit cell, or press SPACE"),
-                (true, true) => tr("Nothing to do: press SPACE to end the turn"),
+                (true, true) => tr("Nothing to do: press SPACE to pass an action"),
             };
             return (hint.into(), Color::new(1.0, 0.55, 0.25, 1.0));
         }

@@ -841,10 +841,10 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 7 | Strike with power 0 | GodAnger/GodStrike added whenever the caster has MP | GodAnger/GodStrike still added when the caster has MP | 0 | Matches |
 | 8 | Hostile mage action | Curse if no negative modifier, else strike; one action per cell | Same | 3 | Matches |
 | 9 | Friendly mage | Heal if wounded and heal > 0, else bless; reserve casters tend the reserve | Same | 3 | Matches |
-| 10 | Own-cell self-cast and the space key | Own card: self-cast if offered, else pass one action. Space: **skips all** remaining actions | Own cell and space are the same thing: **one** action, pass or self-cast | 2, 3 | **Differs** (space) |
-| 11 | Edge columns | A front-row shooter or mage is blocked only by an enemy at c±1 | Columns 1 and last are never "clear": front-row shooters there hit only c±1, front-row mages there cannot cast | 3 | **Differs** |
+| 10 | Own-cell self-cast and the space key | Own card and space: one action, a self-cast if offered (a reserve caster's own cell only while wounded or unblessed), else a pass | Own cell and space are the same thing: **one** action, pass or self-cast | 2, 3 | Matches |
+| 11 | Edge columns | Columns 1 and last are never "clear" (`front_clear`) | Columns 1 and last are never "clear": front-row shooters there hit only c±1, front-row mages there cannot cast | 3 | Matches |
 | 12 | Map priority | Melee, then shot, then magic, later wins | Same | 3 | Matches |
-| 13 | Ghost casters | Reach the opposite front cells from any row | Same, and with no direction test | 3 | Matches (direction edge not modelled) |
+| 13 | Ghost casters | Reach the opposite front cells from any row, with no direction test, on the power's low signed byte; written after Flying's melee | Same, and with no direction test | 3 | Matches |
 | 14 | Undead caster drain | Caster gains the full drain; only the target's loss is capped | Caster gains the full drain; only the target's loss is capped | 3 | Matches |
 | 15 | Vampirism | Melee and long strike only; Death strikes | **Melee and long strike only**; Death strikes | 8 | Matches |
 | 16 | Into the reserve | Front or back row, one reserve transition per turn | Same | 2 | Matches |

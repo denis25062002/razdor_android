@@ -1116,9 +1116,15 @@ impl Battle {
         [right, left].into_iter().flatten().collect()
     }
 
+    /// The enemy front row is "clear" opposite `col` (484ac8): the cells c−1, c and c+1 all
+    /// exist and are empty. So a unit in the first or last column never has a clear front.
+    fn front_clear(&self, team: Team, col: u8) -> bool {
+        col > 0 && col + 1 < self.formation.cols && self.front_near(team, col).is_empty()
+    }
+
     /// What `id`, standing on `from`, would do to `target`: one action per cell, as in the
     /// original's cell map. Where several fit, later ones win as there: melee, then a shot,
-    /// then hostile magic; Flying's melee only where nothing else fits.
+    /// then hostile magic, then Flying's melee (c29150), then a Ghost's cast (48555b).
     fn option_at(&self, id: usize, from: Slot, target: usize) -> Option<ActionKind> {
         use ActionKind::*;
         let (f, t) = (&self.fighters[id], &self.fighters[target]);
@@ -1131,28 +1137,36 @@ impl Battle {
                 return None;
             }
             let near = self.front_near(t.team, from.col);
-            let engaged = !near.is_empty();
             let adjacent = t.slot.row == Row::Front && near.contains(&t.slot.col);
+            let clear = self.front_clear(t.team, from.col);
+            let magic = if t.weakened() { Strike } else { Curse };
             let mut kind = None;
-            if f.has(Bonus::Flying) && from.row.is_active() && adjacent {
-                kind = Some(Melee);
-            }
             if f.is_warrior() && from.row == Row::Front {
                 if adjacent {
                     kind = Some(Melee);
-                } else if !engaged && self.long_strike_targets(t.team, from.col).contains(&target) {
+                } else if near.is_empty() && self.long_strike_targets(t.team, from.col).contains(&target) {
                     kind = Some(LongStrike);
                 }
             }
-            if f.is_shooter() && (from.row == Row::Back || (from.row == Row::Front && (!engaged || adjacent))) {
+            // From the front row a shooter reaches everyone only past a clear front, else just
+            // the occupied cells c−1..c+1; a mage there casts only past a clear front.
+            if f.is_shooter() && (from.row == Row::Back || (from.row == Row::Front && (clear || adjacent))) {
                 kind = Some(Shot);
             }
-            if s.is_mage() && s.magic_direction().hits_enemies() {
-                let reach = from.row == Row::Back || (from.row == Row::Front && !engaged);
-                // Ghost casters also reach the three front cells opposite, from any row.
-                if reach || (f.has(Bonus::Ghost) && adjacent) {
-                    kind = Some(if t.weakened() { Strike } else { Curse });
-                }
+            if s.is_mage() && s.magic_direction().hits_enemies() && (from.row == Row::Back || (from.row == Row::Front && clear)) {
+                kind = Some(magic);
+            }
+            // Flying writes melee on the three front cells opposite after the shots and spells,
+            // so a flying shooter or mage strikes there instead (its test of the attack type
+            // is always true, c29150).
+            if f.has(Bonus::Flying) && from.row.is_active() && adjacent {
+                kind = Some(Melee);
+            }
+            // A Ghost casts at the three front cells opposite from any row, whatever its
+            // direction. Its power test reads only the low byte of the magic power, as a
+            // signed byte, as the original does (48555b): 128..255 fails it.
+            if f.has(Bonus::Ghost) && (f.power as u8 as i8) > 0 && adjacent {
+                kind = Some(magic);
             }
             kind
         } else {
@@ -1162,6 +1176,11 @@ impl Battle {
             if from.row == Row::Reserve {
                 // A caster in the reserve tends the reserve, and nothing else.
                 if t.slot.row != Row::Reserve {
+                    return None;
+                }
+                // Its own cell is a self-cast only while it is wounded or unblessed, else a
+                // pass (48555b end); the other reserve units have no such test.
+                if target == id && t.blessed && !t.wounded() {
                     return None;
                 }
             } else {
@@ -1481,7 +1500,21 @@ impl Battle {
         }
     }
 
-    /// The active fighter passes all its remaining actions.
+    /// The original's own-cell action, of a click on the active unit's own card or the space
+    /// key (4c4f8c): a self-cast when its cell offers one, else a pass. One action either way.
+    pub fn own_cell(&mut self) -> Option<Hit> {
+        let id = self.active()?;
+        match self.options(id, id).first() {
+            Some(&kind) => self.act_with(id, kind).ok(),
+            None => {
+                self.pass();
+                None
+            }
+        }
+    }
+
+    /// The active fighter passes all its remaining actions (Razdor's, for the quick battle
+    /// and tests; the original has no such key).
     pub fn skip(&mut self) {
         if let Some(id) = self.active() {
             self.log.push(crate::trf!("{name} waits", name = self.fighters[id].name));

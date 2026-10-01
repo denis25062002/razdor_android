@@ -165,8 +165,11 @@ fn a_multi_role_unit_gets_one_action_per_cell_magic_over_shot_over_melee() {
     let bt = with(vec![all.clone()], &[(40, f(2))], &[(18, f(2))]);
     assert_eq!(bt.options(0, 1), vec![ActionKind::Shot]);
     // Nothing opposite: magic wins.
-    let bt = with(vec![all], &[(40, f(0))], &[(18, f(4))]);
+    let bt = with(vec![all.clone()], &[(40, f(1))], &[(18, f(4))]);
     assert_eq!(bt.options(0, 1), vec![ActionKind::Curse]);
+    // In the first column the front is never clear: no spell, no shot, a long strike.
+    let bt = with(vec![all], &[(40, f(0))], &[(18, f(4))]);
+    assert_eq!(bt.options(0, 1), vec![ActionKind::LongStrike]);
 }
 
 // --- rows 6, 7: mage actions are automatic ---------------------------------------------------
@@ -1049,10 +1052,12 @@ fn row42_flying_melees_the_three_front_cells_from_either_row() {
     let c = content_with(vec![bird], Formation::VANILLA);
     let bt = battle_in(&c, &[(79, r(0)), (10, f(0))], &[(18, f(0))]);
     assert!(bt.targets(0).is_empty(), "not from the reserve");
-    // A flying shooter shoots as before and gains a melee cell only where it cannot shoot.
+    // Flying writes its melee after the shots, so a flying shooter strikes the three front
+    // cells opposite (for 1, it has no AttackBlow) and shoots only beyond them (c29150).
     let hawk = bonus(80, Bonus::Flying, shooter(80, 20));
     let bt = with(vec![hawk], &[(80, b(2)), (10, f(0))], &[(18, f(2)), (18, b(3))]);
-    assert_eq!((bt.options(0, 2), bt.options(0, 3)), (vec![ActionKind::Shot], vec![ActionKind::Shot]));
+    assert_eq!((bt.options(0, 2), bt.options(0, 3)), (vec![ActionKind::Melee], vec![ActionKind::Shot]));
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 1);
 }
 
 #[test]
@@ -1432,8 +1437,9 @@ fn real_armies_auto_battle_terminates() {
             outcomes[bt.outcome() as usize] += 1;
             assert!(bt.round <= 25);
             let pool = experience::battle_pool(bt.start_of(Team::Enemy).strength, bt.start_of(Team::Player).hp, 0).max(1);
+            // A share below 0.5 becomes 1, but one of exactly 0.5 rounds (half to even) to 0.
             for a in bt.xp_awards(Team::Player) {
-                assert!(a.xp >= 1 && a.xp as i64 <= pool, "battle {n}: share {} of pool {pool}", a.xp);
+                assert!(a.xp >= 0 && a.xp as i64 <= pool, "battle {n}: share {} of pool {pool}", a.xp);
             }
             let gains = bt.player_xp();
             assert_eq!(gains.is_empty(), bt.outcome() != Outcome::Victory);
@@ -1663,4 +1669,59 @@ fn row34_counter_blows_and_poison_are_not_damage_taken() {
     to_round(&mut bt, 2);
     assert!(bt.fighters[1].hp < 200 - lost, "poisoned");
     assert_eq!(bt.fighters[1].lost, lost, "the poison's loss is not counted");
+}
+
+#[test]
+fn row10_the_space_key_is_the_own_cell_one_action() {
+    let healer = acts(128, 2, mage(128, 20, MagicSchool::Life, MagicDirection::ToAlly));
+    let mut bt = with(vec![healer], &[(128, b(2)), (10, f(2))], &[(18, f(2))]);
+    turn_of(&mut bt, 0);
+    bt.fighters[0].hp = 20;
+    // A wounded friendly caster heals itself, one action.
+    let hit = bt.own_cell().expect("a self-cast");
+    assert_eq!((hit.target, hit.kind, bt.fighters[0].hp, bt.active(), bt.actions_left()), (0, ActionKind::Heal, 40, Some(0), 1));
+    // Full and unhurt: it blesses itself; then blessed and full, the space only passes.
+    bt.fighters[0].hp = 50;
+    assert_eq!(bt.own_cell().map(|h| h.kind), Some(ActionKind::Bless));
+    turn_of(&mut bt, 0);
+    bt.fighters[0].blessed = true;
+    assert_eq!(bt.own_cell(), None);
+    assert_eq!((bt.active(), bt.actions_left()), (Some(0), 1), "one action passed, not the turn");
+}
+
+#[test]
+fn row10_a_blessed_reserve_caster_passes_on_its_own_cell() {
+    let c = content_with(vec![], Formation::VANILLA);
+    let mut bt = battle_in(&c, &[(10, f(1)), (13, r(1)), (10, r(2))], &[(18, f(1))]);
+    turn_of(&mut bt, 1);
+    bt.fighters[1].blessed = true;
+    bt.fighters[2].blessed = true;
+    assert!(bt.options(1, 1).is_empty(), "its own cell is a pass");
+    assert_eq!(bt.options(1, 2), vec![ActionKind::Bless], "the others are blessed again");
+}
+
+#[test]
+fn row11_edge_columns_never_have_a_clear_front() {
+    // A front-row shooter in the first column with nothing opposite still hits only c−1..c+1.
+    let bt = battle(&[(11, f(0))], &[(18, f(3)), (18, b(2))]);
+    assert!(bt.targets(0).is_empty());
+    let bt = battle(&[(11, f(0))], &[(18, f(1)), (18, b(2))]);
+    assert_eq!(bt.targets(0), vec![1]);
+    // A front-row mage in the last column can never cast, even with the front opposite empty.
+    let bt = battle(&[(12, f(5))], &[(18, f(1)), (18, b(2))]);
+    assert!(bt.targets(0).is_empty());
+    // One column in, the same front is clear.
+    let bt = battle(&[(12, f(4)), (11, f(1))], &[(18, f(1)), (18, b(2))]);
+    assert_eq!(bt.targets(0), vec![2, 3]);
+    assert_eq!(bt.targets(1), vec![2], "the shooter in column 2 faces the enemy");
+}
+
+#[test]
+fn row13_a_ghost_casts_on_the_power_s_low_byte_whatever_its_direction() {
+    let ghost = |id: u32, power: i32| bonus(id, Bonus::Ghost, mage(id, power, MagicSchool::Death, MagicDirection::ToAlly));
+    let bt = with(vec![ghost(129, 30), ghost(130, 200), ghost(131, 300)], &[(129, r(2)), (130, f(3)), (131, b(3)), (10, f(0))], &[(18, f(2)), (18, b(2))]);
+    assert_eq!(bt.options(0, 4), vec![ActionKind::Curse], "a ToAlly ghost casts from the reserve");
+    assert!(bt.options(0, 5).is_empty(), "only the three front cells opposite");
+    assert!(bt.options(1, 4).is_empty(), "200 is −56 as a signed byte");
+    assert_eq!(bt.options(2, 4), vec![ActionKind::Curse], "300 is 44 in its low byte");
 }
