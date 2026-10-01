@@ -16,7 +16,7 @@ use super::formation::{Row, Slot};
 use super::ai::{AiMind, AiProfile, Respawn};
 use super::magic::ActiveSpell;
 use super::map::{is_water, Decoration, Grid, Tile, TileMap, BASE_SPEED};
-use super::units::{Stats, Unit};
+use super::units::Unit;
 
 const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 
@@ -61,9 +61,9 @@ pub fn place_troops(content: &Content, occupied: &[Slot], entries: &[(u32, i32, 
             dropped += count.max(0) as usize;
             continue;
         }
-        let row = Stats::of_level(content, id, 1).preferred_row();
+        // Each unit takes the first free cell from the reserve forward (495ce0).
         for _ in 0..count.max(0) {
-            match content.formation.free_slot(&taken, row) {
+            match content.formation.new_unit_slot(&taken) {
                 Some(slot) if taken.len() < content.formation.capacity() => {
                     taken.push(slot);
                     out.push(Troop::new(id, level.max(1), slot));
@@ -895,8 +895,7 @@ impl World {
         };
         let p = s.header.hero(archetype);
         let tile = (p.x as i32, p.y as i32);
-        let hero_row = Stats::of_level(content, class.unit(), 1).preferred_row();
-        let hero_slot = content.formation.free_slot(&[], hero_row).expect("empty formation");
+        let hero_slot = content.formation.new_unit_slot(&[]).expect("empty formation");
         let (troops, _) = place_troops(content, &[hero_slot], &dt_entries(&p.troops));
         HeroStart {
             class,
@@ -1466,7 +1465,15 @@ mod tests {
         assert_eq!(a.troops.len(), 6, "leader + 3 + 2");
         assert_eq!(a.leader(), Some(UnitId(1)));
         assert_eq!(a.troops.iter().filter(|t| t.unit == UnitId(5)).map(|t| t.level).collect::<Vec<_>>(), [3, 3]);
-        assert!(a.troops.iter().all(|t| t.slot.row == if t.unit == UnitId(5) { Row::Back } else { Row::Front }));
+        // Placed as the original adds units (495ce0): the reserve, then the back row, whatever
+        // their roles.
+        let mut taken = Vec::new();
+        for t in &a.troops {
+            let s = content().formation.new_unit_slot(&taken).unwrap();
+            assert_eq!(t.slot, s);
+            taken.push(s);
+        }
+        assert!(a.troops.iter().all(|t| t.slot.row != Row::Front));
         assert_eq!((a.patrols, a.patrol_radius, a.gold, a.items.clone()), (true, 6, 80, vec![ItemId(7)]), "word 17 is its starting gold");
         assert_eq!(a.ai.extra_income, 30, "byte 80 × 10 is its daily income");
         assert_eq!(a.speed, 5);

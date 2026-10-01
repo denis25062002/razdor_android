@@ -14,7 +14,7 @@ use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Hold
 use super::magic::ActiveSpell;
 use super::game::{troop_unit, Event, Foe, Game, PACK_SIZE, SPELL_BOOK_SIZE};
 use super::town::ServiceError;
-use super::units::{Stats, Unit};
+use super::units::Unit;
 use super::world::{Army, EventInfo, Troop};
 use crate::dt::dtm::EventKind;
 
@@ -398,8 +398,7 @@ impl EventWorld for Game {
             return;
         }
         let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
-        let row = Stats::of_level(&self.content, id, 1).preferred_row();
-        let Some(slot) = self.content.formation.free_slot(&taken, row) else { return };
+        let Some(slot) = self.content.formation.new_unit_slot(&taken) else { return };
         let mut level = 1;
         if let Some(a) = from_army.and_then(|a| self.army_mut(a)) {
             if let Some(k) = a.troops.iter().position(|t| t.unit == id) {
@@ -435,8 +434,7 @@ impl EventWorld for Game {
         let c = self.content.clone();
         if let Some(a) = to_army.and_then(|a| self.army_mut(a)) {
             let taken: Vec<_> = a.troops.iter().map(|t| t.slot).collect();
-            let row = Stats::of_level(&c, u.def, 1).preferred_row();
-            if let Some(slot) = c.formation.free_slot(&taken, row).filter(|_| taken.len() < c.formation.capacity()) {
+            if let Some(slot) = c.formation.new_unit_slot(&taken).filter(|_| taken.len() < c.formation.capacity()) {
                 a.troops.push(Troop::new(u.def, u.level, slot));
                 if u.named != 0 {
                     a.named = u.named;
@@ -960,7 +958,7 @@ impl Game {
         self.pack.extend(prev.inventory.iter().copied());
         for u in &prev.army {
             let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
-            let Some(slot) = c.formation.free_slot(&taken, u.base_stats(&c).preferred_row()) else { break };
+            let Some(slot) = c.formation.new_unit_slot(&taken) else { break };
             let mut u = u.clone();
             u.slot = slot;
             u.unpaid = false;

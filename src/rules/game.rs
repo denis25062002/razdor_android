@@ -18,7 +18,7 @@ use super::save::ScenarioRef;
 use super::ships::Ship;
 use super::map::{step_minutes, Tile, TileMap, ROAD};
 use super::rng::{EventRng, Rng, WORLD_MUSIC_DRAW};
-use super::units::{PromoteError, Stats, Unit};
+use super::units::{PromoteError, Unit};
 use super::world::{Army, LocationKind, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
 
 /// Real seconds each hero step and each wait tick plays over: the original's
@@ -403,7 +403,7 @@ impl Game {
         let world = World::standard(&content);
         let home = world.locations[0].tile;
         let id = hero.unit();
-        let slot = content.formation.free_slot(&[], Stats::of_level(&content, id, 1).preferred_row()).expect("empty formation");
+        let slot = content.formation.new_unit_slot(&[]).expect("empty formation");
         let squad = vec![Unit::new(&content, id, slot)];
         let gold = content.start_gold(hero);
         let mut g = Game::with_world(content, world, squad, home);
@@ -1099,8 +1099,9 @@ impl Game {
             return Err(HireError::NotOffered);
         }
         let taken: Vec<Slot> = self.squad.iter().map(|u| u.slot).collect();
-        let row = Stats::of_level(&self.content, kind, 1).preferred_row();
-        let slot = match self.content.formation.free_slot(&taken, row) {
+        // A new unit takes the first free cell from the reserve forward, whatever it is
+        // (495ce0).
+        let slot = match self.content.formation.new_unit_slot(&taken) {
             Some(slot) if self.squad.len() < self.max_squad() => slot,
             _ => return Err(HireError::SquadFull),
         };
@@ -1892,7 +1893,9 @@ mod tests {
         let (spear, archer, sword) = (unit(&g, "spearman"), unit(&g, "archer"), unit(&g, "swordsman"));
         g.hire(spear).unwrap();
         assert_eq!(g.gold, 60);
-        assert_eq!(g.squad[1].slot.row, crate::rules::formation::Row::Front);
+        // A new unit takes the first free cell from the reserve forward, whatever it is (495ce0).
+        assert_eq!(g.squad[1].slot, g.content.formation.new_unit_slot(&[g.squad[0].slot]).unwrap());
+        assert_eq!(g.squad[1].slot.row, crate::rules::formation::Row::Reserve);
         assert_eq!(g.hire(sword), Err(HireError::NotOffered));
         g.gold = 10_000;
         while g.squad.len() < g.max_squad() {

@@ -626,13 +626,14 @@ fn best_recruit(c: &Content, a: &Army, l: &Location, troops: &[Troop]) -> Option
     best.map(|(u, cost, _)| (u, cost))
 }
 
-/// Free formation cell for a new unit of type `unit` next to `troops`.
-fn free_slot(c: &Content, troops: &[Troop], unit: UnitId) -> Option<super::formation::Slot> {
+/// Free formation cell for a new unit next to `troops`: the first from the reserve forward,
+/// whatever the unit (495ce0).
+fn free_slot(c: &Content, troops: &[Troop]) -> Option<super::formation::Slot> {
     if troops.len() >= c.formation.capacity() {
         return None;
     }
     let taken: Vec<_> = troops.iter().map(|t| t.slot).collect();
-    c.formation.free_slot(&taken, Stats::of_level(c, unit, 1).preferred_row())
+    c.formation.new_unit_slot(&taken)
 }
 
 /// The dearest item of the shop at `l` the army can afford within its reserve and some unit
@@ -1275,7 +1276,7 @@ impl Game {
                         break;
                     }
                     let Some((unit, cost)) = best_recruit(&c, a, loc, &a.troops) else { break };
-                    let Some(slot) = free_slot(&c, &loc.garrison, unit) else { break };
+                    let Some(slot) = free_slot(&c, &loc.garrison) else { break };
                     self.world.armies[i].gold -= cost;
                     let loc = &mut self.world.locations[l];
                     take_stock(loc, unit);
@@ -1333,7 +1334,7 @@ impl Game {
                 break;
             }
             let Some((unit, cost)) = best_recruit(&c, a, loc, &a.troops) else { break };
-            let Some(slot) = free_slot(&c, &a.troops, unit) else { break };
+            let Some(slot) = free_slot(&c, &a.troops) else { break };
             take_stock(&mut self.world.locations[l], unit);
             let mut t = Troop::new(unit, 1, slot);
             let xp = self.hire_xp(i, unit);
@@ -1410,7 +1411,7 @@ impl Game {
                 return;
             }
             let mut t = *t;
-            let Some(slot) = free_slot(&c, &loc.garrison, t.unit) else { return };
+            let Some(slot) = free_slot(&c, &loc.garrison) else { return };
             t.slot = slot;
             self.world.armies[i].troops.remove(k);
             self.world.locations[l].garrison.push(t);

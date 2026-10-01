@@ -69,6 +69,9 @@ old id, and their versions give both.
 - Before every battle the original plays it once in secret, the AI on both sides, and the
   losses it predicts feed the battle XP; Razdor does the same now, so the XP pool follows
   the original's formula with the predicted loss and the worst turn's loss.
+- A new unit (hired, given by an event, or at the start of a map, for the AI too) takes the
+  first free cell of the reserve, then of the back row, then of the front row, whatever it
+  is, as in the original.
 
 ## 0.2.2 — 2026-10-01
 
