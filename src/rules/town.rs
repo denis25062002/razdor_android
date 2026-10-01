@@ -1225,7 +1225,8 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 12, 2, -2);
         castle.faction = 4;
-        let mut foe = army(1, 20, 6, -2, &[troop(9, 0, 1)]);
+        let mut foe = army(1, 20, 6, -2, &[]);
+        foe.leader_unit = 9;
         foe.gold_income = 11;
         foe.home_building = 1;
         s.armies = vec![foe];

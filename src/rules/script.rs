@@ -719,6 +719,7 @@ impl EventWorld for Game {
                 let relations = self.world.relations;
                 if let Some(a) = self.army_mut(a) {
                     a.attitude = super::world::relation(super::world::player_attitude_to(&relations, a.faction), value);
+                    a.ai.relations[0] = value;
                 }
             }
             Holder::Building(b) => {
@@ -1509,8 +1510,10 @@ mod tests {
         let mut g = start(&s);
         g.drain_events();
         let a = &mut g.world.armies[0];
-        a.ai.enabled = false;
+        a.mind.scripted = true;
         a.path = vec![(4, 2)];
+        // A hostile one's cached battle score says it wins.
+        a.mind.scores.insert(super::super::ai::HERO, 1);
         assert!(g.set_destination((8, 4)));
         let events = walk(&mut g);
         (g, events)

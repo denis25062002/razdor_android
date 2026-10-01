@@ -91,7 +91,7 @@ fn thirty_days_on_every_map() {
         let secs = t0.elapsed().as_secs_f64();
         let st = g.ai_stats;
         println!(
-            "{:<28} {:>3}x{:<3} armies {:>2}→{:>2} waiting {:>2}: AI battles {:>3}, captures {:>2}, retreats {:>2}, respawns {:>2}, hired {:>3}, bought {:>2}, routes {:>5}; player battles {:>2}{}; {:.2} s",
+            "{:<28} {:>3}x{:<3} armies {:>2}→{:>2} waiting {:>2}: AI battles {:>3}, captures {:>2}, respawns {:>2}, hired {:>3}, bought {:>2}, routes {:>5}; player battles {:>2}{}; {:.2} s",
             m.name,
             s.width(),
             s.height(),
@@ -100,7 +100,6 @@ fn thirty_days_on_every_map() {
             g.world.respawns.len(),
             st.battles,
             st.captures,
-            st.retreats,
             st.respawns,
             st.hired,
             st.bought,
@@ -116,7 +115,6 @@ fn thirty_days_on_every_map() {
         totals.battles += st.battles;
         totals.captures += st.captures;
         totals.respawns += st.respawns;
-        totals.retreats += st.retreats;
         totals.paths += st.paths;
         totals.hired += st.hired;
         totals.bought += st.bought;

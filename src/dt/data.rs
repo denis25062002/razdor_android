@@ -609,9 +609,30 @@ pub struct Upgrade {
     /// Level the unit must reach (always 1 in vanilla). The original's AI checks it
     /// against its 0-based level; the player's promotion ignores it.
     pub level: i32,
-    /// Which of `NextUnit1`..`NextUnit3` (1–3) names it. A lone option sits in slot 2, as
-    /// the original's loader moves it.
+    /// Which of `NextUnit1`..`NextUnit3` (1–3) holds it after the original's loader moved
+    /// the options ([`normalise_upgrade_slots`]).
     pub slot: u8,
+}
+
+/// The original's unit loader rearranges the upgrade options (0x4e0448, ai.md §11): a lone
+/// option in slot 1 or 3 moves to slot 2; of two options, one in slot 2 moves to slot 3 when
+/// the other is in slot 1, to slot 1 when the other is in slot 3. So two options always sit
+/// in slots 1 and 3, which the AI's Militia and Infantry picks rely on.
+pub fn normalise_upgrade_slots(upgrades: &mut [Upgrade]) {
+    let has = |n: u8, u: &[Upgrade]| u.iter().any(|x| x.slot == n);
+    let (one, two, three) = (has(1, upgrades), has(2, upgrades), has(3, upgrades));
+    let moves: &[(u8, u8)] = match (one, two, three) {
+        (true, false, false) => &[(1, 2)],
+        (false, false, true) => &[(3, 2)],
+        (true, true, false) => &[(2, 3)],
+        (false, true, true) => &[(2, 1)],
+        _ => &[],
+    };
+    for &(from, to) in moves {
+        for u in upgrades.iter_mut().filter(|u| u.slot == from) {
+            u.slot = to;
+        }
+    }
 }
 
 /// A unit type from `Rus_Units.ini`. See mechanics.md 1.1 for every field.
@@ -681,11 +702,7 @@ impl UnitDef {
                 upgrades.push(Upgrade { target_name: target.to_string(), target: None, level, slot: n });
             }
         }
-        if let [only] = upgrades.as_mut_slice() {
-            if only.slot == 1 {
-                only.slot = 2;
-            }
-        }
+        normalise_upgrade_slots(&mut upgrades);
         let unit = UnitDef {
             id,
             name: f.string("Name"),
@@ -1280,6 +1297,7 @@ Evasion=15\r\n";
         assert_eq!(h.upgrades.len(), 2);
         assert_eq!((h.upgrades[0].target, h.upgrades[0].level), (Some(2), 1));
         assert_eq!((h.upgrades[1].target, h.upgrades[1].level), (None, 2));
+        assert_eq!([h.upgrades[0].slot, h.upgrades[1].slot], [1, 3], "options 1 and 2 end in slots 1 and 3");
         assert_eq!(h.extra.get("Custom").map(String::as_str), Some("yes"));
         assert_eq!(h.extra.get("d-Bogus").map(String::as_str), Some("1"));
         assert_eq!(h.extra.len(), 2);
@@ -1290,6 +1308,24 @@ Evasion=15\r\n";
         assert_eq!(s.bonus, Some(Bonus::Splash));
         assert_eq!(s.evasion, Some(15));
         assert!(s.extra.is_empty());
+    }
+
+    #[test]
+    fn the_loader_moves_upgrade_options_as_the_original() {
+        // 0x4e0448: a lone option goes to slot 2, two options always end in slots 1 and 3.
+        let up = |slot| Upgrade { target_name: String::new(), target: None, level: 0, slot };
+        let slots = |given: &[u8]| {
+            let mut u: Vec<Upgrade> = given.iter().map(|&n| up(n)).collect();
+            normalise_upgrade_slots(&mut u);
+            u.iter().map(|u| u.slot).collect::<Vec<_>>()
+        };
+        assert_eq!(slots(&[1]), [2]);
+        assert_eq!(slots(&[2]), [2]);
+        assert_eq!(slots(&[3]), [2]);
+        assert_eq!(slots(&[1, 2]), [1, 3]);
+        assert_eq!(slots(&[2, 3]), [1, 3]);
+        assert_eq!(slots(&[1, 3]), [1, 3]);
+        assert_eq!(slots(&[1, 2, 3]), [1, 2, 3]);
     }
 
     #[test]

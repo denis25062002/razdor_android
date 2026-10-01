@@ -33,8 +33,10 @@ use super::world::World;
 /// Bumped when the saved state changes shape. 2: the random generator is no longer saved
 /// (as in the original, a load starts it afresh); version 1 saves still load, their saved
 /// generator ignored. 3: armies keep a talk counter towards the hero and the hero a ship just
-/// bought and an event's speed; older saves load with none.
-pub const FORMAT_VERSION: u32 = 3;
+/// bought and an event's speed; older saves load with none. 4: the AI's own state (unit
+/// records with worn items, deaths and pay; scores, talk counters, wander points, noon;
+/// buildings' attitudes to every faction); older saves load with the AI set up afresh.
+pub const FORMAT_VERSION: u32 = 4;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";
@@ -374,6 +376,8 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
     game.event_rng = EventRng::from_clock();
     game.content = content;
     game.origin = Some(meta.scenario.clone());
+    // The AI is set up again on every load (0x4a1ff0 from the save loader).
+    game.ai_init(meta.version >= 4);
     // Saves from before the last-pay minute count everyone as paid now.
     let now = game.clock.total_minutes() as u64;
     for u in game.squad.iter_mut().filter(|u| u.last_paid == 0) {
@@ -432,6 +436,21 @@ pub(crate) mod tests {
         serde_json::to_string(g).unwrap()
     }
 
+    /// The game's state without what a load sets up again for the AI (the armies' minds
+    /// and talk counters towards the hero).
+    fn without_ai(g: &Game) -> serde_json::Value {
+        let mut v = serde_json::to_value(g).unwrap();
+        for key in ["armies", "inactive"] {
+            for a in v["world"][key].as_array_mut().into_iter().flatten() {
+                a.as_object_mut().map(|o| (o.remove("mind"), o.remove("talk")));
+            }
+        }
+        for r in v["world"]["respawns"].as_array_mut().into_iter().flatten() {
+            r["army"].as_object_mut().map(|o| (o.remove("mind"), o.remove("talk")));
+        }
+        v
+    }
+
     /// Save, load, and compare: the state serialises the same, and what was rebuilt matches.
     pub(crate) fn roundtrip(g: &Game, demo: Arc<Content>, install: Option<&Install>) -> Game {
         let meta = meta_of(g, SaveKind::Manual, "test").unwrap();
@@ -439,7 +458,9 @@ pub(crate) mod tests {
         let (m, loaded) = decode(&bytes).unwrap();
         assert_eq!(m, meta);
         let loaded = restore(&m, loaded, demo, install).unwrap();
-        assert_eq!(json(&loaded), json(g), "state differs after a load");
+        // A load sets the AI up again (0x4a1ff0): its scores, talk counters and the income
+        // its castles add are worked out afresh, so they are left out of the comparison.
+        assert_eq!(without_ai(&loaded), without_ai(g), "state differs after a load");
         assert_eq!(loaded.world.title, g.world.title);
         assert_eq!((loaded.world.map.w, loaded.world.map.h), (g.world.map.w, g.world.map.h));
         assert_eq!(loaded.world.events, g.world.events);
@@ -513,6 +534,8 @@ pub(crate) mod tests {
         assert_eq!(roundtrip(&g, c.clone(), None).rng.state(), loaded.rng.state());
         let (mut a, mut b) = (g, loaded);
         a.rng = b.rng.clone();
+        // A load sets the AI up again (0x4a1ff0); so does the game played on.
+        a.ai_init(true);
         for g in [&mut a, &mut b] {
             g.wait(30);
         }
@@ -717,6 +740,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.rng.state(), Rng::save_load(g.world.map.w, &plants, scenario.armies.len()).state());
         let (mut a, mut b) = (g, loaded);
         a.rng = b.rng.clone();
+        // A load sets the AI up again (0x4a1ff0); so does the game played on.
+        a.ai_init(true);
         for g in [&mut a, &mut b] {
             g.wait(12);
         }

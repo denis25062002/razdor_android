@@ -223,6 +223,192 @@ impl Grid {
     }
 }
 
+/// A planner flood's distance map (`TileMap::flood_field`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloodField {
+    /// Distance of every cell, `u16::MAX` where the flood did not go.
+    pub dist: Vec<u16>,
+    /// Seeds it started from.
+    pub kept: usize,
+    w: i32,
+}
+
+impl FloodField {
+    /// Takes cell `t` out of the flood: the path never steps onto it (0x4a2d88).
+    pub fn erase(&mut self, t: Tile) {
+        if t.0 >= 0 && t.1 >= 0 && t.0 < self.w {
+            if let Some(d) = self.dist.get_mut((t.1 * self.w + t.0) as usize) {
+                *d = 0;
+            }
+        }
+    }
+}
+
+/// A cell the planner's flood has not reached.
+const UNREACHED: u16 = u16::MAX;
+
+/// The planner flood's frontier in the original's order: a linked list whose nodes carry
+/// order labels, so that two positions compare by label. An expanded node is replaced in
+/// place by its new neighbours.
+#[derive(Default)]
+struct Frontier {
+    cell: Vec<usize>,
+    label: Vec<u64>,
+    prev: Vec<usize>,
+    next: Vec<usize>,
+}
+
+/// The planner flood's buffers, kept between floods: stamps of the flood that last wrote a
+/// cell instead of clearing them every time.
+#[derive(Default)]
+struct FloodScratch {
+    epoch: u32,
+    seed: Vec<u32>,
+    seen: Vec<u32>,
+    todo: Vec<usize>,
+    heap: BinaryHeap<Reverse<(u32, u32)>>,
+    order: Frontier,
+    /// Frontier nodes by value, and the values in use.
+    buckets: Vec<Vec<u32>>,
+    used: Vec<u32>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<FloodScratch> = std::cell::RefCell::new(FloodScratch::default());
+}
+
+impl FloodScratch {
+    fn begin(&mut self, n: usize) {
+        if self.epoch == u32::MAX || self.seed.len() != n {
+            self.epoch = 0;
+            for v in [&mut self.seed, &mut self.seen] {
+                v.clear();
+                v.resize(n, 0);
+            }
+        }
+        self.epoch += 1;
+        if self.buckets.len() < UNREACHED as usize + 1 {
+            self.buckets.resize_with(UNREACHED as usize + 1, Vec::new);
+        }
+        if self.order.cell.is_empty() {
+            self.order = Frontier::new();
+        }
+        self.order.clear();
+    }
+
+
+    fn end(&mut self) {
+        for v in self.used.drain(..) {
+            self.buckets[v as usize].clear();
+        }
+    }
+}
+
+/// The bucket of value `v`, noted in `used` when it starts filling.
+fn bucket<'a>(buckets: &'a mut [Vec<u32>], used: &mut Vec<u32>, v: u32) -> &'a mut Vec<u32> {
+    let b = &mut buckets[v as usize];
+    if b.is_empty() {
+        used.push(v);
+    }
+    b
+}
+
+/// The list's ends: two sentinel nodes.
+const HEAD: usize = 0;
+const TAIL: usize = 1;
+/// Label spacing when the labels are dealt again.
+const LABEL_STEP: u64 = 1 << 32;
+
+impl Frontier {
+    fn new() -> Frontier {
+        Frontier { cell: vec![0, 0], label: vec![0, u64::MAX], prev: vec![HEAD, HEAD], next: vec![TAIL, TAIL] }
+    }
+
+    fn cell(&self, n: usize) -> usize {
+        self.cell[n]
+    }
+
+    fn label(&self, n: usize) -> u64 {
+        self.label[n]
+    }
+
+    fn node(&mut self, cell: usize) -> usize {
+        self.cell.push(cell);
+        self.label.push(0);
+        self.prev.push(HEAD);
+        self.next.push(TAIL);
+        self.cell.len() - 1
+    }
+
+    fn push_back(&mut self, cell: usize) -> usize {
+        let n = self.node(cell);
+        let last = self.prev[TAIL];
+        self.link(last, n, TAIL);
+        if self.cramped(n) {
+            self.relabel();
+        }
+        n
+    }
+
+    /// Node `n`'s label does not lie strictly between its neighbours'.
+    fn cramped(&self, n: usize) -> bool {
+        self.label[n] <= self.label[self.prev[n]] || self.label[n] >= self.label[self.next[n]]
+    }
+
+    fn link(&mut self, a: usize, n: usize, b: usize) {
+        self.next[a] = n;
+        self.prev[n] = a;
+        self.next[n] = b;
+        self.prev[b] = n;
+        self.label[n] = self.label[a] / 2 + self.label[b] / 2;
+    }
+
+    fn remove(&mut self, n: usize) {
+        let (a, b) = (self.prev[n], self.next[n]);
+        self.next[a] = b;
+        self.prev[b] = a;
+    }
+
+    /// Replaces node `n` by new nodes for `children`, in order. Returns the first new node
+    /// (the others follow it).
+    fn replace(&mut self, n: usize, children: &[(usize, u32)]) -> usize {
+        let (a, b) = (self.prev[n], self.next[n]);
+        self.remove(n);
+        let first = self.cell.len();
+        let mut at = a;
+        for &(cell, _) in children {
+            let m = self.node(cell);
+            self.link(at, m, b);
+            at = m;
+        }
+        if (first..self.cell.len()).any(|m| self.cramped(m)) {
+            self.relabel();
+        }
+        first
+    }
+
+    /// Empties the list.
+    fn clear(&mut self) {
+        self.cell.truncate(2);
+        self.label.truncate(2);
+        self.prev.truncate(2);
+        self.next.truncate(2);
+        self.next[HEAD] = TAIL;
+        self.prev[TAIL] = HEAD;
+    }
+
+    /// Deals the labels again, evenly, in list order.
+    fn relabel(&mut self) {
+        let mut n = self.next[HEAD];
+        let mut k = 1u64;
+        while n != TAIL {
+            self.label[n] = k * LABEL_STEP;
+            k += 1;
+            n = self.next[n];
+        }
+    }
+}
+
 /// The original's eight directions (dx, dy), 0 north-west then clockwise (0x4ecf8c, 0x4ecfb0).
 pub const DIRECTIONS: [(i32, i32); 8] = [(-1, -1), (0, -1), (1, -1), (1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0)];
 
@@ -624,10 +810,43 @@ impl TileMap {
         Vec::new()
     }
 
+    /// The neighbours of cell `i` in the order of [`Grid::directions`] (`None` off the map or
+    /// past the grid's directions).
+    fn neighbour_indices(&self, i: usize) -> [Option<usize>; 8] {
+        let w = self.w as usize;
+        let (x, y) = ((i % w) as i32, (i / w) as i32);
+        let mut out = [None; 8];
+        match self.grid {
+            Grid::Square8 if x > 0 && y > 0 && x + 1 < self.w && y + 1 < self.h => {
+                // Inside the border: every neighbour is on the map.
+                for (o, &(dx, dy)) in out.iter_mut().zip(DIRECTIONS.iter()) {
+                    *o = Some((i as isize + dy as isize * w as isize + dx as isize) as usize);
+                }
+            }
+            Grid::Square8 => {
+                for (o, &(dx, dy)) in out.iter_mut().zip(DIRECTIONS.iter()) {
+                    let (nx, ny) = (x + dx, y + dy);
+                    if nx >= 0 && ny >= 0 && nx < self.w && ny < self.h {
+                        *o = Some((ny * self.w + nx) as usize);
+                    }
+                }
+            }
+            Grid::HexOddR => {
+                for (dir, o) in out.iter_mut().enumerate() {
+                    *o = self.neighbour_index(i, dir);
+                }
+            }
+        }
+        out
+    }
+
     /// Neighbour of cell `i` in direction `dir` of [`Grid::directions`], if on the map.
     fn neighbour_index(&self, i: usize, dir: usize) -> Option<usize> {
         let (x, y) = self.tile_of(i);
-        let (dx, dy) = self.grid.directions(y)[dir]?;
+        let (dx, dy) = match self.grid {
+            Grid::Square8 => DIRECTIONS[dir],
+            Grid::HexOddR => self.grid.directions(y)[dir]?,
+        };
         self.index((x + dx, y + dy))
     }
 
@@ -654,84 +873,224 @@ impl TileMap {
     /// left, ×1.5 rounded down on diagonals (the status bar's time left, §2.4). `None` if
     /// `from` was not reached.
     pub fn flood_route(&self, cost: &dyn Fn(Tile) -> u16, mask: &dyn Fn(Tile) -> u16, seeds: &[(Tile, u32)], from: Tile) -> Option<(Vec<Tile>, u32)> {
-        const UNREACHED: u16 = u16::MAX;
+        let field = self.flood_field(cost, mask, seeds, from);
         let stop = self.index(from)?;
-        let n = (self.w.max(0) * self.h.max(0)) as usize;
-        let mut effective = vec![0u16; n];
-        for (i, e) in effective.iter_mut().enumerate() {
-            let t = self.tile_of(i);
-            // The original's multiplying loop stops before cell 0 (the original's quirk).
-            *e = if i == 0 { mask(t) } else { cost(t).wrapping_mul(mask(t)) };
+        if field.dist[stop] == UNREACHED {
+            return None;
         }
+        let route = self.descend(&field, from);
+        let mut total = 0;
+        let mut prev = from;
+        let mut here = cost(from) as u32;
+        for &t in &route {
+            total += if self.grid.weight(prev, t) == DIAGONAL_WEIGHT { (here * 3) >> 1 } else { here };
+            here = cost(t) as u32;
+            prev = t;
+        }
+        Some((route, total))
+    }
+
+    /// The flood of [`TileMap::flood_route`] (0x482a58): every cell's distance to the nearest
+    /// seed as far as the flood went (it stops the moment `from` is first given one), and how
+    /// many seeds it kept (a seed on `from` is dropped). `from` off the map floods nothing.
+    pub fn flood_field(&self, cost: &dyn Fn(Tile) -> u16, mask: &dyn Fn(Tile) -> u16, seeds: &[(Tile, u32)], from: Tile) -> FloodField {
+        let n = (self.w.max(0) * self.h.max(0)) as usize;
+        let costs: Vec<u16> = (0..n).map(|i| cost(self.tile_of(i))).collect();
+        let mult: Vec<u16> = (0..n).map(|i| mask(self.tile_of(i))).collect();
+        self.flood_maps(&costs, &mult, seeds, from)
+    }
+
+    /// The cost map of the planner for foot armies (LAND) and for ships (SHIP), cost units
+    /// per cell, 0 closed.
+    pub fn land_costs(&self) -> &[u16] {
+        &self.land
+    }
+
+    pub fn water_costs(&self) -> &[u16] {
+        &self.water
+    }
+
+    /// [`TileMap::flood_field`] on a cost map and a multiplier map given cell by cell.
+    pub fn flood_maps(&self, cost: &[u16], mult: &[u16], seeds: &[(Tile, u32)], from: Tile) -> FloodField {
+        let n = (self.w.max(0) * self.h.max(0)) as usize;
         let mut dist = vec![UNREACHED; n];
-        let mut frontier: Vec<(usize, u32)> = Vec::new();
+        let Some(stop) = self.index(from) else { return FloodField { dist, kept: 0, w: self.w } };
         let mut placed: Vec<(usize, u32)> = Vec::new();
         for &(t, v) in seeds {
             let Some(i) = self.index(t) else { continue };
             let v = v.min(32_766);
             // The original (0x482984) compares the stored value (plus 1) of a seed already on
             // the cell with the new value before its plus 1: a seed one above is still added.
-            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
+            if cost[i] == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
                 continue;
             }
             placed.push((i, v + 1));
         }
         // A seed on `from` itself is dropped before the flood (0x482a58): his cell stays
         // unreached and there is no route.
-        for &(i, v) in placed.iter().filter(|&&(i, _)| i != stop) {
+        let frontier: Vec<(usize, u32)> = placed.into_iter().filter(|&(i, _)| i != stop).collect();
+        for &(i, v) in &frontier {
             dist[i] = v as u16;
-            frontier.push((i, v));
         }
-        let mut threshold = 1;
-        'flood: while !frontier.is_empty() {
-            let mut next = Vec::with_capacity(frontier.len());
-            for &(i, d) in &frontier {
-                if d > threshold {
-                    next.push((i, d));
+        let kept = frontier.len();
+        SCRATCH.with(|s| {
+            let s = &mut *s.borrow_mut();
+            s.begin(n);
+            self.flood_with(s, cost, mult, &frontier, stop, &mut dist);
+            s.end();
+        });
+        FloodField { dist, kept, w: self.w }
+    }
+
+    /// The flood itself, in `s`'s buffers.
+    fn flood_with(&self, s: &mut FloodScratch, cost: &[u16], mult: &[u16], frontier: &[(usize, u32)], stop: usize, dist: &mut [u16]) {
+        // The effective cost of a cell: its cost times its multiplier, in 16 bits. The
+        // original's multiplying loop stops before cell 0, which keeps its bare multiplier.
+        let epoch = s.epoch;
+        let effective_at = |i: usize| -> u16 {
+            if i == 0 {
+                mult[0]
+            } else {
+                cost[i].wrapping_mul(mult[i])
+            }
+        };
+        // When `from` itself is closed the flood never reaches it and runs to its end, and
+        // then every distance is the shortest one, whatever the order. The path read from
+        // `from` only needs its neighbours' distances and the lower ones around the cells it
+        // steps to, which are final once a pass's value reaches them: the flood can stop
+        // there with the very same path.
+        if effective_at(stop) == 0 {
+            // When no seed can reach any of its neighbours either, that flood would cover all
+            // it can reach without giving them a value, and the path read from `from` is
+            // empty whatever it did: a search out from `from` that meets no seed says so.
+            for &(i, _) in frontier {
+                s.seed[i] = epoch;
+            }
+            s.todo.clear();
+            s.todo.push(stop);
+            s.seen[stop] = epoch;
+            let mut reachable = false;
+            let mut k = 0;
+            'search: while k < s.todo.len() {
+                let i = s.todo[k];
+                k += 1;
+                for j in self.neighbour_indices(i).into_iter().flatten() {
+                    if s.seed[j] == epoch {
+                        reachable = true;
+                        break 'search;
+                    }
+                    if s.seen[j] != epoch && effective_at(j) != 0 {
+                        s.seen[j] = epoch;
+                        s.todo.push(j);
+                    }
+                }
+            }
+            if !reachable {
+                return;
+            }
+            let watch: Vec<usize> = self.neighbour_indices(stop).into_iter().flatten().filter(|&j| effective_at(j) != 0).collect();
+            s.heap.clear();
+            s.heap.extend(frontier.iter().map(|&(i, v)| Reverse((v, i as u32))));
+            while let Some(Reverse((d, i))) = s.heap.pop() {
+                if watch.iter().all(|&j| dist[j] as u32 <= d) {
+                    break;
+                }
+                let i = i as usize;
+                if d > dist[i] as u32 {
                     continue;
                 }
+                let around = self.neighbour_indices(i);
+                for (dir, j) in around.iter().enumerate().take(self.grid.direction_count()) {
+                    let Some(j) = *j else { continue };
+                    let c = effective_at(j) as u32;
+                    if c == 0 {
+                        continue;
+                    }
+                    let nd = c * self.grid.direction_weight(dir) + d;
+                    if nd < dist[j] as u32 {
+                        dist[j] = nd as u16;
+                        s.heap.push(Reverse((nd, j as u32)));
+                    }
+                }
+            }
+            return;
+        }
+        // The original's flood (0x482a58) runs in passes: every entry of its frontier at the
+        // lowest value expands, in frontier order, the others are carried, and an expanded
+        // entry's new neighbours take its place in the order. The same, without scanning
+        // the carried entries at every pass: the frontier is a linked list in that order
+        // (labels compare positions), and the entries wait in buckets by value.
+        for &(i, v) in frontier {
+            let node = s.order.push_back(i);
+            bucket(&mut s.buckets, &mut s.used, v).push(node as u32);
+        }
+        let mut value = frontier.iter().map(|e| e.1).min().unwrap_or(UNREACHED as u32);
+        let mut batch: Vec<u32> = Vec::new();
+        let mut children: Vec<(usize, u32)> = Vec::new();
+        'flood: while (value as usize) < s.buckets.len() {
+            if s.buckets[value as usize].is_empty() {
+                value += 1;
+                continue;
+            }
+            std::mem::swap(&mut batch, &mut s.buckets[value as usize]);
+            let order = &mut s.order;
+            batch.sort_by_key(|&n| order.label(n as usize));
+            for &node in &batch {
+                let node = node as usize;
+                let (i, d) = (s.order.cell(node), value);
+                // An entry whose cell has since a lower value offers nothing.
+                if d > dist[i] as u32 {
+                    s.order.remove(node);
+                    continue;
+                }
+                children.clear();
+                let around = self.neighbour_indices(i);
                 for dir in (0..self.grid.direction_count()).rev() {
-                    let Some(j) = self.neighbour_index(i, dir) else { continue };
-                    let c = effective[j] as u32;
+                    let Some(j) = around[dir] else { continue };
+                    let c = effective_at(j) as u32;
                     let nd = if c == 0 { UNREACHED as u32 } else { c * self.grid.direction_weight(dir) + d };
                     if nd < dist[j] as u32 {
                         dist[j] = nd as u16;
                         if j == stop {
                             break 'flood;
                         }
-                        next.push((j, nd));
+                        children.push((j, nd));
                     }
                 }
+                let first = s.order.replace(node, &children);
+                for (k, &(_, nd)) in children.iter().enumerate() {
+                    bucket(&mut s.buckets, &mut s.used, nd).push((first + k) as u32);
+                }
             }
-            threshold = next.iter().map(|e| e.1).min().unwrap_or(UNREACHED as u32);
-            frontier = next;
+            batch.clear();
+            value += 1;
         }
-        if dist[stop] == UNREACHED {
-            return None;
-        }
+    }
+
+    /// The path read back from a flood (0x482fe8): from `from`, the neighbour with the
+    /// smallest non-zero distance below the current one, directions in order and the first
+    /// strict minimum winning ties, until none is lower. From an unreached cell the first
+    /// step goes to any reached neighbour.
+    pub fn descend(&self, field: &FloodField, from: Tile) -> Vec<Tile> {
         let mut route = Vec::new();
-        let mut total = 0;
-        let (mut at, mut d) = (stop, dist[stop]);
-        let mut here = cost(from) as u32;
+        let Some(mut at) = self.index(from) else { return route };
+        let mut d = field.dist[at];
         while d != 0 {
             let mut best = None;
             let mut best_d = d;
             for dir in 0..self.grid.direction_count() {
                 let Some(j) = self.neighbour_index(at, dir) else { continue };
-                if dist[j] != 0 && dist[j] < best_d {
-                    best = Some((j, dir));
-                    best_d = dist[j];
+                if field.dist[j] != 0 && field.dist[j] < best_d {
+                    best = Some(j);
+                    best_d = field.dist[j];
                 }
             }
-            let Some((j, dir)) = best else { break };
-            let t = self.tile_of(j);
-            route.push(t);
-            total += if self.grid.direction_weight(dir) == DIAGONAL_WEIGHT { (here * 3) >> 1 } else { here };
-            here = cost(t) as u32;
+            let Some(j) = best else { break };
+            route.push(self.tile_of(j));
             at = j;
             d = best_d;
         }
-        Some((route, total))
+        route
     }
 
     /// Planner cost of `path` from `from` on foot: every cell entered times its step weight.
@@ -840,6 +1199,101 @@ pub fn step_minutes(grid: Grid, a: Tile, b: Tile, cost: u16, speed: u32) -> f32 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original's flood pass by pass (0x482a58), as it reads: the whole frontier is
+    /// scanned at every pass. [`TileMap::flood_field`] must give the very same distances.
+    fn flood_by_passes(map: &TileMap, cost: &dyn Fn(Tile) -> u16, mask: &dyn Fn(Tile) -> u16, seeds: &[(Tile, u32)], from: Tile) -> Vec<u16> {
+        let n = (map.w * map.h) as usize;
+        let stop = map.index(from).unwrap();
+        let effective: Vec<u16> = (0..n).map(|i| if i == 0 { mask(map.tile_of(i)) } else { cost(map.tile_of(i)).wrapping_mul(mask(map.tile_of(i))) }).collect();
+        let mut dist = vec![u16::MAX; n];
+        let mut placed: Vec<(usize, u32)> = Vec::new();
+        for &(t, v) in seeds {
+            let i = map.index(t).unwrap();
+            let v = v.min(32_766);
+            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
+                continue;
+            }
+            placed.push((i, v + 1));
+        }
+        let mut frontier: Vec<(usize, u32)> = Vec::new();
+        for &(i, v) in placed.iter().filter(|&&(i, _)| i != stop) {
+            dist[i] = v as u16;
+            frontier.push((i, v));
+        }
+        let mut threshold = 1;
+        'flood: while !frontier.is_empty() {
+            let mut next = Vec::new();
+            for &(i, d) in &frontier {
+                if d > threshold {
+                    next.push((i, d));
+                    continue;
+                }
+                for dir in (0..8).rev() {
+                    let Some(j) = map.neighbour_index(i, dir) else { continue };
+                    let c = effective[j] as u32;
+                    let nd = if c == 0 { u16::MAX as u32 } else { c * map.grid.direction_weight(dir) + d };
+                    if nd < dist[j] as u32 {
+                        dist[j] = nd as u16;
+                        if j == stop {
+                            break 'flood;
+                        }
+                        next.push((j, nd));
+                    }
+                }
+            }
+            threshold = next.iter().map(|e| e.1).min().unwrap_or(u16::MAX as u32);
+            frontier = next;
+        }
+        dist
+    }
+
+    #[test]
+    fn the_flood_matches_the_originals_passes() {
+        let mut state = 12345u32;
+        let mut rnd = |n: u32| {
+            state = state.wrapping_mul(214_013).wrapping_add(2_531_011);
+            (state >> 16) % n
+        };
+        for case in 0..600 {
+            let (w, h) = (3 + rnd(30) as i32, 3 + rnd(30) as i32);
+            let mut map = TileMap::from_codes(Grid::Square8, w, h, &vec![0; (w * h) as usize], Vec::new());
+            let costs: Vec<u16> = (0..w * h).map(|_| if rnd(6) == 0 { 0 } else { 1 + rnd(8) as u16 }).collect();
+            let mult: Vec<u16> = (0..w * h).map(|_| match rnd(10) { 0 => 0, 1 => 1 + rnd(40) as u16, _ => 1 }).collect();
+            for (i, &c) in costs.iter().enumerate() {
+                let t = (i as i32 % w, i as i32 / w);
+                if c > 0 {
+                    map.open(t, c);
+                }
+            }
+            let cost = |t: Tile| map.cost(t).unwrap_or(0);
+            let seeds: Vec<(Tile, u32)> = (0..1 + rnd(12)).map(|_| ((rnd(w as u32) as i32, rnd(h as u32) as i32), rnd(if case % 3 == 0 { 4 } else { 3000 }))).collect();
+            let from = (rnd(w as u32) as i32, rnd(h as u32) as i32);
+            // Every other case the start is closed, as an ignored army closes its own cell.
+            let mut mult = mult;
+            if case % 2 == 1 {
+                mult[(from.1 * w + from.0) as usize] = 0;
+            }
+            let mask = |t: Tile| mult[(t.1 * w + t.0) as usize];
+            let want = flood_by_passes(&map, &cost, &mask, &seeds, from);
+            let mut got = map.flood_field(&cost, &mask, &seeds, from);
+            // Where the flood reaches the start the whole field is the original's; else only
+            // the path read from it is.
+            let closed = mask(from) == 0 || cost(from) == 0;
+            let k = (from.1 * w + from.0) as usize;
+            if !closed && want[k] != u16::MAX {
+                assert_eq!(got.dist, want, "case {case}");
+            }
+            // The path read from it is the same, with cells around it erased too.
+            let mut full = FloodField { dist: want, kept: got.kept, w };
+            for _ in 0..rnd(3) {
+                let t = (from.0 + rnd(3) as i32 - 1, from.1 + rnd(3) as i32 - 1);
+                full.erase(t);
+                got.erase(t);
+            }
+            assert_eq!(map.descend(&got, from), map.descend(&full, from), "case {case}");
+        }
+    }
 
     // Odd rows are drawn shifted right:
     //   . . . . .

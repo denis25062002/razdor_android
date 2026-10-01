@@ -675,8 +675,8 @@ fn heal_percent(c: &super::content::Content, u: &mut Unit, pct: i32) {
 
 /// Heals a wounded AI troop by `pct`% of its max HP.
 fn heal_troop(c: &super::content::Content, t: &mut super::world::Troop, pct: i32) {
-    if t.hurt > 0 && pct > 0 {
-        let max = Stats::of_level(c, t.unit, t.level.max(1)).max_hp();
+    if t.alive() && t.hurt > 0 && pct > 0 {
+        let max = super::ai::troop_max_hp(c, t);
         t.hurt = (t.hurt - max * pct / 100).max(0);
     }
 }

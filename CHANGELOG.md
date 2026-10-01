@@ -179,6 +179,39 @@ old id, and their versions give both.
 - An event that moves an army to the hero puts it on his cheapest free neighbour (a road
   before grass, a building only as a last resort), moves its home there too but keeps its
   patrol area where it was, and leaves a waiting army off the map.
+- **The world-map AI as in the original**, its slips included. AI armies keep no goal: at
+  every step they may plan again (every few steps, or every step with anyone near), with
+  one flood from everything they want at once, and walk the way it gives. They score other
+  armies and the hero by a battle played in secret (aggression shifting it, a hostile one
+  worth more, a lost one a danger they route around), and every building by its village
+  gold, what they could buy, whether they can take it and its garrison; a stationary guard
+  they cannot beat closes a building to them.
+- Stationary guards no longer move, plan or get paid; an army with nothing to do steps in
+  place, and greets a friend or the hero standing next to it.
+- AI armies greet each other (and, after his step, the hero) by talk counters, and attack a
+  hostile neighbour only when their battle score says so; an enemy sheltering in a third
+  party's building is not attacked.
+- In a building an AI army assaults it if hostile (a tavern or church on its way too, a town
+  only at its worst attitude), takes villages, castles and forts it wins, makes altars and
+  ruins neutral, collects any village's gold (feudal lords), sells its pack and buys items
+  by what they add to its units' strength, heals by its units' hit points left, raises its
+  dead in towns and churches, hires by battle role and its leader's Nature, and buys and
+  deals out its own castles' garrisons.
+- AI armies keep their units' worn items, their dead (raised or dropped after a week) and
+  their pay; a feudal lord short of gold at its noon leaves its cheapest units unpaid, and
+  they stay out of the battles it starts. An army's noon comes at its first step after
+  12:00, from its income, its castles' stock and its villages.
+- Battles between AI armies: the loser's wage bill and gold go to the winner as in the
+  original, the loot of items to the side with more hit points left, worn by whoever they
+  help most; the AI's units are promoted by its own rolls, their items to the loot.
+- Beaten armies no longer retreat into their castle: they respawn after their days, whole
+  when an AI army beat them, the leader alone when the player did (unless the map says
+  whole); a rogue respawning at its ruins takes them over.
+- Armies placed on water are ships and plan like any army on the sea; ships with no patrol
+  of their own wander the whole sea.
+- Units with two upgrade options keep them in the first and third slot, as the original's
+  loader moves them.
+- Saves of the previous format still load; their AI armies start their plans afresh.
 
 ## 0.2.2 — 2026-10-01
 

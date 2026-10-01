@@ -504,7 +504,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 
 | Topic | Razdor now | Original (this file) | Match |
 |---|---|---|---|
-| Wage kinds | Hero leader, event units free, the rest recruits; AI troops all kind 1 | Same for the player; AI kind 2 in foreign buildings | Yes (player) |
+| Wage kinds | Hero and AI leaders free, event units free, the rest recruits; AI hires kind 2 in foreign buildings | Same for the player; AI kind 2 in foreign buildings | Yes |
 | Wage formulas | Brackets and divisors as the original | §1 | Yes |
 | Corpses' wages | Billed | Not billed; may still be picked for a refund | **No** |
 | Rear Service | Per unit `w × 178/256` (or 78), shown in the displayed wages; income test on Razdor's daily income | On the whole bill, truncated once; not in the displayed bill; tests the stored income; also cuts AI wages | **No** (rounding, display, AI) |
@@ -534,7 +534,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
 | Village tribute | Refused from a hostile village | No attitude test (entering captures the village) | **No** |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
-| AI-vs-AI loot | `MinVictoryGold` threshold both ways; no wage bill | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | **No** |
+| AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |
 | Castle capture gold | Stock + income (garrisons carry no gold) | Stock + garrison gold + income | Yes |
 | Ruins treasure | All of the map's goods | The first 5 | **No** |
 | Displays | Report and hire tab show Razdor's computed income and wages | Nominal incomes (towns included) and the bill without Rear Service | **No** |

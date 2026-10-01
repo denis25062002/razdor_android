@@ -391,11 +391,11 @@ and `ui/items_view.rs`) as read on 2026-10-01.
 | Level-up HP | unhurt stays full, wounded keeps HP | proportional rescale with a fractional carry at the next stat rebuild | **differs** |
 | Percent stats | gap to 100 closes by `d`% per level in 32-bit floats, max 99 | the same | none |
 | Player promotion | any unit with a level, not the hero; level 1, XP 0; unwearable items to the pack | the same rules; items stay worn; HP rescaled | items, HP |
-| AI promotion | Militia/Infantry fixed picks, others random filled slot; `NextUnitNLevel ≤ L`, from the game LCG (`rules/rng.rs`) | the same with the game LCG; worn items to the loot pool | troops carry no items |
+| AI promotion | Militia/Infantry fixed picks, others random filled slot; `NextUnitNLevel ≤ L`, from the game LCG (`rules/rng.rs`); worn items to the loot pool | the same with the game LCG; worn items to the loot pool | none |
 | Upgrade slots | ini slots as written | normalised (lone → 2, pair → 1+3) | none for picks, layout only |
 | Event XP | the hero, as it is; a new level shows on the map | the same | none |
 | Opcode 13 | XP banked, per unit or all units | the same; both all-units forms can write outside the army (§5) | Razdor is safe (keep) |
-| AI hires | bytes 14 and 19 as §5, `Random(X) + X div 2` from the game LCG | the same formula with the LCG; also garrison purchases | check garrison buys |
+| AI hires | bytes 14 and 19 as §5, `Random(X) + X div 2` from the game LCG, garrison purchases too | the same formula with the LCG; also garrison purchases | none |
 | Preset offset 8 / 12 | gold / mana; no starting XP | gold / mana | none |
 | Carry-over [3] | level and XP kept, else level 1 | the same | none |
 

@@ -19,7 +19,7 @@ use super::ships::Ship;
 use super::map::{is_water, step_minutes, Tile, TileMap};
 use super::rng::{EventRng, Rng, WORLD_MUSIC_DRAW};
 use super::units::{PromoteError, Unit};
-use super::world::{Army, LocationKind, Owner, Stationed, Troop, World, AI_BUDGET_CAP};
+use super::world::{Army, LocationKind, Stationed, Troop, World, AI_BUDGET_CAP};
 
 /// Real seconds each hero step and each wait tick plays over: the original's
 /// `WalkDelay = 150 + (100 − WalkSpeed) × 2.5` ms at the shipped `WalkSpeed=100` (world.md
@@ -324,27 +324,30 @@ pub struct Game {
     /// settings): the player's choice, set by the interface, not part of the save.
     #[serde(skip)]
     pub improved_ai: bool,
-    /// The AI's simulated battles of the day (`rules::ai`).
+    /// Reports of AI battles to hand to the interface with the slice's events.
     #[serde(skip)]
-    pub(crate) sims: ai::Sims,
+    pub(crate) ai_events: Vec<Event>,
+    /// The AI's simulated battles already played (`rules::ai`).
+    #[serde(skip)]
+    pub(crate) sims: std::cell::RefCell<ai::SimCache>,
 }
 
-/// What an AI army's step needs of the hero: the cells it may not enter, and where he is.
-struct HeroCells {
-    cells: [Option<Tile>; 2],
-    at: Tile,
+/// What an AI army's step needs of the hero: the cells it may not enter (his own and the
+/// one he steps to), and where he is.
+pub(crate) struct HeroCells {
+    pub(crate) cells: [Option<Tile>; 2],
+    pub(crate) at: Tile,
 }
 
 /// Talk counter an army towards the hero is set to after a greeting (world.md §4.3).
 pub(crate) const TALKED: i32 = -500;
 
-/// Army `a` walks its path while its banked minutes cover the next step (world.md §5,
+/// A demo gang walks its path while its banked minutes cover the next step (world.md §5,
 /// 0x4a399c): `cost(the cell it leaves) × speed`, ×1.5 diagonally; `cost` gives the cost units
 /// of a cell, `None` where it cannot go (the route is dropped). A step onto one of the hero's
-/// cells spends its time but the army stays put. Every step taken (or tried) marks it
-/// arrived for [`Game::ai_contact`] and feeds its talk counter towards the hero: +1 when it
-/// is not on his cell (0x4a399c), and `relation + 1` more wherever he is when the relation
-/// is 0 or above (0x4a548c). Remembers where it stood for drawing.
+/// cells spends its time but the gang stays put. Every step taken (or tried) marks it
+/// arrived for [`Game::ai_contact`]. Remembers where it stood for drawing. (The scenario's
+/// armies walk by the AI's step clock, `rules::ai`.)
 fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>, hero: &HeroCells) {
     while let Some(&next) = a.path.first() {
         if cost(next).is_none() {
@@ -359,15 +362,7 @@ fn step_army(map: &TileMap, a: &mut Army, cost: &dyn Fn(Tile) -> Option<u16>, he
         }
         a.budget -= need;
         a.arrived = true;
-        let blocked = hero.cells.contains(&Some(next));
-        let at = if blocked { here } else { next };
-        if map.distance(at, hero.at) > 0 {
-            a.talk = a.talk.saturating_add(1);
-        }
-        if a.attitude >= 0 {
-            a.talk = a.talk.saturating_add(a.attitude as i32 + 1);
-        }
-        if blocked {
+        if hero.cells.contains(&Some(next)) {
             break;
         }
         a.pos = map.center(next);
@@ -443,7 +438,8 @@ impl Game {
             reading: None,
             since_step: 0.0,
             improved_ai: false,
-            sims: ai::Sims::default(),
+            ai_events: Vec::new(),
+            sims: Default::default(),
         };
         // The hero draws no wage; everyone counts as paid at the start.
         let now = clock.total_minutes() as u64;
@@ -525,6 +521,7 @@ impl Game {
         g.spells = start.spells;
         g.archetype = archetype_of(hero);
         g.script = Some(Box::new(EventEngine::new(scenario)));
+        g.ai_init(false);
         g
     }
 
@@ -1058,36 +1055,32 @@ impl Game {
         events
     }
 
-    /// After the hero's step, an AI army that stepped during it and stands next to him
-    /// (|dx| ≤ 1 and |dy| ≤ 1) acts (world.md §4.3, 0x4a548c, 0x4ade3c): a friendly one whose
-    /// talk counter towards him is above 0 greets him (both counters then −500); only when
-    /// none does, a hostile one attacks him, and he is attacked in a building only when it is
-    /// a bridge or his own. Of several, the last in army order acts (the original's loop
-    /// keeps overwriting its pick).
+    /// After the hero's step, what the AI armies' arrivals during it did to him (world.md
+    /// §4.3, ai.md §8.1, 0x4ade3c): a greeting wins over any attack, and of several the
+    /// last army in order acts (the original's loop keeps overwriting its pick). A greeting
+    /// already set both talk counters (`rules::ai`). The demo's gangs attack when they stepped
+    /// next to him (|dx| ≤ 1 and |dy| ≤ 1) and he is not in a building other than a bridge or
+    /// his own.
     pub(crate) fn ai_contact(&mut self) -> Option<Event> {
         if self.foe.is_some() {
             return None;
         }
         let now = self.clock.total_minutes();
-        let here = self.tile();
-        let map = &self.world.map;
-        let next_to = |a: &Army| {
-            let t = a.tile(map);
-            a.arrived && (t.0 - here.0).abs() <= 1 && (t.1 - here.1).abs() <= 1
-        };
-        let greets = self.world.armies.iter().rposition(|a| next_to(a) && !a.hostile() && a.talk > 0);
-        if let Some(i) = greets {
-            self.world.armies[i].talk = TALKED;
+        let contact = |a: &Army, c: ai::Contact| ai::managed(a) && a.mind.contact == Some(c);
+        if let Some(i) = self.world.armies.iter().rposition(|a| contact(a, ai::Contact::Greet)) {
             return Some(Event::Met(i));
         }
+        let here = self.tile();
+        let map = &self.world.map;
         let sheltered = self.world.location_covering(here).is_some_and(|l| {
             let loc = &self.world.locations[l];
             !loc.kind.is_bridge() && !loc.owned()
         });
-        if sheltered {
-            return None;
-        }
-        let i = self.world.armies.iter().rposition(|a| next_to(a) && a.hostile() && now >= a.ignore_until)?;
+        let gang = |a: &Army| {
+            let t = a.tile(map);
+            !ai::managed(a) && !sheltered && a.arrived && (t.0 - here.0).abs() <= 1 && (t.1 - here.1).abs() <= 1 && a.hostile()
+        };
+        let i = self.world.armies.iter().rposition(|a| (contact(a, ai::Contact::Attack) || gang(a)) && now >= a.ignore_until)?;
         self.foe = Some(Foe::Army(i));
         Some(Event::Encounter(i))
     }
@@ -1104,6 +1097,7 @@ impl Game {
             a.walk.minutes.clear();
             a.walk.banked = (a.budget + left).min(AI_BUDGET_CAP);
             a.arrived = false;
+            a.mind.contact = None;
         }
         loop {
             let slice = left.min(WAIT_TICK_MINUTES);
@@ -1137,7 +1131,7 @@ impl Game {
             match tick {
                 Tick::Midnight(_) => self.midnight(),
                 Tick::Noon(day) => {
-                    self.ai_new_day();
+                    // AI armies run their noon at their first arrival after it (`rules::ai`).
                     if day >= self.noon_from.unwrap_or(self.start_day + 1) {
                         self.noon_due = Some(day);
                     }
@@ -1203,12 +1197,11 @@ impl Game {
         DayReport { day, income, mana, wages, mana_wages, unpaid, deserted, gold: self.gold, mana_total: self.mana }
     }
 
-    /// Armies move for `minutes` (world.md §2): each banks them (up to [`AI_BUDGET_CAP`]) and
-    /// takes the steps they cover. The AI plans the routes of the armies it steers
-    /// (`rules::ai`); ships and the demo's gangs chase a nearby hostile hero or patrol. Then AI
-    /// armies act on the goals they reached and fight each other.
+    /// Armies move for `minutes` (world.md §2): the AI's armies by its step clock and
+    /// arrival rules (`rules::ai`); the demo's gangs bank the minutes (up to
+    /// [`AI_BUDGET_CAP`]), chase a nearby hostile hero or patrol, and take the steps they
+    /// cover.
     fn move_armies(&mut self, minutes: f32, events: &mut Vec<Event>) {
-        self.ai_plan();
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
         // The hero's cells: where he stands and, while he steps, the cell he left; standing,
@@ -1216,34 +1209,19 @@ impl Game {
         // cell plus his direction, which a stop does not clear: 0x4a399c).
         let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
         let hero = HeroCells { cells: [Some(hero_tile), self.step_from.or(ahead)], at: hero_tile };
+        self.ai_move(minutes, &hero);
+        events.append(&mut self.ai_events);
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;
         let map = &world.map;
-        for a in armies.iter_mut() {
-            // Stationary guards (patrol radius 0) are skipped by the AI clock (0x4a399c).
-            if a.patrols && a.patrol_radius == 0 {
-                continue;
-            }
+        for a in armies.iter_mut().filter(|a| !ai::managed(a)) {
             a.budget = (a.budget + minutes).min(AI_BUDGET_CAP);
             let here = a.tile(map);
-            let sails = a.sails();
-            if ai::managed(a) {
-                step_army(map, a, &|t| map.cost(t), &hero);
-                continue;
-            }
-            // Ships stay on the water: they chase the hero to the water next to him.
-            let goal = if sails { Game::sea_chase_goal(world, here, hero_tile) } else { Some(hero_tile) };
-            let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS && goal.is_some();
-            let route = |a: &Army, from: Tile, to: Tile| {
-                if sails {
-                    map.path_by(from, to, AI_PATH_NODES, &|_, y| world.sea_step(y))
-                } else {
-                    ai::army_path(world, a, from, to, AI_PATH_NODES)
-                }
-            };
-            if let (true, Some(goal)) = (near, goal) {
-                if !a.chasing || a.path.last() != Some(&goal) {
-                    a.path = route(a, here, goal);
+            let near = a.hostile() && now >= a.ignore_until && map.distance(here, hero_tile) <= CHASE_RADIUS;
+            let route = |a: &Army, from: Tile, to: Tile| ai::army_path(world, a, from, to, AI_PATH_NODES);
+            if near {
+                if !a.chasing || a.path.last() != Some(&hero_tile) {
+                    a.path = route(a, here, hero_tile);
                     a.chasing = true;
                 }
             } else if a.chasing {
@@ -1254,8 +1232,7 @@ impl Game {
                 let (r, c) = (a.patrol_radius, a.patrol_centre());
                 for _ in 0..3 {
                     let t = (c.0 + self.rng.range(-r, r), c.1 + self.rng.range(-r, r));
-                    let fits = if sails { world.is_sea(t) } else { map.passable(t) };
-                    if fits && world.location_at(t).is_none() && map.distance(t, c) <= r {
+                    if map.passable(t) && world.location_at(t).is_none() && map.distance(t, c) <= r {
                         a.path = route(a, here, t);
                         if !a.path.is_empty() {
                             break;
@@ -1265,14 +1242,9 @@ impl Game {
                 // Rest between patrol legs, or after failing to find one *(guess)*.
                 a.rest_until = now + self.rng.range(30, 180) as f64;
             }
-            if sails {
-                step_army(map, a, &|t| world.sea_step(t), &hero);
-            } else {
-                step_army(map, a, &|t| map.cost(t), &hero);
-            }
+            step_army(map, a, &|t| map.cost(t), &hero);
         }
         self.world.armies = armies;
-        self.ai_after_walk(events);
     }
 
     /// Price to hire unit type `kind`: its `Cost` (in mana for elementals).
@@ -1338,7 +1310,7 @@ impl Game {
         let (enemies, attacker, defence) = match self.foe {
             Some(Foe::Garrison(l)) => {
                 let loc = &self.world.locations[l];
-                (loc.garrison.iter().map(|t| troop_unit(&self.content, t)).collect(), Team::Player, loc.garrison_defence)
+                (loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(&self.content, t)).collect(), Team::Player, loc.garrison_defence)
             }
             Some(Foe::Army(i)) => (ai::army_units(&self.content, &self.world.armies[i]), Team::Enemy, 0),
             None => (Vec::new(), Team::Player, 0),
@@ -1510,6 +1482,12 @@ impl Game {
         }
         let (_, mut dropped_left) = self.take_items(dropped);
         let foe = self.foe.take();
+        // The AI rescores its matchups with the hero and the army he fought (4c50ec).
+        self.mark_dirty(ai::HERO);
+        if let Some(Foe::Army(i)) = foe {
+            let uid = self.world.armies[i].uid;
+            self.mark_dirty(uid);
+        }
         let mana = if battle.outcome() == Outcome::Victory { self.surrender_mana(battle) } else { 0 };
         self.mana += mana;
 
@@ -1525,12 +1503,10 @@ impl Game {
                 let rolls = std::mem::take(&mut loc.loot_rolls);
                 // Whatever it is (castle, fort, ruins…), a place whose garrison is beaten is
                 // the hero's now; only the demo's bandit camps burn instead.
-                let captured = (loc.kind != LocationKind::Camp).then(|| {
-                    loc.owner = Owner::Player;
-                    loc.faction = 1;
-                    loc.attitude = 3;
-                    l
-                });
+                let captured = (loc.kind != LocationKind::Camp).then_some(l);
+                if captured.is_some() {
+                    self.world.give_to_player(l);
+                }
                 self.gold += reward;
                 let mut found = treasure;
                 found.extend((0..rolls).filter_map(|_| self.roll_item(Source::Loot)));
@@ -1548,9 +1524,13 @@ impl Game {
                 });
                 let army = &mut self.world.armies[i];
                 army.gold -= gold;
-                let (id, mut found) = (army.id, std::mem::take(&mut army.items));
-                // Every item its units wore goes too (`ai::army_units` puts them on).
-                // Off the map; a lord retreats, others may respawn (`rules::ai`).
+                let (id, mut found) = (army.id, Vec::new());
+                // Every item its units wore, then its pack (economy.md §3).
+                for t in army.troops.iter_mut() {
+                    found.extend(t.worn.iter_mut().filter_map(Option::take));
+                }
+                found.append(&mut army.items);
+                // Off the map; it may respawn (`rules::ai`).
                 self.army_beaten(i, Beaten::ByPlayer);
                 self.gold += reward;
                 if id == 0 && self.rng.range(1, 100) <= GANG_LOOT_CHANCE {
@@ -1559,10 +1539,7 @@ impl Game {
                 let (loot, left_behind) = self.take_items(found);
                 dropped_left += left_behind;
                 if let Some(h) = home {
-                    let loc = &mut self.world.locations[h];
-                    loc.owner = Owner::Player;
-                    loc.faction = 1;
-                    loc.attitude = 3;
+                    self.world.give_to_player(h);
                 }
                 BattleResult::Victory { reward, mana, lost, loot, left_behind: dropped_left, level_ups, captured: home }
             }
@@ -1747,13 +1724,23 @@ pub(crate) fn archetype_of(hero: HeroClass) -> u8 {
     }
 }
 
-/// A fresh unit for an army or garrison troop, at its level and full health.
+/// The unit of an army or garrison troop: its level and XP, its worn items, its pay and
+/// kind, its hit points (its maximum, items included, minus what it lacks; 0 dead).
 pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     let mut u = Unit::new(content, t.unit, t.slot);
     u.level = t.level.max(1);
     u.xp = t.xp;
+    u.items = t.worn;
+    u.wage_kind = t.kind;
+    u.unpaid = t.unpaid;
+    u.last_paid = t.last_paid;
     u.heal_full(content);
-    u.hp = (u.hp - t.hurt).max(1);
+    if t.alive() {
+        u.hp = (u.hp - t.hurt).max(1);
+    } else {
+        u.hp = 0;
+        u.died_at = t.died_at;
+    }
     u
 }
 
@@ -2629,7 +2616,7 @@ mod tests {
         let mut g = start(&s);
         g.fog = Fog::disabled(24, 6);
         let a = &mut g.world.armies[0];
-        a.ai.enabled = false;
+        a.mind.scripted = true;
         a.path = path;
         g
     }
@@ -2650,8 +2637,15 @@ mod tests {
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_) | Event::Encounter(_))), "{events:?}");
         assert_eq!(g.world.armies[0].talk, -500 + 1 + 2);
-        // An army standing still next to him never greets him.
+        // An army with no path steps in place on its own cell's cost (0x4a399c): each of
+        // those is an arrival too, so it greets him as well. A stationary guard never does.
         let mut g = with_walker(1, (4, 2), vec![]);
+        assert!(g.set_destination((3, 3)));
+        let events = walk_until_stopped(&mut g);
+        assert!(events.contains(&Event::Met(0)), "{events:?}");
+        let mut g = with_walker(1, (4, 2), vec![]);
+        g.world.armies[0].patrols = true;
+        g.world.armies[0].patrol_radius = 0;
         assert!(g.set_destination((3, 3)));
         let events = walk_until_stopped(&mut g);
         assert!(!events.iter().any(|e| matches!(e, Event::Met(_))), "{events:?}");
@@ -2681,7 +2675,10 @@ mod tests {
         assert!(g.set_destination((8, 4)));
         let events = walk_until_stopped(&mut g);
         assert!(events.contains(&Event::Met(0)), "{events:?}");
-        assert_eq!((g.tile(), g.world.armies[0].talk), ((8, 4), -500));
+        // Its counter fell to −500 and grows again by 1 + 2 at each step in place since.
+        let talk = g.world.armies[0].talk;
+        assert_eq!(g.tile(), (8, 4));
+        assert!((-500..0).contains(&talk) && (talk + 500) % 3 == 0, "{talk}");
     }
 
     #[test]
@@ -2692,13 +2689,14 @@ mod tests {
         let mut g = start(&s);
         g.fog = Fog::disabled(24, 6);
         for (a, to) in g.world.armies.iter_mut().zip([(4, 2), (4, 4)]) {
-            a.ai.enabled = false;
+            a.mind.scripted = true;
             a.path = vec![to];
         }
         assert!(g.set_destination((3, 3)));
         let events = walk_until_stopped(&mut g);
         assert!(events.contains(&Event::Met(1)) && !events.contains(&Event::Met(0)), "{events:?}");
-        assert_eq!((g.world.armies[0].talk, g.world.armies[1].talk), (3, -500));
+        // Both greeted him in their arrivals (0x4a548c): both counters fell to −500.
+        assert_eq!((g.world.armies[0].talk, g.world.armies[1].talk), (-500, -500));
     }
 
     #[test]
@@ -2737,6 +2735,8 @@ mod tests {
         // A hostile army two cells east walks west along row 2: it may not enter his cell,
         // so it stays next to him; it attacks after his step, never while he waits.
         let mut g = with_walker(-2, (4, 2), vec![(3, 2), (2, 2), (1, 2)]);
+        // Its cached battle score against him says it wins (ai.md §8).
+        g.world.armies[0].mind.scores.insert(ai::HERO, 1);
         g.wait(2);
         assert_eq!(g.world.armies[0].tile(&g.world.map), (3, 2), "it stopped short of him");
         assert!(g.foe.is_none(), "no attack while he waits");
@@ -2783,8 +2783,10 @@ mod tests {
         let at = g.world.armies[0].tile(&g.world.map);
         assert!(at.0 > 8 && g.tile() == (at.0 - 1, 2), "next to it: {:?} {at:?}", g.tile());
         // Moved by other means (not a step of its own), it is not followed: he walks to the
-        // cell clicked.
+        // cell clicked. (A stationary guard: an army with no path steps in place.)
         let mut g = with_walker(1, (8, 2), vec![]);
+        g.world.armies[0].patrols = true;
+        g.world.armies[0].patrol_radius = 0;
         assert!(g.set_destination((8, 2)));
         g.world.armies[0].pos = g.world.map.center((12, 2));
         walk_until_stopped(&mut g);
@@ -2804,7 +2806,7 @@ mod tests {
         let mut g = start(&s);
         g.fog = Fog::disabled(24, 6);
         let a = &mut g.world.armies[0];
-        a.ai.enabled = false;
+        a.mind.scripted = true;
         a.path = vec![(9, 2), (10, 2)];
         a.speed = 10;
         assert!(g.set_destination((8, 2)));
@@ -2834,12 +2836,12 @@ mod tests {
         let mut s = strip();
         let mut foe = army(1, 7, 4, -2, &[troop(4, 0, 1)]);
         foe.patrols = 0;
-        // The AI goes only for battles it would win: a bold one for this.
+        // The AI goes only for battles it would win: a bold one for this; and no wandering.
         foe.aggression = 100;
+        foe.no_random_targets = 1;
         s.armies = vec![foe];
         let mut g = start(&s);
         let events = g.wait(4);
-        assert!(g.world.armies[0].chasing);
         assert!(!events.iter().any(|e| matches!(e, Event::Encounter(_))), "no attack on a waiting hero: {events:?}");
         let a = g.world.armies[0].tile(&g.world.map);
         assert!((a.0 - 2).abs() <= 1 && (a.1 - 2).abs() <= 1, "it came next to him: {a:?}");
@@ -2861,7 +2863,7 @@ mod tests {
         s.buildings = vec![castle];
         s.armies = vec![army(1, 12, 2, -2, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.world.locations[0].owner = Owner::Player;
+        g.world.locations[0].owner = crate::rules::world::Owner::Player;
         // Standing outside: no bonus.
         g.foe = Some(Foe::Army(0));
         assert_eq!(g.start_battle().building_defence(Team::Player), 0);
@@ -2880,7 +2882,7 @@ mod tests {
         s.buildings = vec![castle];
         s.armies = vec![army(1, 12, 2, -2, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.world.locations[0].owner = Owner::Neutral;
+        g.world.locations[0].owner = crate::rules::world::Owner::Neutral;
         g.world.locations[0].attitude = 2;
         g.foe = Some(Foe::Army(0));
         g.location = Some(0);
@@ -3132,20 +3134,17 @@ mod tests {
         let at = g.world.armies[0].pos;
         g.tick(10.0);
         assert_eq!(g.world.armies[0].pos, at, "the hero stands still: so does the world");
-        // One orthogonal grass step ahead of it.
+        // One orthogonal grass step ahead of it, and no plan before its countdown runs out.
         let a = &mut g.world.armies[0];
-        a.mind.goal = crate::rules::ai::Goal::Wander((13, 2));
-        a.mind.think_at = f64::MAX;
-        a.path = vec![(13, 2)];
+        a.mind.countdown = 100;
+        a.path = vec![(13, 2), (14, 2)];
         let mut events = Vec::new();
         g.pass_time(20.0, &mut events);
         assert_eq!(g.world.armies[0].pos, at, "20 minutes do not pay a 25-minute grass step");
         g.pass_time(10.0, &mut events);
         assert_ne!(g.world.armies[0].pos, at, "30 do");
-        // The bank holds 200 minutes at most.
-        g.world.armies[0].path.clear();
-        g.world.armies[0].mind.goal = crate::rules::ai::Goal::Idle;
-        g.world.armies[0].mind.think_at = f64::MAX;
+        // The bank holds 200 minutes at most (an army too slow to take a step: 5 × 100).
+        g.world.armies[0].speed = 100;
         g.pass_time(24.0 * 60.0, &mut events);
         assert_eq!(g.world.armies[0].budget, 200.0);
     }
@@ -3160,9 +3159,8 @@ mod tests {
         let mut g = start(&s);
         let a = &mut g.world.armies[0];
         let (x0, y0) = a.pos;
-        a.mind.goal = crate::rules::ai::Goal::Wander((15, 2));
-        a.mind.think_at = f64::MAX;
-        a.path = vec![(13, 2), (14, 2), (15, 2)];
+        a.mind.countdown = 100;
+        a.path = vec![(13, 2), (14, 2), (15, 2), (16, 2)];
         // 50 banked + 25 minutes: two grass steps (25 each) and a third left unpaid.
         a.budget = 50.0;
         let mut events = Vec::new();

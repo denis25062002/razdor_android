@@ -1,100 +1,94 @@
-//! AI armies (mechanics.md 5.6, §8.8; `original-mechanics/world.md` §4–5): what the
-//! scenario's armies want and do while the player walks.
+//! AI armies (`original-mechanics/ai.md`): the scenario's armies as the original steers them,
+//! one to one, its slips included.
 //!
-//! - **Brain**: every army the AI steers ([`managed`]: the scenario's land armies) picks a goal
-//!   on a cadence ([`THINK_MINUTES`]) from its behaviour style (feudal, rogue, peasant: army
-//!   byte 59), its target model (byte 85) and the `Min/Max…Target` priorities of `_Global.ini`
-//!   ([`Priorities`]): attack the player or a hostile army, take a hostile castle or fort
-//!   (rogues: their lost home first), heal at a friendly building, fill a garrison, hire,
-//!   shop, collect a village's tribute, talk to a friendly army, wander its patrol, go home.
-//!   As the original (world.md §5): every candidate is seeded with its priority into one
-//!   flood over the map and the army takes the lowest `priority + path cost` (10 per
-//!   orthogonal grass cell; [`choose`]); lower wins. Armies and the player are candidates
-//!   only within `AIDistance0..2` cells of the army, by its style ([`target_range`]); a
-//!   patrolling army takes targets only inside its patrol box. An army or garrison is worth
-//!   attacking only when a simulated battle says it wins ([`battle_seed`]). The per-army flags
-//!   (bytes 76–81) remove goals.
-//! - **Walking** (world.md §2): an army banks the minutes of every hero step and wait tick
-//!   (up to 200) and takes a step when they cover `cost × speed` (×1.5 diagonally).
-//! - **Economy** (noon, [`Game::ai_new_day`]): income from owned buildings and the army's
-//!   daily income (byte 80 × 10); feudal lords pay wages and keep `NeedUpkeepDay` days of
-//!   them in reserve when they hire or shop; rogues pay no wages and hire only rogue units;
-//!   peasants do neither. Garrisons heal at midnight ([`Game::ai_midnight`]).
-//! - **AI battles**: mutually hostile armies that meet, or an army reaching its target, fight
-//!   with the battle engine played by the AI on both sides ([`Game::ai_battle`]); losses, XP,
-//!   loot and captures are applied, and the player hears of it when it happens within sight.
-//! - **Lords and respawn**: a beaten feudal lord who still owns a building retreats into it
-//!   and comes back after [`RECOVER_DAYS`] *(guess)*; other armies with a home building and a
-//!   respawn time come back after it at the centre of their home ([`Respawn`], world.md §5).
+//! - **Step clock** (ai.md §2, 0x4a399c): an army banks the minutes of every hero step and
+//!   wait tick (up to 200) and takes a step when they cover `cost(cell left) × speed`, ×1.5
+//!   diagonally; with no path it "steps in place" on its own cell's cost. Every step ends in
+//!   an **arrival**: the talk counters grow, it may **re-plan**, then its arrival rules run.
+//!   Stationary guards (patrol radius 0) do nothing at all.
+//! - **Planner** (§7, [`Game::ai_plan`]): no goal is kept. Each plan seeds every target at
+//!   once (buildings by their score, armies by their cached battle score or talk counter,
+//!   four wander points) into one flood over the map (`TileMap::flood_field`), laid over a
+//!   multiplier map where losing matchups push **repulsion cones** and forbidden buildings and
+//!   guards are closed; the path is read back by steepest descent.
+//! - **Scores**: an army's score against another comes from a simulated battle
+//!   ([`Game::army_score`], cached per pair with dirty flags); a building's from four parts
+//!   ([`Game::building_score`]); lower is more attractive, 0 no interest, below 0 danger.
+//! - **Arrival** ([`Game::ai_arrive`]): contacts with neighbours (attack, triple the scores,
+//!   greet), then in a building: assault and capture, village gold, shopping, healing,
+//!   resurrection, hiring, garrison buying and the garrison reshuffle; the visited building's
+//!   score is zeroed until the next rescoring.
+//! - **AI battles** ([`Game::ai_battle`]): the battle engine plays both sides; HP, deaths, XP
+//!   with promotion rolls, the asymmetric loot and the pooled items handed out by tactical
+//!   gain. Beaten armies leave the map and **respawn** at their home after their days.
+//! - **Noon and midnight** (§14): an army's noon is run at its first arrival after 12:00;
+//!   midnight updates the village average and rescores every building.
 //!
-//! Everything the original leaves open is marked *(guess)* and listed in mechanics.md §8.8.
+//! Everything the original leaves open is marked *(guess)*.
 
-use std::collections::{BinaryHeap, HashMap};
-use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::dt::dtm::Army as DtArmy;
 
 use super::battle::{Battle, Outcome, Team};
 use super::clock::MINUTES_PER_DAY;
-use super::content::{Content, GlobalOptions, Nature, UnitId, WageKind};
+use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, SpellDef, UnitId, WageKind};
+use super::economy::{delphi_round, relation_price, REAR_SERVICE};
 use super::events::ArmyId;
 use super::fog;
-use super::game::{troop_unit, Event, Foe, Game};
+use super::game::{troop_unit, Event, Foe, Game, HeroCells, TALKED};
 use super::items;
-use super::map::Tile;
+use super::map::{step_minutes, Tile};
 use super::rng::Rng;
-use super::units::{Stats, Unit};
+use super::units::Unit;
 use super::world::{Army, Location, LocationKind, Owner, Troop, World};
 
-/// An AI army thinks again after this many game minutes *(guess)*.
-pub const THINK_MINUTES: f64 = 60.0;
-/// Route searches (A*) all AI armies together may start per slice of game time; the rest wait
-/// for the next slice. Chasing the player is not counted.
-pub const MAX_PATHS_PER_SLICE: usize = 4;
-/// Cells a goal route search may expand.
-pub const GOAL_PATH_NODES: usize = 12_000;
-/// Cells a chase route search may expand.
-const CHASE_PATH_NODES: usize = 4_000;
-/// Cells the goal flood may expand ([`choose`]).
-const FLOOD_NODES: usize = 40_000;
-/// Seeds of the goal flood are capped here (the original's 32766).
-const MAX_SEED: i64 = 32_766;
-/// Random points a wandering army considers (world.md §5).
-const WANDER_POINTS: usize = 4;
-/// A castle or fort's seed is `AtackCastle × this` (world.md §5).
-const CASTLE_FACTOR: i64 = 50;
-/// A beaten lord recovers in his building this many days *(guess)*.
-pub const RECOVER_DAYS: u64 = 3;
-/// Armies heal at a building only below this share of their hit points, in per mille *(guess)*.
-pub const HEAL_BELOW: i64 = 750;
-/// Items an AI army carries at most *(guess)*.
+/// Unit records of an army or a garrison.
+pub const MAX_UNITS: usize = 12;
+/// Items an army's pack holds.
 pub const MAX_ARMY_ITEMS: usize = 12;
-/// A goal that could not be reached is left alone this long.
-const BLOCK_MINUTES: f64 = MINUTES_PER_DAY as f64;
-/// After a stalemate two armies leave each other alone this long *(guess)*.
-const TRUCE_MINUTES: f64 = MINUTES_PER_DAY as f64;
-/// Between two talks with friendly armies *(guess)*.
-const TALK_EVERY: f64 = MINUTES_PER_DAY as f64;
-/// Minutes a talk takes.
-const TALK_MINUTES: f64 = 60.0;
+/// Key of the hero in an army's score and talk maps (scenario armies are 1-based).
+pub const HERO: u32 = 0;
 /// Battle reports kept in [`Game::ai_log`].
 pub const LOG_KEPT: usize = 30;
 /// Steps after which an auto-played battle is cut off (the engine's turn limit ends it well
 /// before).
 const MAX_BATTLE_STEPS: usize = 20_000;
-/// Armies meet on neighbouring cells, as the hero does.
-const CONTACT: i32 = 1;
+/// Wander points an army keeps (0x4a2550).
+const WANDER_POINTS: usize = 4;
+/// A building or an army it may not go for.
+const FORBIDDEN: i32 = -100_000;
+/// Pair scores tripled at a sheltered neighbour stop here.
+const TRIPLED_CAP: i32 = 10_000;
+/// Armies closer than this (octile) close their cell to an ignored army's plan and the other
+/// way round (0x4a2d88).
+const NEAR_IGNORED: i32 = 11;
+/// After more idle plans in a row than this, an army takes random targets anyway.
+const IDLE_FOR_RANDOM: i32 = 10;
+/// Repulsion slopes: the steep cone's factor, and a stationary guard's narrower cones.
+const STEEP: f32 = 25.0;
+const GUARD_SLOPE: f32 = 5.0;
+/// A talk counter at or above this no longer draws an army to its friend.
+const TALK_COOLED: i32 = 800;
+/// A unit hired or bought beyond this while filling the third role is not wanted.
+const LATE_CAP: usize = 8;
+/// Rounds of the garrison reshuffle (the counter is tested before it is raised).
+const RESHUFFLE_ROUNDS: i32 = 201;
+/// A tactical gain an item must beat to be bought or worn.
+const WORTH: i32 = 5;
+/// What a cell the reshuffle cannot fill is charged.
+const FULL: i32 = 100_000;
 
-/// Behaviour style (army byte 59, mechanics.md 5.6).
+/// Behaviour style (army byte 59).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Style {
-    /// Like the player: income, tribute, wages, hiring, shopping.
+    /// Collects village gold, pays wages, keeps `NeedUpkeepDay` days of them.
     #[default]
     Feudal,
-    /// No wages, no tribute, hires rogue units, retakes its forts.
+    /// Pays no wages; spends a day's worth.
     Rogue,
-    /// Wanders.
+    /// Never assaults, shops, heals or hires; collects nothing.
     Peasant,
 }
 
@@ -111,6 +105,21 @@ impl Style {
             _ => Style::Feudal,
         }
     }
+
+    /// The byte the original compares (`style < 2`, `style == 0`) and indexes
+    /// `AIDistance0..2` with.
+    pub fn byte(self) -> usize {
+        match self {
+            Style::Feudal => 0,
+            Style::Rogue => 1,
+            Style::Peasant => 2,
+        }
+    }
+
+    /// Feudal or rogue: the styles that assault, shop, heal and hire (`style < 2`).
+    pub fn lordly(self) -> bool {
+        self != Style::Peasant
+    }
 }
 
 /// Target models (army byte 85): index into the `_Global.ini` priority lists.
@@ -122,7 +131,7 @@ pub mod model {
     pub const TRADING: usize = 4;
 }
 
-/// What the scenario says about an army's behaviour.
+/// What the scenario says about an army's behaviour (ai.md §1).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AiProfile {
     /// Steered by the AI. False for the demo's gangs.
@@ -130,19 +139,19 @@ pub struct AiProfile {
     pub style: Style,
     /// Target model, 0..=4 ([`model`]).
     pub model: usize,
-    /// Byte 69, about −70..100: how much stronger an enemy it dares to attack.
+    /// Byte 69, signed, in percent: shifts the simulated battles it scores.
     pub aggression: i32,
-    /// Attitude towards the four factions (byte 65; the one towards the player is
-    /// [`Army::attitude`]).
+    /// Attitude towards the four factions (bytes 65–68).
     pub relations: [i8; 4],
     pub respawn_days: u32,
-    /// Respawn the whole army, not only the leader.
+    /// Byte 83: a beaten army comes back whole, not only its leader, when the player beat it.
     pub respawn_all: bool,
-    /// Daily gold income: byte 80 × 10 (world.md §5; word 17 is its starting gold).
+    /// Base daily income: byte 80 × 10.
     pub extra_income: i32,
-    /// Byte 82, default 50: the garrison it keeps in its buildings, in percent of its own
-    /// strength *(guess)*.
-    pub garrison_strength: i32,
+    /// Byte 82: the garrison level its own towns, castles and forts are kept at (0 none).
+    /// Saves from before it read −1 and take the scenario's on load.
+    #[serde(default = "unknown_level")]
+    pub garrison_level: i32,
     /// Byte 71: experience correction in percent. It scales the XP the player gains by
     /// beating this army (experience.md §3); 0 is read as 100 *(guess: no shipped army has 0)*.
     pub exp_correction: i32,
@@ -161,13 +170,15 @@ pub struct AiProfile {
     pub no_random: bool,
     pub no_talk: bool,
     pub no_buildings: bool,
-    /// The army as the scenario places it (for respawns).
-    pub start_troops: Vec<Troop>,
+}
+
+fn unknown_level() -> i32 {
+    -1
 }
 
 impl AiProfile {
-    /// The profile of a scenario army; `troops` as placed.
-    pub fn from_dt(a: &DtArmy, troops: &[Troop]) -> AiProfile {
+    /// The profile of a scenario army.
+    pub fn from_dt(a: &DtArmy) -> AiProfile {
         AiProfile {
             enabled: true,
             style: Style::of(a.behaviour, a.model),
@@ -177,7 +188,7 @@ impl AiProfile {
             respawn_days: a.respawn_days as u32,
             respawn_all: a.respawn_all != 0,
             extra_income: a.unknown_80 as i32 * 10,
-            garrison_strength: if a.garrison_strength == 0 { 50 } else { a.garrison_strength as i32 },
+            garrison_level: a.garrison_strength as i32,
             exp_correction: if a.exp_correction == 0 { 100 } else { a.exp_correction as i32 },
             exp_like_player: a.exp_like_player != 0,
             hire_bonus_exp: a.hire_bonus_exp as i32,
@@ -187,84 +198,65 @@ impl AiProfile {
             no_random: a.no_random_targets != 0,
             no_talk: a.no_socialising != 0,
             no_buildings: a.no_building_interest != 0,
-            start_troops: troops.to_vec(),
         }
     }
 }
 
-/// What an AI army is up to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Goal {
-    #[default]
-    Idle,
-    /// A patrol leg to this cell.
-    Wander(Tile),
-    /// Back to its post.
-    Home,
-    AttackPlayer,
-    /// Go to the player to meet him: a friendly army that hunts only the player (a
-    /// messenger), whose meeting the scenario's events wait for.
-    MeetPlayer,
-    /// An army, by [`Army::uid`].
-    AttackArmy(u32),
-    /// Take a castle or fort (index into `locations`).
-    Capture(usize),
-    Heal(usize),
-    /// Fill the garrison of its own building.
-    Garrison(usize),
-    Hire(usize),
-    Shop(usize),
-    Village(usize),
-    /// Visit a friendly army.
-    Talk(u32),
-}
-
-impl Goal {
-    pub fn building(self) -> Option<usize> {
-        match self {
-            Goal::Capture(l) | Goal::Heal(l) | Goal::Garrison(l) | Goal::Hire(l) | Goal::Shop(l) | Goal::Village(l) => Some(l),
-            _ => None,
-        }
-    }
-
-    pub fn army(self) -> Option<u32> {
-        match self {
-            Goal::AttackArmy(u) | Goal::Talk(u) => Some(u),
-            _ => None,
-        }
-    }
-
-    fn same_kind(self, other: Goal) -> bool {
-        std::mem::discriminant(&self) == std::mem::discriminant(&other)
-    }
-}
-
-/// An AI army's current goal and bookkeeping.
+/// What the AI keeps of an army between its arrivals (ai.md §1's record fields).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AiMind {
-    pub goal: Goal,
-    /// Game minute of the next goal choice.
-    pub think_at: f64,
-    /// Noons in a row it could not pay its wages.
-    pub unpaid_days: u32,
-    /// No talk before this minute.
-    pub talk_after: f64,
-    /// No AI battle before this minute (after a stalemate) with army `truce_with` (uid),
-    /// nor with its buildings.
-    pub truce_until: f64,
-    pub truce_with: u32,
-    /// Goals it could not reach, and until when they are left alone.
-    pub blocked: Vec<(Goal, f64)>,
+    /// Steps until it plans again.
+    pub countdown: i32,
+    /// Plans in a row that found it standing with nothing to do.
+    pub idle: i32,
+    /// Its four wander points; a point in column 0 (a cleared one is (0, 0)) is never a
+    /// target.
+    pub wander: [Tile; WANDER_POINTS],
+    /// Came back from a respawn and has not finished a path since: it seeds no armies.
+    pub just_respawned: bool,
+    /// Healing keeps it standing until this minute.
+    pub busy_until: f64,
+    /// Game minute of its next noon.
+    pub next_noon: f64,
+    /// Today's income as its noon counted it (for its spare gold).
+    pub income: i32,
+    /// Village gold it collects a day on average, and what it collected today.
+    pub village_avg: i32,
+    pub village_today: i32,
+    /// The building it stands in and the defence its battles get from it.
+    pub standing: Option<usize>,
+    pub defence: i32,
+    /// Battle scores against other armies (by uid, [`HERO`] the hero) and the pairs not to be
+    /// rescored before something changes them.
+    pub scores: BTreeMap<u32, i32>,
+    pub clean: BTreeSet<u32>,
+    /// Talk counters towards other armies (the one towards the hero is [`Army::talk`]).
+    pub talk: BTreeMap<u32, i32>,
+    /// Its score of every building (by index).
+    pub buildings: Vec<i32>,
+    /// What its last arrival did to the hero, read after his step ([`Game::ai_contact`]).
+    #[serde(skip)]
+    pub contact: Option<Contact>,
+    /// Tests walk it along the path they give it: it never plans.
+    #[cfg(test)]
+    #[serde(skip)]
+    pub scripted: bool,
+}
+
+/// What an AI army's arrival does to the hero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Contact {
+    Attack,
+    Greet,
 }
 
 /// A beaten army waiting to come back.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Respawn {
-    /// Game minute it comes back.
+    /// Game minute after which it comes back (time of defeat + its respawn days).
     pub due: f64,
     pub army: Army,
-    /// A lord recovering in one of his buildings (else an ordinary respawn).
-    pub lord: bool,
 }
 
 /// A battle between AI armies (or an AI army and a garrison), for the player's log.
@@ -278,25 +270,31 @@ pub struct AiNews {
 
 /// Counts for the simulation reports and tests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AiStats {
     pub battles: u32,
     pub captures: u32,
     pub respawns: u32,
-    pub retreats: u32,
     pub hired: u32,
     pub bought: u32,
+    /// Plans made.
     pub paths: u32,
 }
 
-/// The AI steers this army: a scenario army on land. Ships and the demo's gangs keep the
-/// simple rules of `Game::move_armies`.
+/// The AI steers this army: a scenario army. The demo's gangs keep the simple rules of
+/// `Game::move_armies`.
 pub fn managed(a: &Army) -> bool {
-    a.ai.enabled && !a.sails()
+    a.ai.enabled
 }
 
-/// Priorities of one target model (`_Global.ini`, mechanics.md 5.6): lower is more urgent.
-/// Pairs are (Min, Max): the value runs from Max at no need to Min at full need.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A stationary guard: patrols with radius 0. It never steps, plans or arrives.
+pub fn stationary(a: &Army) -> bool {
+    a.patrols && a.patrol_radius == 0
+}
+
+/// Priorities of one target model (`_Global.ini`, ai.md §1): lower is more urgent.
+/// Pairs are (Min, Max).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Priorities {
     pub attack_army: i32,
     pub attack_castle: i32,
@@ -310,46 +308,11 @@ pub struct Priorities {
     pub gold_village: i32,
 }
 
-/// Razdor's own priorities for content without `_Global.ini` (the demo), on the scale of the
-/// additive scoring (a path cost of 10 per grass cell): attacks are cheap, wandering dear.
-const DEMO_PRIORITIES: Priorities = Priorities {
-    attack_army: 2,
-    attack_castle: 2,
-    random: 450,
-    talk: 350,
-    heal: (40, 120),
-    garrison: (100, 450),
-    purchase: (120, 300),
-    gold_purchase: 400,
-    village: (20, 200),
-    gold_village: 100,
-};
-
 impl Priorities {
-    /// The priorities of target model `m`. A key missing from a file that has the others
-    /// reads as 0, as the exe reads a missing key; so the shipped file's misspelt
-    /// `MixHealingTarget` leaves the healing minimum at 0 *(guess)*.
+    /// The priorities of target model `m`. A missing key reads as 0, as the exe reads it,
+    /// so the shipped file's misspelt `MixHealingTarget` leaves the healing minimum at 0.
     pub fn of(o: &GlobalOptions, m: usize) -> Priorities {
         let t = &o.ai_targets;
-        let all = [
-            t.min_attack_army,
-            t.min_attack_castle,
-            t.min_random,
-            t.min_talking,
-            t.min_healing,
-            t.max_healing,
-            t.min_garrison,
-            t.max_garrison,
-            t.min_purchase,
-            t.max_purchase,
-            t.gold_purchase,
-            t.min_village,
-            t.max_village,
-            t.gold_village,
-        ];
-        if all.iter().all(Option::is_none) {
-            return DEMO_PRIORITIES;
-        }
         let m = m.min(model::TRADING);
         let g = |p: Option<[i32; 5]>| p.map_or(0, |v| v[m]);
         Priorities {
@@ -367,84 +330,65 @@ impl Priorities {
     }
 }
 
-/// From Max at `need` 0 to Min at `need` 1000 (per mille).
-fn lerp((min, max): (i32, i32), need: i64) -> i32 {
-    let need = need.clamp(0, 1000);
-    (max as i64 - (max as i64 - min as i64) * need / 1000) as i32
-}
-
-/// How far an army considers other armies and the player as targets, in cells of the
-/// original's distance ([`crate::rules::map::Grid::octile`]): `AIDistance0..2` indexed by its
-/// behaviour style (world.md §4: feudal 100, rogue 50, peasant 25 with the shipped values).
+/// `AIDistance0..2` by behaviour style: how far an army rescores other armies.
 pub fn target_range(o: &GlobalOptions, style: Style) -> i32 {
-    let band = match style {
-        Style::Feudal => 0,
-        Style::Rogue => 1,
-        Style::Peasant => 2,
-    };
-    o.ai_distance[band].max(0)
+    o.ai_distance[style.byte()]
 }
 
-/// Cell `t` lies inside army `a`'s patrol box (`post ± radius`, world.md §4); an army that
-/// does not patrol takes targets anywhere.
+/// Cell `t` lies inside army `a`'s patrol box (`centre ± radius`, clamped to the map); an
+/// army that does not patrol has no box.
 pub fn in_patrol(a: &Army, t: Tile) -> bool {
     let c = a.patrol_centre();
     !a.patrols || ((t.0 - c.0).abs() <= a.patrol_radius && (t.1 - c.1).abs() <= a.patrol_radius)
 }
 
-/// Attitude of army `a` towards faction `f` (1 player, 2 ally, 3 neighbour, 4 enemy).
-pub fn relation(a: &Army, f: u8) -> i8 {
+/// The original's `Round` of a float stored into an integer: half to even, and a value
+/// beyond 64 bits (an infinity or NaN from a division by 0) gives the FPU's "indefinite"
+/// integer, whose low 32 bits the callers keep: 0.
+pub fn fpu_round(x: f64) -> i32 {
+    if !x.is_finite() || x.abs() >= 9.2e18 {
+        return 0;
+    }
+    delphi_round(x) as i32
+}
+
+/// Attitude `atts` holds towards faction `f` (1–4); another value reads as 0.
+pub fn attitude_of(atts: &[i8; 4], f: u8) -> i8 {
     match f {
-        1 => a.attitude,
-        2..=4 => a.ai.relations[f as usize - 1],
+        1..=4 => atts[f as usize - 1],
         _ => 0,
     }
 }
 
-/// Army `a` would attack army `b` (another faction it is ill-disposed towards).
-pub fn hostile_to(a: &Army, b: &Army) -> bool {
-    a.faction != b.faction && relation(a, b.faction) < 0
+/// The original's relation of side A to side B (0x4a0868, ai.md §3), each side given by its
+/// faction and attitudes: A's attitude to B's faction `a` and B's to A's `b`; both ≥ 0 →
+/// `(a + b) div 2`, `a` < 0 → `a`, else −1. The factions are not compared.
+pub fn relation_between(a: (u8, &[i8; 4]), b: (u8, &[i8; 4])) -> i8 {
+    super::world::relation(attitude_of(a.1, b.0), attitude_of(b.1, a.0))
 }
 
-/// Army `a` is ill-disposed towards building `l` (it would take it).
-pub fn hostile_to_location(a: &Army, l: &Location) -> bool {
-    match l.owner {
-        Owner::Army(id) if id == a.id => false,
-        Owner::Player => a.hostile(),
-        _ => l.faction != a.faction && relation(a, l.faction) < 0,
-    }
+/// Army `a` is welcome in building `l`: its own, or the building's attitude to its faction
+/// is not below 0 (what shopping and the services test).
+fn welcome(a: &Army, l: &Location) -> bool {
+    l.owner == Owner::Army(a.id) || l.attitude_to(a.faction) >= 0
 }
 
-/// Army `a` is welcome in building `l`: its own, or of a faction it is not ill-disposed
-/// towards (never the player's).
-pub fn welcome_at(a: &Army, l: &Location) -> bool {
-    match l.owner {
-        Owner::Army(id) if id == a.id => true,
-        Owner::Player => false,
-        _ => l.faction == a.faction || relation(a, l.faction) >= 0,
-    }
+/// Building `l` is one army `a` assaults when it stands in it (ai.md §9.1): the building's
+/// attitude to its faction or its attitude to the building's faction is negative, it does
+/// not own it and it is feudal or rogue; a town only at its attitude −3.
+fn assaults(a: &Army, l: &Location) -> bool {
+    let mine = attitude_of(&a.ai.relations, l.faction);
+    let hostile = (l.attitude_to(a.faction) < 0 || mine < 0) && l.owner != Owner::Army(a.id) && a.ai.style.lordly();
+    hostile && !(l.kind == LocationKind::Town && mine > -3)
 }
 
-/// Army `a` may not walk through building `l`, as the hero may not through his enemies'
-/// ([`Location::bars_hero`]): castles and forts that are not its own or a friend's, ruins
-/// not its own and not cleared, and any other building it is ill-disposed towards.
-pub fn bars_army(a: &Army, l: &Location) -> bool {
-    let own = l.owner == Owner::Army(a.id);
-    let friend = own
-        || match l.owner {
-            Owner::Player => a.attitude > 0,
-            _ => l.faction == a.faction || relation(a, l.faction) > 0,
-        };
-    match l.kind {
-        LocationKind::Castle | LocationKind::Fort => !friend,
-        LocationKind::Ruins => !own && !l.cleared,
-        k if k.is_bridge() => false,
-        _ => hostile_to_location(a, l),
-    }
+/// Kinds with a garrison record (0x4b5291): towns, castles, forts and ruins.
+fn has_garrison(kind: LocationKind) -> bool {
+    matches!(kind, LocationKind::Town | LocationKind::Castle | LocationKind::Fort | LocationKind::Ruins)
 }
 
-/// Army `a`'s route from `from` to `to`, around the buildings it may not walk through
-/// ([`bars_army`]); the ones it stands in and heads for stay open.
+/// Army `a`'s route from `from` to `to` around the buildings it may not walk through
+/// ([`bars_army`]); the event that sends an army somewhere uses it.
 pub fn army_path(world: &World, a: &Army, from: Tile, to: Tile, max_nodes: usize) -> Vec<Tile> {
     let (start, end) = (world.location_covering(from), world.location_covering(to));
     world.map.path_where(from, to, max_nodes, &|t| match world.location_covering(t) {
@@ -453,446 +397,402 @@ pub fn army_path(world: &World, a: &Army, from: Tile, to: Tile, max_nodes: usize
     })
 }
 
-/// Kinds that hire for the AI: those that hire for the player, villages and altars
-/// (mechanics.md 5.3).
-pub fn hires_for_ai(kind: LocationKind) -> bool {
-    use LocationKind::*;
-    matches!(kind, Palace | Town | Castle | Fort | Church | Village | Altar)
-}
-
-/// Maximum HP of a troop without items.
-pub fn troop_max_hp(c: &Content, t: &Troop) -> i32 {
-    Stats::of_level(c, t.unit, t.level.max(1)).max_hp().max(1)
-}
-
-/// Strength of a troop: its tactical cost times its share of hit points left.
-pub fn troop_strength(c: &Content, t: &Troop) -> i64 {
-    let max = troop_max_hp(c, t) as i64;
-    c.tactical_cost(t.unit, t.level) as i64 * (max - t.hurt as i64).max(0) / max
-}
-
-pub fn army_strength(c: &Content, a: &Army) -> i64 {
-    a.troops.iter().map(|t| troop_strength(c, t)).sum()
-}
-
-/// Hit points left over the maximum, per mille.
-pub fn health(c: &Content, a: &Army) -> i64 {
-    let max: i64 = a.troops.iter().map(|t| troop_max_hp(c, t) as i64).sum();
-    let hurt: i64 = a.troops.iter().map(|t| t.hurt.max(0) as i64).sum();
-    if max == 0 {
-        1000
-    } else {
-        (max - hurt).max(0) * 1000 / max
+/// Army `a` may not walk through building `l` on an event's errand *(guess)*: castles and
+/// forts that are not its own or a friend's, ruins not its own and not cleared, and any other
+/// building it would assault.
+pub fn bars_army(a: &Army, l: &Location) -> bool {
+    let own = l.owner == Owner::Army(a.id);
+    let friend = own || l.attitude_to(a.faction) > 0;
+    match l.kind {
+        LocationKind::Castle | LocationKind::Fort => !friend,
+        LocationKind::Ruins => !own && !l.cleared,
+        k if k.is_bridge() => false,
+        _ => assaults(a, l),
     }
 }
 
-/// Strength of a building's defenders (its garrison, the player's units left there),
-/// with its extra defence *(guess: +2% per point)*.
-pub fn defenders_strength(c: &Content, l: &Location) -> i64 {
-    let troops: i64 = l.garrison.iter().map(|t| troop_strength(c, t)).sum();
-    let units: i64 = l.stationed.iter().filter(|s| s.unit.alive()).map(|s| c.tactical_cost(s.unit.def, s.unit.level) as i64 * s.unit.hp as i64 / s.unit.max_hp(c).max(1) as i64).sum();
-    (troops + units) * (100 + 2 * l.garrison_defence.max(0) as i64) / 100
+// ----------------------------------------------------------------------------------------
+// Unit records
+// ----------------------------------------------------------------------------------------
+
+/// A troop's hit points and maximum (worn items included); 0 for a corpse.
+pub fn troop_hp(c: &Content, t: &Troop) -> (i32, i32) {
+    let u = troop_unit(c, t);
+    (u.hp, u.max_hp(c).max(1))
 }
 
-/// Hit points of both sides before and after a simulated battle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Maximum HP of a troop.
+pub fn troop_max_hp(c: &Content, t: &Troop) -> i32 {
+    troop_hp(c, t).1
+}
+
+/// The two tactical costs of a unit record (experience.md §1): mode 0 of its level stats,
+/// mode 1 of its current stats, worn items included; both with the building defence `bd`
+/// its record stands in, both at least 1.
+pub fn tactical_modes(c: &Content, t: &Troop, bd: i32) -> (i32, i32) {
+    let u = troop_unit(c, t);
+    (super::experience::tactical(c, t.unit, &u.base_stats(c), bd), u.tactical(c, bd))
+}
+
+/// The "gain" of a unit's items (the original's tactical cost mode 2): its current tactical
+/// cost over the one of its level stats.
+fn item_gain(c: &Content, t: &Troop, bd: i32) -> i32 {
+    let (base, now) = tactical_modes(c, t, bd);
+    now - base
+}
+
+/// The attack role of a unit type (record +0xC4, saves-data.md): 4 melee when `AB > AS` and
+/// `AB > MP`, then 7 shooter when `AS > AB` and `AS > MP`, then 0x11 caster when `AB/2 < MP`
+/// and `AS/2 < MP`; a later test overrides an earlier one, none gives 0.
+pub fn attack_kind(c: &Content, unit: UnitId) -> u8 {
+    let d = c.unit(unit);
+    let (ab, sh, mp) = (d.attack_blow, d.attack_shot, d.magic_power);
+    let mut k = 0;
+    if ab > sh && ab > mp {
+        k = 4;
+    }
+    if sh > ab && sh > mp {
+        k = 7;
+    }
+    if (ab as f64 / 2.0) < mp as f64 && (sh as f64 / 2.0) < mp as f64 {
+        k = 0x11;
+    }
+    k
+}
+
+/// What the army-totals routine (0x4a16d4) keeps of a record (ai.md §5, §7.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    /// The gold wage bill of the living units (a kind-1 Elemental's wage goes to the mana
+    /// bill instead).
+    pub wages: i32,
+    /// `Σ Round(Cost / CostRecrutDiv)` over the living units, untiered, the leader included.
+    pub recruit_sum: i32,
+    /// `Σ Round(HP × Cost / maxHP × HealingConst/100)` over the wounded: their current HP.
+    pub heal_bill: i32,
+    /// `Σ Round(Cost × ResurectConst/100)` over the dead.
+    pub res_bill: i32,
+    /// Σ max HP and Σ missing HP of the living.
+    pub max_living: i32,
+    pub missing: i32,
+    /// Σ mode-1 tactical cost over every unit, the dead included.
+    pub strength: i32,
+}
+
+/// The totals of `troops` standing in a building of defence `bd`.
+pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
+    let o = &c.options;
+    let mut t = Totals::default();
+    for tr in troops {
+        t.strength += tactical_modes(c, tr, bd).1;
+        let cost = c.unit(tr.unit).cost;
+        if !tr.alive() {
+            t.res_bill += fpu_round(cost as f64 * (o.resurect_const as f64 / 100.0));
+            continue;
+        }
+        if tr.kind.is_paid() && !(tr.kind == WageKind::Recruit && c.paid_in_mana(tr.unit)) {
+            t.wages += c.wage_for(tr.unit, tr.kind);
+        }
+        t.recruit_sum += fpu_round(cost as f64 / o.cost_recrut_div as f64);
+        let (hp, max) = troop_hp(c, tr);
+        t.max_living += max;
+        if hp < max {
+            t.missing += max - hp;
+            t.heal_bill += fpu_round((hp as i64 * cost as i64) as f64 / max as f64 / (100.0 / o.healing_const as f64));
+        }
+    }
+    t
+}
+
+/// Daily gold wages of an AI army's living troops (the leader and event units draw none).
+pub fn army_wages(c: &Content, troops: &[Troop]) -> i32 {
+    totals(c, troops, 0).wages
+}
+
+/// The units an army fights with: its living troops, their worn items on.
+pub fn army_units(c: &Content, a: &Army) -> Vec<Unit> {
+    a.troops.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect()
+}
+
+/// Puts `item` on troop `t` if it can wear it (`items::slot_for`'s rules). A higher maximum
+/// brings as many hit points (`items::put_on`): the HP it lacks stay. Returns the slot.
+fn wear(c: &Content, t: &mut Troop, item: ItemId) -> Option<usize> {
+    let slot = items::slot_for(c, &troop_unit(c, t), item).ok()?;
+    t.worn[slot] = Some(item);
+    Some(slot)
+}
+
+/// The tactical gain of troop `t` with `item` tried on (mode 2), if it can wear it.
+fn gain_with(c: &Content, t: &Troop, item: ItemId, bd: i32) -> Option<i32> {
+    let mut tried = *t;
+    wear(c, &mut tried, item)?;
+    Some(item_gain(c, &tried, bd))
+}
+
+/// An item of a scenario army at map load (0x4a273c): it goes to the unit whose tactical
+/// gain it raises most (strictly above 0, the first of equals), else into the pack (lost
+/// when the pack is full).
+pub fn give_item(c: &Content, a: &mut Army, item: ItemId) {
+    let mut best: Option<(usize, i32)> = None;
+    for (k, t) in a.troops.iter().enumerate() {
+        if let Some(v) = gain_with(c, t, item, 0) {
+            if v > best.map_or(0, |b| b.1) {
+                best = Some((k, v));
+            }
+        }
+    }
+    match best {
+        Some((k, _)) => {
+            wear(c, &mut a.troops[k], item);
+        }
+        None if a.items.len() < MAX_ARMY_ITEMS => a.items.push(item),
+        None => {}
+    }
+}
+
+/// Hands out a pool of items (0x4a473c, ai.md §10.1): the pack joins the pool; then, while
+/// some unit can wear some pool item with a tactical gain above 5, the largest gain (units in
+/// order, items in order, the first of equals) is worn and the item leaves the pool (the
+/// last one takes its place). The pack is then refilled with up to 12 of the rest, the
+/// dearest first; the others are lost.
+pub fn redistribute(c: &Content, troops: &mut [Troop], pack: &mut Vec<ItemId>, mut pool: Vec<ItemId>, bd: i32) {
+    pool.append(pack);
+    loop {
+        let mut best: Option<(usize, usize, i32)> = None;
+        for (u, t) in troops.iter().enumerate() {
+            for (k, &item) in pool.iter().enumerate() {
+                if let Some(v) = gain_with(c, t, item, bd) {
+                    if v > WORTH && v > best.map_or(0, |b| b.2) {
+                        best = Some((u, k, v));
+                    }
+                }
+            }
+        }
+        let Some((u, k, _)) = best else { break };
+        wear(c, &mut troops[u], pool[k]);
+        pool.swap_remove(k);
+        if pool.is_empty() {
+            break;
+        }
+    }
+    while pack.len() < MAX_ARMY_ITEMS {
+        let mut best: Option<(usize, i32)> = None;
+        for (k, &item) in pool.iter().enumerate() {
+            let price = c.try_item(item).map_or(0, |d| d.cost.abs());
+            if price > best.map_or(0, |b| b.1) {
+                best = Some((k, price));
+            }
+        }
+        let Some((k, _)) = best else { break };
+        pack.push(pool.remove(k));
+    }
+}
+
+// ----------------------------------------------------------------------------------------
+// Simulated battles
+// ----------------------------------------------------------------------------------------
+
+/// Hit points of both sides before and after a simulated battle, and its last turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SimResult {
     pub own: i64,
     pub own_left: i64,
     pub theirs: i64,
     pub theirs_left: i64,
+    pub turn: u32,
 }
 
-/// Plays a battle between `mine` (attacking) and `theirs` (with a building's extra `defence`)
-/// with the battle engine on both sides, as the original scores its targets (world.md §5).
-pub fn simulate(c: &Arc<Content>, mine: &[Unit], theirs: &[Unit], defence: i32) -> SimResult {
-    let side: Vec<(usize, &Unit)> = mine.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
-    let mut b = Battle::new(c.clone(), &side, theirs, Team::Player);
-    // The same engine as the off-screen battle (4a0710): AI mode 0, no Splash follow-ups but
-    // for heals and blessings, both sides auto-arranged. Its pre-simulation only predicts the
-    // XP, unused here, so it is not run.
-    b.set_simulation();
-    b.skip_prediction();
-    if defence > 0 {
-        b.set_building_defence(Team::Enemy, defence);
+/// One side of a battle between AI sides: its units, its building defence, its spells.
+pub struct Side<'a> {
+    pub units: Vec<Unit>,
+    pub defence: i32,
+    pub spells: Vec<&'a SpellDef>,
+}
+
+/// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
+/// engine on both sides, AI mode 0, both sides auto-arranged, each with its own building
+/// defence; played to its end.
+fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
+    let side: Vec<(usize, &Unit)> = a.units.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
+    let mut bt = Battle::new(c.clone(), &side, &b.units, Team::Player);
+    bt.set_simulation();
+    if !predict {
+        bt.skip_prediction();
     }
-    b.auto_arrange(Team::Player);
-    b.auto_arrange(Team::Enemy);
-    b.begin();
+    bt.apply_spells(Team::Player, &a.spells);
+    bt.apply_spells(Team::Enemy, &b.spells);
+    if a.defence > 0 {
+        bt.set_building_defence(Team::Player, a.defence);
+    }
+    if b.defence > 0 {
+        bt.set_building_defence(Team::Enemy, b.defence);
+    }
+    bt.auto_arrange(Team::Player);
+    bt.auto_arrange(Team::Enemy);
+    bt.begin();
     let mut steps = 0;
-    while b.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
-        b.ai_step();
+    while bt.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
+        bt.ai_step();
         steps += 1;
     }
-    let na = mine.len().min(b.fighters.len());
+    bt
+}
+
+/// The HP totals of a played battle (each side's start and end, the end capped at the
+/// start) and its last turn.
+fn sim_result(bt: &Battle, na: usize, a: &[Unit], b: &[Unit]) -> SimResult {
     let left = |fs: &[super::battle::Fighter]| -> i64 { fs.iter().map(|f| f.hp.max(0) as i64).sum() };
     let hp = |us: &[Unit]| -> i64 { us.iter().map(|u| u.hp.max(0) as i64).sum() };
-    SimResult { own: hp(mine), own_left: left(&b.fighters[..na]), theirs: hp(theirs), theirs_left: left(&b.fighters[na..]) }
+    let (own, theirs) = (hp(a), hp(b));
+    let na = na.min(bt.fighters.len());
+    SimResult { own, own_left: left(&bt.fighters[..na]).min(own), theirs, theirs_left: left(&bt.fighters[na..]).min(theirs), turn: bt.round }
 }
 
-/// The seed of a target army, the player or a garrison from a simulated battle (world.md §5):
-/// the army's `aggression`% of both sides' hit points moves the result *(the exact use is
-/// M: here a win needs `own_left − theirs_left + (own + theirs) × aggression/100 > 0`)*. A
-/// win scores `1 + lost share × ZeroDensity·30 × own/theirs` and seeds
-/// `(priority + score) × (relation + 4)`; a loss is no target (the original's repulsion field
-/// around a danger is not modelled).
-pub fn battle_seed(s: SimResult, priority: i32, relation: i8, zero_density: i32, aggression: i32) -> Option<i64> {
-    if s.own <= 0 || s.theirs <= 0 {
-        return None;
-    }
-    let margin = (s.own_left - s.theirs_left) * 100 + (s.own + s.theirs) * aggression as i64;
-    if margin <= 0 {
-        return None;
-    }
-    let lost = (s.own - s.own_left).max(0) as f64 / s.own as f64;
-    let score = 1.0 + lost * (zero_density.max(0) * 30) as f64 * s.own as f64 / s.theirs as f64;
-    let factor = (relation as i32 + 4).max(1) as f64;
-    Some((((priority.max(0) as f64 + score) * factor).round() as i64).min(MAX_SEED))
+/// Plays a simulated battle (the AI's scoring) and returns its HP totals.
+pub fn simulate(c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
+    let bt = fight(c, a, b, false);
+    sim_result(&bt, a.units.len(), &a.units, &b.units)
 }
 
-/// Simulated battles of the day, by (attacker uid, target key), so an army does not replay
-/// the same battle at every thought.
+/// What a simulated battle depends on: each side's units (type, level, HP, worn items),
+/// building defence and spells. The engine plays the AI on both sides with no randomness, so
+/// the same key gives the same result ([`SimCache`]).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct SimKey {
+    sides: [SideKey; 2],
+}
+
+/// A side of a [`SimKey`]: (type, level, HP, worn items) of each unit, the defence, the
+/// spells.
+type SideKey = (Vec<(u32, i32, i32, [Option<ItemId>; items::SLOTS])>, i32, Vec<u32>);
+
+impl SimKey {
+    fn of(a: &Side, b: &Side) -> SimKey {
+        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items)).collect(), s.defence, s.spells.iter().map(|d| d.id).collect());
+        SimKey { sides: [side(a), side(b)] }
+    }
+}
+
+/// Simulated battles already played (not saved): the AI rescores the same matchups often.
 #[derive(Clone, Debug, Default)]
-pub struct Sims {
-    day: u64,
-    results: HashMap<(u32, u64), SimResult>,
-}
+pub struct SimCache(std::collections::HashMap<SimKey, SimResult>);
 
-/// Key of the player as a simulated target.
-const SIM_PLAYER: u64 = u64::MAX;
-/// Keys of garrisons: this plus the building's index.
-const SIM_GARRISON: u64 = 1 << 40;
+/// Entries the cache holds before it starts afresh.
+const SIM_CACHE_SIZE: usize = 50_000;
 
-impl Sims {
-    fn get(&mut self, day: u64, key: (u32, u64), run: impl FnOnce() -> SimResult) -> SimResult {
-        if self.day != day {
-            self.day = day;
-            self.results.clear();
+impl SimCache {
+    fn get(&mut self, c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
+        let key = SimKey::of(a, b);
+        if let Some(&r) = self.0.get(&key) {
+            return r;
         }
-        *self.results.entry(key).or_insert_with(run)
+        if self.0.len() >= SIM_CACHE_SIZE {
+            self.0.clear();
+        }
+        let r = simulate(c, a, b);
+        self.0.insert(key, r);
+        r
     }
 }
 
-/// Daily wages of an AI army: every troop but the leader, by its cost and hiring kind
-/// (mechanics.md 1.5); units paid in mana are not paid.
-pub fn army_wages(c: &Content, troops: &[Troop]) -> i32 {
-    troops.iter().skip(1).filter(|t| !c.paid_in_mana(t.unit)).map(|t| c.wage_for(t.unit, WageKind::of(c.unit(t.unit)))).sum()
-}
-
-/// Gold a feudal lord keeps: `NeedUpkeepDay` days of wages (of `troops`).
-pub fn reserve(c: &Content, a: &Army, troops: &[Troop]) -> i32 {
-    match a.ai.style {
-        Style::Feudal => c.options.need_upkeep_day.max(0) * army_wages(c, troops),
-        _ => 0,
-    }
-}
-
-/// The units an army fights with: its troops, and its items worn by the first unit that
-/// can wear each *(guess: the original's use of an AI army's items is not decoded)*.
-pub fn army_units(c: &Content, a: &Army) -> Vec<Unit> {
-    let mut units: Vec<Unit> = a.troops.iter().map(|t| troop_unit(c, t)).collect();
-    for &item in &a.items {
-        for u in units.iter_mut() {
-            if let Ok(s) = items::slot_for(c, u, item) {
-                items::put_on(c, u, s, item);
-                break;
-            }
-        }
-    }
-    units
-}
-
-/// The best recruit an army can hire at `l` now: affordable within its reserve, in stock, a
-/// rogue unit for rogues, not paid in mana; the strongest first.
-fn best_recruit(c: &Content, a: &Army, l: &Location, troops: &[Troop]) -> Option<(UnitId, i32)> {
-    let mut best: Option<(UnitId, i32, i32)> = None;
-    for r in &l.recruits {
-        if r.stock == Some(0) || c.try_unit(r.unit).is_none() || c.paid_in_mana(r.unit) {
-            continue;
-        }
-        let def = c.unit(r.unit);
-        if a.ai.style == Style::Rogue && def.nature != Nature::Rogue {
-            continue;
-        }
-        let cost = def.cost.max(0);
-        let mut after = troops.to_vec();
-        after.push(Troop::new(r.unit, 1, super::formation::Slot::new(super::formation::Row::Front, 0)));
-        if a.gold - cost < reserve(c, a, &after) {
-            continue;
-        }
-        let power = c.tactical_cost(r.unit, 1);
-        if best.is_none_or(|(_, _, p)| power > p) {
-            best = Some((r.unit, cost, power));
-        }
-    }
-    best.map(|(u, cost, _)| (u, cost))
-}
-
-/// Free formation cell for a new unit next to `troops`: the first from the reserve forward,
-/// whatever the unit (495ce0).
-fn free_slot(c: &Content, troops: &[Troop]) -> Option<super::formation::Slot> {
-    if troops.len() >= c.formation.capacity() {
-        return None;
-    }
-    let taken: Vec<_> = troops.iter().map(|t| t.slot).collect();
-    c.formation.new_unit_slot(&taken)
-}
-
-/// The dearest item of the shop at `l` the army can afford within its reserve and some unit
-/// of it can wear. Price: the item's cost.
-fn best_buy(c: &Content, a: &Army, l: &Location) -> Option<(usize, i32)> {
-    let shop = l.shop.as_ref()?;
-    if a.items.len() >= MAX_ARMY_ITEMS {
-        return None;
-    }
-    let budget = a.gold - reserve(c, a, &a.troops);
-    let units = army_units(c, a);
-    let mut best: Option<(usize, i32)> = None;
-    for (k, &item) in shop.stock.iter().enumerate() {
-        let Some(def) = c.try_item(item) else { continue };
-        let cost = def.cost.max(0);
-        if cost > budget || best.is_some_and(|(_, b)| b >= cost) {
-            continue;
-        }
-        if units.iter().any(|u| items::slot_for(c, u, item).is_ok()) {
-            best = Some((k, cost));
-        }
-    }
-    best
-}
-
-/// Candidate goals of one army, each with its seed and its cells.
-struct Seeds<'a> {
-    list: Vec<(i64, Goal, Vec<Tile>)>,
-    blocked: &'a [(Goal, f64)],
-    now: f64,
-}
-
-impl Seeds<'_> {
-    fn offer(&mut self, seed: i64, goal: Goal, cells: Vec<Tile>) {
-        if self.blocked.iter().any(|&(g, until)| g == goal && self.now < until) || cells.is_empty() {
-            return;
-        }
-        self.list.push((seed.clamp(0, MAX_SEED), goal, cells));
-    }
-}
-
-/// What army `i` wants now, and the way there (world.md §5). `hero`: the player's cell (on
-/// land) and his army, if he can be attacked; `wander`: random points of its patrol box to
-/// consider. Every candidate is seeded with its priority; one flood from the army over the
-/// map (reaching a cell costs `cost × weight` of the cell left, as the original's flood from
-/// the targets does) finds the lowest `seed + path cost`, which wins. Returns the goal and the
-/// path to the cell of it the flood reached (empty if it stands there, or the goal is idle).
+/// The score of a simulated battle of army A (aggression `g`, speed `speed_a`) against side
+/// C (speed `speed_c`) at relation `r` (0x4a08f8, ai.md §4). Lower is better, 0 nothing to
+/// gain, below 0 a danger.
+/// - Nothing happened, or the battle ran to `BattleEndTurn` (even one wiped out on that very
+///   turn): 0.
+/// - The aggression shifts both results: `B1 −= Round(g·B0/100)` (not below 0) and
+///   `A1 += Round(g·A0/100)`, a tenth of that for a negative `g` *(guess: the original then
+///   divides by 1000 unless A's unit count is below a side-record value of unknown meaning;
+///   Razdor takes the ÷1000 always)*; A1 not below 0.
+/// - A win (`A1 > 0` and `A1 > B1`): `Round((1 − A1/A0)·30·ZeroDensity·A0/B0 + 1)` after a
+///   loss, `Round(A0/B0 + 1)` without; at least 1.
+/// - A loss: `−5 − Round(√(B0/A0)·ZeroDensity·speedA/speedC)`, not below −50.
+/// - By relation: `s div (r + 1)` at r ≥ 0; at r < 0 a danger grows `((2 − r)·s) div 3`, a
+///   target becomes `(AtackArmy + s)·(r + 4)`.
 #[allow(clippy::too_many_arguments)]
-pub fn choose(w: &World, c: &Arc<Content>, i: usize, hero: Option<(Tile, &[Unit])>, now: f64, day: u64, wander: &[Tile], sims: &mut Sims) -> (Goal, Vec<Tile>) {
-    let a = &w.armies[i];
-    let p = &a.ai;
-    let map = &w.map;
-    let g = map.grid;
-    let here = a.tile(map);
-    let pr = Priorities::of(&c.options, p.model);
-    let range = target_range(&c.options, p.style);
-    let zd = c.options.zero_density;
-    let mut seeds = Seeds { list: Vec::new(), blocked: &a.mind.blocked, now };
-    let reach = |t: Tile| w.same_region(here, t);
-    let in_view = |t: Tile| g.octile(here, t) <= range && in_patrol(a, t);
-    let mut mine: Option<Vec<Unit>> = None;
-    let mut units = |a: &Army| mine.get_or_insert_with(|| army_units(c, a)).clone();
-
-    // The player (every style: peasants too hunt him when ill-disposed).
-    if let Some((h, squad)) = hero {
-        if a.hostile() && now >= a.ignore_until && in_view(h) && reach(h) {
-            let own = units(a);
-            let s = sims.get(day, (a.uid, SIM_PLAYER), || simulate(c, &own, squad, 0));
-            if let Some(seed) = battle_seed(s, pr.attack_army, a.attitude, zd, p.aggression) {
-                seeds.offer(seed, Goal::AttackPlayer, vec![h]);
-            }
-        }
-        // A friendly army that hunts only the player has nothing else to go for: it comes to
-        // meet him (the scenarios' messengers), wherever its post is.
-        if !a.hostile() && p.player_only && g.octile(here, h) <= range && reach(h) {
-            seeds.offer(pr.talk as i64, Goal::MeetPlayer, vec![h]);
-        }
+pub fn army_score(s: SimResult, g: i32, r: i8, attack_army: i32, zero_density: i32, speed_a: u32, speed_c: u32, end_turn: i32) -> i32 {
+    let (a0, b0) = (s.own, s.theirs);
+    let (mut a1, mut b1) = (s.own_left.min(a0), s.theirs_left.min(b0));
+    if (a1 == a0 && b1 == b0) || s.turn as i32 == end_turn {
+        return 0;
     }
-    if p.style != Style::Peasant {
-        // Hostile armies in range.
-        if !p.player_only {
-            for b in w.armies.iter().filter(|b| b.uid != a.uid && managed(b) && !b.ai.ignored && hostile_to(a, b)) {
-                let bt = b.tile(map);
-                if !in_view(bt) || !reach(bt) || now < a.mind.truce_until || now < b.mind.truce_until {
-                    continue;
-                }
-                let own = units(a);
-                let s = sims.get(day, (a.uid, b.uid as u64), || simulate(c, &own, &army_units(c, b), 0));
-                if let Some(seed) = battle_seed(s, pr.attack_army, relation(a, b.faction), zd, p.aggression) {
-                    seeds.offer(seed, Goal::AttackArmy(b.uid), vec![bt]);
-                }
-            }
-        }
-        // Buildings: inside its patrol box (anywhere when it does not patrol), a lost home
-        // anywhere.
-        if !p.no_buildings {
-            offer_buildings(&mut seeds, w, c, a, &pr, day, sims, &mut units);
-        }
-        // A friendly army of its own faction in range.
-        if !p.no_talk && now >= a.mind.talk_after {
-            for b in w.armies.iter().filter(|b| b.uid != a.uid && managed(b) && b.faction == a.faction) {
-                let bt = b.tile(map);
-                if in_view(bt) && reach(bt) && !hostile_to(b, a) {
-                    seeds.offer(pr.talk as i64, Goal::Talk(b.uid), vec![bt]);
-                }
-            }
-        }
+    let g = g as i64;
+    b1 = (b1 - fpu_round((g * b0) as f64 / 100.0) as i64).max(0);
+    let div = if g >= 0 { 100.0 } else { 1000.0 };
+    a1 = (a1 + fpu_round((g * a0) as f64 / div) as i64).max(0);
+    let zd = zero_density as f64;
+    let mut v = if a1 > 0 && a1 > b1 {
+        let v = if a1 < a0 {
+            fpu_round((1.0 - a1 as f64 / a0 as f64) * (zd * 30.0) * a0 as f64 / b0 as f64 + 1.0)
+        } else {
+            fpu_round(a0 as f64 / b0 as f64 + 1.0)
+        };
+        v.max(1)
+    } else {
+        let v = -5 - fpu_round((b0 as f64 / a0 as f64).sqrt() * (speed_a as f64 * zd) / speed_c.max(1) as f64);
+        v.max(-50)
+    };
+    let r = r as i32;
+    if r >= 0 {
+        v /= r + 1;
+    } else if v < 0 {
+        v = (2 - r) * v / 3;
+    } else {
+        v = (attack_army + v) * (r + 4);
     }
-    // Wandering its patrol (unless it takes no random targets), or going back to its post
-    // when it is outside its patrol box. The original also seeds the wander points of an
-    // army that does not patrol (ai.md §7.2); Razdor's goal scoring does not yet.
-    let box_radius = if a.patrols { a.patrol_radius } else { 0 };
-    let away = g.distance(here, a.post) > box_radius + 1;
-    if away && w.same_region(here, a.post) {
-        seeds.offer(pr.random as i64, Goal::Home, vec![a.post]);
-    } else if a.patrols && a.patrol_radius > 0 && !p.no_random {
-        for &t in wander {
-            seeds.offer(pr.random as i64, Goal::Wander(t), vec![t]);
-        }
-    }
-    flood(w, here, &seeds.list)
+    v
 }
 
-/// Seeds the buildings army `a` might go to.
-#[allow(clippy::too_many_arguments)]
-fn offer_buildings(seeds: &mut Seeds, w: &World, c: &Arc<Content>, a: &Army, pr: &Priorities, day: u64, sims: &mut Sims, units: &mut dyn FnMut(&Army) -> Vec<Unit>) {
-    let p = &a.ai;
-    let here = a.tile(&w.map);
-    let now = seeds.now;
-    let hp = health(c, a);
-    let free = c.formation.capacity().saturating_sub(a.troops.len()) as i64;
-    let cap = c.formation.capacity().max(1) as i64;
-    let mine = army_strength(c, a);
-    for (l, loc) in w.locations.iter().enumerate() {
-        if loc.kind.is_bridge() {
-            continue;
-        }
-        let home_lost = p.style == Style::Rogue && a.home == Some(l) && loc.kind.capturable() && loc.owner != Owner::Army(a.id);
-        if (!in_patrol(a, loc.tile) && !home_lost) || !w.same_region(here, loc.tile) {
-            continue;
-        }
-        let cells = || -> Vec<Tile> { loc.cells().filter(|&t| w.location_at(t) == Some(l)).collect() };
-        let truce = now < a.mind.truce_until && loc.owner == Owner::Army(a.mind.truce_with.min(u8::MAX as u32) as u8);
-        let own = loc.owner == Owner::Army(a.id);
-        if loc.kind.capturable() && !p.player_only && (hostile_to_location(a, loc) || home_lost) {
-            // A leader alone does not storm walls, except his lost home *(guess)*.
-            let force = a.troops.len() > 1 || home_lost;
-            if truce || !force {
-                continue;
+// ----------------------------------------------------------------------------------------
+// The planner's repulsion cone
+// ----------------------------------------------------------------------------------------
+
+/// Adds a repulsion cone of strength `s` and slope `f` around `(x, y)` to the multiplier map
+/// `mult` (`w × h`, 0x482e4c, ai.md §7.4): every scanned cell gets
+/// `s − floor(f·(max(|dx|,|dy|) + min/2))` when that is above 1. The scan box is the
+/// original's: `r = ((s − 2)·32768) div Round(16384·f)`, columns `x − r − 1 ..` for `2r + 1`
+/// (or to the map's edge), rows likewise, so it sits a cell up-left of the centre and a weak
+/// or steep cone (r = 0) adds nothing. The cells are walked in the bitmap's row order, so a
+/// box wider than the map wraps into the next row.
+pub fn repulsion(mult: &mut [u16], w: i32, h: i32, (x, y): Tile, f: f32, s: i32) {
+    let k = delphi_round(16384.0 * f as f64) as i32;
+    if k == 0 {
+        return;
+    }
+    let r = (s - 2).wrapping_mul(0x8000) / k;
+    let x0 = (x - r - 1).max(0);
+    let cols = if w < x + r { w - x0 } else { 2 * r + 1 };
+    let y0 = (y - r - 1).max(0);
+    let rows = if h < y + r { h - y0 } else { 2 * r + 1 };
+    if cols <= 0 || rows <= 0 {
+        return;
+    }
+    let mut at = (w * y0 + x0) as i64;
+    for cy in y0..y0 + rows {
+        for cx in x0..x0 + cols {
+            let (dx, dy) = ((x - cx).abs(), (y - cy).abs());
+            let d2 = if dx < dy { dy * 2 + dx } else { dx * 2 + dy };
+            let mut p = d2.wrapping_mul(k);
+            if p < 0 {
+                p += 0x7fff;
             }
-            let defenders: Vec<Unit> = loc.garrison.iter().map(|t| troop_unit(c, t)).chain(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone())).collect();
-            let wins = defenders.is_empty() || {
-                let own_units = units(a);
-                let s = sims.get(day, (a.uid, SIM_GARRISON + l as u64), || simulate(c, &own_units, &defenders, loc.garrison_defence));
-                battle_seed(s, 0, -1, 0, p.aggression).is_some()
-            };
-            if wins {
-                let seed = pr.attack_castle as i64 * CASTLE_FACTOR;
-                seeds.offer(if home_lost { seed / 2 } else { seed }, Goal::Capture(l), cells());
+            let v = s - (p >> 15);
+            if v > 1 {
+                if let Some(m) = usize::try_from(at).ok().and_then(|i| mult.get_mut(i)) {
+                    *m = m.wrapping_add(v as u16);
+                }
             }
-            continue;
+            at += 1;
         }
-        if !welcome_at(a, loc) {
-            continue;
-        }
-        // Healing: in its own castle or fort, or (feudal) any friendly healer.
-        let heals_here = (own && loc.kind.capturable()) || (p.style == Style::Feudal && loc.heals());
-        if hp < HEAL_BELOW && heals_here {
-            seeds.offer(lerp(pr.heal, 1000 - hp) as i64, Goal::Heal(l), cells());
-        }
-        if own && loc.kind.capturable() && p.style == Style::Feudal && !loc.recruits.is_empty() {
-            let target = mine * p.garrison_strength as i64 / 100;
-            let have = defenders_strength(c, loc);
-            if have < target && loc.garrison.len() < c.formation.capacity() && best_recruit(c, a, loc, &a.troops).is_some() {
-                seeds.offer(lerp(pr.garrison, (target - have) * 1000 / target.max(1)) as i64, Goal::Garrison(l), cells());
-            }
-        }
-        if free > 0 && hires_for_ai(loc.kind) && best_recruit(c, a, loc, &a.troops).is_some() {
-            seeds.offer(lerp(pr.purchase, free * 1000 / cap) as i64, Goal::Hire(l), cells());
-        }
-        if p.style == Style::Feudal && best_buy(c, a, loc).is_some() {
-            let spare = (a.gold - reserve(c, a, &a.troops)) as i64;
-            seeds.offer(lerp(pr.purchase, spare * 1000 / pr.gold_purchase.max(1) as i64) as i64, Goal::Shop(l), cells());
-        }
-        let tribute_ours = own || loc.faction == a.faction || loc.linked.is_some_and(|k| w.locations[k].owner == Owner::Army(a.id));
-        if p.style == Style::Feudal && loc.kind == LocationKind::Village && loc.tribute_gold > 0 && tribute_ours {
-            seeds.offer(lerp(pr.village, loc.tribute_gold as i64 * 1000 / pr.gold_village.max(1) as i64) as i64, Goal::Village(l), cells());
-        }
+        at += (w - cols) as i64;
     }
 }
 
-/// One flood from `from` over the foot map: the seed with the lowest `seed + path cost`
-/// wins; the path is the flood's way to the winning cell (world.md §5, 0x482a58).
-fn flood(w: &World, from: Tile, seeds: &[(i64, Goal, Vec<Tile>)]) -> (Goal, Vec<Tile>) {
-    let map = &w.map;
-    let g = map.grid;
-    let Some(start) = map.mask_index(from) else { return (Goal::Idle, Vec::new()) };
-    let mut at: HashMap<usize, (i64, usize)> = HashMap::new();
-    for (k, (s, _, cells)) in seeds.iter().enumerate() {
-        for &t in cells {
-            let Some(j) = map.mask_index(t) else { continue };
-            let e = at.entry(j).or_insert((*s, k));
-            if *s < e.0 {
-                *e = (*s, k);
-            }
-        }
-    }
-    let Some(min_seed) = at.values().map(|v| v.0).min() else { return (Goal::Idle, Vec::new()) };
-    let n = (map.w * map.h) as usize;
-    let mut dist = vec![u32::MAX; n];
-    let mut parent = vec![u32::MAX; n];
-    dist[start] = 0;
-    let mut open = BinaryHeap::from([Reverse((0u32, start as u32))]);
-    let mut best: Option<(i64, usize, usize)> = None;
-    let mut expanded = 0;
-    let tile = |i: usize| (i as i32 % map.w, i as i32 / map.w);
-    while let Some(Reverse((d, i))) = open.pop() {
-        let i = i as usize;
-        if d > dist[i] {
-            continue;
-        }
-        if best.is_some_and(|(b, _, _)| d as i64 + min_seed >= b) {
-            break;
-        }
-        if let Some(&(s, k)) = at.get(&i) {
-            if best.is_none_or(|(b, _, _)| s + (d as i64) < b) {
-                best = Some((s + d as i64, k, i));
-            }
-        }
-        expanded += 1;
-        if expanded > FLOOD_NODES {
-            break;
-        }
-        let here = tile(i);
-        let leave = map.cost(here).unwrap_or(super::map::ROAD) as u32;
-        for nb in g.neighbours(here) {
-            let Some(j) = map.mask_index(nb) else { continue };
-            if !map.passable(nb) {
-                continue;
-            }
-            let nd = d + leave * g.weight(here, nb);
-            if nd < dist[j] {
-                dist[j] = nd;
-                parent[j] = i as u32;
-                open.push(Reverse((nd, j as u32)));
-            }
-        }
-    }
-    let Some((_, k, cell)) = best else { return (Goal::Idle, Vec::new()) };
-    let mut path = Vec::new();
-    let mut cur = cell;
-    while cur != start {
-        path.push(tile(cur));
-        cur = parent[cur] as usize;
-    }
-    path.reverse();
-    (seeds[k].1, path)
+/// Who an army deals with: the hero or another army (by index).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Party {
+    Hero,
+    Army(usize),
 }
 
 /// Who beat an army.
@@ -934,505 +834,1888 @@ impl Game {
         self.world.armies.remove(i)
     }
 
-    /// The player's cell, if AI armies on land can go for him (not while he sails).
-    fn hero_target(&self) -> Option<Tile> {
-        (!self.aboard()).then(|| self.tile())
+    /// Puts an army back on the map among the others in id order, keeping the pending foe
+    /// pointing at the right army.
+    fn insert_army(&mut self, a: Army) {
+        let k = self.world.armies.iter().position(|b| b.id > a.id).unwrap_or(self.world.armies.len());
+        if let Some(Foe::Army(j)) = self.foe {
+            if j >= k {
+                self.foe = Some(Foe::Army(j + 1));
+            }
+        }
+        self.world.armies.insert(k, a);
     }
 
     // ------------------------------------------------------------------------------------
-    // Brain and routes
+    // Parties: the hero and the armies
     // ------------------------------------------------------------------------------------
 
-    /// Before the armies walk a slice: respawns due, then goals and routes of the armies the
-    /// AI steers.
-    pub(crate) fn ai_plan(&mut self) {
+    /// The managed armies' indices with the hero first: the order of the original's loops
+    /// over army records 0..N.
+    fn parties(&self) -> Vec<Party> {
+        std::iter::once(Party::Hero).chain((0..self.world.armies.len()).filter(|&j| managed(&self.world.armies[j])).map(Party::Army)).collect()
+    }
+
+    /// Faction and attitudes: the hero is faction 1 with the header's first row.
+    fn sides_of(&self, p: Party) -> (u8, [i8; 4]) {
+        match p {
+            Party::Hero => (1, self.world.relations[0]),
+            Party::Army(j) => {
+                let a = &self.world.armies[j];
+                (a.faction, a.ai.relations)
+            }
+        }
+    }
+
+    /// The relation of army `i` to `p` (ai.md §3).
+    fn relation_to(&self, i: usize, p: Party) -> i8 {
+        let (fa, aa) = self.sides_of(Party::Army(i));
+        let (fb, ab) = self.sides_of(p);
+        relation_between((fa, &aa), (fb, &ab))
+    }
+
+    fn key_of(&self, p: Party) -> u32 {
+        match p {
+            Party::Hero => HERO,
+            Party::Army(j) => self.world.armies[j].uid,
+        }
+    }
+
+    fn cell_of(&self, p: Party) -> Tile {
+        match p {
+            Party::Hero => self.tile(),
+            Party::Army(j) => self.world.armies[j].tile(&self.world.map),
+        }
+    }
+
+    fn ignored(&self, p: Party) -> bool {
+        matches!(p, Party::Army(j) if self.world.armies[j].ai.ignored)
+    }
+
+    fn guard(&self, p: Party) -> bool {
+        matches!(p, Party::Army(j) if stationary(&self.world.armies[j]))
+    }
+
+    /// At sea: a ship army, or the hero aboard.
+    fn afloat(&self, p: Party) -> bool {
+        match p {
+            Party::Hero => self.aboard(),
+            Party::Army(j) => self.world.armies[j].sails(),
+        }
+    }
+
+    /// The building `p` stands in (the hero: the one he entered).
+    fn standing_in(&self, p: Party) -> Option<usize> {
+        match p {
+            Party::Hero => self.location,
+            Party::Army(j) => self.world.armies[j].mind.standing,
+        }
+    }
+
+    /// The cell `p` steps to next (its own when it has no path).
+    fn next_cell(&self, p: Party, hero: &HeroCells) -> Tile {
+        match p {
+            Party::Hero => hero.cells[1].unwrap_or(hero.at),
+            Party::Army(j) => {
+                let a = &self.world.armies[j];
+                a.path.first().copied().unwrap_or_else(|| a.tile(&self.world.map))
+            }
+        }
+    }
+
+    /// The defence the hero's side fights with: his own building's, or a friend's
+    /// (`Game::start_battle`).
+    fn hero_defence(&self) -> i32 {
+        let here = self.location.or_else(|| self.world.location_covering(self.tile()));
+        here.map(|l| &self.world.locations[l]).filter(|l| l.owned() || l.attitude > 0).map_or(0, |l| l.garrison_defence.max(0))
+    }
+
+    /// Army `i`'s side in its battles: its living units (only the paid ones when it
+    /// attacks, 0x49855c), its building defence and its spells.
+    fn army_side(&self, i: usize, attacking: bool) -> (Side<'_>, Vec<usize>) {
+        let c = &self.content;
+        let a = &self.world.armies[i];
+        let fought: Vec<usize> = (0..a.troops.len()).filter(|&k| a.troops[k].alive() && (!attacking || !a.troops[k].unpaid)).collect();
+        let units = fought.iter().map(|&k| troop_unit(c, &a.troops[k])).collect();
+        (Side { units, defence: a.mind.defence, spells: self.spells_on_army(i) }, fought)
+    }
+
+    /// The hero's side as a target: all his living units.
+    fn hero_side(&self) -> Side<'_> {
+        let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
+        Side { units, defence: self.hero_defence(), spells: self.army_spells() }
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Scores
+    // ------------------------------------------------------------------------------------
+
+    fn army_totals(&self, i: usize) -> Totals {
+        let a = &self.world.armies[i];
+        totals(&self.content, &a.troops, a.mind.defence)
+    }
+
+    /// The gold army `i` may spend (0x4a0530, ai.md §5): with `W = (wage bill + 2 ×
+    /// Σ Round(Cost/CostRecrutDiv)) div 3`, a feudal army keeps `NeedUpkeepDay` days of `W`
+    /// minus the income of the days between, the others one day; within `0..gold`.
+    pub fn spare_gold(&self, i: usize) -> i32 {
+        let a = &self.world.armies[i];
+        let t = self.army_totals(i);
+        let cost = (t.wages + 2 * t.recruit_sum) / 3;
+        let n = self.content.options.need_upkeep_day;
+        let m = &a.mind;
+        let v = match a.ai.style {
+            Style::Feudal => a.gold - n * cost + (m.income + m.village_avg) * (n - 1),
+            _ => a.gold - cost + m.income + m.village_avg,
+        };
+        v.min(a.gold).max(0)
+    }
+
+    /// A fresh score of army `i` against `p` from a simulated battle ([`army_score`]).
+    pub fn army_score_of(&self, i: usize, p: Party) -> i32 {
+        let c = &self.content;
+        let (side, _) = self.army_side(i, true);
+        let (theirs, speed_c) = match p {
+            Party::Hero => (self.hero_side(), self.hero_speed()),
+            Party::Army(j) => (self.army_side(j, false).0, self.world.armies[j].speed.max(1)),
+        };
+        let s = self.sims.borrow_mut().get(c, &side, &theirs);
+        let a = &self.world.armies[i];
+        let pr = Priorities::of(&c.options, a.ai.model);
+        let o = &c.options;
+        army_score(s, a.ai.aggression, self.relation_to(i, p), pr.attack_army, o.zero_density, a.speed.max(1), speed_c, o.battle_end_turn)
+    }
+
+    /// Army `i`'s cached score against the party of key `key` (0 when never scored).
+    fn cached(&self, i: usize, key: u32) -> i32 {
+        self.world.armies[i].mind.scores.get(&key).copied().unwrap_or(0)
+    }
+
+    /// Scores army `i` against `p` afresh and marks the pair clean.
+    fn rescore_pair(&mut self, i: usize, p: Party) {
+        let v = self.army_score_of(i, p);
+        let key = self.key_of(p);
+        let m = &mut self.world.armies[i].mind;
+        m.scores.insert(key, v);
+        m.clean.insert(key);
+    }
+
+    /// Every pair with the army (or hero) of key `key` is to be rescored, both ways
+    /// (0x4a26e8).
+    pub(crate) fn mark_dirty(&mut self, key: u32) {
+        for a in self.world.armies.iter_mut() {
+            if a.uid == key {
+                a.mind.clean.clear();
+            } else {
+                a.mind.clean.remove(&key);
+            }
+        }
+    }
+
+    /// Army `i`'s score of building `l` (0x4a0ba4, ai.md §6): the smallest positive of its
+    /// village, purchase, attack and garrison parts, 0 for none, −1 when the attack part
+    /// forbids it.
+    pub fn building_score(&self, i: usize, l: usize) -> i32 {
+        self.building_score_with(i, l, self.spare_gold(i), self.army_totals(i).strength)
+    }
+
+    /// [`Game::building_score`] with the army's spare gold and strength worked out.
+    fn building_score_with(&self, i: usize, l: usize, spare: i32, strength: i32) -> i32 {
+        let c = &self.content;
+        let o = &c.options;
+        let w = &self.world;
+        let a = &w.armies[i];
+        let b = &w.locations[l];
+        if b.kind.is_bridge() {
+            return 0;
+        }
+        let pr = Priorities::of(o, a.ai.model);
+        let own = b.owner == Owner::Army(a.id);
+        let leader = a.troops.first().map_or(Nature::Normal, |t| c.unit(t.unit).nature);
+        // Village: gold in stock, a village or its own building.
+        let stock = b.tribute_gold;
+        let village = if stock != 0 && (b.kind == LocationKind::Village || own) {
+            let (lo, hi) = pr.village;
+            let v = fpu_round((1.0 - stock as f64 / (pr.gold_village + spare) as f64) * (hi - lo) as f64);
+            let v = if v < 0 { lo } else { v + lo };
+            if a.ai.style != Style::Feudal {
+                v * 3
+            } else {
+                v
+            }
+        } else {
+            0
+        };
+        // Purchase: recruits of its leader's Nature, goods it can afford.
+        let purchase = if spare < 1 || b.attitude_to(a.faction) < 0 {
+            0
+        } else {
+            let units = a.troops.len();
+            let recruits = if units < MAX_UNITS {
+                let (mut sum, mut n) = (0i64, 0i64);
+                for r in b.recruits.iter().filter(|r| c.try_unit(r.unit).is_some_and(|d| d.nature == leader)) {
+                    let count = r.stock.unwrap_or(0).max(0) as i64;
+                    sum += count * c.unit(r.unit).cost as i64;
+                    n += count;
+                }
+                if n < 1 {
+                    0
+                } else {
+                    (sum / n * n.min((MAX_UNITS - units) as i64)) as i32
+                }
+            } else {
+                0
+            };
+            let goods: Vec<i32> = random_goods(b).iter().filter_map(|&(_, item)| c.try_item(item)).map(|d| d.cost.abs()).filter(|&p| p <= spare).collect();
+            let mut v = recruits;
+            if !goods.is_empty() {
+                let n = goods.len() as i64;
+                let free = a.troops.iter().map(|t| t.worn.iter().filter(|s| s.is_none()).count() as i64).sum::<i64>();
+                let wares = (goods.iter().map(|&p| p as i64).sum::<i64>() / n * n.min(free)) as i32;
+                if v == 0 || (0 < v && v < wares) {
+                    v = wares;
+                }
+            }
+            if v < 1 {
+                0
+            } else {
+                let (lo, hi) = pr.purchase;
+                fpu_round((lo as i64 * pr.gold_purchase as i64) as f64 / v as f64 + (hi as i64 * pr.gold_purchase as i64) as f64 / spare as f64)
+            }
+        };
+        // Attack: a hostile town (at −3 only), castle, fort or ruins it can beat.
+        let attackable = assaults(a, b) && !matches!(b.kind, LocationKind::Tavern | LocationKind::Church | LocationKind::Smithy | LocationKind::Obelisk);
+        let mut attack = 0;
+        if has_garrison(b.kind) && attackable {
+            attack = fpu_round((pr.attack_castle * 50) as f64 / (b.gold_income + 1) as f64);
+            if attack == 0 {
+                attack = 1;
+            }
+            let garrison = b.garrison.len() + b.stationed.len();
+            if garrison < 1 {
+                attack = attack / 4 + 1;
+            } else {
+                let (side, _) = self.army_side(i, true);
+                let s = self.sims.borrow_mut().get(c, &side, &self.garrison_side(l));
+                let (a0, b0) = (s.own, s.theirs);
+                let (a1, b1) = (s.own_left.min(a0), s.theirs_left.min(b0));
+                if !((a1 == a0 && b1 == b0) || s.turn as i32 == o.battle_end_turn) {
+                    // A feudal army wins when its HP left, shifted by its aggression (÷100,
+                    // never the ÷1000 of the army score), is still 1 or more; the garrison's
+                    // result is not compared (the original's). A rogue when the garrison kept
+                    // at most half its HP.
+                    let wins = match a.ai.style {
+                        Style::Feudal => a1 + fpu_round((a.ai.aggression as i64 * a0) as f64 / 100.0) as i64 >= 1,
+                        _ => b1 <= b0 / 2,
+                    };
+                    if wins {
+                        let gain = fpu_round(((1.0 - a1 as f64 / a0 as f64) + b1 as f64 / b0 as f64) * (o.zero_density as f64 * 30.0) + 1.0);
+                        attack = (attack + gain).max(1);
+                    } else {
+                        attack = FORBIDDEN;
+                    }
+                }
+            }
+            if b.gold_income == 0 && garrison == 0 {
+                attack *= 50;
+            }
+            // A stationary guard in it that it cannot beat forbids it.
+            for p in self.parties() {
+                if self.guard(p) && self.standing_in(p) == Some(l) {
+                    let key = self.key_of(p);
+                    if self.cached(i, key) < 0 || self.army_score_of(i, p) < 0 {
+                        attack = FORBIDDEN;
+                    }
+                }
+            }
+        }
+        // Garrison: its own building, its strength against the garrison's.
+        let garrison = if own && has_garrison(b.kind) {
+            let s = strength;
+            let g = totals(c, &b.garrison, b.garrison_defence).strength;
+            let (lo, hi) = pr.garrison;
+            match s.cmp(&g) {
+                std::cmp::Ordering::Less => fpu_round(((hi - lo) as i64 * s as i64) as f64 / g as f64) + lo,
+                std::cmp::Ordering::Greater => fpu_round(((hi - lo) as i64 * g as i64) as f64 / s as f64) + lo,
+                std::cmp::Ordering::Equal => 0,
+            }
+        } else {
+            0
+        };
+        let mut best = 0;
+        for v in [village, purchase, attack, garrison] {
+            if v > 0 && (best == 0 || v < best) {
+                best = v;
+            }
+        }
+        if attack < 0 {
+            -1
+        } else {
+            best
+        }
+    }
+
+    /// The garrison of building `l` as a battle side: its troops and the player's units left
+    /// there, living, with the building's defence.
+    fn garrison_side(&self, l: usize) -> Side<'_> {
+        let c = &self.content;
+        let loc = &self.world.locations[l];
+        let mut units: Vec<Unit> = loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect();
+        units.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
+        Side { units, defence: loc.garrison_defence, spells: Vec::new() }
+    }
+
+    /// Army `i` scores every building afresh.
+    pub(crate) fn rescore_buildings(&mut self, i: usize) {
+        let (spare, strength) = (self.spare_gold(i), self.army_totals(i).strength);
+        let scores: Vec<i32> = (0..self.world.locations.len()).map(|l| self.building_score_with(i, l, spare, strength)).collect();
+        self.world.armies[i].mind.buildings = scores;
+    }
+
+    fn rescore_building(&mut self, i: usize, l: usize) {
+        let v = self.building_score(i, l);
+        let n = self.world.locations.len();
+        let m = &mut self.world.armies[i].mind;
+        m.buildings.resize(n, 0);
+        m.buildings[l] = v;
+    }
+
+    fn stored_building(&self, i: usize, l: usize) -> i32 {
+        self.world.armies[i].mind.buildings.get(l).copied().unwrap_or(0)
+    }
+
+    fn set_stored_building(&mut self, i: usize, l: usize, v: i32) {
+        let n = self.world.locations.len();
+        let m = &mut self.world.armies[i].mind;
+        m.buildings.resize(n, 0);
+        m.buildings[l] = v;
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Map load
+    // ------------------------------------------------------------------------------------
+
+    /// The AI's setup at map load and at every save load (0x4a1ff0, ai.md §7.1): every
+    /// army stands in the building under it, all its pairs are dirty and it scores every
+    /// building; at map load also its building defence, its first noon (today's 12:00, or
+    /// tomorrow's when that has passed), its income and a village average of 50 (the
+    /// building scores come first, so they see no income and no average). Then the owners of
+    /// castles and forts count their income towards today's (on top of a loaded one too),
+    /// the talk counters are zeroed, and every pair of AI armies within the first one's
+    /// `AIDistance`, neither of them a stationary guard, is scored once.
+    pub(crate) fn ai_init(&mut self, from_save: bool) {
+        let now = self.clock.total_minutes();
+        let day = MINUTES_PER_DAY as f64;
+        let ids: Vec<usize> = (0..self.world.armies.len()).filter(|&i| managed(&self.world.armies[i])).collect();
+        for &i in &ids {
+            let cell = self.world.armies[i].tile(&self.world.map);
+            let standing = self.world.location_covering(cell);
+            {
+                let m = &mut self.world.armies[i].mind;
+                m.standing = standing;
+                m.clean.clear();
+                if !from_save {
+                    m.income = 0;
+                    m.village_avg = 0;
+                }
+            }
+            self.rescore_buildings(i);
+            if !from_save {
+                let defence = standing.map_or(0, |l| self.world.locations[l].garrison_defence);
+                let a = &mut self.world.armies[i];
+                let m = &mut a.mind;
+                m.defence = defence;
+                m.idle = 0;
+                a.budget = 0.0;
+                let mut noon = (now / day).floor() * day + day / 2.0;
+                if noon < now {
+                    noon += day;
+                }
+                m.next_noon = noon;
+                m.income = a.ai.extra_income;
+                m.village_avg = 50;
+                m.village_today = 50;
+            }
+        }
+        // The armies waiting off the map get their records set up too (a building score is 0
+        // for an army off the map).
+        if !from_save {
+            let map = &self.world.map;
+            let locations = &self.world.locations;
+            let footprints = |t: Tile| self.world.location_covering(t);
+            let waiting: Vec<(usize, Option<usize>)> = self.world.inactive.iter().enumerate().map(|(k, a)| (k, footprints(a.tile(map)))).collect();
+            for (k, standing) in waiting {
+                let defence = standing.map_or(0, |l| locations[l].garrison_defence);
+                let a = &mut self.world.inactive[k];
+                let mut noon = (now / day).floor() * day + day / 2.0;
+                if noon < now {
+                    noon += day;
+                }
+                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], ..AiMind::default() };
+            }
+        }
+        let incomes: Vec<(u8, i32)> = self.world.locations.iter().filter(|l| l.kind.capturable()).filter_map(|l| match l.owner {
+            Owner::Army(id) => Some((id, l.gold_income)),
+            _ => None,
+        }).collect();
+        for (id, income) in incomes {
+            if let Some(a) = self.world.armies.iter_mut().chain(self.world.inactive.iter_mut()).find(|a| a.id == id && managed(a)) {
+                a.mind.income += income;
+            }
+        }
+        for a in self.world.armies.iter_mut().chain(self.world.inactive.iter_mut()) {
+            a.talk = 0;
+            a.mind.talk.clear();
+        }
+        if !from_save {
+            // Everyone counts as paid at the start (a save from before the pay records too).
+            let stamp = now as u64;
+            let troops = self.world.armies.iter_mut().chain(self.world.inactive.iter_mut()).filter(|a| managed(a)).flat_map(|a| a.troops.iter_mut());
+            for t in troops.filter(|t| t.last_paid == 0) {
+                t.last_paid = stamp;
+            }
+        }
+        for &k in &ids {
+            for &j in &ids {
+                let map = &self.world.map;
+                let (a, b) = (&self.world.armies[k], &self.world.armies[j]);
+                if k == j || stationary(a) || stationary(b) {
+                    continue;
+                }
+                if map.grid.octile(a.tile(map), b.tile(map)) <= target_range(&self.content.options, a.ai.style) {
+                    self.rescore_pair(k, Party::Army(j));
+                }
+            }
+        }
+    }
+}
+
+/// The market goods of building `l` the AI deals with, with their stock index: the random
+/// ones only (the original keeps the map's fixed goods as negative ids and skips them).
+fn random_goods(l: &Location) -> Vec<(usize, ItemId)> {
+    let Some(shop) = &l.shop else { return Vec::new() };
+    let mut fixed = shop.fixed.clone();
+    let mut out = Vec::new();
+    for (k, &item) in shop.stock.iter().enumerate() {
+        if let Some(f) = fixed.iter().position(|&x| x == item) {
+            fixed.remove(f);
+        } else {
+            out.push((k, item));
+        }
+    }
+    out
+}
+
+impl Game {
+    // ------------------------------------------------------------------------------------
+    // The driver and the step clock
+    // ------------------------------------------------------------------------------------
+
+    /// The AI's part of a slice of `minutes` (0x4ade3c): beaten armies whose time has come
+    /// return, then every army the AI steers, in order, banks the minutes and takes the steps
+    /// they cover; a stationary guard does nothing at all and a healing one stands still.
+    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells) {
         let now = self.clock.total_minutes();
         self.ai_respawns(now);
-        let hero = self.hero_target();
-        let mut budget = MAX_PATHS_PER_SLICE;
-        for i in 0..self.world.armies.len() {
-            if !managed(&self.world.armies[i]) || self.is_foe(i) {
+        let uids: Vec<u32> = self.world.armies.iter().filter(|a| managed(a)).map(|a| a.uid).collect();
+        for uid in uids {
+            let Some(i) = self.army_by_uid(uid) else { continue };
+            let a = &mut self.world.armies[i];
+            if stationary(a) || now <= a.mind.busy_until {
                 continue;
             }
-            if self.needs_thought(i, hero, now) {
-                let (goal, path) = self.ai_choice(i);
-                self.set_goal(i, goal, path, now);
+            a.budget = (a.budget + minutes).min(super::world::AI_BUDGET_CAP);
+            if self.is_foe(i) {
+                continue;
             }
-            self.route(i, hero, now, &mut budget);
+            self.ai_walk(uid, hero);
         }
     }
 
-    /// What army `i` would choose now ([`choose`]), with random wander points of its patrol
-    /// box and the day's simulated battles.
-    pub(crate) fn ai_choice(&mut self, i: usize) -> (Goal, Vec<Tile>) {
-        let now = self.clock.total_minutes();
-        let day = self.clock.day_index();
-        let wander = self.wander_points(i);
-        let hero = self.hero_target();
-        // The player defends there: all his living units fight, the unpaid ones too.
-        let squad: Vec<Unit> = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
-        let mut sims = std::mem::take(&mut self.sims);
-        let out = choose(&self.world, &self.content, i, hero.map(|h| (h, squad.as_slice())), now, day, &wander, &mut sims);
-        self.sims = sims;
-        out
+    /// Army `uid` takes the steps its bank covers (0x4a399c, ai.md §2): a step costs
+    /// `cost(cell left) × speed` minutes, ×1.5 diagonally; with no path it steps in place on
+    /// its own cell's cost. A step into one of the hero's cells spends its time but the army
+    /// stays where it is. Every step, taken or not, is an arrival ([`Game::ai_arrival`]).
+    fn ai_walk(&mut self, uid: u32, hero: &HeroCells) {
+        loop {
+            let Some(i) = self.army_by_uid(uid) else { return };
+            let (need, next, moves) = {
+                let w = &self.world;
+                let a = &w.armies[i];
+                let map = &w.map;
+                let here = a.tile(map);
+                let next = a.path.first().copied();
+                let to = next.unwrap_or(here);
+                let left = self.ai_cost(a, here);
+                let need = match next {
+                    Some(t) => step_minutes(map.grid, here, t, left, a.speed.max(1)),
+                    None => left as f32 * a.speed.max(1) as f32,
+                };
+                (need, next, !hero.cells.contains(&Some(to)))
+            };
+            if self.world.armies[i].budget < need {
+                return;
+            }
+            self.world.armies[i].budget -= need;
+            self.ai_stepped(i, next, moves, need);
+            self.ai_arrival(uid, hero);
+            // A cell of no cost would step forever: once per slice.
+            if need <= 0.0 || self.army_by_uid(uid).is_none_or(|i| self.is_foe(i)) {
+                return;
+            }
+        }
     }
 
-    fn needs_thought(&self, i: usize, hero: Option<Tile>, now: f64) -> bool {
-        let a = &self.world.armies[i];
-        if now >= a.mind.think_at {
-            return true;
+    /// Cost units of cell `t` on army `a`'s map: LAND, or SHIP for a ship army (0 closed).
+    fn ai_cost(&self, a: &Army, t: Tile) -> u16 {
+        if a.sails() {
+            self.world.sea_step(t).unwrap_or(0)
+        } else {
+            self.world.map.cost(t).unwrap_or(0)
         }
+    }
+
+    /// The step-clock bookkeeping of a step that ended (0x4a399c): a real step moves the army
+    /// on (unless the hero's cell barred it), counts one step off its re-plan countdown and
+    /// ends its idle plans; reaching the end of its path, or a closed next cell, draws new
+    /// wander points and forces a re-plan. A step in place (no path) clears "just respawned",
+    /// draws new wander points, forces a re-plan and counts one more idle plan.
+    fn ai_stepped(&mut self, i: usize, next: Option<Tile>, moves: bool, minutes: f32) {
+        let closed = |g: &Game, t: Tile| g.ai_cost(&g.world.armies[i], t) == 0;
+        let after = next.filter(|_| moves).and_then(|_| self.world.armies[i].path.get(1).copied()).or_else(|| next.filter(|_| !moves));
+        let next_closed = after.is_some_and(|t| closed(self, t));
         let map = &self.world.map;
-        let range = target_range(&self.content.options, a.ai.style);
-        let sees_hero = hero.is_some_and(|h| map.grid.octile(a.tile(map), h) <= range && in_patrol(a, h));
-        let near_hero = hero.is_some_and(|h| map.grid.octile(a.tile(map), h) <= range);
-        let messenger = !a.hostile() && a.ai.player_only;
-        match a.mind.goal {
-            // The player went out of range (or a truce began).
-            Goal::AttackPlayer => !sees_hero || now < a.ignore_until,
-            Goal::MeetPlayer => !near_hero,
-            // A messenger comes in range of the player.
-            _ if messenger => near_hero,
-            // A hostile army spots the player.
-            _ => a.hostile() && now >= a.ignore_until && sees_hero,
-        }
-    }
-
-    fn set_goal(&mut self, i: usize, goal: Goal, path: Vec<Tile>, now: f64) {
-        let offset = (self.world.armies[i].uid % 6) as f64 * 5.0;
-        let same = {
-            let a = &self.world.armies[i];
-            a.mind.goal == goal || (matches!(goal, Goal::Wander(_)) && goal.same_kind(a.mind.goal) && !a.path.is_empty())
-        };
-        if same {
-            self.world.armies[i].mind.think_at = now + THINK_MINUTES + offset;
-            return;
-        }
-        if !path.is_empty() {
-            self.ai_stats.paths += 1;
-        }
         let a = &mut self.world.armies[i];
-        a.mind.goal = goal;
-        a.path = path;
-        a.chasing = goal == Goal::AttackPlayer;
-        a.mind.think_at = now + THINK_MINUTES + offset;
-        if goal == Goal::Idle {
-            // Nothing to do: rest a while *(guess: ZeroDensity × 6..36 minutes, 30..180
-            // with the shipped 5)*.
-            let z = self.content.options.zero_density.max(1);
-            let rest = self.rng.range(6 * z, 36 * z) as f64;
-            self.world.armies[i].mind.think_at = now + rest;
+        a.arrived = true;
+        let renew = match next {
+            Some(t) => {
+                if moves {
+                    a.pos = map.center(t);
+                    a.path.remove(0);
+                    a.walk.points.push(a.pos);
+                    a.walk.minutes.push(minutes);
+                }
+                a.mind.countdown -= 1;
+                a.mind.idle = 0;
+                a.path.is_empty() || next_closed
+            }
+            None if moves => {
+                a.mind.just_respawned = false;
+                a.mind.idle += 1;
+                true
+            }
+            None => {
+                // Standing, its own cell barred by the hero's: the original's path index
+                // stays on its only cell, so it counts as a step that reached the end.
+                a.mind.countdown -= 1;
+                a.mind.idle = 0;
+                true
+            }
+        };
+        if renew {
+            a.mind.countdown = 0;
+            a.path.clear();
+            self.ai_wander(i);
         }
     }
 
-    /// The four wander points of army `i` (ai.md §7.2, engine.md §3.4, 0x4a2550): x then y
-    /// for each, inside its patrol box (its post ± radius, clamped to the map) when it
-    /// patrols, anywhere on the map when it does not. There is no passability test. A point
-    /// on its own cell is dropped, and so is one in column 0: the original's user skips every
-    /// point whose x is not above 0 (kept). A stationary guard never plans, so never draws.
-    fn wander_points(&mut self, i: usize) -> Vec<Tile> {
+    /// The four wander points of army `i` (0x4a2550): x then y for each, inside its patrol
+    /// box (its centre ± radius, clamped to the map) when it patrols, anywhere on the map when
+    /// it does not; a point on its own cell gets x = 0, which no plan seeds.
+    fn ai_wander(&mut self, i: usize) {
         let (w, h) = (self.world.map.w, self.world.map.h);
-        let (post, r, here, patrols) = {
+        let (c, r, here, patrols) = {
             let a = &self.world.armies[i];
             (a.patrol_centre(), a.patrol_radius, a.tile(&self.world.map), a.patrols)
         };
-        if patrols && r <= 0 {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        for _ in 0..WANDER_POINTS {
-            let t = if patrols {
-                let (x0, x1) = ((post.0 - r).max(0), (post.0 + r).min(w - 1));
-                let (y0, y1) = ((post.1 - r).max(0), (post.1 + r).min(h - 1));
-                let x = x0 + self.rng.random(x1 + 1 - x0);
-                (x, y0 + self.rng.random(y1 + 1 - y0))
+        let mut pts = [(0, 0); WANDER_POINTS];
+        for p in pts.iter_mut() {
+            *p = if patrols {
+                let (x0, x1) = ((c.0 - r).max(0), (c.0 + r).min(w - 1));
+                let (y0, y1) = ((c.1 - r).max(0), (c.1 + r).min(h - 1));
+                let x = x0 + self.rng.random(x1 - x0 + 1);
+                (x, y0 + self.rng.random(y1 - y0 + 1))
             } else {
                 let x = self.rng.random(w);
                 (x, self.rng.random(h))
             };
-            if t != here && t.0 > 0 {
-                out.push(t);
+        }
+        for p in pts.iter_mut() {
+            if *p == here {
+                p.0 = 0;
             }
         }
-        out
+        self.world.armies[i].mind.wander = pts;
     }
 
-    /// The cell army `i` heads for: the building's centre, the other army's cell, the leg's
-    /// end, its post. `None`: the goal is gone.
-    fn goal_cell(&self, i: usize, hero: Option<Tile>) -> Option<Tile> {
-        let a = &self.world.armies[i];
-        match a.mind.goal {
-            Goal::Idle => None,
-            Goal::Wander(t) => Some(t),
-            Goal::Home => Some(a.post),
-            Goal::AttackPlayer | Goal::MeetPlayer => hero,
-            Goal::AttackArmy(u) | Goal::Talk(u) => self.army_by_uid(u).map(|j| self.world.armies[j].tile(&self.world.map)),
-            g => g.building().map(|l| self.world.locations[l].tile),
-        }
-    }
-
-    /// Army `i` is where its goal is: next to the army it goes for, in the building (any of
-    /// its cells), on the cell.
-    fn at_goal(&self, i: usize, t: Tile, target: Tile) -> bool {
-        let goal = self.world.armies[i].mind.goal;
-        let map = &self.world.map;
-        if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
-            // It heads for his very cell, which it never enters (world.md §5): it keeps
-            // trying the last step, standing next to him, and is in contact after each try.
-            t == target
-        } else if goal.army().is_some() {
-            map.distance(t, target) <= CONTACT
-        } else if let Some(l) = goal.building() {
-            self.world.location_at(t) == Some(l)
-        } else {
-            t == target
-        }
-    }
-
-    /// Plans army `i`'s route to its goal when its route does not end there.
-    fn route(&mut self, i: usize, hero: Option<Tile>, now: f64, budget: &mut usize) {
-        let goal = self.world.armies[i].mind.goal;
-        if goal == Goal::Idle {
-            return;
-        }
-        let Some(target) = self.goal_cell(i, hero) else {
-            self.drop_goal(i, now, false);
-            return;
-        };
-        let (here, end) = {
-            let a = &self.world.armies[i];
-            (a.tile(&self.world.map), a.path.last().copied())
-        };
-        if self.at_goal(i, here, target) {
-            return;
-        }
-        let chases = goal.army().is_some() || matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer);
-        let fresh = match end {
-            Some(e) if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) => e == target,
-            Some(e) if chases => self.world.map.distance(e, target) <= 1,
-            Some(e) => self.at_goal(i, e, target),
-            None => false,
-        };
-        if fresh {
-            return;
-        }
-        let nodes = if matches!(goal, Goal::AttackPlayer | Goal::MeetPlayer) {
-            CHASE_PATH_NODES
-        } else if *budget == 0 {
-            return;
-        } else {
-            *budget -= 1;
-            GOAL_PATH_NODES
-        };
-        self.ai_stats.paths += 1;
-        let path = if self.world.same_region(here, target) { army_path(&self.world, &self.world.armies[i], here, target, nodes) } else { Vec::new() };
-        if path.is_empty() {
-            self.drop_goal(i, now, true);
-        } else {
-            self.world.armies[i].path = path;
-        }
-    }
-
-    /// Army `i` leaves `goal` alone for a while (it came to nothing).
-    fn block(&mut self, i: usize, goal: Goal) {
-        let now = self.clock.total_minutes();
-        let m = &mut self.world.armies[i].mind;
-        m.blocked.retain(|&(b, until)| b != goal && now < until);
-        m.blocked.push((goal, now + BLOCK_MINUTES));
-    }
-
-    /// Gives up the goal (blocking it for a while when it could not be reached) and thinks
-    /// again at the next slice.
-    fn drop_goal(&mut self, i: usize, now: f64, block: bool) {
-        let a = &mut self.world.armies[i];
-        if block && !matches!(a.mind.goal, Goal::AttackPlayer | Goal::MeetPlayer) {
-            let g = a.mind.goal;
-            a.mind.blocked.retain(|&(b, until)| b != g && now < until);
-            a.mind.blocked.push((g, now + BLOCK_MINUTES));
-        }
-        a.mind.goal = Goal::Idle;
-        a.chasing = false;
-        a.path.clear();
-        a.mind.think_at = now;
-    }
-
-    /// After the armies walked a slice: those that reached their goal act on it, then AI
-    /// armies that meet fight.
-    pub(crate) fn ai_after_walk(&mut self, events: &mut Vec<Event>) {
-        let now = self.clock.total_minutes();
-        let hero = self.hero_target();
-        let uids: Vec<u32> = self.world.armies.iter().filter(|a| managed(a)).map(|a| a.uid).collect();
-        for uid in uids {
-            let Some(i) = self.army_by_uid(uid) else { continue };
-            if !self.is_foe(i) {
-                self.arrive_ai(i, hero, now, events);
-            }
-        }
-        self.ai_contacts(now, events);
-    }
-
-    fn arrive_ai(&mut self, i: usize, hero: Option<Tile>, now: f64, events: &mut Vec<Event>) {
-        let goal = self.world.armies[i].mind.goal;
-        if matches!(goal, Goal::Idle | Goal::AttackPlayer | Goal::MeetPlayer) {
-            return;
-        }
-        let Some(target) = self.goal_cell(i, hero) else { return };
+    /// The rest of an arrival (0x4a399c's tail, then 0x4a548c): the octile distance to every
+    /// other party on the map (0 on the same cell, which then counts as absent); +1 to the
+    /// talk counter towards each at a distance; a re-plan when the countdown ran out or any
+    /// is within `AIGetPathDistance`; then the arrival rules. An attack on or a greeting of
+    /// the hero is kept for [`Game::ai_contact`].
+    fn ai_arrival(&mut self, uid: u32, hero: &HeroCells) {
+        let Some(i) = self.army_by_uid(uid) else { return };
         let here = self.world.armies[i].tile(&self.world.map);
-        let d = self.world.map.distance(here, target);
-        let rest = |g: &mut Game, i: usize, minutes: f64| {
-            let a = &mut g.world.armies[i];
-            a.mind.goal = Goal::Idle;
-            a.path.clear();
-            a.mind.think_at = now + minutes;
-        };
-        match goal {
-            Goal::AttackArmy(u) if d <= CONTACT => {
-                if let Some(j) = self.army_by_uid(u) {
-                    if hostile_to(&self.world.armies[i], &self.world.armies[j]) && !self.is_foe(j) {
-                        self.ai_battle(i, Defender::Army(j), events);
-                    } else {
-                        rest(self, i, 0.0);
-                    }
-                }
+        let grid = self.world.map.grid;
+        let reach = self.content.options.ai_get_path_distance;
+        let mut dist: Vec<(Party, i32)> = Vec::new();
+        let mut replan = self.world.armies[i].mind.countdown < 1;
+        for p in self.parties() {
+            if p == Party::Army(i) {
+                continue;
             }
-            Goal::Talk(_) if d <= CONTACT => {
-                self.world.armies[i].mind.talk_after = now + TALK_EVERY;
-                rest(self, i, TALK_MINUTES);
+            let d = grid.octile(here, self.cell_of(p));
+            if 0 < d && d <= reach {
+                replan = true;
             }
-            Goal::Wander(_) | Goal::Home if d == 0 || self.world.armies[i].path.is_empty() => {
-                let z = self.content.options.zero_density.max(1);
-                let minutes = self.rng.range(6 * z, 36 * z) as f64;
-                rest(self, i, minutes);
-            }
-            g if g.building().is_some_and(|l| self.world.location_at(here) == Some(l)) => {
-                if let Some(l) = g.building() {
-                    // It stands at the footprint's centre (world.md §7).
-                    let centre = self.world.map.center(self.world.locations[l].tile);
-                    self.world.armies[i].pos = centre;
-                    let uid = self.world.armies[i].uid;
-                    let minutes = self.act_at(i, l, g, events);
-                    // A lost battle took it off the map.
-                    if let Some(i) = self.army_by_uid(uid) {
-                        rest(self, i, minutes);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Army `i` reached building `l` for `goal`. Returns the minutes it stays.
-    fn act_at(&mut self, i: usize, l: usize, goal: Goal, events: &mut Vec<Event>) -> f64 {
-        let c = self.content.clone();
-        match goal {
-            Goal::Capture(_) => {
-                let a = &self.world.armies[i];
-                let loc = &self.world.locations[l];
-                let home_lost = a.ai.style == Style::Rogue && a.home == Some(l) && loc.owner != Owner::Army(a.id);
-                if !(hostile_to_location(a, loc) || home_lost) {
-                    return 0.0;
-                }
-                // Its owner standing at the gate defends it first.
-                if let Owner::Army(oid) = loc.owner {
-                    let map = &self.world.map;
-                    let guard = self.world.armies.iter().position(|b| b.id == oid && b.uid != a.uid && managed(b) && (self.world.location_at(b.tile(map)) == Some(l) || map.distance(b.tile(map), loc.tile) <= CONTACT));
-                    if let Some(j) = guard {
-                        let now = self.clock.total_minutes();
-                        let (a, b) = (&self.world.armies[i], &self.world.armies[j]);
-                        if !self.is_foe(j) && now >= a.mind.truce_until && now >= b.mind.truce_until {
-                            self.ai_battle(i, Defender::Army(j), events);
-                        }
-                        return THINK_MINUTES;
-                    }
-                }
-                let loc = &self.world.locations[l];
-                if loc.garrison.is_empty() && loc.stationed.iter().all(|s| !s.unit.alive()) {
-                    self.take_building(i, l, events);
-                } else {
-                    self.ai_battle(i, Defender::Garrison(l), events);
-                }
-                THINK_MINUTES
-            }
-            Goal::Heal(_) => {
-                let own = self.world.locations[l].owner == Owner::Army(self.world.armies[i].id);
+            if d > 0 {
+                let key = self.key_of(p);
                 let a = &mut self.world.armies[i];
-                let mut healed = 0;
-                for t in a.troops.iter_mut().filter(|t| t.hurt > 0) {
-                    let max = troop_max_hp(&c, t);
-                    // Paid as the player pays (mechanics.md 1.6), free in its own building.
-                    let price = if own { 0 } else { (c.unit(t.unit).cost.max(0) * c.options.healing_const * t.hurt + 100 * max - 1) / (100 * max) };
-                    if price > a.gold {
-                        break;
-                    }
-                    a.gold -= price;
-                    t.hurt = 0;
-                    healed += 1;
-                }
-                if healed == 0 {
-                    self.block(i, goal);
-                }
-                (healed * c.options.healing_time.max(0)) as f64
-            }
-            Goal::Garrison(_) => {
-                let mut hired = 0;
-                loop {
-                    let a = &self.world.armies[i];
-                    let loc = &self.world.locations[l];
-                    let target = army_strength(&c, a) * a.ai.garrison_strength as i64 / 100;
-                    if defenders_strength(&c, loc) >= target {
-                        break;
-                    }
-                    let Some((unit, cost)) = best_recruit(&c, a, loc, &a.troops) else { break };
-                    let Some(slot) = free_slot(&c, &loc.garrison) else { break };
-                    self.world.armies[i].gold -= cost;
-                    let loc = &mut self.world.locations[l];
-                    take_stock(loc, unit);
-                    loc.garrison.push(Troop::new(unit, 1, slot));
-                    hired += 1;
-                }
-                self.ai_stats.hired += hired;
-                if hired == 0 {
-                    self.block(i, goal);
-                }
-                THINK_MINUTES
-            }
-            Goal::Hire(_) => {
-                if self.ai_hire_at(i, l) == 0 {
-                    self.block(i, goal);
-                }
-                THINK_MINUTES
-            }
-            Goal::Shop(_) => {
-                if let Some((k, cost)) = best_buy(&c, &self.world.armies[i], &self.world.locations[l]) {
-                    let shop = self.world.locations[l].shop.as_mut().expect("shop");
-                    let item = shop.stock.remove(k);
-                    if let Some(f) = shop.fixed.iter().position(|&x| x == item) {
-                        shop.fixed.remove(f);
-                    }
-                    let a = &mut self.world.armies[i];
-                    a.gold -= cost;
-                    a.items.push(item);
-                    self.ai_stats.bought += 1;
+                if key == HERO {
+                    a.talk = a.talk.saturating_add(1);
                 } else {
-                    self.block(i, goal);
+                    let c = a.mind.talk.entry(key).or_insert(0);
+                    *c = c.saturating_add(1);
                 }
-                THINK_MINUTES
             }
-            Goal::Village(_) => {
-                let loc = &mut self.world.locations[l];
-                let gold = std::mem::take(&mut loc.tribute_gold);
-                loc.tribute_mana = 0;
-                self.world.armies[i].gold += gold;
-                THINK_MINUTES
+            dist.push((p, d));
+        }
+        if replan {
+            self.ai_plan(i, &dist, hero);
+        }
+        if let Some(c) = self.ai_arrive(uid) {
+            if let Some(i) = self.army_by_uid(uid) {
+                self.world.armies[i].mind.contact = Some(c);
             }
-            _ => 0.0,
         }
     }
 
-    /// Hires at building `l` into army `i` while it can (free cell, stock, gold above its
-    /// reserve). Returns how many it hired.
-    pub(crate) fn ai_hire_at(&mut self, i: usize, l: usize) -> u32 {
+    // ------------------------------------------------------------------------------------
+    // The planner
+    // ------------------------------------------------------------------------------------
+
+    /// Army `i` plans (0x4a2d88, ai.md §7), with `dist` its distance to every other party:
+    /// 1. the dirty pairs within `AIDistance` are rescored (farther ones keep their last
+    ///    score, still used below);
+    /// 2. with a heal or resurrection bill and spare gold, every friendly service building's
+    ///    stored score is lowered to the healing value `h` (3h at a town or church when a
+    ///    resurrection is due), for good until it is rescored;
+    /// 3. seeds: every building with a positive score (inside its patrol box when it
+    ///    patrols), every party by its score or talk value, the wander points; a danger
+    ///    (negative value) pushes two repulsion cones instead;
+    /// 4. closed: forbidden buildings' footprints, stationary guards, and the armies near an
+    ///    ignored one (or near it when it is ignored);
+    /// 5. one flood from all seeds, the cells of the parties within `AIGetPathDistance` and
+    ///    the cells they step to next erased, the path read by steepest descent. With no seed
+    ///    kept it stands (an empty path) and the countdown is left as it is.
+    pub(crate) fn ai_plan(&mut self, i: usize, dist: &[(Party, i32)], hero: &HeroCells) {
+        #[cfg(test)]
+        if self.world.armies[i].mind.scripted {
+            return;
+        }
         let c = self.content.clone();
-        let mut hired = 0;
-        loop {
+        let o = &c.options;
+        let (style, model, uid) = {
             let a = &self.world.armies[i];
-            let loc = &self.world.locations[l];
-            if !hires_for_ai(loc.kind) || !welcome_at(a, loc) {
-                break;
+            (a.ai.style, a.ai.model, a.uid)
+        };
+        let range = target_range(o, style);
+        for &(p, d) in dist {
+            let key = self.key_of(p);
+            if 0 < d && d <= range && !self.world.armies[i].mind.clean.contains(&key) {
+                self.rescore_pair(i, p);
             }
-            let Some((unit, cost)) = best_recruit(&c, a, loc, &a.troops) else { break };
-            let Some(slot) = free_slot(&c, &a.troops) else { break };
-            take_stock(&mut self.world.locations[l], unit);
-            let mut t = Troop::new(unit, 1, slot);
-            let xp = self.hire_xp(i, unit);
-            if xp > 0 {
-                ai_hire_gain(&c, &mut self.rng, &mut t, xp);
-            }
-            let a = &mut self.world.armies[i];
-            a.gold -= cost;
-            a.troops.push(t);
-            hired += 1;
         }
-        self.ai_stats.hired += hired;
-        hired
+        self.ai_stats.paths += 1;
+        let pr = Priorities::of(o, model);
+        let (w, h) = (self.world.map.w, self.world.map.h);
+        let idx = |t: Tile| -> Option<usize> { (t.0 >= 0 && t.1 >= 0 && t.0 < w && t.1 < h).then(|| (t.1 * w + t.0) as usize) };
+        let mut seeds: Vec<(Tile, u32)> = Vec::new();
+        let mut mult = vec![1u16; (w.max(0) * h.max(0)) as usize];
+        // Healing lowers the stored building scores.
+        let t = self.army_totals(i);
+        let spare = self.spare_gold(i);
+        if (t.heal_bill > 0 || t.res_bill > 0) && spare > 0 {
+            let (lo, hi) = pr.heal;
+            let mut v = fpu_round((1.0 - t.missing as f64 / t.max_living as f64) * (hi - lo) as f64 + lo as f64);
+            if spare < t.heal_bill {
+                v = fpu_round((t.heal_bill as i64 * v as i64) as f64 / spare as f64);
+            }
+            let faction = self.world.armies[i].faction;
+            for l in 0..self.world.locations.len() {
+                let b = &self.world.locations[l];
+                if !b.services || b.attitude_to(faction) < 0 {
+                    continue;
+                }
+                let cap = if t.res_bill >= 1 && matches!(b.kind, LocationKind::Town | LocationKind::Church) { v.wrapping_mul(3) } else { v };
+                if cap < self.stored_building(i, l) {
+                    self.set_stored_building(i, l, cap);
+                }
+            }
+        }
+        let a = &self.world.armies[i];
+        let here = a.tile(&self.world.map);
+        let box_has = |t: Tile| in_patrol(a, t);
+        if !a.ai.no_buildings {
+            for (l, b) in self.world.locations.iter().enumerate() {
+                let v = self.stored_building(i, l);
+                if v > 0 && (!a.patrols || box_has(b.tile)) {
+                    seeds.push((b.tile, v as u32));
+                }
+            }
+        }
+        for &(p, _) in dist {
+            let r = self.relation_to(i, p);
+            let key = self.key_of(p);
+            let mut v = if r < 0 {
+                self.cached(i, key)
+            } else if a.ai.no_talk {
+                0
+            } else {
+                let cnt = if key == HERO { a.talk } else { a.mind.talk.get(&key).copied().unwrap_or(0) };
+                if cnt < 1 {
+                    cnt / 100
+                } else {
+                    (TALK_COOLED - cnt).max(0) + pr.talk
+                }
+            };
+            let f = if self.guard(p) { GUARD_SLOPE } else { 1.0 };
+            if a.ai.player_only {
+                if p != Party::Hero && v > 0 {
+                    v = 0;
+                }
+                if p == Party::Hero && v == 0 {
+                    v = 1;
+                }
+            }
+            if self.ignored(p) {
+                v = 0;
+            }
+            let cell = self.cell_of(p);
+            if v < 1 {
+                if v < 0 && a.sails() == self.afloat(p) {
+                    repulsion(&mut mult, w, h, cell, f, -v);
+                    repulsion(&mut mult, w, h, cell, f * STEEP, v.wrapping_mul(-5));
+                }
+            } else if (!a.patrols || (box_has(here) && box_has(cell))) && !a.mind.just_respawned {
+                seeds.push((cell, v as u32));
+            }
+        }
+        for (l, b) in self.world.locations.iter().enumerate() {
+            if self.stored_building(i, l) < 0 {
+                let (x0, y0) = (b.anchor.0 - b.size.0 + 1, b.anchor.1 - b.size.1 + 1);
+                fill_rect(&mut mult, w, (x0, y0), b.size);
+            }
+        }
+        let parties = self.parties();
+        for &p in &parties {
+            if self.guard(p) {
+                if let Some(k) = idx(self.cell_of(p)) {
+                    mult[k] = 0;
+                }
+            }
+        }
+        let grid = self.world.map.grid;
+        for &p in parties.iter().filter(|&&p| p != Party::Hero) {
+            if (a.ai.ignored || self.ignored(p)) && grid.octile(here, self.cell_of(p)) < NEAR_IGNORED {
+                if let Some(k) = idx(self.cell_of(p)) {
+                    mult[k] = 0;
+                }
+            }
+        }
+        if !a.ai.no_random || a.mind.idle > IDLE_FOR_RANDOM {
+            for &pt in &a.mind.wander {
+                if pt.0 > 0 && idx(pt).is_some_and(|k| mult[k] != 0) {
+                    seeds.push((pt, pr.random as u32));
+                }
+            }
+        }
+        let world = &self.world;
+        let costs = if a.sails() { world.map.water_costs() } else { world.map.land_costs() };
+        let mut field = world.map.flood_maps(costs, &mult, &seeds, here);
+        let reach = o.ai_get_path_distance;
+        for &(p, d) in dist {
+            if 0 < d && d <= reach {
+                field.erase(self.cell_of(p));
+                field.erase(self.next_cell(p, hero));
+            }
+        }
+        let path = (field.kept > 0).then(|| world.map.descend(&field, here));
+
+        let a = &mut self.world.armies[i];
+        match path {
+            Some(path) => {
+                a.path = path;
+                a.mind.countdown = reach;
+            }
+            None => a.path.clear(),
+        }
+        let _ = uid;
+    }
+}
+
+/// Closes the footprint `size` at top-left `(x0, y0)` on the multiplier map (0x47650c): the
+/// bitmap's rows from `y0`, `size.0` cells from `x0` each, at least one row.
+fn fill_rect(mult: &mut [u16], w: i32, (x0, y0): Tile, size: (i32, i32)) {
+    for r in 0..size.1.max(1) {
+        for c in 0..size.0.max(0) {
+            let k = (y0 + r) as i64 * w as i64 + (x0 + c) as i64;
+            if let Some(m) = usize::try_from(k).ok().and_then(|k| mult.get_mut(k)) {
+                *m = 0;
+            }
+        }
+    }
+}
+
+impl Game {
+    // ------------------------------------------------------------------------------------
+    // Arrival
+    // ------------------------------------------------------------------------------------
+
+    /// The arrival rules of army `uid` (0x4a548c, ai.md §8–9):
+    /// 1. its home is rescored when it does not own it; after 12:00 its noon runs and every
+    ///    building is rescored; corpses older than `MaxTimeResurection` are dropped;
+    /// 2. contacts, the hero first: a friendly party's talk counter grows by relation + 1; a
+    ///    hostile neighbour (|dx| ≤ 1, |dy| ≤ 1) in no building, on a bridge or in its own
+    ///    building is attacked when the cached score is positive and it is not ignored (the
+    ///    hero: [`Contact::Attack`]); one inside someone else's building triples both scores;
+    ///    a friendly neighbour is greeted (the hero only after his step);
+    /// 3. in a building: assault and capture, village gold, shopping, healing, resurrection,
+    ///    hiring, garrison buying and reshuffle; the building's stored score is zeroed.
+    ///
+    /// Returns what it did to the hero. An army beaten in its own fight stops there (the
+    /// original goes on with the dead army's record).
+    pub(crate) fn ai_arrive(&mut self, uid: u32) -> Option<Contact> {
+        let now = self.clock.total_minutes();
+        let i = self.army_by_uid(uid)?;
+        let mut result = None;
+        if let Some(home) = self.world.armies[i].home {
+            if self.world.locations[home].owner != Owner::Army(self.world.armies[i].id) {
+                self.rescore_building(i, home);
+            }
+        }
+        if self.world.armies[i].mind.next_noon < now {
+            self.ai_noon(i, now);
+            self.rescore_buildings(i);
+        }
+        let window = self.content.options.max_time_resurection.max(0) as f64;
+        if self.army_totals(i).res_bill > 0 {
+            self.world.armies[i].troops.retain(|t| t.died_at.is_none_or(|d| d as f64 + window >= now));
+        }
+        // Contacts.
+        let hero_step = self.step_from.is_some();
+        let here = self.world.armies[i].tile(&self.world.map);
+        let parties: Vec<(Party, u32)> = self.parties().into_iter().map(|p| (p, self.key_of(p))).collect();
+        for (p, key) in parties {
+            let Some(i) = self.army_by_uid(uid) else { return result };
+            let p = match p {
+                Party::Hero => Party::Hero,
+                Party::Army(_) => match self.army_by_uid(key) {
+                    Some(j) => Party::Army(j),
+                    None => continue,
+                },
+            };
+            if p == Party::Army(i) {
+                continue;
+            }
+            let r = self.relation_to(i, p);
+            if r >= 0 {
+                self.add_talk(i, key, r as i32 + 1);
+            }
+            let there = self.cell_of(p);
+            if (here.0 - there.0).abs() >= 2 || (here.1 - there.1).abs() >= 2 {
+                continue;
+            }
+            if r < 0 {
+                let b = self.world.location_covering(there);
+                let open = match b {
+                    None => true,
+                    Some(l) => {
+                        let loc = &self.world.locations[l];
+                        loc.kind.is_bridge()
+                            || match p {
+                                Party::Hero => loc.owner == Owner::Player,
+                                Party::Army(j) => loc.owner == Owner::Army(self.world.armies[j].id),
+                            }
+                    }
+                };
+                if open {
+                    if self.cached(i, key) > 0 && !self.ignored(p) {
+                        match p {
+                            Party::Hero => result = Some(Contact::Attack),
+                            Party::Army(j) => {
+                                self.ai_battle(i, Defender::Army(j));
+                            }
+                        }
+                    }
+                } else {
+                    // Sheltered in someone else's building: no fight, both scores tripled.
+                    let triple = |v: i32| if v > 0 { (v * 3).min(TRIPLED_CAP) } else { v.min(TRIPLED_CAP) };
+                    let v = triple(self.cached(i, key));
+                    self.world.armies[i].mind.scores.insert(key, v);
+                    if let Party::Army(j) = p {
+                        let v = triple(self.cached(j, uid));
+                        self.world.armies[j].mind.scores.insert(uid, v);
+                    }
+                }
+            } else if p != Party::Hero || hero_step {
+                let mine = self.talk_of(i, key);
+                if p == Party::Hero && mine > 0 {
+                    result = Some(Contact::Greet);
+                }
+                if p != Party::Hero || mine > 0 {
+                    self.world.armies[i].mind.countdown = 0;
+                    self.set_talk(i, key, TALKED);
+                    self.ai_wander(i);
+                }
+                if let Party::Army(j) = p {
+                    self.world.armies[j].mind.countdown = 0;
+                    self.set_talk(j, uid, TALKED);
+                }
+            }
+        }
+        let i = self.army_by_uid(uid)?;
+        let here = self.world.armies[i].tile(&self.world.map);
+        let Some(l) = self.world.location_covering(here) else {
+            let m = &mut self.world.armies[i].mind;
+            if m.standing.is_some() {
+                m.standing = None;
+                m.defence = 0;
+            }
+            return result;
+        };
+        self.ai_in_building(uid, l, now, &mut result);
+        result
     }
 
-    /// XP a unit of type `unit` that army `i` hires starts with (experience.md §5): with
-    /// "add experience like the player", `P − strength/2`, where P is the player's army's
-    /// strength and XP per unit (`Σ(tactical + XP) / (units + 2)`) and `strength` the
-    /// recruit's own; plus the army's hire bonus; then a random amount from half of it to
-    /// one and a half times it.
-    fn hire_xp(&mut self, i: usize, unit: UnitId) -> i32 {
-        let c = self.content.clone();
-        let p = &self.world.armies[i].ai;
-        let mut x = 0i64;
-        if p.exp_like_player {
-            let sum: i64 = self.squad.iter().map(|u| c.tactical_cost(u.def, u.level) as i64 + u.xp as i64).sum();
-            let per = sum / (self.squad.len() as i64 + 2);
-            if per > 0 {
-                x = per - c.tactical_cost(unit, 1) as i64 / 2;
+    fn talk_of(&self, i: usize, key: u32) -> i32 {
+        let a = &self.world.armies[i];
+        if key == HERO {
+            a.talk
+        } else {
+            a.mind.talk.get(&key).copied().unwrap_or(0)
+        }
+    }
+
+    fn set_talk(&mut self, i: usize, key: u32, v: i32) {
+        let a = &mut self.world.armies[i];
+        if key == HERO {
+            a.talk = v;
+        } else {
+            a.mind.talk.insert(key, v);
+        }
+    }
+
+    fn add_talk(&mut self, i: usize, key: u32, d: i32) {
+        let v = self.talk_of(i, key).saturating_add(d);
+        self.set_talk(i, key, v);
+    }
+
+    /// Army `uid` arrived in building `l` (ai.md §9).
+    fn ai_in_building(&mut self, uid: u32, l: usize, now: f64, result: &mut Option<Contact>) {
+        let Some(i) = self.army_by_uid(uid) else { return };
+        let assault = assaults(&self.world.armies[i], &self.world.locations[l]);
+        if !assault {
+            self.world.armies[i].mind.standing = Some(l);
+        } else {
+            let owner = self.world.locations[l].owner;
+            // The player's building with him inside: he is attacked.
+            if owner == Owner::Player && self.location == Some(l) {
+                *result = Some(Contact::Attack);
+                return;
+            }
+            let mut won = self.ai_battle(i, Defender::Garrison(l));
+            if let Owner::Army(oid) = owner {
+                let defender = self.world.armies.iter().position(|b| b.id == oid && managed(b) && b.mind.standing == Some(l));
+                if let (Some(j), Some(i)) = (defender, self.army_by_uid(uid)) {
+                    if !self.world.armies[j].ai.ignored && i != j {
+                        won = self.ai_battle(i, Defender::Army(j));
+                    }
+                }
+            }
+            let Some(i) = self.army_by_uid(uid) else { return };
+            if !won {
+                self.world.armies[i].mind.standing = None;
+            } else {
+                let (id, faction, relations) = {
+                    let a = &self.world.armies[i];
+                    (a.id, a.faction, a.ai.relations)
+                };
+                let kind = self.world.locations[l].kind;
+                let town = kind == LocationKind::Town && attitude_of(&relations, self.world.locations[l].faction) == -3;
+                let was_players = self.world.locations[l].owned();
+                if town || matches!(kind, LocationKind::Village | LocationKind::Castle | LocationKind::Fort) {
+                    let loc = &mut self.world.locations[l];
+                    loc.take_sides(faction, relations);
+                    loc.owner = Owner::Army(id);
+                    loc.cleared = false;
+                    if self.world.armies[i].home.is_none() {
+                        self.world.armies[i].home = Some(l);
+                    }
+                    self.ai_stats.captures += 1;
+                    let text = crate::trf!("{name} took {place}.", name = army_name(&self.world.armies[i]), place = building_name(&self.world.locations[l]));
+                    let tile = self.world.locations[l].tile;
+                    self.report(text, tile, was_players);
+                }
+                if matches!(kind, LocationKind::Altar | LocationKind::Ruins) {
+                    let loc = &mut self.world.locations[l];
+                    loc.owner = Owner::Neutral;
+                    loc.take_sides(3, [0; 4]);
+                }
+                let d = self.world.locations[l].garrison_defence;
+                let m = &mut self.world.armies[i].mind;
+                m.standing = Some(l);
+                m.defence = d;
             }
         }
-        x += p.hire_bonus_exp as i64;
+        let Some(i) = self.army_by_uid(uid) else { return };
+        let (id, style) = (self.world.armies[i].id, self.world.armies[i].ai.style);
+        let own = self.world.locations[l].owner == Owner::Army(id);
+        if own {
+            self.world.armies[i].mind.defence = self.world.locations[l].garrison_defence;
+        }
+        if self.world.armies[i].mind.standing.is_none() || self.world.locations[l].kind.is_bridge() {
+            self.set_stored_building(i, l, 0);
+            return;
+        }
+        // Village gold: feudal armies take any village's whole stock; its mana is lost.
+        if style == Style::Feudal && self.world.locations[l].kind == LocationKind::Village && self.world.locations[l].tribute_gold != 0 {
+            let loc = &mut self.world.locations[l];
+            let gold = std::mem::take(&mut loc.tribute_gold);
+            loc.tribute_mana = 0;
+            let a = &mut self.world.armies[i];
+            a.gold += gold;
+            a.mind.village_today += gold;
+        }
+        let mut changed = false;
+        if style.lordly() {
+            self.ai_shop(i, l);
+            let welcome_here = welcome(&self.world.armies[i], &self.world.locations[l]);
+            if welcome_here {
+                if self.world.locations[l].services {
+                    changed |= self.ai_heal(i, l, now);
+                    changed |= self.ai_hire(i, l);
+                }
+                let level = self.world.armies[i].ai.garrison_level;
+                let keeps = |g: &Game| {
+                    let loc = &g.world.locations[l];
+                    level != 0 && loc.owner == Owner::Army(id) && matches!(loc.kind, LocationKind::Town | LocationKind::Castle | LocationKind::Fort) && g.stored_building(i, l) > 0
+                };
+                if keeps(self) {
+                    self.ai_buy_garrison(i, l);
+                    changed = true;
+                }
+                if keeps(self) {
+                    self.ai_reshuffle(i, l);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.mark_dirty(uid);
+        }
+        self.world.armies[i].mind.countdown = 0;
+        self.set_stored_building(i, l, 0);
+    }
+}
+
+impl Game {
+    // ------------------------------------------------------------------------------------
+    // Spending
+    // ------------------------------------------------------------------------------------
+
+    /// The price army `i` pays at building `l`: the relation factor of the building's
+    /// attitude to its faction (+3 when it owns it).
+    fn ai_price(&self, i: usize, l: usize, base: i32) -> i32 {
+        let a = &self.world.armies[i];
+        let b = &self.world.locations[l];
+        relation_price(base, b.attitude_to(a.faction), b.owner == Owner::Army(a.id))
+    }
+
+    /// Shopping (ai.md §9.3, 0x4a548c): in a building with goods well disposed to it — a
+    /// market or church when its leader is not undead, an altar when it is — it sells its
+    /// pack for half the price, then, if its spare gold covers the cheapest good, buys by
+    /// tactical gain: every (unit, good) the unit can wear that raises its tactical cost is
+    /// valued once at its gain; then the largest value above 5 whose price fits the spare
+    /// gold is bought, again and again. The values are not recomputed: a good bought for a
+    /// unit that can no longer wear it (it bought one of that type just before) is paid for
+    /// and lost (the original's).
+    fn ai_shop(&mut self, i: usize, l: usize) {
+        let c = self.content.clone();
+        let (faction, leader_undead, bd) = {
+            let a = &self.world.armies[i];
+            (a.faction, a.troops.first().is_some_and(|t| c.unit(t.unit).nature == Nature::Undead), a.mind.defence)
+        };
+        let b = &self.world.locations[l];
+        let place = (matches!(b.kind, LocationKind::Market | LocationKind::Church) && !leader_undead) || (b.kind == LocationKind::Altar && leader_undead);
+        if !place || b.shop.as_ref().is_none_or(|s| s.stock.is_empty()) || b.attitude_to(faction) < 0 {
+            return;
+        }
+        let pack = std::mem::take(&mut self.world.armies[i].items);
+        let mut kept = Vec::new();
+        for item in pack {
+            match c.try_item(item).map(|d| d.cost) {
+                Some(p) if p > 0 => {
+                    let v = self.ai_price(i, l, p.abs()) / 2;
+                    self.world.armies[i].gold += v;
+                }
+                _ => kept.push(item),
+            }
+        }
+        self.world.armies[i].items = kept;
+        let goods = random_goods(&self.world.locations[l]);
+        let spare = self.spare_gold(i);
+        let cheapest = goods.iter().filter_map(|&(_, g)| c.try_item(g)).map(|d| self.ai_price(i, l, d.cost.abs())).min().unwrap_or(100_000).min(100_000);
+        if spare <= 0 || cheapest > spare {
+            return;
+        }
+        // value[k][u] and the price of good k.
+        let n = self.world.armies[i].troops.len();
+        let mut value = vec![vec![0i32; n]; goods.len()];
+        let mut price = vec![0i32; goods.len()];
+        for u in 0..n {
+            for (k, &(_, item)) in goods.iter().enumerate() {
+                let t = self.world.armies[i].troops[u];
+                let before = tactical_modes(&c, &t, bd).1;
+                let mut tried = t;
+                if wear(&c, &mut tried, item).is_some() {
+                    let after = tactical_modes(&c, &tried, bd).1;
+                    if after > before {
+                        value[k][u] = item_gain(&c, &tried, bd);
+                    }
+                    price[k] = self.ai_price(i, l, c.item(item).cost).abs();
+                }
+            }
+        }
+        let mut bought = Vec::new();
+        loop {
+            let spare = self.spare_gold(i);
+            let mut best: Option<(usize, usize, i32)> = None;
+            for u in 0..n {
+                for k in 0..goods.len() {
+                    if price[k] != 0 && price[k] <= spare && value[k][u] > WORTH && value[k][u] > best.map_or(0, |b| b.2) {
+                        best = Some((u, k, value[k][u]));
+                    }
+                }
+            }
+            let Some((u, k, _)) = best else { break };
+            let item = goods[k].1;
+            wear(&c, &mut self.world.armies[i].troops[u], item);
+            self.world.armies[i].gold -= price[k];
+            bought.push(goods[k].0);
+            value[k].iter_mut().for_each(|v| *v = 0);
+            price[k] = 0;
+            self.ai_stats.bought += 1;
+        }
+        bought.sort_unstable();
+        if let Some(shop) = self.world.locations[l].shop.as_mut() {
+            for k in bought.into_iter().rev() {
+                shop.stock.remove(k);
+            }
+        }
+    }
+
+    /// Healing and resurrection (ai.md §9.4): with a heal bill, and a barracks unit undead
+    /// exactly when its leader is, every wounded unit is healed fully for the relation price
+    /// of `Round(Cost × HealingConst/100 × HP/maxHP)` — its current HP, so a badly hurt unit
+    /// is cheap — when that is below its gold; in a town or church the dead are raised, the
+    /// highest tactical cost first, for `Round(Cost × ResurectConst/100)`, those it cannot
+    /// afford skipped. Each one keeps it busy for `HealingTime` from now. Returns whether
+    /// anyone was healed or raised.
+    fn ai_heal(&mut self, i: usize, l: usize, now: f64) -> bool {
+        let c = self.content.clone();
+        let o = &c.options;
+        let mut done = false;
+        let t = self.army_totals(i);
+        if t.heal_bill > 0 {
+            let leader_undead = self.world.armies[i].troops.first().is_some_and(|t| c.unit(t.unit).nature == Nature::Undead);
+            let kind = self.world.locations[l].recruits.iter().any(|r| c.try_unit(r.unit).is_some_and(|d| (d.nature == Nature::Undead) == leader_undead));
+            if kind {
+                for k in 0..self.world.armies[i].troops.len() {
+                    let tr = self.world.armies[i].troops[k];
+                    let (hp, max) = troop_hp(&c, &tr);
+                    if !tr.alive() || hp >= max {
+                        continue;
+                    }
+                    let base = fpu_round(c.unit(tr.unit).cost as f64 / (100.0 / o.healing_const as f64) * hp as f64 / max as f64);
+                    let p = self.ai_price(i, l, base);
+                    let a = &mut self.world.armies[i];
+                    if p < a.gold {
+                        a.gold -= p;
+                        a.troops[k].hurt = 0;
+                        a.mind.busy_until = now + o.healing_time as f64;
+                        done = true;
+                    }
+                }
+            }
+        }
+        if matches!(self.world.locations[l].kind, LocationKind::Town | LocationKind::Church) && self.army_totals(i).res_bill > 0 {
+            let bd = self.world.armies[i].mind.defence;
+            let mut skipped = vec![false; self.world.armies[i].troops.len()];
+            loop {
+                let a = &self.world.armies[i];
+                let mut pick: Option<(usize, i32)> = None;
+                for (k, tr) in a.troops.iter().enumerate() {
+                    let v = tactical_modes(&c, tr, bd).1;
+                    if !tr.alive() && !skipped[k] && v > pick.map_or(0, |p| p.1) {
+                        pick = Some((k, v));
+                    }
+                }
+                let Some((k, _)) = pick else { break };
+                let base = fpu_round(c.unit(a.troops[k].unit).cost as f64 * (o.resurect_const as f64 / 100.0));
+                let p = self.ai_price(i, l, base);
+                let a = &mut self.world.armies[i];
+                if p < a.gold {
+                    a.gold -= p;
+                    a.troops[k].died_at = None;
+                    a.troops[k].hurt = 0;
+                    a.mind.busy_until = now + o.healing_time as f64;
+                    done = true;
+                } else {
+                    skipped[k] = true;
+                }
+            }
+        }
+        done
+    }
+
+    /// `P` of the hire XP (experience.md §5): with "add experience like the player", the
+    /// player's units' `Σ (tactical cost + XP) div (units + 2)`, the dead included; else 0.
+    fn hire_base_xp(&self, i: usize) -> i32 {
+        if !self.world.armies[i].ai.exp_like_player {
+            return 0;
+        }
+        let c = &self.content;
+        let sum: i64 = self.squad.iter().map(|u| c.tactical_cost(u.def, u.level) as i64 + u.xp as i64).sum();
+        (sum / (self.squad.len() as i64 + 2)) as i32
+    }
+
+    /// The XP a unit of `unit` hired by army `i` gets, given `P` (4a6b40): `X = (P − its
+    /// tactical cost div 2 when P ≥ 1, else 0) + the army's hire bonus`; when `X` > 0 it is
+    /// fed `Rand(X) + X div 2`, level by level. Only drawn when `P` or the bonus is positive.
+    fn hire_xp(&mut self, i: usize, unit: UnitId, p: i32) -> i32 {
+        let bonus = self.world.armies[i].ai.hire_bonus_exp;
+        if p <= 0 && bonus <= 0 {
+            return 0;
+        }
+        let x = if p < 1 { 0 } else { p - self.content.tactical_cost(unit, 1) / 2 } + bonus;
         if x <= 0 {
             return 0;
         }
-        let x = x.min(i32::MAX as i64 / 2) as i32;
         self.rng.random(x) + x / 2
     }
 
-    /// Army `i` walks into building `l`, which has no defenders: it is its.
-    fn take_building(&mut self, i: usize, l: usize, events: &mut Vec<Event>) {
-        let a = &self.world.armies[i];
-        let (id, faction, attitude, name) = (a.id, a.faction, a.attitude, army_name(a));
-        let loc = &mut self.world.locations[l];
-        let was_players = loc.owned();
-        loc.owner = Owner::Army(id);
-        loc.faction = faction;
-        loc.attitude = attitude;
-        loc.cleared = false;
-        loc.stationed.clear();
-        let text = crate::trf!("{name} took {place}.", name, place = building_name(loc));
-        let tile = loc.tile;
-        self.ai_stats.captures += 1;
-        self.leave_garrison(i, l);
-        self.report(text, tile, was_players, events);
+    /// The preference order of the roles by their tactical cost sums (warriors ×1, shooters
+    /// and mages ×2): the lowest first, ties as the original orders them.
+    fn role_order(c: &Content, troops: &[Troop], bd: i32) -> [u8; 3] {
+        let (mut w, mut s, mut m) = (0i64, 0i64, 0i64);
+        for t in troops {
+            let v = tactical_modes(c, t, bd).1 as i64;
+            match attack_kind(c, t.unit) {
+                4 => w += v,
+                7 => s += 2 * v,
+                0x11 => m += 2 * v,
+                _ => {}
+            }
+        }
+        if w < s && w < m {
+            if s < m {
+                [4, 7, 0x11]
+            } else {
+                [4, 0x11, 7]
+            }
+        } else if s < m {
+            if w < m {
+                [7, 4, 0x11]
+            } else {
+                [7, 0x11, 4]
+            }
+        } else if w < s {
+            [0x11, 4, 7]
+        } else {
+            [0x11, 7, 4]
+        }
     }
 
-    /// Army `i` leaves troops in the castle or fort it took: its weakest ones, until the
-    /// garrison has `garrison_strength`% of what the army keeps; the leader stays with
-    /// it *(guess: the original's garrison handling is not decoded)*.
-    fn leave_garrison(&mut self, i: usize, l: usize) {
+    /// Hiring (ai.md §9.5): while its spare gold is 1 or more and it has fewer units than the
+    /// cap (12), the roles are ordered by their sums and the barracks slots scanned role by
+    /// role for a unit in stock of that role, of its leader's Nature (a leader of unit 74 may
+    /// hire any non-undead), whose price fits the spare gold; the first is hired. Entering
+    /// the third role lowers the cap to 8, but the cap is only tested before each pass, and
+    /// passing the last slot of the third role ends the visit's hiring. A unit is a recruit
+    /// in its own building, a mercenary elsewhere; its XP comes level by level with a
+    /// promotion try each. Then the army's items are handed out again. Returns whether it
+    /// hired.
+    fn ai_hire(&mut self, i: usize, l: usize) -> bool {
         let c = self.content.clone();
-        let cap = c.formation.capacity();
-        loop {
+        let p = self.hire_base_xp(i);
+        let now = self.clock.total_minutes() as u64;
+        let mut cap = MAX_UNITS;
+        let mut hired = false;
+        while self.spare_gold(i) >= 1 && self.world.armies[i].troops.len() < cap {
             let a = &self.world.armies[i];
-            let loc = &self.world.locations[l];
-            if a.troops.len() <= 1 || loc.garrison.len() >= cap {
-                return;
+            let order = Game::role_order(&c, &a.troops, a.mind.defence);
+            let leader = a.troops.first().map(|t| t.unit);
+            let nature = leader.map_or(Nature::Normal, |u| c.unit(u).nature);
+            let any_living = leader == Some(UnitId(74));
+            let own = self.world.locations[l].owner == Owner::Army(a.id);
+            let wanted = |u: UnitId, role: u8| c.try_unit(u).is_some_and(|d| attack_kind(&c, u) == role && (d.nature == nature || (any_living && d.nature != Nature::Undead)));
+            let mut scan = Scan::default();
+            loop {
+                if let Some(r) = self.world.locations[l].recruits.get(scan.slot).copied() {
+                    if r.stock.unwrap_or(0) > 0 && wanted(r.unit, order[scan.pref]) {
+                        let price = self.ai_price(i, l, c.unit(r.unit).cost);
+                        if price <= self.spare_gold(i) {
+                            self.ai_add_hire(i, l, r.unit, price, own, p, now);
+                            hired = true;
+                            scan.done = true;
+                        }
+                    }
+                }
+                scan.next(&mut cap);
+                if scan.done || self.spare_gold(i) == 0 {
+                    break;
+                }
             }
-            let rest: i64 = army_strength(&c, a);
-            let Some((k, t)) = a.troops.iter().enumerate().skip(1).min_by_key(|(_, t)| troop_strength(&c, t)) else { return };
-            let s = troop_strength(&c, t);
-            if defenders_strength(&c, loc) * 100 >= (rest - s) * a.ai.garrison_strength as i64 {
-                return;
-            }
-            let mut t = *t;
-            let Some(slot) = free_slot(&c, &loc.garrison) else { return };
-            t.slot = slot;
-            self.world.armies[i].troops.remove(k);
-            self.world.locations[l].garrison.push(t);
         }
+        let (troops, pack, bd) = {
+            let a = &mut self.world.armies[i];
+            (std::mem::take(&mut a.troops), std::mem::take(&mut a.items), a.mind.defence)
+        };
+        let (mut troops, mut pack) = (troops, pack);
+        redistribute(&c, &mut troops, &mut pack, Vec::new(), bd);
+        let a = &mut self.world.armies[i];
+        a.troops = troops;
+        a.items = pack;
+        hired
+    }
+
+    /// Army `i` hires `unit` at building `l` for `price`.
+    #[allow(clippy::too_many_arguments)]
+    fn ai_add_hire(&mut self, i: usize, l: usize, unit: UnitId, price: i32, own: bool, p: i32, now: u64) {
+        let c = self.content.clone();
+        take_stock(&mut self.world.locations[l], unit);
+        let slot = free_slot(&c, &self.world.armies[i].troops);
+        let mut t = Troop::new(unit, 1, slot.unwrap_or(super::formation::Slot::new(super::formation::Row::Reserve, 0)));
+        t.kind = if own { WageKind::Recruit } else { WageKind::Mercenary };
+        t.last_paid = now;
+        let xp = self.hire_xp(i, unit, p);
+        let mut pool = Vec::new();
+        if xp > 0 {
+            ai_hire_gain(&c, &mut self.rng, &mut t, xp, &mut pool);
+        }
+        let a = &mut self.world.armies[i];
+        a.gold -= price;
+        a.troops.push(t);
+        self.ai_stats.hired += 1;
+    }
+
+    /// Garrison buying (ai.md §9.6) in its own town, castle or fort with a garrison level and
+    /// a positive stored score: while its spare gold is above a third of the gold it had when
+    /// it started and the garrison has fewer units than the cap, it buys into the garrison as
+    /// it hires (the garrison's role sums, its leader's Nature, no exception), recruits. The
+    /// price is not compared with the gold: it is simply deducted. Returns whether it bought.
+    fn ai_buy_garrison(&mut self, i: usize, l: usize) -> bool {
+        let c = self.content.clone();
+        let g0 = self.world.armies[i].gold;
+        let p = self.hire_base_xp(i);
+        let now = self.clock.total_minutes() as u64;
+        let mut cap = MAX_UNITS;
+        let mut bought = false;
+        while self.spare_gold(i) > g0 / 3 && self.world.locations[l].garrison.len() < cap {
+            let loc = &self.world.locations[l];
+            let order = Game::role_order(&c, &loc.garrison, loc.garrison_defence);
+            let nature = self.world.armies[i].troops.first().map_or(Nature::Normal, |t| c.unit(t.unit).nature);
+            let wanted = |u: UnitId, role: u8| c.try_unit(u).is_some_and(|d| attack_kind(&c, u) == role && d.nature == nature);
+            let mut scan = Scan::default();
+            loop {
+                if let Some(r) = self.world.locations[l].recruits.get(scan.slot).copied() {
+                    if r.stock.unwrap_or(0) > 0 && wanted(r.unit, order[scan.pref]) && self.spare_gold(i) > g0 / 3 {
+                        let price = self.ai_price(i, l, c.unit(r.unit).cost);
+                        take_stock(&mut self.world.locations[l], r.unit);
+                        self.world.armies[i].gold -= price;
+                        let slot = free_slot(&c, &self.world.locations[l].garrison);
+                        let mut t = Troop::new(r.unit, 1, slot.unwrap_or(super::formation::Slot::new(super::formation::Row::Reserve, 0)));
+                        t.last_paid = now;
+                        let xp = self.hire_xp(i, r.unit, p);
+                        let mut pool = Vec::new();
+                        if xp > 0 {
+                            ai_hire_gain(&c, &mut self.rng, &mut t, xp, &mut pool);
+                        }
+                        self.world.locations[l].garrison.push(t);
+                        self.ai_stats.hired += 1;
+                        bought = true;
+                        scan.done = true;
+                    }
+                }
+                scan.next(&mut cap);
+                if scan.done || self.spare_gold(i) < g0 / 3 {
+                    break;
+                }
+            }
+        }
+        bought
+    }
+
+    /// The garrison reshuffle (ai.md §9.6): every living unit but the leader, of the army and
+    /// the garrison, is dealt again between them by a quota table on the garrison level `L`
+    /// and the building's defence `D` (`q = L / (D/25 + 1)`); units with the Garrison bonus go
+    /// to the garrison first; then up to 201 rounds give the cell of the smallest value (army
+    /// before garrison, mages before shooters before warriors, the last of equals) the
+    /// unassigned unit of that role with the highest `Round(cost + √XP)`. The dead are dropped
+    /// and the units left after the last round lost.
+    fn ai_reshuffle(&mut self, i: usize, l: usize) {
+        let c = self.content.clone();
+        let (army_bd, d, level, income, fort) = {
+            let a = &self.world.armies[i];
+            let b = &self.world.locations[l];
+            (a.mind.defence, b.garrison_defence, a.ai.garrison_level, b.gold_income, b.kind == LocationKind::Fort)
+        };
+        // The pool: the army's units after the leader, then the garrison's, living ones.
+        let mut pool: Vec<(Troop, i32)> = Vec::new();
+        let leader = {
+            let a = &mut self.world.armies[i];
+            let mut rest = std::mem::take(&mut a.troops);
+            let leader = if rest.is_empty() { None } else { Some(rest.remove(0)) };
+            pool.extend(rest.into_iter().filter(|t| t.alive()).map(|t| (t, army_bd)));
+            leader
+        };
+        let garrison = std::mem::take(&mut self.world.locations[l].garrison);
+        pool.extend(garrison.into_iter().filter(|t| t.alive()).map(|t| (t, d)));
+        let cost: Vec<i32> = pool.iter().map(|(t, bd)| tactical_modes(&c, t, *bd).1).collect();
+        let kind: Vec<u8> = pool.iter().map(|(t, _)| attack_kind(&c, t.unit)).collect();
+        let role = |k: u8| match k {
+            4 => Some(0),
+            7 => Some(1),
+            0x11 => Some(2),
+            _ => None,
+        };
+        let mut quota = [[0i64; 3]; 2];
+        for (k, &v) in cost.iter().enumerate() {
+            if let Some(r) = role(kind[k]) {
+                quota[1][r] += v as i64;
+            }
+        }
+        let factor = d as f64 / 25.0 + 1.0;
+        let q = level as f64 / factor;
+        for r in 0..3 {
+            if q >= 50.0 {
+                quota[0][r] = delphi_round((q - 50.0) * 2.0 * quota[1][r] as f64 / 100.0);
+                if r == 0 {
+                    quota[1][0] = 0;
+                }
+            } else {
+                quota[1][r] = delphi_round((100.0 - 2.0 * q) * quota[1][r] as f64 / 100.0);
+            }
+        }
+        for v in quota[1].iter_mut() {
+            if fort {
+                *v += 150 - 2 * income as i64;
+            }
+            *v = (*v - 2 * income as i64).max(0);
+        }
+        let mut assigned = vec![false; pool.len()];
+        let mut left = pool.len();
+        let mut army: Vec<Troop> = leader.into_iter().collect();
+        let mut held: Vec<Troop> = Vec::new();
+        for k in (0..pool.len()).rev() {
+            if c.unit(pool[k].0.unit).bonus == Some(Bonus::Garrison) {
+                held.push(pool[k].0);
+                assigned[k] = true;
+                left -= 1;
+                quota[1][0] += delphi_round(factor * cost[k] as f64);
+            }
+        }
+        let mut rounds = 0;
+        while left > 0 && rounds < RESHUFFLE_ROUNDS {
+            rounds += 1;
+            let (mut br, mut bc) = (0usize, 0usize);
+            let mut want = 4u8;
+            for r in 0..2 {
+                for cc in (0..3).rev() {
+                    if quota[r][cc] <= quota[br][bc] {
+                        br = r;
+                        bc = cc;
+                        want = [4, 7, 0x11][cc];
+                    }
+                }
+            }
+            let mut pick: Option<(usize, i64)> = None;
+            for k in 0..pool.len() {
+                if assigned[k] || kind[k] != want {
+                    continue;
+                }
+                let v = cost[k] as f64 + (pool[k].0.xp as f64).sqrt();
+                if (pick.map_or(0, |p| p.1) as f64) < v {
+                    pick = Some((k, delphi_round(v)));
+                }
+            }
+            let Some((k, _)) = pick else {
+                quota[br][bc] += FULL as i64;
+                continue;
+            };
+            if br == 0 {
+                if army.len() < MAX_UNITS {
+                    army.push(pool[k].0);
+                    assigned[k] = true;
+                    left -= 1;
+                    quota[0][bc] += cost[k] as i64;
+                    self.world.armies[i].troops = army.clone();
+                    if self.spare_gold(i) == 0 {
+                        for v in quota[0].iter_mut() {
+                            *v += FULL as i64;
+                        }
+                    }
+                } else {
+                    quota[0][bc] += FULL as i64;
+                }
+            } else if held.len() < MAX_UNITS {
+                held.push(pool[k].0);
+                assigned[k] = true;
+                left -= 1;
+                quota[1][bc] += delphi_round(factor * cost[k] as f64);
+            } else {
+                quota[1][bc] += FULL as i64;
+            }
+        }
+        // Both are re-gridded: the leader keeps his cell, the others take the first free
+        // ones from the reserve forward.
+        let mut taken: Vec<super::formation::Slot> = army.first().map(|t| t.slot).into_iter().collect();
+        for t in army.iter_mut().skip(1) {
+            if let Some(s) = c.formation.new_unit_slot(&taken) {
+                t.slot = s;
+                taken.push(s);
+            }
+        }
+        self.world.armies[i].troops = army;
+        let mut slots: Vec<super::formation::Slot> = Vec::new();
+        for t in held.iter_mut() {
+            if let Some(s) = c.formation.new_unit_slot(&slots) {
+                t.slot = s;
+                slots.push(s);
+            }
+        }
+        self.world.locations[l].garrison = held;
+    }
+}
+
+/// The scan of the barracks by role (0x4a548c's hire loops): slots 1–6 of the first role,
+/// then of the second, then of the third. Entering the third sets the cap to 8; passing its
+/// last slot ends the scan and sets the cap to 0, even right after a unit was taken there.
+#[derive(Default)]
+struct Scan {
+    pref: usize,
+    slot: usize,
+    done: bool,
+}
+
+impl Scan {
+    fn next(&mut self, cap: &mut usize) {
+        self.slot += 1;
+        if self.slot == 6 {
+            self.pref += 1;
+            self.slot = 0;
+            if self.pref == 2 {
+                *cap = LATE_CAP;
+            }
+        }
+        if self.pref == 3 {
+            self.done = true;
+            *cap = 0;
+        }
+    }
+}
+
+/// Stock of `unit` at `l` goes down by one.
+fn take_stock(l: &mut Location, unit: UnitId) {
+    if let Some(n) = l.recruits.iter_mut().find(|r| r.unit == unit).and_then(|r| r.stock.as_mut()) {
+        *n = (*n - 1).max(0);
+    }
+}
+
+/// Free formation cell for a new unit next to `troops`: the first from the reserve forward,
+/// whatever the unit (495ce0).
+fn free_slot(c: &Content, troops: &[Troop]) -> Option<super::formation::Slot> {
+    let taken: Vec<_> = troops.iter().map(|t| t.slot).collect();
+    c.formation.new_unit_slot(&taken)
+}
+
+impl Game {
+    // ------------------------------------------------------------------------------------
+    // AI against AI
+    // ------------------------------------------------------------------------------------
+
+    /// Army `att` fights `def` off screen (0x4a4c68, ai.md §10), the battle engine playing
+    /// both sides (only its paid units fight). HP and deaths are written back; then:
+    /// - the attacker wiped out: it is beaten; a feudal or rogue defender takes its wage bill
+    ///   (if it is feudal) and its gold, all of it below `MinVictoryGold`, else
+    ///   `gold div VictoryGoldDiv`; its worn items go to the pool;
+    /// - else its fighters gain XP (with promotion tries), a dead leader gets 1 HP, its dead
+    ///   units' items go to the pool;
+    /// - the defender wiped out: an army is beaten, a garrison emptied; a feudal or rogue
+    ///   attacker takes a town's, castle's or fort's income, garrison gold and stock, or an
+    ///   army's wage bill (when it is feudal or rogue) and `gold div VictoryGoldDiv` (no
+    ///   `MinVictoryGold` here), or another garrison's `gold div VictoryGoldDiv`;
+    /// - else the same XP and items for the defender.
+    ///
+    /// The pool goes to the attacker when its HP left is strictly greater, else to the
+    /// defender. Returns true when the defender was wiped out (or had nobody).
+    pub fn ai_battle(&mut self, att: usize, def: Defender) -> bool {
+        let c = self.content.clone();
+        let o = c.options.clone();
+        let now = self.clock.total_minutes();
+        let att_uid = self.world.armies[att].uid;
+        let def_uid = match def {
+            Defender::Army(j) => Some(self.world.armies[j].uid),
+            Defender::Garrison(_) => None,
+        };
+        // An empty record is beaten at once.
+        let empty = match def {
+            Defender::Army(j) => self.world.armies[j].troops.is_empty(),
+            Defender::Garrison(l) => self.world.locations[l].garrison.is_empty() && self.world.locations[l].stationed.is_empty(),
+        };
+        if empty {
+            return true;
+        }
+        let att_totals = self.army_totals(att);
+        let def_wages = match def {
+            Defender::Army(j) => self.army_totals(j).wages,
+            Defender::Garrison(_) => 0,
+        };
+        let (side_a, fought_a) = self.army_side(att, true);
+        let (side_b, fought_b) = match def {
+            Defender::Army(j) => self.army_side(j, false),
+            Defender::Garrison(l) => {
+                let loc = &self.world.locations[l];
+                let fought: Vec<usize> = (0..loc.garrison.len()).filter(|&k| loc.garrison[k].alive()).collect();
+                (self.garrison_side(l), fought)
+            }
+        };
+        let bt = fight(&c, &side_a, &side_b, true);
+        let na = side_a.units.len();
+        drop((side_a, side_b));
+        self.ai_stats.battles += 1;
+        self.battles += 1;
+        // Each fighter's share of its side's pool (experience.md §3); the gain takes
+        // `AIExpiriencePercent` of it.
+        let award = |team: Team, k: usize| -> i32 { bt.xp_awards(team).iter().find(|a| a.fighter == k).map_or(0, |a| a.xp) };
+        let a_left: i64 = bt.fighters[..na].iter().map(|f| f.hp.max(0) as i64).sum();
+        let b_left: i64 = bt.fighters[na..].iter().map(|f| f.hp.max(0) as i64).sum();
+        let stamp = now as u64;
+        // Write back: HP and deaths.
+        {
+            let a = &mut self.world.armies[att];
+            for (n, &k) in fought_a.iter().enumerate() {
+                write_hp(&c, &mut a.troops[k], bt.fighters[n].hp, stamp);
+            }
+        }
+        match def {
+            Defender::Army(j) => {
+                let b = &mut self.world.armies[j];
+                for (n, &k) in fought_b.iter().enumerate() {
+                    write_hp(&c, &mut b.troops[k], bt.fighters[na + n].hp, stamp);
+                }
+            }
+            Defender::Garrison(l) => {
+                let loc = &mut self.world.locations[l];
+                for (n, &k) in fought_b.iter().enumerate() {
+                    write_hp(&c, &mut loc.garrison[k], bt.fighters[na + n].hp, stamp);
+                }
+                let mut f = na + fought_b.len();
+                for s in loc.stationed.iter_mut().filter(|s| s.unit.alive()) {
+                    if let Some(x) = bt.fighters.get(f) {
+                        s.unit.hp = x.hp.max(0);
+                        if s.unit.hp == 0 {
+                            s.unit.died_at = Some(stamp);
+                        }
+                    }
+                    f += 1;
+                }
+            }
+        }
+        let mut pool: Vec<ItemId> = Vec::new();
+        self.mark_dirty(att_uid);
+        if let Some(u) = def_uid {
+            self.mark_dirty(u);
+        }
+        let def_lordly = match def {
+            Defender::Army(j) => self.world.armies[j].ai.style.lordly(),
+            // A garrison's record has style 0.
+            Defender::Garrison(_) => true,
+        };
+        let a_beaten = a_left == 0;
+        if a_beaten {
+            let (style, gold) = (self.world.armies[att].ai.style, self.world.armies[att].gold);
+            if def_lordly {
+                let mut take = if style == Style::Feudal { att_totals.wages } else { 0 };
+                let g = if gold < o.min_victory_gold { gold } else { gold / o.victory_gold_div.max(1) };
+                take += g;
+                self.world.armies[att].gold -= g;
+                match def {
+                    Defender::Army(j) => self.world.armies[j].gold += take,
+                    Defender::Garrison(l) => self.world.locations[l].treasure_gold += take,
+                }
+            }
+            for t in self.world.armies[att].troops.iter_mut() {
+                pool.extend(t.worn.iter_mut().filter_map(Option::take));
+            }
+        } else {
+            let pct = o.ai_experience_percent;
+            for (n, &k) in fought_a.iter().enumerate() {
+                let xp = award(Team::Player, n);
+                let t = &mut self.world.armies[att].troops[k];
+                ai_gain_xp(&c, &mut self.rng, t, xp, pct, &mut pool);
+            }
+            let a = &mut self.world.armies[att];
+            revive_leader(&c, &mut a.troops);
+            for t in a.troops.iter_mut().filter(|t| !t.alive()) {
+                pool.extend(t.worn.iter_mut().filter_map(Option::take));
+            }
+        }
+        let b_beaten = b_left == 0;
+        let mut won = true;
+        if b_beaten {
+            if self.world.armies[att].ai.style.lordly() {
+                match def {
+                    Defender::Garrison(l) if matches!(self.world.locations[l].kind, LocationKind::Town | LocationKind::Castle | LocationKind::Fort) => {
+                        let loc = &mut self.world.locations[l];
+                        let gold = loc.gold_income + loc.treasure_gold + std::mem::take(&mut loc.tribute_gold);
+                        self.world.armies[att].gold += gold;
+                    }
+                    Defender::Garrison(l) => {
+                        let loc = &mut self.world.locations[l];
+                        let g = loc.treasure_gold / o.victory_gold_div.max(1);
+                        loc.treasure_gold -= g;
+                        self.world.armies[att].gold += g;
+                    }
+                    Defender::Army(j) => {
+                        let b = &self.world.armies[j];
+                        let wages = if b.ai.style.lordly() { def_wages } else { 0 };
+                        let g = b.gold / o.victory_gold_div.max(1);
+                        self.world.armies[j].gold -= g;
+                        self.world.armies[att].gold += wages + g;
+                    }
+                }
+            }
+            match def {
+                Defender::Army(j) => {
+                    for t in self.world.armies[j].troops.iter_mut() {
+                        pool.extend(t.worn.iter_mut().filter_map(Option::take));
+                    }
+                }
+                Defender::Garrison(l) => {
+                    let loc = &mut self.world.locations[l];
+                    for t in loc.garrison.iter_mut() {
+                        pool.extend(t.worn.iter_mut().filter_map(Option::take));
+                    }
+                    for s in loc.stationed.iter_mut() {
+                        pool.extend(s.unit.items.iter_mut().filter_map(Option::take));
+                    }
+                    loc.garrison.clear();
+                    loc.stationed.clear();
+                }
+            }
+        } else {
+            won = false;
+            let pct = o.ai_experience_percent;
+            match def {
+                Defender::Army(j) => {
+                    for (n, &k) in fought_b.iter().enumerate() {
+                        let xp = award(Team::Enemy, na + n);
+                        ai_gain_xp(&c, &mut self.rng, &mut self.world.armies[j].troops[k], xp, pct, &mut pool);
+                    }
+                    let b = &mut self.world.armies[j];
+                    revive_leader(&c, &mut b.troops);
+                    for t in b.troops.iter_mut().filter(|t| !t.alive()) {
+                        pool.extend(t.worn.iter_mut().filter_map(Option::take));
+                    }
+                }
+                Defender::Garrison(l) => {
+                    for (n, &k) in fought_b.iter().enumerate() {
+                        let xp = award(Team::Enemy, na + n);
+                        ai_gain_xp(&c, &mut self.rng, &mut self.world.locations[l].garrison[k], xp, pct, &mut pool);
+                    }
+                    let loc = &mut self.world.locations[l];
+                    for t in loc.garrison.iter_mut().filter(|t| !t.alive()) {
+                        pool.extend(t.worn.iter_mut().filter_map(Option::take));
+                    }
+                    loc.stationed.retain(|s| s.unit.alive());
+                }
+            }
+        }
+        if !pool.is_empty() {
+            if b_left < a_left {
+                let a = &mut self.world.armies[att];
+                let bd = a.mind.defence;
+                redistribute(&c, &mut a.troops, &mut a.items, pool, bd);
+            } else {
+                match def {
+                    Defender::Army(j) => {
+                        let b = &mut self.world.armies[j];
+                        let bd = b.mind.defence;
+                        redistribute(&c, &mut b.troops, &mut b.items, pool, bd);
+                    }
+                    Defender::Garrison(l) => {
+                        let loc = &mut self.world.locations[l];
+                        let bd = loc.garrison_defence;
+                        redistribute(&c, &mut loc.garrison, &mut loc.treasure, pool, bd);
+                    }
+                }
+            }
+        }
+        // Reports, and the beaten leave the map.
+        let a_name = army_name(&self.world.armies[att]);
+        let tile = self.world.armies[att].tile(&self.world.map);
+        match def {
+            Defender::Army(j) => {
+                let b_name = army_name(&self.world.armies[j]);
+                if b_beaten {
+                    self.report(crate::trf!("{winner} defeated {loser}.", winner = a_name, loser = b_name), tile, false);
+                } else if a_beaten {
+                    self.report(crate::trf!("{winner} defeated {loser}.", winner = b_name, loser = a_name), tile, false);
+                }
+            }
+            Defender::Garrison(l) if a_beaten => {
+                let loc = &self.world.locations[l];
+                let text = crate::trf!("{name} fell at the walls of {place}.", name = a_name, place = building_name(loc));
+                let (t, mine) = (loc.tile, loc.owned());
+                self.report(text, t, mine);
+            }
+            _ => {}
+        }
+        if a_beaten {
+            if let Some(i) = self.army_by_uid(att_uid) {
+                self.army_beaten(i, Beaten::ByAi);
+            }
+        }
+        if b_beaten {
+            if let Some(i) = def_uid.and_then(|u| self.army_by_uid(u)) {
+                self.army_beaten(i, Beaten::ByAi);
+            }
+        }
+        if !a_beaten {
+            if let Some(i) = self.army_by_uid(att_uid) {
+                self.rescore_buildings(i);
+            }
+        }
+        if !b_beaten {
+            if let Some(i) = def_uid.and_then(|u| self.army_by_uid(u)) {
+                self.rescore_buildings(i);
+            }
+        }
+        if let Some(i) = self.army_by_uid(att_uid) {
+            self.world.armies[i].mind.countdown = 0;
+        }
+        won
     }
 
     /// Adds a battle report to the log; the player hears of it (an event) when it happened
     /// within his sight, or concerned his own building.
-    fn report(&mut self, text: String, tile: Tile, concerns_player: bool, events: &mut Vec<Event>) {
+    fn report(&mut self, text: String, tile: Tile, concerns_player: bool) {
         let news = AiNews { text, tile, at: self.clock.total_minutes() as u64 };
-        // Within the hero's sight (a circle in cells, world.md §3).
         let seen = fog::within(self.tile(), tile, self.sight_radius());
         if seen || concerns_player {
-            events.push(Event::Battle(news.clone()));
+            self.ai_events.push(Event::Battle(news.clone()));
             self.ai_log.push(news);
             if self.ai_log.len() > LOG_KEPT {
                 self.ai_log.remove(0);
@@ -1440,215 +2723,14 @@ impl Game {
         }
     }
 
-    /// Mutually hostile AI armies on neighbouring cells fight, one battle at a time.
-    fn ai_contacts(&mut self, now: f64, events: &mut Vec<Event>) {
-        for _ in 0..16 {
-            let Some((x, y)) = self.contact_pair(now) else { return };
-            self.ai_battle(x, Defender::Army(y), events);
-        }
-    }
-
-    /// The first pair (attacker, defender) of AI armies next to each other that fight: one
-    /// is going for the other, or both are ill-disposed towards each other and neither is
-    /// ignored by the AI or hunts only the player.
-    fn contact_pair(&self, now: f64) -> Option<(usize, usize)> {
-        let w = &self.world;
-        let map = &w.map;
-        let n = w.armies.len();
-        let tiles: Vec<Tile> = w.armies.iter().map(|a| a.tile(map)).collect();
-        let fights = |a: &Army, b: &Army| {
-            let wants = a.mind.goal == Goal::AttackArmy(b.uid) && hostile_to(a, b);
-            let mutual = hostile_to(a, b) && hostile_to(b, a) && !a.ai.ignored && !b.ai.ignored && !a.ai.player_only && !b.ai.player_only && a.ai.style != Style::Peasant && b.ai.style != Style::Peasant;
-            wants || mutual
-        };
-        for x in 0..n {
-            let a = &w.armies[x];
-            if !managed(a) || self.is_foe(x) || now < a.mind.truce_until {
-                continue;
-            }
-            for y in 0..n {
-                let b = &w.armies[y];
-                if x == y || !managed(b) || self.is_foe(y) || now < b.mind.truce_until || map.distance(tiles[x], tiles[y]) > CONTACT {
-                    continue;
-                }
-                if fights(a, b) {
-                    return Some((x, y));
-                }
-            }
-        }
-        None
-    }
-
-    /// Army `att` fights `def` off-screen, the battle engine playing both sides. The loser
-    /// is beaten ([`Game::army_beaten`]); a beaten garrison gives up its castle or fort.
-    /// Losses, hit points, XP (`AIExpiriencePercent`, the army's experience correction) and
-    /// the loot (`VictoryGoldDiv` of the loser's gold and its items) are applied.
-    pub fn ai_battle(&mut self, att: usize, def: Defender, events: &mut Vec<Event>) -> Outcome {
-        let c = self.content.clone();
-        let a_units = army_units(&c, &self.world.armies[att]);
-        let (b_units, defence) = match def {
-            Defender::Army(j) => (army_units(&c, &self.world.armies[j]), 0),
-            Defender::Garrison(l) => {
-                let loc = &self.world.locations[l];
-                let mut u: Vec<Unit> = loc.garrison.iter().map(|t| troop_unit(&c, t)).collect();
-                u.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
-                (u, loc.garrison_defence)
-            }
-        };
-        let na = a_units.len();
-        // Squad indices from 1: no fighter counts as the player's hero.
-        let side_a: Vec<(usize, &Unit)> = a_units.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
-        let mut b = Battle::new(c.clone(), &side_a, &b_units, Team::Player);
-        b.set_simulation();
-        b.apply_spells(Team::Player, &self.spells_on_army(att));
-        if let Defender::Army(j) = def {
-            b.apply_spells(Team::Enemy, &self.spells_on_army(j));
-        }
-        if defence > 0 {
-            b.set_building_defence(Team::Enemy, defence);
-        }
-        // Both sides are auto-arranged (4a0710).
-        b.auto_arrange(Team::Player);
-        b.auto_arrange(Team::Enemy);
-        b.begin();
-        let mut steps = 0;
-        while b.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
-            b.ai_step();
-            steps += 1;
-        }
-        let outcome = b.outcome();
-        self.ai_stats.battles += 1;
-        self.battles += 1;
-
-        // XP: each side that still has strength gains its shares × AIExpiriencePercent;
-        // no army correction and no difficulty factor apply between AI armies.
-        let mut xp_a = vec![0; na];
-        for aw in b.ai_xp(Team::Player) {
-            if aw.fighter < na {
-                xp_a[aw.fighter] += aw.xp;
-            }
-        }
-        let mut xp_b = vec![0; b_units.len()];
-        for aw in b.ai_xp(Team::Enemy) {
-            if let Some(k) = aw.fighter.checked_sub(na) {
-                if k < xp_b.len() {
-                    xp_b[k] += aw.xp;
-                }
-            }
-        }
-        let hp_a: Vec<(i32, i32)> = b.fighters[..na].iter().map(|f| (f.hp.max(0), f.max_hp())).collect();
-        let hp_b: Vec<(i32, i32)> = b.fighters[na..].iter().map(|f| (f.hp.max(0), f.max_hp())).collect();
-        {
-            let a = &mut self.world.armies[att];
-            write_back(&c, &mut self.rng, &mut a.troops, &hp_a, &xp_a);
-        }
-        match def {
-            Defender::Army(j) => {
-                let a = &mut self.world.armies[j];
-                write_back(&c, &mut self.rng, &mut a.troops, &hp_b, &xp_b);
-            }
-            Defender::Garrison(l) => {
-                let loc = &mut self.world.locations[l];
-                let ng = loc.garrison.len();
-                write_back(&c, &mut self.rng, &mut loc.garrison, &hp_b[..ng.min(hp_b.len())], &xp_b[..ng.min(xp_b.len())]);
-                let mut k = ng;
-                for s in loc.stationed.iter_mut().filter(|s| s.unit.alive()) {
-                    if let Some(&(hp, _)) = hp_b.get(k) {
-                        s.unit.hp = hp;
-                        s.unit.gain_xp(&c, xp_b[k]);
-                    }
-                    k += 1;
-                }
-                loc.stationed.retain(|s| s.unit.alive());
-            }
-        }
-
-        let a_name = army_name(&self.world.armies[att]);
-        let a_tile = self.world.armies[att].tile(&self.world.map);
-        match (outcome, def) {
-            (Outcome::Victory, Defender::Army(j)) => {
-                let b_name = army_name(&self.world.armies[j]);
-                self.take_loot(att, j);
-                self.report(crate::trf!("{winner} defeated {loser}.", winner = a_name, loser = b_name), a_tile, false, events);
-                self.army_beaten(j, Beaten::ByAi);
-            }
-            (Outcome::Victory, Defender::Garrison(l)) => {
-                self.world.locations[l].garrison.clear();
-                self.take_building(att, l, events);
-            }
-            (Outcome::Defeat, Defender::Army(j)) => {
-                let b_name = army_name(&self.world.armies[j]);
-                self.take_loot(j, att);
-                self.report(crate::trf!("{winner} defeated {loser}.", winner = b_name, loser = a_name), a_tile, false, events);
-                self.army_beaten(att, Beaten::ByAi);
-            }
-            (Outcome::Defeat, Defender::Garrison(l)) => {
-                let loc = &self.world.locations[l];
-                let text = crate::trf!("{name} fell at the walls of {place}.", name = a_name, place = building_name(loc));
-                let (tile, mine) = (loc.tile, loc.owned());
-                self.report(text, tile, mine, events);
-                self.army_beaten(att, Beaten::ByAi);
-            }
-            _ => {
-                // A stalemate: both leave each other alone for a while.
-                let now = self.clock.total_minutes();
-                let other = match def {
-                    Defender::Army(j) => self.world.armies[j].uid,
-                    Defender::Garrison(l) => match self.world.locations[l].owner {
-                        Owner::Army(id) => id as u32,
-                        _ => u32::MAX,
-                    },
-                };
-                let me = self.world.armies[att].uid;
-                let a = &mut self.world.armies[att];
-                a.mind.truce_until = now + TRUCE_MINUTES;
-                a.mind.truce_with = other;
-                let g = a.mind.goal;
-                a.mind.blocked.push((g, now + TRUCE_MINUTES));
-                a.mind.goal = Goal::Idle;
-                a.path.clear();
-                if let Defender::Army(j) = def {
-                    self.world.armies[j].mind.truce_until = now + TRUCE_MINUTES;
-                    self.world.armies[j].mind.truce_with = me;
-                }
-            }
-        }
-        outcome
-    }
-
-    /// Army `winner` takes `loser`'s loot: `VictoryGoldDiv` of its gold (none if its units
-    /// carry no money) and its items, up to [`MAX_ARMY_ITEMS`].
-    fn take_loot(&mut self, winner: usize, loser: usize) {
-        let l = &self.world.armies[loser];
-        let gold = if l.ai.no_money { 0 } else { self.victory_gold(l.gold) };
-        let l = &mut self.world.armies[loser];
-        l.gold -= gold;
-        let items = std::mem::take(&mut l.items);
-        let w = &mut self.world.armies[winner];
-        w.gold += gold;
-        let room = MAX_ARMY_ITEMS.saturating_sub(w.items.len());
-        w.items.extend(items.into_iter().take(room));
-    }
-
     // ------------------------------------------------------------------------------------
-    // Beaten armies: lords' retreat, respawn
+    // Beaten armies and respawn
     // ------------------------------------------------------------------------------------
-
-    /// The building a beaten lord retreats to: his home if he owns it, else his building
-    /// nearest to him.
-    fn refuge(&self, a: &Army) -> Option<usize> {
-        let own = |l: &Location| l.owner == Owner::Army(a.id) && a.id != 0;
-        if let Some(h) = a.home.filter(|&h| own(&self.world.locations[h])) {
-            return Some(h);
-        }
-        let here = a.tile(&self.world.map);
-        (0..self.world.locations.len()).filter(|&l| own(&self.world.locations[l])).min_by_key(|&l| self.world.map.distance(here, self.world.locations[l].tile))
-    }
 
     /// Army `i` lost a battle (or a spell destroyed it): it leaves the map and is recorded as
-    /// beaten. A feudal lord who still owns a building retreats into it with his leader and
-    /// comes back after [`RECOVER_DAYS`] (mechanics.md 2.5); an army with a respawn time
-    /// comes back after it (the leader alone, or the whole army when flagged).
+    /// beaten (ai.md §12). Beaten by the player, its record keeps only its leader unless it
+    /// respawns whole (byte 83); beaten by the AI it keeps every unit, dead, so the whole army
+    /// comes back. With a home and a respawn delay it waits for its respawn.
     pub(crate) fn army_beaten(&mut self, i: usize, by: Beaten) {
         let now = self.clock.total_minutes();
         let mut a = self.remove_army(i);
@@ -1663,198 +2745,199 @@ impl Game {
         }
         a.path.clear();
         a.chasing = false;
-        a.mind = AiMind::default();
-        a.budget = 0.0;
         a.effects.clear();
-        let c = self.content.clone();
-        if a.ai.style == Style::Feudal && self.refuge(&a).is_some() {
-            let leader = a.troops.first().copied().or_else(|| a.ai.start_troops.first().copied());
-            a.troops = leader.into_iter().map(|mut t| {
-                t.hurt = troop_max_hp(&c, &t) - 1;
-                t
-            }).collect();
-            if !a.troops.is_empty() {
-                self.world.respawns.push(Respawn { due: now + (RECOVER_DAYS * MINUTES_PER_DAY) as f64, army: a, lord: true });
-                self.ai_stats.retreats += 1;
-                return;
-            }
+        a.mind.standing = None;
+        a.mind.contact = None;
+        if by == Beaten::ByPlayer && !a.ai.respawn_all {
+            a.troops.truncate(1);
         }
-        if a.ai.respawn_days > 0 {
+        if a.home.is_some() && a.ai.respawn_days > 0 && !a.troops.is_empty() {
             let due = now + (a.ai.respawn_days as u64 * MINUTES_PER_DAY) as f64;
-            self.world.respawns.push(Respawn { due, army: a, lord: false });
+            self.world.respawns.push(Respawn { due, army: a });
         }
     }
 
-    /// Where a respawning army comes back (world.md §5): the centre of its home building. A
-    /// feudal army that no longer owns its home uses a town it owns, else a castle, else a
-    /// fort; owning none, or having no home, it does not come back.
-    fn respawn_home(&self, a: &Army) -> Option<usize> {
-        let home = a.home?;
-        if a.ai.style != Style::Feudal || self.world.locations[home].owner == Owner::Army(a.id) {
-            return Some(home);
-        }
-        let owned = |kinds: &[LocationKind]| self.world.locations.iter().position(|l| l.owner == Owner::Army(a.id) && kinds.contains(&l.kind));
-        owned(&[LocationKind::Town, LocationKind::Palace]).or_else(|| owned(&[LocationKind::Castle])).or_else(|| owned(&[LocationKind::Fort]))
-    }
-
-    /// Beaten armies whose time has come return: a lord from his building (if he still owns
-    /// one; else an ordinary respawn, if he has a respawn time), the others at the centre of
-    /// their home ([`Game::respawn_home`]) with full hit points, the scenario's leader or
-    /// whole army, and the days' income in gold.
+    /// Beaten armies whose delay has passed (strictly) come back (0x4a28d0, ai.md §12):
+    /// a feudal army at its home if it still owns it, else the first town, castle or fort it
+    /// owns (owning none, never); a rogue or peasant at its home, taking it over when it is a
+    /// village, shipyard, altar or ruins (from anyone, the player included). It stands at the
+    /// building's centre with every unit of its record alive, unhurt and paid, its first
+    /// wander point at its post, "just respawned", and the delay's days of income in gold.
     fn ai_respawns(&mut self, now: f64) {
-        if !self.world.respawns.iter().any(|r| r.due <= now) {
-            return;
-        }
         let mut k = 0;
         while k < self.world.respawns.len() {
-            if self.world.respawns[k].due > now {
+            if self.world.respawns[k].due >= now {
                 k += 1;
                 continue;
             }
-            let Respawn { mut army, lord, .. } = self.world.respawns.remove(k);
-            if lord {
-                if let Some(l) = self.refuge(&army) {
-                    army.troops.iter_mut().for_each(|t| t.hurt = 0);
-                    army.pos = self.world.map.center(self.world.locations[l].tile);
-                    army.mind.think_at = now;
-                    self.world.armies.push(army);
-                    continue;
+            let Respawn { mut army, .. } = self.world.respawns.remove(k);
+            let Some(home) = army.home else { continue };
+            let own = |w: &World, l: usize| w.locations[l].owner == Owner::Army(army.id);
+            let at = if army.ai.style == Style::Feudal && !own(&self.world, home) {
+                let pick = [LocationKind::Town, LocationKind::Castle, LocationKind::Fort].iter().find_map(|&kind| (0..self.world.locations.len()).find(|&l| own(&self.world, l) && self.world.locations[l].kind == kind));
+                match pick {
+                    Some(l) => l,
+                    None => continue,
                 }
-                if army.ai.respawn_days == 0 {
-                    continue;
-                }
-            }
-            let start = &army.ai.start_troops;
-            army.troops = if army.ai.respawn_all { start.clone() } else { start.iter().take(1).copied().collect() };
-            army.troops.iter_mut().for_each(|t| t.hurt = 0);
-            if army.troops.is_empty() {
-                continue;
-            }
-            army.gold += army.ai.respawn_days as i32 * army.ai.extra_income;
-            army.items.clear();
-            army.mind = AiMind { think_at: now, ..AiMind::default() };
-            let Some(home) = self.respawn_home(&army) else { continue };
-            if army.ai.style != Style::Feudal {
-                use LocationKind::*;
-                let loc = &mut self.world.locations[home];
-                if matches!(loc.kind, Village | Shipyard | Altar | Entrance) {
+            } else {
+                if army.ai.style != Style::Feudal && matches!(self.world.locations[home].kind, LocationKind::Village | LocationKind::Shipyard | LocationKind::Altar | LocationKind::Ruins) {
+                    let loc = &mut self.world.locations[home];
+                    loc.take_sides(army.faction, army.ai.relations);
                     loc.owner = Owner::Army(army.id);
-                    loc.faction = army.faction;
-                    loc.attitude = army.attitude;
                 }
+                home
+            };
+            let stamp = now as u64;
+            for t in army.troops.iter_mut() {
+                t.hurt = 0;
+                t.died_at = None;
+                t.unpaid = false;
+                t.last_paid = stamp;
             }
-            army.pos = self.world.map.center(self.world.locations[home].tile);
-            self.world.armies.push(army);
+            let m = &mut army.mind;
+            m.wander = [(0, 0); WANDER_POINTS];
+            m.wander[0] = army.post;
+            m.just_respawned = true;
+            army.path.clear();
+            army.pos = self.world.map.center(self.world.locations[at].tile);
+            army.gold += army.ai.respawn_days as i32 * army.ai.extra_income;
+            let uid = army.uid;
+            self.insert_army(army);
+            self.mark_dirty(uid);
             self.ai_stats.respawns += 1;
         }
     }
 
     // ------------------------------------------------------------------------------------
-    // Economy
+    // Noon and midnight
     // ------------------------------------------------------------------------------------
 
-    /// The AI's noon: income from owned buildings and the army's daily income; feudal lords
-    /// pay wages (a unit leaves after `MaxTimeNotUpkeep` unpaid, the last hired first) and
-    /// hire where they stand.
-    pub(crate) fn ai_new_day(&mut self) {
+    /// Army `i`'s noon (0x4a41d8, ai.md §14), run at its first arrival after 12:00: the next
+    /// is tomorrow's; it gains its base income, the gold stock of its castles and forts and
+    /// of the villages linked to its buildings (all emptied); today's income keeps the
+    /// castles' and forts' income instead of their stock. A feudal army then pays its wages
+    /// (economy.md §1); the others mark every unit paid.
+    fn ai_noon(&mut self, i: usize, now: f64) {
+        let day = MINUTES_PER_DAY as f64;
+        let id = self.world.armies[i].id;
+        let mut income = self.world.armies[i].ai.extra_income;
+        let mut delta = 0;
+        for l in 0..self.world.locations.len() {
+            let owner = self.world.locations[l].owner;
+            let loc = &self.world.locations[l];
+            if owner == Owner::Army(id) && loc.kind.capturable() {
+                let x = loc.tribute_gold;
+                income += x;
+                delta += x - loc.gold_income;
+                self.world.locations[l].tribute_gold = 0;
+            }
+            let loc = &self.world.locations[l];
+            if loc.kind == LocationKind::Village && loc.linked.is_some_and(|k| self.world.locations[k].owner == Owner::Army(id)) {
+                income += loc.tribute_gold;
+                self.world.locations[l].tribute_gold = 0;
+            }
+        }
+        let stamp = now as u64;
+        let a = &mut self.world.armies[i];
+        a.mind.next_noon = ((now / day).floor() + 1.0) * day + day / 2.0;
+        a.gold += income;
+        a.mind.income = income - delta;
+        if a.ai.style == Style::Feudal {
+            self.ai_pay_wages(i, stamp);
+        } else {
+            for t in self.world.armies[i].troops.iter_mut() {
+                t.unpaid = false;
+                t.last_paid = stamp;
+            }
+        }
+    }
+
+    /// A feudal army pays its gold wage bill (economy.md §1), cut by the player's Rear
+    /// Service (the original reads the player's flag and income even here). With the gold
+    /// not below 0 everyone is paid; else the paid units of kind 1 or 2, not Elementals, with
+    /// the lowest full wage (the earliest of equals, corpses included) are refunded and go
+    /// unpaid until it is not, the gold is set to 0, and every unit last paid more than
+    /// `MaxTimeNotUpkeep` ago leaves.
+    fn ai_pay_wages(&mut self, i: usize, now: u64) {
         let c = self.content.clone();
-        let limit = (c.options.max_time_not_upkeep.max(1) as u64).div_ceil(MINUTES_PER_DAY) as u32;
+        let mut bill = self.army_totals(i).wages;
+        if self.squad_has(&Bonus::AddPayment) {
+            let k = if self.daily_income() != 0 { REAR_SERVICE.0 } else { REAR_SERVICE.1 };
+            bill = bill * k / 256;
+        }
+        let a = &mut self.world.armies[i];
+        a.gold -= bill;
+        if a.gold >= 0 {
+            for t in a.troops.iter_mut() {
+                t.unpaid = false;
+                t.last_paid = now;
+            }
+            return;
+        }
+        for t in a.troops.iter_mut() {
+            t.unpaid = false;
+        }
+        while a.gold < 0 {
+            let pick = (0..a.troops.len())
+                .filter(|&k| {
+                    let t = &a.troops[k];
+                    !t.unpaid && t.kind.is_paid() && !c.paid_in_mana(t.unit)
+                })
+                .min_by_key(|&k| (c.wage_for(a.troops[k].unit, a.troops[k].kind), k));
+            let Some(k) = pick else {
+                a.gold += FULL;
+                break;
+            };
+            a.troops[k].unpaid = true;
+            a.gold += c.wage_for(a.troops[k].unit, a.troops[k].kind);
+        }
+        for t in a.troops.iter_mut().filter(|t| !t.unpaid) {
+            t.last_paid = now;
+        }
+        a.gold = 0;
+        let limit = c.options.max_time_not_upkeep.max(0) as u64;
+        a.troops.retain(|t| t.last_paid + limit >= now);
+    }
+
+    /// The AI's midnight (0x4a1998, ai.md §14): every army's village average becomes
+    /// `(average + today's) div 2` and every AI army rescores every building. (The Medic's
+    /// 10% runs with the economy's midnight.)
+    pub(crate) fn ai_midnight(&mut self) {
         for i in 0..self.world.armies.len() {
-            if !managed(&self.world.armies[i]) || self.world.armies[i].ai.style == Style::Peasant {
+            if !managed(&self.world.armies[i]) {
                 continue;
             }
-            let id = self.world.armies[i].id;
-            let owned: i32 = self.world.locations.iter().filter(|l| l.owner == Owner::Army(id) && l.pays_income()).map(|l| l.gold_income).sum();
-            let here = self.world.armies[i].tile(&self.world.map);
-            let at = self.world.location_at(here);
-            let a = &mut self.world.armies[i];
-            a.gold += owned + a.ai.extra_income;
-            if a.ai.style == Style::Feudal {
-                let wages = army_wages(&c, &a.troops);
-                if a.gold >= wages {
-                    a.gold -= wages;
-                    a.mind.unpaid_days = 0;
-                } else {
-                    a.mind.unpaid_days += 1;
-                    if a.mind.unpaid_days >= limit && a.troops.len() > 1 {
-                        a.troops.pop();
-                        a.mind.unpaid_days = 0;
-                    }
-                }
-            }
-            if let Some(l) = at {
-                self.ai_hire_at(i, l);
-            }
-        }
-    }
-
-    /// The AI's midnight (world.md §6): the garrisons of AI and neutral buildings heal
-    /// `GarrisonAutoHeal`% of their maximum, and so do armies standing in their own castle or
-    /// fort *(guess)*.
-    pub(crate) fn ai_midnight(&mut self) {
-        let c = self.content.clone();
-        let heal = c.options.garrison_auto_heal.max(0);
-        for i in 0..self.world.armies.len() {
-            let a = &self.world.armies[i];
-            let at = self.world.location_at(a.tile(&self.world.map));
-            let home = at.is_some_and(|l| self.world.locations[l].owner == Owner::Army(a.id) && self.world.locations[l].kind.capturable());
-            if managed(a) && home {
-                for t in self.world.armies[i].troops.iter_mut() {
-                    t.hurt = (t.hurt - troop_max_hp(&c, t) * heal / 100).max(0);
-                }
-            }
-        }
-        for l in self.world.locations.iter_mut().filter(|l| matches!(l.owner, Owner::Army(_) | Owner::Neutral)) {
-            for t in l.garrison.iter_mut() {
-                t.hurt = (t.hurt - troop_max_hp(&c, t) * heal / 100).max(0);
-            }
+            let m = &mut self.world.armies[i].mind;
+            m.village_avg = (m.village_avg + m.village_today) / 2;
+            m.village_today = 0;
+            self.rescore_buildings(i);
         }
     }
 }
 
-/// Stock of `unit` at `l` goes down by one.
-fn take_stock(l: &mut Location, unit: UnitId) {
-    if let Some(n) = l.recruits.iter_mut().find(|r| r.unit == unit).and_then(|r| r.stock.as_mut()) {
-        *n = (*n - 1).max(0);
+/// Writes a fighter's end HP `hp` into troop `t`: dead (the time of death now, unless it was
+/// already dead), or the HP it lacks against its maximum.
+fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
+    if hp <= 0 {
+        if t.died_at.is_none() {
+            t.died_at = Some(now);
+        }
+        return;
+    }
+    let max = troop_max_hp(c, t);
+    t.hurt = (max - hp).max(0);
+}
+
+/// A side that survived keeps its leader (unit 1) with 1 HP.
+fn revive_leader(c: &Content, troops: &mut [Troop]) {
+    if let Some(t) = troops.first_mut().filter(|t| !t.alive()) {
+        t.died_at = None;
+        t.hurt = troop_max_hp(c, t) - 1;
     }
 }
 
-/// Writes a battle back into `troops`: `hp` (current, maximum in battle) per troop, the dead
-/// leave; the leader (troop 0) survives with 1 HP while any of his troops does
-/// (mechanics.md 2.5); `xp` is gained with level-ups and a chance to take the upgrade tree
-/// ([`ai_unit_gain`]).
-fn write_back(c: &Content, rng: &mut Rng, troops: &mut Vec<Troop>, hp: &[(i32, i32)], xp: &[i32]) {
-    let survivors = hp.iter().any(|&(h, _)| h > 0);
-    let mut keep = Vec::with_capacity(troops.len());
-    for (k, t) in troops.iter_mut().enumerate() {
-        let Some(&(mut h, max_battle)) = hp.get(k) else {
-            keep.push(true);
-            continue;
-        };
-        if k == 0 && h <= 0 && survivors {
-            h = 1;
-        }
-        if h <= 0 {
-            // A beaten army keeps its dead: the caller removes it.
-            keep.push(!survivors);
-            continue;
-        }
-        let max = troop_max_hp(c, t);
-        t.hurt = (max_battle - h).clamp(0, max - 1);
-        if let Some(&x) = xp.get(k).filter(|&&x| x > 0) {
-            ai_unit_gain(c, rng, t, x);
-        }
-        keep.push(true);
-    }
-    let mut k = 0;
-    troops.retain(|_| {
-        k += 1;
-        keep[k - 1]
-    });
-}
-
-/// A troop banks `xp` and rises the levels it pays for, keeping the rest; AI units keep XP
-/// like the player's. Returns the levels gained.
+/// A troop banks `xp` and rises the levels it pays for, keeping the rest. Returns the levels
+/// gained.
 pub fn troop_gain_xp(c: &Content, t: &mut Troop, xp: i32) -> i32 {
     t.xp = t.xp.saturating_add(xp.max(0));
     let mut gained = 0;
@@ -1873,39 +2956,39 @@ pub fn troop_gain_xp(c: &Content, t: &mut Troop, xp: i32) -> i32 {
 /// How many levels one gain may add (a bound for absurd amounts).
 const MAX_LEVELS_AT_ONCE: i32 = 200;
 
-/// An AI unit's gain after a battle (the original's 0x4a4a7c): the XP, then one try at the
-/// upgrade tree ([`ai_promote`]).
-pub fn ai_unit_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32) {
-    troop_gain_xp(c, t, xp);
-    ai_promote(c, rng, t);
+/// An AI unit's gain (0x4a4a7c): `award × pct div 100` XP, then one try at the upgrade tree
+/// ([`ai_promote`]), the roll made even when nothing was gained.
+pub fn ai_gain_xp(c: &Content, rng: &mut Rng, t: &mut Troop, award: i32, pct: i32, pool: &mut Vec<ItemId>) {
+    troop_gain_xp(c, t, (pct as i64 * award as i64 / 100) as i32);
+    ai_promote(c, rng, t, pool);
 }
 
-/// XP a newly hired AI unit starts with, level by level, with a try at the upgrade tree at
-/// every level (the original's 0x4a4c04).
-fn ai_hire_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32) {
+/// XP a newly hired AI unit starts with (0x4a4c04): fed level by level, each level a gain
+/// with a promotion try; what does not reach a level stays as its XP.
+fn ai_hire_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32, pool: &mut Vec<ItemId>) {
     let mut left = xp.max(0).saturating_add(t.xp);
-    t.xp = 0;
     for _ in 0..MAX_LEVELS_AT_ONCE {
         let need = c.xp_to_next(t.unit, t.level);
         if left < need {
-            break;
+            t.xp = left;
+            return;
         }
+        ai_gain_xp(c, rng, t, need, 100, pool);
         left -= need;
-        t.level += 1;
-        ai_promote(c, rng, t);
+        if left == 0 {
+            return;
+        }
     }
-    t.xp = left;
 }
 
-/// The AI's pick in the upgrade tree (experience.md §4): Militia (unit 4) tries option 1 one
-/// time in three and option 3 otherwise, Infantry (unit 8) option 3 one time in three and
-/// option 1 otherwise, every other class a random filled option. The pick is taken when
-/// its `NextUnitNLevel` is at most the unit's 0-based level: the unit starts the new class
-/// at level 1 with no XP. An empty pick promotes nobody *(guess: the original would read an
-/// empty slot)*.
-fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
+/// The AI's pick in the upgrade tree (0x4a4a7c, ai.md §11): Militia (unit 4) tries slot 1
+/// one time in three and slot 3 otherwise, Infantry (unit 8) slot 3 one time in three and
+/// slot 1 otherwise, any other class `Rand(3) + 1` until it hits a filled slot. The pick is
+/// taken when its `NextUnitNLevel` is at most the unit's 0-based level: the unit becomes that
+/// class at level 1 (the original's 0) with no XP, its worn items to the pool.
+fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop, pool: &mut Vec<ItemId>) -> bool {
     let def = c.unit(t.unit);
-    let slots: [Option<&super::content::Upgrade>; 3] = [1u8, 2, 3].map(|n| def.upgrades.iter().find(|u| u.slot == n));
+    let slots: [Option<&super::content::Upgrade>; 3] = [1u8, 2, 3].map(|n| def.upgrades.iter().find(|u| u.slot == n && u.target.is_some()));
     if slots.iter().all(Option::is_none) {
         return false;
     }
@@ -1931,6 +3014,8 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
             }
         },
     };
+    // Militia and Infantry always hold two options, in slots 1 and 3 (the loader's moves);
+    // were one empty, the original would turn the unit into an invalid class.
     let Some(up) = slots[pick - 1] else { return false };
     let Some(target) = up.target.map(UnitId).filter(|&id| c.try_unit(id).is_some()) else { return false };
     if up.level > t.level - 1 {
@@ -1939,6 +3024,7 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop) -> bool {
     t.unit = target;
     t.level = 1;
     t.xp = 0;
+    pool.extend(t.worn.iter_mut().filter_map(Option::take));
     true
 }
 
@@ -1966,3 +3052,4 @@ mod tests;
 
 #[cfg(test)]
 mod real_maps;
+

@@ -257,6 +257,7 @@ impl Driver {
         let tile = self.g.world.locations[l].tile;
         let ok = self.walk(tile, &|g| g.location == Some(l));
         self.log(format!("entered B{id}: {ok}"));
+
         if ok {
             self.hear_rumours();
         }
@@ -454,8 +455,10 @@ fn play_rk3(d: &mut Driver) {
     d.enter(9);
     d.reach_army(6);
     d.step("baron", &[17, 18]);
-    d.enter(140);
+    // Army 19 takes the fort B140 on its own first (its AI assaults it): beat it, then take
+    // the fort back.
     d.reach_army(19);
+    d.enter(140);
     d.reach_army(6);
     d.step("baron", &[19, 20]);
     d.reach_army(21);

@@ -254,7 +254,8 @@ dmg  = max(1, dmg · (100 − target.Evasion)/100)       // Community
   out to be alive but badly wounded (an event condition checks "the hero has only 1 HP"). If
   the whole army dies, the scenario is lost. [doc]
 - An AI feudal lord cannot be killed for good while he still owns a building: he retreats
-  there and recovers. To finish him, capture all his buildings. [doc]
+  there and recovers. To finish him, capture all his buildings. [doc] (The exe has no
+  retreat: a beaten lord respawns at a building he owns after his days, ai.md §12.)
 - AI armies can respawn after an editor-set number of days, either the leader alone or the whole army. [doc]
 
 ### 2.6 Rewards
@@ -561,8 +562,8 @@ Each is marked *(guess)* in the code.
 - **Levels** follow original-mechanics/experience.md (`src/rules/experience.rs`,
   `units.rs`): level 1 as hired (the exe's 0); promotion is open to any non-hero unit with a
   level, free, back to level 1 with no XP and HP kept; items the new class cannot wear go to
-  the pack *(guess)*. The AI's Militia and Infantry picks that land on an empty slot promote
-  nobody *(guess)*.
+  the pack *(guess)*. The loader moves two upgrade options into slots 1 and 3, as the
+  original's does, so the AI's Militia and Infantry picks never land on an empty slot.
 - **Item modifiers** (economy.md §5): each worn item's `f-` above 0 replaces its stat in slot
   order (a later slot wins); the potions' `d-`, the items' `d-`; the potions' `p-`, then each
   item's `p-` in turn, compounding (truncated each time); lasting spells come after (their
@@ -1046,12 +1047,11 @@ Explored cells stay explored; there is no "seen before" state (the video).
   *(guess)*.
 - **Fog**: the hero sees as far at sea as on land; routes need explored water as they need
   explored land.
-- **Scenario ships** (army byte 72: 1 hero ship, 2 pirates, 3 merchants): placed on the
-  nearest water within 8 cells, move on the SHIP map at the army's speed, always cruise
-  within their patrol radius (8 when the editor gives 0) *(guess)*; hostile ones chase the
-  hero to the water next to him and fight on contact like any army. Merchants never attack
-  (their attitude is raised to at least 0; РК4's merchant is marked −2 in its file)
-  *(guess)*. Events bring waiting ships onto the water.
+- **Scenario ships**: an army placed on water (not on a bridge) is a ship army for good
+  (ai.md §13); army byte 72 (1 hero ship, 2 pirates, 3 merchants) only picks its picture.
+  Ships run the same AI as land armies on the SHIP map (land seeds are dropped there).
+  Merchants' attitude to the hero is raised to at least 0 for his own encounters (РК4's
+  merchant is marked −2 in its file) *(guess)*. Events bring waiting ships onto the water.
 - **Saves**: the ship (cell, aboard) is part of the game state; the water mask is rebuilt
   from the map.
 - **Reachability** (env-gated test): from every class's start, walking and renting a ship
@@ -1068,83 +1068,50 @@ Explored cells stay explored; there is no "seen before" state (the video).
 
 ### 8.8 AI armies (`src/rules/ai.rs`)
 
+The AI follows original-mechanics/ai.md one to one, its slips included; the few points it
+leaves open are listed at the end of its table.
+
 - **Style**: army byte 59 (0 feudal, 1 rogue, 2 peasant; it equals the model byte 4/5/6 of
   every such army of the shipped maps, and model-7 armies carry it too), else the model.
-  **Target model**: byte 85, the index into the `_Global.ini` priority lists.
-- **Who**: the scenario's land armies. Ships and the demo's gangs keep the simple rules
-  (chase the hero, patrol).
-- **Goals and priorities** (world.md §5): every candidate is seeded with its priority into
-  one flood over the foot map from the army; it takes the lowest `priority + path cost`
-  (path cost as the original's flood: the cell left × the step weight, 10 per orthogonal
-  grass cell); lower wins, seeds capped at 32766. Min/Max pairs run from Max at no need to
-  Min at full need: healing by missing HP (only below 75% HP *(guess)*), garrison by how far
-  it is below `garrison_strength`% (byte 82) of the army's strength, purchase by free
-  formation cells (hiring) or by spare gold over `GoldPurchaseTarget` (shopping), villages by
-  tribute over `GoldVillageTarget`. A key missing from a file that has the others reads 0, as
-  the exe would: the shipped misspelt `MixHealingTarget` leaves the healing minimum at 0.
-  Without `_Global.ini` (the demo) Razdor uses its own values on the same scale.
-- **Goals**: attack the player or a hostile army (attitude towards its faction < 0, not
-  flagged "ignored by AI") when a **simulated battle** (the battle engine on both sides, once
-  a day per pair) says it wins: `own_left − theirs_left + (own + theirs) × aggression/100 > 0`
-  *(the use of aggression is M)*; the seed is `(AtackArmy + 1 + lost share × ZeroDensity·30 ×
-  own/theirs) × (relation + 4)`. A lost battle is no target (the original's repulsion field
-  around a danger is not modelled). Take a hostile castle or fort when a simulated fight
-  with its garrison is won (at once if empty), not with its leader alone, seeded
-  `AtackCastle × 50`; rogues go for their lost home anywhere, at half. Heal in its own castle
-  or fort (free) or, feudal, at any friendly healer (paid as the player pays); fill its own
-  garrison, hire, shop (feudal), collect tribute from villages of its faction or linked to its
-  castle (feudal); talk to an army of its faction (once a day); wander (four random points of
-  its patrol box seeded `Random`); go back to its post when outside its patrol box. Peasants
-  only wander and hunt the player. Flags: "hunts only the player" drops army and castle
-  targets, "no random targets" the patrol, "no socialising" the talks, "no interest in
-  buildings" every building goal.
-- **Range**: armies and the player are candidates within `AIDistance0..2` cells (the
-  original's `max + min/2` distance) chosen by the style byte 59: feudal 100, rogue 50,
-  peasant 25 with the shipped values. A patrolling army takes targets only inside its patrol
-  box (`post ± radius`); radius 0 is a stationary guard.
-- **Walking**: armies bank the minutes of every hero step and wait tick (at most 200) and
-  step when they cover `cost(next) × speed` (×1.5 diagonally); speed `max(1, 5 − correction)`,
-  one less when led by the Archmage unit. They stand at a building's footprint centre.
-- **Cadence**: a goal is chosen again every 60 game minutes (staggered), when a hostile
-  army spots the hero or loses him, and when a goal is done or gone. The flood gives the
-  route; routes are planned again with A* when the goal's cell moved, at most 4 searches per
-  slice for all armies (chasing the hero is not counted), up to 12 000 cells each; a goal in
-  another region on foot or not found is left alone for a day. Rest between things:
-  `ZeroDensity` × 6..36 minutes (30..180 with the shipped 5).
-- **Economy** (at noon): gold from owned buildings (not villages) and the daily income
-  (byte 80 × 10; word 17 is the starting gold), for every style but peasants. Feudal lords pay
-  wages (`WageKind` as for the player, the leader free); unpaid for `MaxTimeNotUpkeep` (7
-  noons), the last unit leaves. Hiring (the strongest affordable unit in stock; rogues: rogue
-  units only; never units paid in mana) and shopping (the dearest item a unit can wear, at its
-  cost) keep `NeedUpkeepDay` days of wages. Buildings that hire for the AI: towns, castles,
-  forts, churches, villages, altars that are its own or of a faction it is not ill-disposed
-  towards (never the player's). At midnight an army standing in its own castle or fort heals
-  `GarrisonAutoHeal`% *(guess)*, as do the garrisons of the AI and of neutral buildings.
-- **Items**: an army's items are worn in battle by the first unit that can wear each (the
-  player's battles against it too); at most 12.
-- **Battles**: two armies on neighbouring cells fight when one is going for the other, or
-  both are ill-disposed towards each other and neither is ignored by the AI, hunts only the
-  player or is a peasant. An army reaching a castle or fort it goes for fights its owner if
-  he stands at the gate, else its garrison (with the building's extra defence), else takes
-  it. The battle engine plays both sides; the attacker has the initiative bonus. Survivors
-  keep their wounds, the leader survives with 1 HP while his army does, each side with
-  strength left gains its shares × `AIExpiriencePercent` (experience.md §3), banked with
-  level-ups and a try at the upgrade tree. The winner takes `VictoryGoldDiv` of the loser's gold (none
-  when its units carry no money) and its items. A taken castle or fort changes owner,
-  faction and income; the taker leaves its weakest troops as a garrison until it holds
-  `garrison_strength`% of what it keeps (the leader stays with him). A stalemate: a
-  truce of one day between the two (and the other's buildings).
-- **Reports**: a battle within the hero's sight (his 8–10 cells), or at a building of his, is
-  an event (a message line) and goes into `Game::ai_log` (30 kept).
-- **Beaten armies**: a feudal lord who still owns a building retreats into it (his home,
-  else the nearest) with his leader at 1 HP and returns after 3 days at full health *(guess)*;
-  if he lost them all meanwhile he respawns like others or is gone. Others with a home
-  building and a respawn time (byte 70, days) come back after it at the **centre of their
-  home** (world.md §5) with full HP: the leader alone, or the whole army of the scenario with
-  byte 83, and `days × daily income` more gold. A feudal army that no longer owns its home
-  uses a town it owns, else a castle, else a fort; owning none, or with no home, it does not
-  come back. Rogues and peasants take their home when it is a village, shipyard, altar or
-  dungeon entrance. This holds whoever beat them (the player too).
+  **Target model**: byte 85, the index into the `_Global.ini` priority lists; a missing key
+  reads 0 (the shipped misspelt `MixHealingTarget` leaves the healing minimum at 0).
+- **Who**: every scenario army, ships included (an army placed on water sails the SHIP map).
+  The demo's gangs keep their simple rules (chase the hero, patrol).
+- **Step clock**: armies bank the minutes of every hero step and wait tick (at most 200) and
+  step when they cover `cost(cell left) × speed` (×1.5 diagonally); with no path an army
+  steps in place on its own cell's cost. Every step is an arrival. Stationary guards do
+  nothing at all; an army healing stands still for `HealingTime`.
+- **Planning**: at an arrival, when its countdown of `AIGetPathDistance` steps ran out or any
+  party is that near. Seeds: buildings by their score, armies and the hero by their cached
+  battle score (hostile) or talk counter (friendly), four wander points; a danger (a
+  negative score) pushes two repulsion cones onto a multiplier map instead; forbidden
+  buildings, stationary guards and the armies near an ignored one are closed. One flood
+  from all seeds in the original's pass order, the path read by steepest descent.
+- **Scores**: an army's against another from a simulated battle (the battle engine on both
+  sides; cached per pair, rescored within `AIDistance0..2` when dirty); a building's from its
+  village, purchase, attack and garrison parts, rescored at noon, midnight and after battles.
+  Lower is better, 0 no interest.
+- **Arrival**: talk counters, attacks on hostile neighbours (tripled scores when they shelter
+  in someone else's building), greetings (−500 both ways); in a building: assault and
+  capture, village gold (feudal), shopping, healing and resurrection, hiring, garrison buying
+  and reshuffle. AI armies keep their units' records: worn items, corpses (dropped after
+  `MaxTimeResurection`), pay.
+- **Noon** at the first arrival after 12:00 (its income, its castles' and forts' stock, its
+  linked villages'; feudal wages, short gold leaving the cheapest unpaid), **midnight**: the
+  village average and every building rescored.
+- **AI battles**: one battle with the full engine, only the attacker's paid units; HP and
+  deaths written back, XP with the AI's promotion rolls, the asymmetric loot of ai.md §10,
+  worn items pooled and handed out by tactical gain.
+- **Reports**: a battle or capture within the hero's sight (his 8–10 cells), or at a
+  building of his, is an event (a message line) and goes into `Game::ai_log` (30 kept).
+- **Beaten armies** leave the map; with a home and a respawn delay (byte 70, days) they
+  come back after it at the centre of their home (a feudal one that lost it: its first town,
+  castle or fort; none, never; a rogue takes over a village, shipyard, altar or ruins home),
+  the whole record when the AI beat them, the leader alone (unless byte 83) when the player
+  did.
+- **Performance**: simulated battles with the same sides are played once (`SimCache`), and
+  a flood that cannot change the path (an ignored army's own cell is closed) stops as soon
+  as the path is known; the results are the original's.
 
 ## Appendix: `_Global.ini` `[GlobalOptions]` quick reference
 

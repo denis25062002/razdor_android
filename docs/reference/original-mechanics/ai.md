@@ -532,39 +532,51 @@ per army at map load), which matters for a bit-exact replay.
 
 ## Razdor now → original
 
-Razdor's AI is `src/rules/ai.rs` (with `game.rs` `move_armies`/`step_army`, `world.rs`
-respawn data). "Razdor now" is the state read for this file.
+Razdor's AI is `src/rules/ai.rs` (with `game.rs` `move_armies`/`ai_contact`, `map.rs`
+`flood_maps`/`descend`, `world.rs` unit records and respawn data). "Razdor now" is the state
+after the parity pass.
 
 | Topic | Razdor now | Original | Work |
 |---|---|---|---|
-| Thinking cadence | Re-chooses every 60 min (`THINK_MINUTES`) or when the player comes in/out of range; A* to the chosen cell, 4 searches per slice | Re-plans on arrival every `AIGetPathDistance` steps, or every step while anything is within `AIGetPathDistance`; one flood from the targets, path by descent (§2, §7.5) | Replace the cadence and the A* route with the per-arrival flood and descent |
-| Goal memory | Explicit goal (`Goal`), blocked goals for a day, truce after a stalemate | No goal kept; the flood decides each time; a visited building's score is zeroed until rescoring (§9.7) | Drop goals/blocks/truces; add the score zeroing |
-| Step cost | `cost(next cell)`; hero's cell not respected | Cost of the cell left; a step into the player's cell (or next cell) waits (§2) | Change `step_army` |
-| Stationary guards | Choose goals and walk like other armies (only wandering is off) | Never step, plan, arrive or get a noon (§2) | Freeze them |
-| Relation | `hostile_to`: other faction and one-sided attitude < 0 | Two-sided rule of §3, factions not compared | Use §3 everywhere |
-| Range | Targets only within AIDistance (by style) and the patrol box | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Cache pair scores with dirty flags |
-| Army score | `battle_seed`: win test on margin with aggression on both totals; loss → no target | §4 exactly (shifted A1, ÷1000 for negative aggression, relation scaling, negative scores) | Port §4 |
-| Danger | Not modelled | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Add the multiplier map |
-| Peasants | No army, building or talk targets | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Remove the peasant exclusions |
-| Building score | Separate heuristics per goal with Razdor's `lerp` (Max at no need → Min) | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Port §6 |
-| Healing | Below 75% HP (`HEAL_BELOW`), own castle or friendly healer, paid like the player, time × units | Heal seed lowers existing scores only (§7.2); heal cost uses current HP; busy `HealingTime` once (§9.4) | Port |
-| Village gold | Feudal, own/linked/same-faction villages | Feudal, any village it stands on (§9.2); score part for villages and own buildings with stock | Port |
-| Shopping | Dearest affordable wearable item, one per visit | Sell the pack at half, then buy by tactical-cost gain > 5 while affordable (§9.3); markets/churches or altars by leader nature | Port |
-| Hiring | Strongest affordable recruit; rogues hire rogue units only | Role balancing, leader-Nature match (unit 74 exception), third role caps at 8 (§9.5); kind 1/2 by ownership | Port |
-| Garrison | Leaves its weakest units after a capture; tops up to `garrison_strength`% of its strength | Buying and the quota reshuffle of §9.6, driven by byte 82 and the defence | Port |
-| Contact | Battle when one goes for the other or both are hostile (not peasants, ignored, hunters) | On arrival, hostile neighbour with a positive cached score, not ignored; no fight inside someone else's building (§8) | Port |
-| Greeting / talk | `Talk` goal with a 1-day cooldown | Talk counters (+1 per arrival, + relation + 1), −500 after a greeting, talk seed `800 − c + Talking` (§7.2, §8) | Port |
-| Messenger | `MeetPlayer` goal for friendly hunters | Falls out of the seed rule (value 0 → 1) and the greeting (§7.2) | Simplify |
-| AI vs AI loot | `VictoryGoldDiv` of the gold both ways, no wage total, items up to 12 | Asymmetric (§10): MinVictoryGold only when the attacker loses; wage totals; pooled items to the side with more HP, best-gain wearing | Port |
-| Leader survival | Leader at 1 HP while a troop survives | Leader at 1 HP when its side survives (§10) | Matches in effect |
-| Lord retreat | Feudal lord retreats into a building, back after 3 days *(guess)* | No retreat; only the respawn rule (§12) | Remove the guess |
-| Respawn content | Leader or whole army by byte 83 | Byte 83 only when the player beat it; beaten by the AI → whole army (§12) | Port |
-| Respawn takeover | Village, shipyard, altar, dungeon entrance | Village, shipyard, altar, **ruins** (§12) | Fix the list |
-| Promotion slots | Two options stay in slots 1 and 2 (`dt/data.rs`) | Two options move to slots 1 and 3 (§11) | Fix the loader; the Militia/Infantry picks then always work |
-| Noon | Every managed non-peasant army at 12:00, then hires where it stands | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14) | Port |
-| Midnight | Garrisons heal; armies in their own castle heal *(guess)* | Medic armies heal 10%; armies rescore buildings (§14) | Port |
-| Ships | Separate simple chase/patrol rules | Same AI on the SHIP map (§13) | Unify |
-| Contact with the player before he moves | Possible | Not before his first step (§8.1) | Decide (parity) |
+| Thinking cadence | Re-plans at an arrival when its countdown of `AIGetPathDistance` steps ran out or any party is within that distance; one flood from every seed at once, in the original's pass order (`TileMap::flood_maps`), path by steepest descent (`Game::ai_plan`) | Re-plans on arrival every `AIGetPathDistance` steps, or every step while anything is within `AIGetPathDistance`; one flood from the targets, path by descent (§2, §7.5) | Matches |
+| Goal memory | No goal kept; a visited building's stored score is zeroed until its next rescoring | No goal kept; the flood decides each time; a visited building's score is zeroed until rescoring (§9.7) | Matches |
+| Step cost | Cost of the cell left; a step into the hero's cell (or the one ahead of him) waits; an army with no path steps in place on its own cell's cost, each an arrival | Cost of the cell left; a step into the player's cell (or next cell) waits (§2) | Matches |
+| Stationary guards | Never bank, step, plan, arrive or get a noon | Never step, plan, arrive or get a noon (§2) | Matches |
+| Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
+| Range | Pair scores cached per army with dirty flags; only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
+| Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
+| Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
+| Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
+| Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |
+| Healing | The heal seed lowers the stored scores of friendly service buildings; heals priced by the current HP, `HealingTime` busy from the last; the dead raised dearest first in towns and churches | Heal seed lowers existing scores only (§7.2); heal cost uses current HP; busy `HealingTime` once (§9.4) | Matches |
+| Village gold | Feudal, any village it stands on, its mana thrown away; the village part for villages and its own buildings with stock | Feudal, any village it stands on (§9.2); score part for villages and own buildings with stock | Matches |
+| Shopping | Sells the pack at half, then buys by tactical gain above 5 while the spare gold covers it, values not recomputed (a good bought for a unit that can no longer wear it is paid and lost); markets and churches, or altars for an undead leader | Sell the pack at half, then buy by tactical-cost gain > 5 (§9.3); markets/churches or altars by leader nature | Matches |
+| Hiring | Role order by tactical sums, leader's Nature (unit 74 any non-undead), the cap of 8 set on entering the third role and tested only before a pass; kind 1 at home, 2 abroad; hire XP level by level | Role balancing, leader-Nature match (unit 74 exception), third role caps at 8 (§9.5); kind 1/2 by ownership | Matches |
+| Garrison | Buying while the spare gold is above a third of the starting gold (the price simply deducted), then the quota reshuffle by byte 82 and the defence | Buying and the quota reshuffle of §9.6, driven by byte 82 and the defence | Matches |
+| Contact | At every arrival: a hostile neighbour in no building, on a bridge or in its own is attacked when the cached score is positive and it is not ignored; in someone else's building both scores are tripled (cap 10000) | On arrival, hostile neighbour with a positive cached score, not ignored; no fight inside someone else's building (§8) | Matches |
+| Greeting / talk | Talk counters per pair (+1 per arrival at a distance, + relation + 1 when friendly), −500 on both sides after a greeting, talk seed `800 − c + Talking`, `c div 100` below 1 | Talk counters (+1 per arrival, + relation + 1), −500 after a greeting, talk seed `800 − c + Talking` (§7.2, §8) | Matches |
+| Messenger | Falls out of the seed rule (a 0 for the player becomes 1) and the greeting | Falls out of the seed rule (value 0 → 1) and the greeting (§7.2) | Matches |
+| AI vs AI loot | Asymmetric: `MinVictoryGold` only when the attacker loses, wage bills by style, a garrison's gold; worn items pooled and handed out by tactical gain to the side with more HP, the rest packed dearest first | Asymmetric (§10): MinVictoryGold only when the attacker loses; wage totals; pooled items to the side with more HP, best-gain wearing | Matches |
+| Leader survival | Leader at 1 HP when its side survives | Leader at 1 HP when its side survives (§10) | Matches |
+| Lord retreat | None | No retreat; only the respawn rule (§12) | Matches |
+| Respawn content | Beaten by the player: the leader only unless byte 83; beaten by the AI: the whole record, its dead raised | Byte 83 only when the player beat it; beaten by the AI → whole army (§12) | Matches |
+| Respawn takeover | Village, shipyard, altar, ruins, from anyone | Village, shipyard, altar, **ruins** (§12) | Matches |
+| Promotion slots | The loader moves the options as the original (`normalise_upgrade_slots`): two always in slots 1 and 3 | Two options move to slots 1 and 3 (§11) | Matches |
+| Noon | At its first arrival after 12:00; its base income, its castles' and forts' stock and its linked villages'; today's income with the castles' income; feudal wages (the player's Rear Service too); others all paid | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14) | Matches |
+| Midnight | Medic 10% (with the economy's midnight), village average, every building rescored | Medic armies heal 10%; armies rescore buildings (§14) | Matches |
+| Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
+| Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
+
+Left out for now: an army beaten in a fight of its own arrival ends that arrival (the
+original goes on with the dead army's record, which can fight again or collect village
+gold); the Community's mana bill taken from the player's mana at every AI noon, and its
+short-mana flag (economy.md §1); the barracks are read as a list without the empty slots
+between units (the original's slot positions only matter for the cap of 8 at the last
+slot); the hero's pairs are marked dirty only after his battles (the other callers of
+0x4a26e8 are not traced); an army takes all the steps of a slice before the next one
+moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
+and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,
+"Stock growth").
 
 ## Unknowns
 

@@ -15,14 +15,10 @@
 //!   water he left, where a click on it takes him back aboard. The land test reads a cell
 //!   further south (the original's bug, kept: [`World::landing_terrain_is_land`]).
 //!
-//! The scenario's own ships (army byte 72: hero, pirate and merchant ships) are armies that
-//! move on the SHIP map (water and building footprints); pirates attack like any hostile army,
-//! merchants never do.
-//!
-//! Razdor's choices *(guess)*, listed in mechanics.md §8.6: ship armies always cruise within
-//! their patrol radius ([`SHIP_PATROL`] cells when the editor gives none) and chase the hero
-//! to the water next to him. [`World::mooring`] (the water nearest a shipyard on foot) serves
-//! only the reachability check of the editor's tools.
+//! The scenario's own ships are the armies placed on water (ai.md §13): the same AI as on
+//! land, on the SHIP map (water and building footprints); army byte 72 (hero, pirate and
+//! merchant ships) only picks the picture. [`World::mooring`] (the water nearest a shipyard
+//! on foot) serves only the reachability check of the editor's tools.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +30,6 @@ use super::world::{Army, LocationKind, World};
 pub const MIXED_LAND_FACTOR: u16 = 5;
 /// How many steps on foot from a shipyard its ship may wait *(guess)*.
 pub const MOORING_RADIUS: i32 = 24;
-/// Patrol radius of a scenario ship whose editor radius is 0 *(guess)*.
-pub const SHIP_PATROL: i32 = 8;
 
 /// Ship types (`.DTm` army byte 72).
 pub mod kind {
@@ -282,11 +276,12 @@ impl Game {
     }
 
     /// The hero goes to sea (`true`) or leaves it (0x496d28): the AI armies on the medium he
-    /// is now on (ships, or land armies) lose their banked time and plan again.
+    /// is now on (ships, or land armies) lose their banked time and plan again at their next
+    /// arrival.
     fn sea_changed(&mut self, at_sea: bool) {
         for a in self.world.armies.iter_mut().filter(|a| a.sails() == at_sea) {
             a.budget = 0.0;
-            a.path.clear();
+            a.mind.countdown = 0;
         }
     }
 
@@ -305,16 +300,6 @@ impl Game {
         let in_yard = self.world.location_at(from).is_some_and(|l| self.world.locations[l].kind == LocationKind::Shipyard);
         self.ship = (!in_yard).then_some(Ship { tile: from, aboard: false });
         self.sea_changed(false);
-    }
-
-    /// Where a hostile ship army at `from` heads to reach the hero: his cell at sea, else the
-    /// water next to him nearest to it.
-    pub(crate) fn sea_chase_goal(world: &World, from: Tile, hero: Tile) -> Option<Tile> {
-        if world.is_sea(hero) {
-            return Some(hero);
-        }
-        let g = world.map.grid;
-        g.neighbours(hero).filter(|&n| world.is_sea(n)).min_by_key(|&n| g.distance(from, n))
     }
 }
 
@@ -554,6 +539,8 @@ mod tests {
         let mut s = strait();
         let mut pirate = army(1, 15, 0, -2, &[troop(4, 0, 1)]);
         pirate.ship = kind::PIRATE;
+        // Gold for its wages: an unpaid crew does not attack (ai.md §4).
+        pirate.gold_income = 500;
         let mut merchant = army(2, 11, 11, -2, &[troop(4, 0, 1)]);
         merchant.ship = kind::MERCHANT;
         s.armies = vec![pirate, merchant];
@@ -562,7 +549,9 @@ mod tests {
         assert_eq!(ids, [1, 2]);
         assert!(g.world.armies[0].hostile() && g.world.armies[0].sails());
         assert!(!g.world.armies[1].hostile(), "merchants never attack");
-        assert!(g.world.armies[0].patrols && g.world.armies[0].patrol_radius == SHIP_PATROL);
+        // No patrol of their own: they wander the whole sea like any army that does not
+        // patrol (ai.md §13).
+        assert!(!g.world.armies[0].patrols);
         // The ships cruise, on water only; nobody attacks a waiting hero.
         let before: Vec<_> = g.world.armies.iter().map(|a| a.pos).collect();
         g.wait(24);
@@ -573,8 +562,13 @@ mod tests {
         assert_ne!(before, g.world.armies.iter().map(|a| a.pos).collect::<Vec<_>>(), "they moved");
         // Out at sea, the pirates come for the hero as he sails up and down.
         g.world.armies.retain(|a| a.id == 1);
-        g.world.armies[0].pos = g.world.map.center((15, 1));
-        g.world.armies[0].path.clear();
+        let a = &mut g.world.armies[0];
+        a.pos = g.world.map.center((15, 1));
+        a.path.clear();
+        // Bold enough to attack him (the AI attacks only battles it wins), no wandering.
+        a.ai.aggression = 100;
+        a.ai.no_random = true;
+        a.mind.clean.clear();
         g.rent_ship().unwrap();
         let mut events = Vec::new();
         for target in [(14, 5), (11, 5), (14, 5), (11, 5), (14, 5), (11, 5)] {

@@ -11,7 +11,7 @@ use crate::i18n::{n_, tr};
 use crate::dt::dtm::{self, Archetype, BuildingType, EventKind, Scenario};
 
 use super::clock::Clock;
-use super::content::{Content, HeroClass, ItemId, UnitId};
+use super::content::{Content, HeroClass, ItemId, UnitId, WageKind};
 use super::formation::{Row, Slot};
 use super::ai::{AiMind, AiProfile, Respawn};
 use super::magic::ActiveSpell;
@@ -23,25 +23,57 @@ const KINGDOM: &str = include_str!("../../data/kingdom.txt");
 /// Attitude value at or below which a side attacks the player (relations run −3..3).
 pub const HOSTILE_BELOW: i8 = 0;
 
-/// A unit in an army or a garrison.
+/// [`Location::relations`] of a save written before buildings kept them.
+pub const UNKNOWN_RELATIONS: [i8; 4] = [i8::MIN; 4];
+
+fn unknown_relations() -> [i8; 4] {
+    UNKNOWN_RELATIONS
+}
+
+/// A unit in an army or a garrison: the original's unit record (ai.md §1) as the AI keeps
+/// it, its worn items, death and pay included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Troop {
     pub unit: UnitId,
     /// 1 as hired.
     pub level: i32,
     pub slot: Slot,
-    /// Hit points lost to world spells (a troop fights with its maximum minus this).
+    /// Hit points it lacks: it has its maximum (worn items included) minus this. 0 unhurt.
     #[serde(default)]
     pub hurt: i32,
     /// Experience towards the next level (AI armies gain it in their own battles).
     #[serde(default)]
     pub xp: i32,
+    /// Worn items, as a unit's ([`Unit::items`]).
+    #[serde(default)]
+    pub worn: [Option<ItemId>; crate::rules::items::SLOTS],
+    /// Game minute of death: a corpse stays in the record (it may be resurrected, and it
+    /// comes back with a respawn) until the AI drops it (ai.md §9).
+    #[serde(default)]
+    pub died_at: Option<u64>,
+    /// Missed a payday: it stays out of the battles its army starts (economy.md §1).
+    #[serde(default)]
+    pub unpaid: bool,
+    /// Game minute it was last paid; it may leave on a short noon long after.
+    #[serde(default)]
+    pub last_paid: u64,
+    /// Hiring kind for the wage formula: AI leaders are [`WageKind::Leader`].
+    #[serde(default = "recruit")]
+    pub kind: WageKind,
+}
+
+fn recruit() -> WageKind {
+    WageKind::Recruit
 }
 
 impl Troop {
-    /// A troop at full health.
+    /// A troop at full health, a recruit.
     pub fn new(unit: UnitId, level: i32, slot: Slot) -> Troop {
-        Troop { unit, level, slot, hurt: 0, xp: 0 }
+        Troop { unit, level, slot, hurt: 0, xp: 0, worn: [None; crate::rules::items::SLOTS], died_at: None, unpaid: false, last_paid: 0, kind: WageKind::Recruit }
+    }
+
+    pub fn alive(&self) -> bool {
+        self.died_at.is_none()
     }
 }
 
@@ -260,6 +292,16 @@ pub struct Location {
     pub faction: u8,
     /// Attitude towards the player, −3..3.
     pub attitude: i8,
+    /// Attitudes towards the four factions (byte 338); the one towards the player's faction
+    /// is [`Location::attitude`] ([`Location::attitude_to`]). The AI reads the one towards
+    /// its own faction (ai.md §3). Saves from before them read [`UNKNOWN_RELATIONS`] and take
+    /// the scenario's on load.
+    #[serde(default = "unknown_relations")]
+    pub relations: [i8; 4],
+    /// Byte 294, the services flag: AI armies heal, resurrect and hire here (ai.md §9.4).
+    /// Scenario data, restored on load.
+    #[serde(skip)]
+    pub services: bool,
     /// Daily gold and mana for the owner (castles, forts, towns) or, for villages, the
     /// tribute that accumulates up to the maximum.
     pub gold_income: i32,
@@ -307,6 +349,8 @@ impl Location {
             owner: Owner::Neutral,
             faction: 3,
             attitude: 1,
+            relations: [1, 0, 0, 0],
+            services: false,
             gold_income: 0,
             gold_max: 0,
             mana_income: 0,
@@ -358,6 +402,23 @@ impl Location {
 
     pub fn owned(&self) -> bool {
         self.owner == Owner::Player
+    }
+
+    /// Attitude towards faction `f` (1–4): the original reads its byte `+0x151 + f`; another
+    /// value reads as 0.
+    pub fn attitude_to(&self, f: u8) -> i8 {
+        match f {
+            1 => self.attitude,
+            2..=4 => self.relations[f as usize - 1],
+            _ => 0,
+        }
+    }
+
+    /// Takes the faction and the four attitudes of a new owner.
+    pub fn take_sides(&mut self, faction: u8, relations: [i8; 4]) {
+        self.faction = faction;
+        self.attitude = relations[0];
+        self.relations = relations;
     }
 
     /// Not the player's and ill-disposed towards him.
@@ -510,7 +571,7 @@ pub struct Army {
     /// demo's gangs, which keep the simple chase-and-patrol rules.
     #[serde(default)]
     pub ai: AiProfile,
-    /// Its current goal and bookkeeping (`rules::ai`).
+    /// What the AI keeps of it between its steps: scores, talk counters, plans (`rules::ai`).
     #[serde(default)]
     pub mind: AiMind,
 }
@@ -764,6 +825,8 @@ impl World {
             l.owner = b.owner().map_or(Owner::Neutral, Owner::Army);
             l.faction = b.faction;
             l.attitude = b.relations[0];
+            l.relations = b.relations;
+            l.services = b.has_barracks != 0;
             if b.faction == 1 {
                 l.owner = Owner::Player;
             }
@@ -774,8 +837,9 @@ impl World {
             // A village starts with one day's tribute *(guess)*.
             l.tribute_gold = if kind == LocationKind::Village { l.gold_income } else { 0 };
             l.tribute_mana = if kind == LocationKind::Village { l.mana_income } else { 0 };
-            let (garrison, dropped) = place_troops(content, &[], &dt_entries(&b.garrison));
+            let (mut garrison, dropped) = place_troops(content, &[], &dt_entries(&b.garrison));
             world.dropped_units += dropped;
+            garrison.iter_mut().for_each(|t| t.last_paid = start.total_minutes() as u64);
             l.garrison = garrison;
             l.garrison_defence = b.garrison_extra_defence as i32;
             if b.has_barracks != 0 || b.barracks.iter().any(|r| r.unit != 0) {
@@ -812,14 +876,24 @@ impl World {
                 entries.push((a.leader_unit as u32, a.leader_level as i32 + 1, 1));
             }
             entries.extend(dt_entries(&a.troops));
-            let (troops, dropped) = place_troops(content, &[], &entries);
+            let (mut troops, dropped) = place_troops(content, &[], &entries);
             world.dropped_units += dropped;
             if troops.is_empty() {
                 continue;
             }
-            let troops_for_ai = troops.clone();
+            if a.leader_unit != 0 {
+                // The leader draws no wage (economy.md §1, kind 0).
+                troops[0].kind = WageKind::Leader;
+            }
+            // Everyone counts as paid at the start.
+            let paid = start.total_minutes() as u64;
+            troops.iter_mut().for_each(|t| t.last_paid = paid);
             let at = (a.x as i32, a.y as i32);
-            let placed = if a.ship != 0 {
+            // An army placed on water (terrain codes 0–2), not on a bridge, is a ship army
+            // for good; byte 72 only picks its picture (ai.md §13, 0x4b4a90).
+            let afloat = world.map.in_bounds(at) && is_water(world.map.surface(at)) && world.location_covering(at).is_none();
+            let ship = if afloat { a.ship.max(super::ships::kind::HERO) } else { 0 };
+            let placed = if ship != 0 {
                 world.nearest_sea(at, PLACE_RADIUS)
             } else if world.map.passable(at) {
                 Some(at)
@@ -834,7 +908,7 @@ impl World {
             // mage) is hostile through its faction.
             let towards = player_attitude_to(&world.relations, a.faction);
             let attitude = relation(towards, a.relations[0]);
-            let attitude = if a.ship == super::ships::kind::MERCHANT { attitude.max(0) } else { attitude };
+            let attitude = if ship == super::ships::kind::MERCHANT { attitude.max(0) } else { attitude };
             let home = (a.home_building as usize).checked_sub(1).filter(|&j| j < world.locations.len());
             let army = Army {
                 id: a.id,
@@ -847,14 +921,14 @@ impl World {
                 home,
                 post: tile,
                 box_centre: None,
-                // Ships always cruise their waters *(guess)*.
-                patrols: a.patrols != 0 || a.ship != 0,
-                patrol_radius: if a.ship != 0 && a.patrol_radius == 0 { super::ships::SHIP_PATROL } else { a.patrol_radius as i32 },
+                patrols: a.patrols != 0,
+                patrol_radius: a.patrol_radius as i32,
                 troops,
                 faction: a.faction,
                 attitude,
-                gold: a.gold_income as i32,
-                items: artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)),
+                // Word 17, signed (ai.md §1).
+                gold: a.gold_income as i16 as i32,
+                items: Vec::new(),
                 speed: Army::speed_for(a.speed_correction, a.leader_unit as u32),
                 budget: 0.0,
                 walk: Walk::default(),
@@ -866,10 +940,15 @@ impl World {
                 rest_until: 0.0,
                 named: a.named_character,
                 effects: Vec::new(),
-                ship: a.ship,
-                ai: AiProfile::from_dt(a, &troops_for_ai),
+                ship,
+                ai: AiProfile::from_dt(a),
                 mind: AiMind::default(),
             };
+            let mut army = army;
+            // Its items go to the unit each one helps most, else into its pack (0x4a273c).
+            for item in artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)) {
+                super::ai::give_item(content, &mut army, item);
+            }
             // An army with no cell of its kind nearby (a land army far out on the water)
             // waits with the inactive.
             if a.is_active() && placed.is_some() {
@@ -932,10 +1011,13 @@ impl World {
     /// Building `l` becomes the player's (a start building, a capture): owner, his faction,
     /// full attitude.
     pub fn give_to_player(&mut self, l: usize) {
+        let mine = self.relations[0];
         let loc = &mut self.locations[l];
         loc.owner = Owner::Player;
         loc.faction = 1;
         loc.attitude = 3;
+        // His attitudes to the other factions are copied too (economy.md §3).
+        loc.relations = [3, mine[1], mine[2], mine[3]];
     }
 
     /// The demo kingdom of `data/kingdom.txt`, populated with the built-in demo units.
@@ -1037,6 +1119,10 @@ impl World {
             l.name.clone_from(&f.name);
             l.owner_name.clone_from(&f.owner_name);
             l.description.clone_from(&f.description);
+            l.services = f.services;
+            if l.relations == UNKNOWN_RELATIONS {
+                l.relations = [l.attitude, f.relations[1], f.relations[2], f.relations[3]];
+            }
         }
         let texts: HashMap<u8, &Army> = fresh.armies.iter().chain(fresh.inactive.iter()).filter(|a| a.id != 0).map(|a| (a.id, a)).collect();
         let respawning = self.respawns.iter_mut().map(|r| &mut r.army);
@@ -1058,6 +1144,9 @@ impl World {
                     // Saves from before the AI kept no profile: the scenario's.
                     if !a.ai.enabled {
                         a.ai = f.ai.clone();
+                    }
+                    if a.ai.garrison_level < 0 {
+                        a.ai.garrison_level = f.ai.garrison_level;
                     }
                 }
                 None => return Err(format!("army {} is not on the map", a.id)),

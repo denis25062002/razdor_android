@@ -504,7 +504,7 @@ impl Game {
         let mut k = 0;
         a.troops.retain_mut(|t| {
             k += 1;
-            if only_leader && k > 1 {
+            if (only_leader && k > 1) || !t.alive() {
                 return true;
             }
             let max = troop_unit(&c, t).max_hp(&c);
@@ -519,7 +519,7 @@ impl Game {
         if let Some((e, m)) = effect {
             add_effect(&mut a.effects, e, m, now);
         }
-        let destroyed = a.troops.is_empty();
+        let destroyed = !a.troops.iter().any(|t| t.alive());
         if destroyed {
             self.army_beaten(i, crate::rules::ai::Beaten::ByPlayer);
             let events = self.run_script();
@@ -586,7 +586,10 @@ mod tests {
         let mut s = scenario(24, 6);
         s.armies = vec![army(9, at.0, at.1, -2, troops)];
         let w = crate::rules::world::World::from_scenario(&s, &g.content);
-        let a = w.armies[0].clone();
+        let mut a = w.armies[0].clone();
+        // A stationary guard: it waits where it stands (the AI's armies wander).
+        a.patrols = true;
+        a.patrol_radius = 0;
         let uid = a.uid;
         g.world.armies.push(a);
         uid
@@ -800,8 +803,12 @@ mod tests {
     fn an_enemy_reaching_the_hero_does_not_interrupt_the_cast() {
         let mut g = game(HeroClass::Knight);
         with_enemy(&mut g, (6, 2), &[troop(4, 0, 1)]);
-        // Bold enough to attack a stronger hero (the AI attacks only battles it wins).
-        g.world.armies.last_mut().unwrap().ai.aggression = 100;
+        // Bold enough to attack a stronger hero (the AI attacks only battles it wins), and
+        // free to go for him.
+        let a = g.world.armies.last_mut().unwrap();
+        a.ai.aggression = 100;
+        a.ai.no_random = true;
+        a.patrols = false;
         let mana = g.mana;
         let cast = g.cast(2, CastTarget::Own).unwrap();
         assert!(matches!(cast.outcome, CastOutcome::Done { .. }), "{:?}", cast.outcome);
