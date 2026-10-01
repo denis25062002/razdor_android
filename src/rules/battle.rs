@@ -415,6 +415,14 @@ pub struct FighterResult {
     pub slot: Slot,
 }
 
+/// A cell the AI's front-row fallback may pick (489549).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrontPick {
+    Move(Slot),
+    Own,
+    Cast(usize, ActionKind),
+}
+
 /// What the AI does with the active unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Plan {
@@ -476,6 +484,9 @@ pub struct Battle {
     /// +0x10, +0x14; the turn in progress at the end is never counted).
     turn_lost: [i64; 2],
     max_turn_lost: [i64; 2],
+    /// Cells of the player's army formation held by units that do not fight (the dead, and
+    /// the unpaid when he attacks): the original's start fix sees them (4d2141).
+    bench: Vec<Slot>,
 }
 
 /// A fighter in its side's strength sum.
@@ -585,6 +596,7 @@ impl Battle {
             predicted: [0; 2],
             turn_lost: [0; 2],
             max_turn_lost: [0; 2],
+            bench: Vec::new(),
         };
         b.fit_to_formation();
         b
@@ -624,6 +636,12 @@ impl Battle {
     pub fn set_simulation(&mut self) {
         self.interactive = false;
         self.ai_level = 0;
+    }
+
+    /// The cells of the player's army formation whose units stay out of the battle (the dead,
+    /// the unpaid of an attack). They count for the start fix in [`Battle::begin`].
+    pub fn set_bench(&mut self, cells: Vec<Slot>) {
+        self.bench = cells;
     }
 
     /// No pre-simulation: for battles whose XP nobody receives (the AI's target scoring),
@@ -821,8 +839,9 @@ impl Battle {
         // The battle window's fix of the player's formation (4d2141): with nobody in front,
         // his back row moves into the front row, same columns, and stays there after the
         // battle. The reserve does not move, and the enemy needs no fix. There is no other
-        // collapse before the first action.
-        if !self.row_occupied(Team::Player, Row::Front) {
+        // collapse before the first action. The test reads the army's formation, so a corpse
+        // or a unit sitting out in the front row counts as somebody there (the original's).
+        if !self.row_occupied(Team::Player, Row::Front) && !self.bench.iter().any(|s| s.row == Row::Front) {
             for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == Team::Player && f.slot.row == Row::Back) {
                 f.slot.row = Row::Front;
             }
@@ -2190,8 +2209,8 @@ impl Battle {
         if self.fighters[id].slot.row == Row::Reserve {
             return Some(self.ai_move(id, &opts));
         }
-        if let Some(to) = self.ai_retreat(id) {
-            return Some(Plan::Move(to));
+        if let Some(plan) = self.ai_retreat(id, &opts) {
+            return Some(plan);
         }
         let pick = |kinds: &[ActionKind], score: &dyn Fn(usize, ActionKind) -> i64| {
             self.pick(opts.iter().filter(|o| kinds.contains(&o.1)).map(|&(t, k)| (self.fighters[t].slot, score(t, k) as f64, (t, k))))
@@ -2259,7 +2278,14 @@ impl Battle {
     /// A front-row unit that is not a warrior, with more than one action and an AttackBlow
     /// not above both its power and its AttackShot, steps back behind the healthiest own
     /// front unit, if another own unit stands in front (or it is the side's lone mage).
-    fn ai_retreat(&self, id: usize) -> Option<Slot> {
+    ///
+    /// With no back-row cell to step to, the original's edge rule (4ed390 on) scores 1 on the
+    /// own front cell of the first column when the unit stands in the second and an enemy
+    /// stands in the last front column, and on the last column's cell when it stands in the
+    /// last but one and an enemy stands in the first; that needs another own front unit.
+    /// The cell's own code is then what happens: a step there when it is free and next to
+    /// the unit, a heal or blessing on an ally there, else an action spent for nothing.
+    fn ai_retreat(&self, id: usize, opts: &[(usize, ActionKind)]) -> Option<Plan> {
         let f = &self.fighters[id];
         let (ab, sh, mp) = (f.base[Stat::AttackBlow], f.base[Stat::AttackShot], f.power);
         if f.slot.row != Row::Front || f.has(Bonus::Ghost) || f.actions <= 1 || f.ai_role == AiRole::Warrior || (ab > mp && ab > sh) {
@@ -2267,14 +2293,31 @@ impl Battle {
         }
         let others = self.living(f.team).filter(|o| o.slot.row == Row::Front).count() > 1;
         let alone_mage = self.living(f.team).count() == 1 && f.ai_role == AiRole::Mage;
-        if !others && !alone_mage {
-            return None;
+        let moves = self.moves(id);
+        let mut cands: Vec<(Slot, f64, Slot)> = Vec::new();
+        if others || alone_mage {
+            cands.extend(moves.iter().filter(|m| m.row == Row::Back).map(|&m| {
+                let front = self.at(f.team, Slot::new(Row::Front, m.col)).filter(|&o| o != id);
+                (m, 1000.0 + front.map_or(0, |o| self.fighters[o].hp) as f64, m)
+            }));
         }
-        let cands = self.moves(id).into_iter().filter(|m| m.row == Row::Back).map(|m| {
-            let front = self.at(f.team, Slot::new(Row::Front, m.col)).filter(|&o| o != id);
-            (m, 1000.0 + front.map_or(0, |o| self.fighters[o].hp) as f64, m)
-        });
-        self.pick(cands).map(|(_, m)| m)
+        let cols = self.formation.cols;
+        let enemy_front = |c: u8| self.at(f.team.other(), Slot::new(Row::Front, c)).is_some();
+        if others && f.slot.col == 1 && enemy_front(cols - 1) {
+            cands.push((Slot::new(Row::Front, 0), 1.0, Slot::new(Row::Front, 0)));
+        }
+        if others && f.slot.col + 2 == cols && enemy_front(0) {
+            cands.push((Slot::new(Row::Front, cols - 1), 1.0, Slot::new(Row::Front, cols - 1)));
+        }
+        let (_, to) = self.pick(cands)?;
+        Some(if moves.contains(&to) {
+            Plan::Move(to)
+        } else if let Some(&(t, k)) = self.at(f.team, to).and_then(|t| opts.iter().find(|o| o.0 == t)) {
+            Plan::Act(t, k)
+        } else {
+            // A cell with no code: the action is spent and nothing happens, as a pass.
+            Plan::Pass
+        })
     }
 
     /// The strike power of `a` on `t` (485b3c for a strike): protection, the nature table
@@ -2550,8 +2593,11 @@ impl Battle {
             // Any other back-row unit looks for a cell code that is never written.
             Row::Back => None,
             // Front row: `2·(4 − |d|)` per enemy front unit at d columns and `4 − |d|` per enemy
-            // back unit, negative far away (no floor); the own cell counts too (a pass or a
-            // self-cast), the cells it cannot step to do not.
+            // back unit, negative far away (no floor). Only the cells with a code of their own
+            // keep their score: the cells it can step to, its own cell (a pass or a self-cast)
+            // and, for a friendly caster, an ally's front cell it could heal or bless, in any
+            // column; picking that one casts on the ally (489549 zeroes only the cells of code
+            // 0).
             Row::Front => {
                 let score = |c: u8| {
                     (0..cols)
@@ -2561,8 +2607,18 @@ impl Battle {
                         })
                         .sum::<i32>()
                 };
-                let cells = moves.iter().filter(|m| m.row == Row::Front).map(|&m| (m, Some(m))).chain(std::iter::once((from, None)));
-                self.pick(cells.map(|(s, m)| (s, score(s.col) as f64, m)))
+                let allies = opts.iter().filter(|o| o.0 != id && matches!(o.1, ActionKind::Heal | ActionKind::Bless) && self.fighters[o.0].slot.row == Row::Front);
+                let cells = moves
+                    .iter()
+                    .filter(|m| m.row == Row::Front)
+                    .map(|&m| (m, FrontPick::Move(m)))
+                    .chain(std::iter::once((from, FrontPick::Own)))
+                    .chain(allies.map(|&(t, k)| (self.fighters[t].slot, FrontPick::Cast(t, k))));
+                match self.pick(cells.map(|(s, p)| (s, score(s.col) as f64, p))) {
+                    Some((_, FrontPick::Move(m))) => return Plan::Move(m),
+                    Some((_, FrontPick::Cast(t, k))) => return Plan::Act(t, k),
+                    _ => None,
+                }
             }
             Row::Reserve => {
                 // A mage tends the most wounded reserve unit it can target.

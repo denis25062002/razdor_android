@@ -234,7 +234,9 @@ its last action (48b5ac). It never runs at a turn start.
 - **At the start of the battle** there is no collapse in the battle code. The battle window
   (4d2141) instead fixes the **player's army formation** before the sides are built: if its
   front row is empty, its back row moves into the front row (same columns). The reserve is not
-  moved, and the change stays in the army's formation after the battle. In wide mode the copy
+  moved, and the change stays in the army's formation after the battle. The test reads the
+  army's formation, where the dead and the units that sit out keep cells: one of them in the
+  front row stops the fix. In wide mode the copy
   also carries the back row's blocked end cells (columns 1 and 6) into the formation's front row
   and opens them in the back row; the battle grid rebuilt from the formation (section 6) turns
   any blocked cell into an open one, and the write-back after the battle restores the normal
@@ -343,6 +345,13 @@ Everything here is **code** unless marked.
    MagicPower and its AttackShot. It also needs another own unit in the front row, or to be the
    side's only unit and a mage. Each legal back-row cell scores 1000, plus the HP of the own
    front unit in that column (other columns only). So it hides behind the toughest front unit.
+   With the switch at 4ed390 on (it is), there is also an edge rule, which needs another own
+   front unit: a unit in the second column scores 1 on its side's first front cell when an
+   enemy stands in the last front column, and a unit in the last but one column scores 1 on
+   the last front cell when an enemy stands in the first. A free back-row cell always wins
+   over it; without one, the AI takes that cell's own code: a step when it is free and next
+   to the unit, a heal or blessing on an ally there, else an action spent for nothing.
+   **code** (4864e0, the 4ed390 branch)
 2. **Melee** (row-1 targets, codes 4 and 5):
    - R is the target's return damage on the actor (its melee damage if it is a warrior, its
      shot damage if a shooter, its power if a mage); M is the target's Manevres.
@@ -370,7 +379,11 @@ Everything here is **code** unless marked.
 5. **Moves, only when nothing else scored:**
    - Back-row pure warriors (no AS, no MP) step forward, preferring a column facing an enemy and
      one with a strong own back-row unit behind.
-   - Front-row units shift sideways toward the most enemies.
+   - Front-row units shift sideways toward the most enemies: per front column, `2·(4 − |d|)`
+     for each enemy front unit at d columns and `4 − |d|` for each enemy back unit. Only the
+     cells with a code of their own keep their score: the free cells next to it, its own cell
+     (a pass or a self-cast) and, for a friendly caster, an ally's front cell it may tend, in
+     any column; picking an ally's cell heals or blesses it. **code** (489549)
    - Reserve units come out: warriors to row 1 or 2, others to the nearest back-row cell. A mage
      in the reserve heals wounded reserve units instead.
    - A back-row non-warrior never moves (its branch looks for a code that is never written).
@@ -815,7 +828,10 @@ wrap-up). **code**
    all its units are removed.
 3. The sides are copied back to the armies (4988c0): HP, the per-battle stat blocks, and the
    army grid rebuilt from the battle grid (with the wide-row blocks restored, and units that
-   did not fight placed in free cells, reserve first).
+   did not fight placed in free cells, reserve first). That placement (4988c0) takes the units
+   that sat out, then every unit with HP 0, each in the first free cell of the reserve, then
+   the back row, then the front row, scanning the columns in plain order from the first (not
+   the preferred order of section 6). **code**
 
 **Outcome** (4c50ec). **code**
 - **Defeat** if the player's side has no unit (game-over path).
@@ -849,7 +865,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 15 | Vampirism | Melee and long strike only; Death strikes | **Melee and long strike only**; Death strikes | 8 | Matches |
 | 16 | Into the reserve | Front or back row, one reserve transition per turn | Same | 2 | Matches |
 | 17 | Collapse timing | Only after a death and after the actor's last action | Only after a death and after the actor's last action; never at a turn start | 2 | Matches |
-| 18 | Battle start | At `begin()` (after Razdor's deployment) only the player's back row moves into an empty front row; it persists | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | Matches |
+| 18 | Battle start | At `begin()` (after Razdor's deployment) only the player's back row moves into an empty front row; it persists. The front counts as taken while a unit that does not fight (a corpse, an unpaid unit of an attack) holds a cell there (`Battle::set_bench`) | Only the player's army back row moves into an empty front row, in the army formation (persists) | 2, 9 | Matches |
 | 19 | Reserve collapse | Reserve to row 1, actions 0 | Same | 2 | Matches |
 | 20 | Wide formation | Per-side battle grid: the enemy's has the blocks, the player's none (the screen still offers only the formation's 12 cells); a collapse copies a row's blocks forward and opens the row left | Same, but the player's battle grid has no blocks (4d2233) and a collapse moves the blocks between rows | 6, 2 | Matches (what the screen shows for opened cells is unknown) |
 | 21 | Enemy formation | Auto-arranged every battle (`Battle::auto_arrange`); off-screen both sides. Not written back to the enemy's troops: a beaten army or garrison is gone and a lost battle ends the game, so it shows nowhere | **Auto-arranged** every battle (483b3c) and written back to the army; off-screen both sides | 9, 10 | Matches (write-back: no effect) |
@@ -869,9 +885,9 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
 | 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
-| 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
+| 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors; a front-row caster's fallback may pick an ally's front cell it can tend, in any column); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
-| 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role | Also needs a non-warrior role | 4 | Matches |
+| 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role; the edge rule (score 1 on the first or last front cell) when no back cell is free | Also needs a non-warrior role; the 4ed390 edge rule | 4 | Matches |
 | 41 | AI "killable" (normal level, off-screen) | Reads the own unit with the target's list index (an empty record past the list: HP 0) | Reads the own unit with the target's index (bug) | 4 | Matches |
 | 42 | AI Life scoring | As the code read (486bb9): heal, bless by rows with or without enemy shooters, the curse value with the DS/DB slip on the strike power, the cursed flag | Medium confidence | 4 | Matches the reading |
 | 42a | AI Elemental scoring | Main and alternative per side, cells scanned row by row; front-row haste scaled by hits-to-kill; the ÷10 rule with its exceptions; strike whenever a slow is impossible, slow + strike with a spare action; ×10 with an all-Ghost side; the turn's mean initiative | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | Matches |
@@ -881,7 +897,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 45 | AI target-scoring battle (`ai::simulate`) | Mode 0, no Splash, both sides auto-arranged, the defending player with all his living units | Same engine as the off-screen battle: mode 0, no Splash | 10 | Matches |
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
 | 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units). The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
-| 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
+| 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first, columns in plain order (`Formation::after_battle_slot`) | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
 
 ## Unknowns and open points
 - **Wide-row quirks on screen.** What the screen shows when the player's side uses a cell that is

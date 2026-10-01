@@ -1161,6 +1161,9 @@ impl Game {
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && (attacker != Team::Player || !u.unpaid))).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
+        // The units that stay out still hold their cells in the army's formation.
+        let fighting: Vec<usize> = player.iter().map(|p| p.0).collect();
+        b.set_bench((0..self.squad.len()).filter(|i| !fighting.contains(i)).map(|i| self.squad[i].slot).collect());
         b.set_xp_correction(correction);
         b.set_improved_ai(self.improved_ai);
         // Lasting world spells change the stats of both sides.
@@ -1265,7 +1268,7 @@ impl Game {
         // The army's formation is rebuilt from the battle grid (4988c0): the survivors keep
         // the cells they ended on (a cell outside the formation is lost); those left without
         // one, the units that did not fight first, then the dead, take free cells, reserve
-        // first.
+        // first, columns in plain order (not the preferred order of a new unit).
         let formation = self.content.formation;
         let mut placed = vec![false; self.squad.len()];
         let mut dead = vec![false; self.squad.len()];
@@ -1285,7 +1288,7 @@ impl Game {
         let dead_now = |i: usize| dead[i] || !self.squad[i].alive();
         let rest: Vec<usize> = (0..self.squad.len()).filter(|&i| !placed[i] && !dead_now(i)).chain((0..self.squad.len()).filter(|&i| !placed[i] && dead_now(i))).collect();
         for i in rest {
-            if let Some(s) = formation.new_unit_slot(&taken) {
+            if let Some(s) = formation.after_battle_slot(&taken) {
                 self.squad[i].slot = s;
                 taken.push(s);
             }
@@ -1735,9 +1738,12 @@ mod tests {
         // Those without a cell take free ones, reserve first: the spearman who sat out, then
         // the fallen hero (back at 1 HP).
         let f = g.content.formation;
-        let first_free = f.new_unit_slot(&[Slot::new(crate::rules::formation::Row::Front, 0)]).unwrap();
+        let first_free = f.after_battle_slot(&[Slot::new(crate::rules::formation::Row::Front, 0)]).unwrap();
+        // Columns in plain order: the first open reserve cell, not the preferred column.
+        let reserve = crate::rules::formation::Row::Reserve;
+        assert_eq!(first_free, if f.cols == 6 { Slot::new(reserve, 2) } else { Slot::new(reserve, 0) });
         assert_eq!(g.squad[2].slot, first_free);
-        assert_eq!(g.squad[0].slot, f.new_unit_slot(&[Slot::new(crate::rules::formation::Row::Front, 0), first_free]).unwrap());
+        assert_eq!(g.squad[0].slot, f.after_battle_slot(&[Slot::new(crate::rules::formation::Row::Front, 0), first_free]).unwrap());
         assert_eq!(g.squad[0].hp, 1);
     }
 

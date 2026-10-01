@@ -141,11 +141,20 @@ impl Formation {
         out.into_iter().map(|c| c as u8).collect()
     }
 
-    /// Where the original puts a unit added to an army, or one left without a cell after a
-    /// battle (495ce0, 495fac, 4988c0): the first free cell of the reserve, then the back row,
-    /// then the front row, columns in the preferred order, whatever the unit's role.
+    /// Where the original puts a unit added to an army (495ce0, 495fac): the first free cell
+    /// of the reserve, then the back row, then the front row, columns in the preferred order,
+    /// whatever the unit's role.
     pub fn new_unit_slot(&self, occupied: &[Slot]) -> Option<Slot> {
-        let order = self.col_order();
+        self.first_free(occupied, &self.col_order())
+    }
+
+    /// Where the battle's write-back puts a unit left without a cell (4988c0): the same rows,
+    /// reserve first, but the columns in plain order from the first, not the preferred one.
+    pub fn after_battle_slot(&self, occupied: &[Slot]) -> Option<Slot> {
+        self.first_free(occupied, &(0..self.cols).collect::<Vec<_>>())
+    }
+
+    fn first_free(&self, occupied: &[Slot], order: &[u8]) -> Option<Slot> {
         [Row::Reserve, Row::Back, Row::Front]
             .into_iter()
             .filter(|r| self.rows().contains(r))
@@ -234,6 +243,19 @@ mod tests {
         assert_eq!(order[6], Slot::new(Row::Front, 3));
         let v = Formation::VANILLA;
         assert_eq!(v.new_unit_slot(&[]), Some(Slot::new(Row::Reserve, 2)), "4 columns: reserve column 3 first");
+    }
+
+    #[test]
+    fn the_battle_write_back_fills_columns_in_plain_order() {
+        // 4988c0: reserve, back, front, each from its first column (1-based 1, 2, 3, 4).
+        let v = Formation::VANILLA;
+        assert_eq!(v.after_battle_slot(&[]), Some(Slot::new(Row::Reserve, 0)));
+        let full: Vec<Slot> = (0..4).map(|c| Slot::new(Row::Reserve, c)).collect();
+        assert_eq!(v.after_battle_slot(&full), Some(Slot::new(Row::Back, 0)));
+        // 6 columns: only the formation's cells, reserve columns 3 and 4 first.
+        let w = Formation::WIDE;
+        assert_eq!(w.after_battle_slot(&[]), Some(Slot::new(Row::Reserve, 2)));
+        assert_eq!(w.after_battle_slot(&[Slot::new(Row::Reserve, 2), Slot::new(Row::Reserve, 3)]), Some(Slot::new(Row::Back, 1)));
     }
 
     #[test]

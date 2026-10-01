@@ -2079,3 +2079,55 @@ fn a_caster_without_a_school_is_not_reduced_and_curses_for_nothing() {
     assert_eq!((hit.kind, hit.buff), (ActionKind::Curse, Buff::default()));
     assert!(bt.fighters[2].cursed, "only the flag");
 }
+
+#[test]
+fn row38_a_front_row_caster_with_nothing_to_do_tends_the_best_placed_ally() {
+    // 489549 zeroes only the front cells of code 0: an ally's cell a friendly caster could
+    // tend keeps its score, in any column. The Death mage scores no heal (a living ally) and
+    // no blessing (a mage), so the moves decide: the ally facing the enemy (2·4) beats the
+    // step to column 3 (2·3) and its own cell (2·2), and it is blessed.
+    let priest = mage(150, 30, MagicSchool::Death, MagicDirection::ToAlly);
+    let mut bt = with(vec![priest], &[(18, f(4))], &[(150, f(2)), (13, f(4))]);
+    turn_of(&mut bt, 1);
+    match bt.ai_step() {
+        Some(Step::Act { actor: 1, hit }) => assert_eq!((hit.target, hit.kind), (2, ActionKind::Bless)),
+        other => panic!("expected a blessing on the ally, got {other:?}"),
+    }
+}
+
+#[test]
+fn row40_with_no_cell_behind_the_retreat_takes_the_edge_rule() {
+    // A shooter in the second column, another own unit in front, the enemy in the last front
+    // column and the back row full: the retreat scores 1 on the first column's front cell
+    // (4ed390 on), and as it is free and next to the unit, the unit steps there instead of
+    // shooting.
+    let archer = acts(151, 2, shooter(151, 20));
+    let c = content_with(vec![archer], Formation::VANILLA);
+    let mut bt = battle_in(&c, &[(18, f(3))], &[(151, f(1)), (18, f(2)), (18, b(0)), (18, b(1)), (18, b(2))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_step(), Some(Step::Move { actor: 1, from: f(1), to: f(0) }));
+    // A free cell behind still wins (1000 against 1).
+    let mut bt = battle_in(&c, &[(18, f(3))], &[(151, f(1)), (18, f(2)), (18, b(0)), (18, b(2))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_step(), Some(Step::Move { actor: 1, from: f(1), to: b(1) }));
+    // With the edge cell taken by an ally it cannot tend, the action is spent for nothing.
+    let mut bt = battle_in(&c, &[(18, f(3))], &[(151, f(1)), (18, f(2)), (18, f(0)), (18, b(0)), (18, b(1)), (18, b(2))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.ai_step(), Some(Step::Wait { actor: 1 }));
+}
+
+#[test]
+fn row18_a_corpse_in_the_front_row_stops_the_start_fix() {
+    // The fix reads the army's formation (4d2141), where the dead and the units sitting out
+    // keep their cells: with one of them in front, the back row stays where it is.
+    let c = content_with(vec![], Formation::WIDE);
+    let mut bt = prepared(&c, &[(11, b(2)), (11, b(3))], &[(18, f(2))], Team::Player);
+    bt.set_bench(vec![f(2)]);
+    bt.begin();
+    assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (b(2), b(3)));
+    // One behind does not count.
+    let mut bt = prepared(&c, &[(11, b(2)), (11, b(3))], &[(18, f(2))], Team::Player);
+    bt.set_bench(vec![r(2)]);
+    bt.begin();
+    assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (f(2), f(3)));
+}

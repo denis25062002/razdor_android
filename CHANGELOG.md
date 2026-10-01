@@ -66,6 +66,11 @@ old id, and their versions give both.
 - The battle AI moves as the original's: units in the reserve only move (or tend the
   reserve), a front-row unit may keep its cell when that is where it scores best, and a unit
   with nothing to do casts on itself when its own cell offers a spell.
+- A front-row caster of the battle AI with nothing better to do may heal or bless an ally in
+  the front row, in any column, when that ally's cell scores best among its moves. A unit
+  that wants to step back but finds no free cell behind it may instead step to the edge of
+  the front row (or spend the action) when an enemy stands at the far edge, as in the
+  original.
 - The enemy is arranged anew for every battle as the original does it: its strongest front
   fighter in front, its shooters and mages behind, the rest by strength. Battles between AI
   armies arrange both sides, and the AI's practice battles play by the same rules (no
@@ -74,6 +79,9 @@ old id, and their versions give both.
   meets his whole army.
 - After a battle the army keeps the cells its units ended on; units that did not fight, then
   the fallen, take free cells from the reserve forward.
+- Those units fill each row from its first column, as the original's write-back does, not
+  from the centre as a new unit does. A fallen or unpaid unit standing in the front row
+  keeps the back row from stepping up when the next battle starts.
 - Before every battle the original plays it once in secret, the AI on both sides, and the
   losses it predicts feed the battle XP; Razdor does the same now, so the XP pool follows
   the original's formula with the predicted loss and the worst turn's loss.
