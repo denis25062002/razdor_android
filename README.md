@@ -126,6 +126,16 @@ folder, so `Razdor.exe` (Windows), `razdor` (Linux) or `razdor-macos` (macOS) co
 bottle); the folder remembered from an earlier run; a search of `~/Games`, `~/Downloads` and
 the home folder. Made for the Community Update 1.2 (game 1.8.1).
 
+**Mods.** Supported: the **Evolution** mod (checked with version 9.0 on the Community
+Update: 161 units, its upgrade tree, items, spells and maps). A Discord Times mod is a
+changed install (its own `Rus_*.ini` files, art sheets and maps), so point `RAZDOR_DT_DIR`
+at a copy of the game with the mod in it. Razdor reads the ini files as leniently as the
+original: a value it cannot read counts as absent, an entry without a usable `GlobalIndex`
+(or an item without a `Type`) is skipped, and each case is written to `razdor.log` instead
+of refusing the install. Mods that patch `DiscordTimes.exe` itself are not supported. The
+checks `cargo test` runs against your install expect the plain Community Update, so many of
+them fail on a modded one.
+
 `scripts/dist.sh` builds both programs into `dist/`: `razdor` for Linux and `Razdor.exe` for
 Windows (x86_64, one file with no DLLs of its own; cross-built with
 [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), see the script), with their SHA-256 in `dist/SHA256SUMS`.

@@ -101,17 +101,24 @@ pub fn list_maps(dir: &Path) -> Result<Vec<MapEntry>, DtError> {
 
 impl DtInstall {
     /// Load the unit, artefact and spell definitions and the global options from `dir`,
-    /// and list its maps.
+    /// and list its maps. Only a missing or unreadable file fails; values the readers had to
+    /// ignore or entries they skipped (common in mods) are written to the log.
     pub fn load(dir: &Path) -> Result<DtInstall, DtError> {
-        let mut options = GlobalOptions::from_ini(&read_ini(dir, GLOBAL_FILE)?)?;
+        fn logged<T>(file: &str, loaded: data::Loaded<T>) -> T {
+            for w in &loaded.warnings {
+                crate::diag!("install: {file}: {w}");
+            }
+            loaded.value
+        }
+        let mut options = logged(GLOBAL_FILE, GlobalOptions::from_ini(&read_ini(dir, GLOBAL_FILE)?));
         if impossible_difficulty(dir) {
             options.difficulty_factor = 100;
         }
         Ok(DtInstall {
             dir: dir.to_path_buf(),
-            units: data::parse_units(&read_ini(dir, UNITS_FILE)?)?,
-            artefacts: data::parse_artefacts(&read_ini(dir, ARTEFACTS_FILE)?)?,
-            spells: data::parse_spells(&read_ini(dir, SPELLS_FILE)?)?,
+            units: logged(UNITS_FILE, data::parse_units(&read_ini(dir, UNITS_FILE)?)),
+            artefacts: logged(ARTEFACTS_FILE, data::parse_artefacts(&read_ini(dir, ARTEFACTS_FILE)?)),
+            spells: logged(SPELLS_FILE, data::parse_spells(&read_ini(dir, SPELLS_FILE)?)),
             options,
             maps: list_maps(dir)?,
         })

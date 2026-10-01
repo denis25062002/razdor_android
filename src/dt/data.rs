@@ -4,9 +4,13 @@
 //! Field meanings are documented in `docs/reference/mechanics.md` (sections 1.1, 3.2, 4 and
 //! the `_Global.ini` appendix). Keys this module does not know are kept in each definition's
 //! `extra` map, so community additions never make loading fail.
+//!
+//! Mods edit these files by hand, and the original reads them leniently: a value it cannot
+//! read counts as absent. So does this module: such a value takes the key's default, an entry
+//! without a usable `GlobalIndex` (or an artefact without a `Type`) is skipped, and each case
+//! is reported as a warning in [`Loaded::warnings`] instead of failing the whole file.
 
 use super::ini::{Ini, Section};
-use super::DtError;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
@@ -464,17 +468,48 @@ impl SpellTarget {
 }
 
 // ------------------------------------------------------------------------------------------
-// Field reader: tracks which keys were consumed, the rest becomes `extra`.
+// Loaded values and the field reader
 // ------------------------------------------------------------------------------------------
 
+/// A file's definitions plus what had to be ignored or skipped to read them.
+#[derive(Clone, Debug)]
+pub struct Loaded<T> {
+    pub value: T,
+    /// One line per ignored value or skipped entry (`[section] Key=value: …`).
+    pub warnings: Vec<String>,
+}
+
+impl<T> Loaded<T> {
+    /// The value, or every warning when there was any: for our own data, which must be clean.
+    pub fn strict(self) -> Result<T, String> {
+        if self.warnings.is_empty() {
+            Ok(self.value)
+        } else {
+            Err(self.warnings.join("; "))
+        }
+    }
+}
+
+/// Tracks which keys were consumed (the rest becomes `extra`) and collects warnings for
+/// values that could not be read; those read as absent.
 struct Fields<'a> {
     sec: &'a Section,
     used: RefCell<Vec<String>>,
+    warnings: RefCell<Vec<String>>,
 }
 
 impl<'a> Fields<'a> {
     fn new(sec: &'a Section) -> Self {
-        Fields { sec, used: RefCell::new(Vec::new()) }
+        Fields { sec, used: RefCell::new(Vec::new()), warnings: RefCell::new(Vec::new()) }
+    }
+
+    fn warn(&self, key: &str, value: &str, what: &str) {
+        self.warnings.borrow_mut().push(format!("[{}] {key}={value}: {what}", self.sec.name));
+    }
+
+    /// Hand the collected warnings over to `out`.
+    fn warnings_into(&self, out: &mut Vec<String>) {
+        out.append(&mut self.warnings.borrow_mut());
     }
 
     fn mark(&self, key: &str) {
@@ -490,37 +525,62 @@ impl<'a> Fields<'a> {
         self.str(key).unwrap_or_default().to_string()
     }
 
-    fn opt_int(&self, key: &str) -> Result<Option<i32>, DtError> {
+    /// An integer; `None` when absent, empty or not a number (with a warning).
+    fn opt_int(&self, key: &str) -> Option<i32> {
         self.mark(key);
-        self.sec.get_int(key)
+        self.sec.get_int(key).unwrap_or_else(|_| {
+            self.warn(key, self.sec.get(key).unwrap_or(""), "not a number, ignored");
+            None
+        })
     }
 
-    fn int(&self, key: &str) -> Result<i32, DtError> {
-        Ok(self.opt_int(key)?.unwrap_or(0))
+    fn int(&self, key: &str) -> i32 {
+        self.opt_int(key).unwrap_or(0)
     }
 
-    fn required_int(&self, key: &str) -> Result<i32, DtError> {
-        self.opt_int(key)?
-            .ok_or_else(|| DtError::Missing { section: self.sec.name.clone(), key: key.to_string() })
-    }
-
-    fn enum_opt<T>(&self, key: &str, parse: impl Fn(&str) -> Option<T>) -> Result<Option<T>, DtError> {
-        match self.str(key) {
-            None => Ok(None),
-            Some(v) => parse(v).map(Some).ok_or_else(|| self.sec.bad_value(key, v)),
+    /// A comma-separated list of exactly `N` integers; `None` when absent, empty or
+    /// malformed (with a warning).
+    fn int_array<const N: usize>(&self, key: &str) -> Option<[i32; N]> {
+        self.mark(key);
+        let read = self.sec.get_int_list(key).ok().map(|list| list.map(<[i32; N]>::try_from));
+        match read {
+            Some(None) => None,
+            Some(Some(Ok(a))) => Some(a),
+            Some(Some(Err(_))) | None => {
+                self.warn(key, self.sec.get(key).unwrap_or(""), &format!("not {N} numbers, ignored"));
+                None
+            }
         }
     }
 
-    /// All `<prefix><Stat>` keys with a non-empty value.
-    fn mods(&self, prefix: &str) -> Result<StatMods, DtError> {
+    /// An enum value; `None` when absent, empty or unknown (with a warning).
+    fn enum_opt<T>(&self, key: &str, parse: impl Fn(&str) -> Option<T>) -> Option<T> {
+        let v = self.str(key)?;
+        let parsed = parse(v);
+        if parsed.is_none() {
+            self.warn(key, v, "unknown value, ignored");
+        }
+        parsed
+    }
+
+    /// All `<prefix><Stat>` keys with a readable value.
+    fn mods(&self, prefix: &str) -> StatMods {
         let mut out = StatMods::new();
         for stat in Stat::ALL {
             let key = format!("{prefix}{}", stat.key());
-            if let Some(v) = self.opt_int(&key)? {
+            if let Some(v) = self.opt_int(&key) {
                 out.insert(stat, v);
             }
         }
-        Ok(out)
+        out
+    }
+
+    /// `GlobalIndex` as an id; an error (the entry gets skipped) when it is empty, not a
+    /// number or negative.
+    fn global_index(&self) -> Result<u32, String> {
+        self.mark("GlobalIndex");
+        let v = self.sec.get("GlobalIndex").unwrap_or("");
+        v.parse().map_err(|_| format!("[{}] GlobalIndex={v}: not an id, entry skipped", self.sec.name))
     }
 
     /// Entries not consumed by the typed fields, empty values dropped.
@@ -609,12 +669,14 @@ pub struct UnitDef {
 }
 
 impl UnitDef {
-    fn from_section(sec: &Section) -> Result<UnitDef, DtError> {
+    /// The unit of `sec`, or `None` (with a warning) when it has no usable `GlobalIndex`.
+    fn from_section(sec: &Section, warnings: &mut Vec<String>) -> Option<UnitDef> {
         let f = Fields::new(sec);
+        let id = f.global_index().map_err(|w| warnings.push(w)).ok()?;
         let mut upgrades = Vec::new();
         for n in 1..=3u8 {
             let name_key = format!("NextUnit{n}");
-            let level = f.int(&format!("NextUnit{n}Level"))?;
+            let level = f.int(&format!("NextUnit{n}Level"));
             if let Some(target) = f.str(&name_key) {
                 upgrades.push(Upgrade { target_name: target.to_string(), target: None, level, slot: n });
             }
@@ -624,43 +686,43 @@ impl UnitDef {
                 only.slot = 2;
             }
         }
-        let id = f.required_int("GlobalIndex")?;
         let unit = UnitDef {
-            id: u32::try_from(id).map_err(|_| sec.bad_value("GlobalIndex", &id.to_string()))?,
+            id,
             name: f.string("Name"),
             description: f.string("Descript"),
-            icon_index: f.int("IconIndex")?,
-            cost: f.int("Cost")?,
-            cost_multiplier: f.int("CostMultipler")?,
-            cost_gold_div: f.int("CostGoldDiv")?,
-            start_experience: f.int("StartExpirience")?,
-            level_multiplier: f.int("LevelMultipler")?,
-            hits: f.int("Hits")?,
-            attack_blow: f.int("AttackBlow")?,
-            attack_shot: f.int("AttackShot")?,
-            magic_power: f.int("MagicPower")?,
-            defence_blow: f.int("DefenceBlow")?,
-            defence_shot: f.int("DefenceShot")?,
-            protect_life: f.int("ProtectLife")?,
-            protect_death: f.int("ProtectDeath")?,
-            protect_elemental: f.int("ProtectElemental")?,
-            initiative: f.int("Initiative")?,
-            manevres: f.int("Manevres")?,
-            regen: f.int("Regen")?,
-            vampirism: f.int("Vampirizm")?,
-            magic: f.enum_opt("Magic", MagicSchool::parse)?,
-            magic_direction: f.enum_opt("MagicDirection", MagicDirection::parse)?,
-            nature: f.enum_opt("Nature", Nature::parse)?.unwrap_or_default(),
+            icon_index: f.int("IconIndex"),
+            cost: f.int("Cost"),
+            cost_multiplier: f.int("CostMultipler"),
+            cost_gold_div: f.int("CostGoldDiv"),
+            start_experience: f.int("StartExpirience"),
+            level_multiplier: f.int("LevelMultipler"),
+            hits: f.int("Hits"),
+            attack_blow: f.int("AttackBlow"),
+            attack_shot: f.int("AttackShot"),
+            magic_power: f.int("MagicPower"),
+            defence_blow: f.int("DefenceBlow"),
+            defence_shot: f.int("DefenceShot"),
+            protect_life: f.int("ProtectLife"),
+            protect_death: f.int("ProtectDeath"),
+            protect_elemental: f.int("ProtectElemental"),
+            initiative: f.int("Initiative"),
+            manevres: f.int("Manevres"),
+            regen: f.int("Regen"),
+            vampirism: f.int("Vampirizm"),
+            magic: f.enum_opt("Magic", MagicSchool::parse),
+            magic_direction: f.enum_opt("MagicDirection", MagicDirection::parse),
+            nature: f.enum_opt("Nature", Nature::parse).unwrap_or_default(),
             bonus: f.str("Bonus").map(Bonus::parse),
-            surrender: f.int("Surrender")?,
+            surrender: f.int("Surrender"),
             upgrades,
-            level_up: f.mods("d-")?,
-            evasion: f.opt_int("Evasion")?,
-            min_magic_power: f.opt_int("MinMagicPower")?,
-            mana_drain: f.opt_int("ManaDrain")?,
+            level_up: f.mods("d-"),
+            evasion: f.opt_int("Evasion"),
+            min_magic_power: f.opt_int("MinMagicPower"),
+            mana_drain: f.opt_int("ManaDrain"),
             extra: BTreeMap::new(),
         };
-        Ok(UnitDef { extra: f.extra(), ..unit })
+        f.warnings_into(warnings);
+        Some(UnitDef { extra: f.extra(), ..unit })
     }
 
     /// The unit's value of a base stat.
@@ -684,20 +746,24 @@ impl UnitDef {
 }
 
 /// All units of `Rus_Units.ini`, in file order, with upgrade targets resolved by name.
-pub fn parse_units(ini: &Ini) -> Result<Vec<UnitDef>, DtError> {
-    let mut units = ini
+pub fn parse_units(ini: &Ini) -> Loaded<Vec<UnitDef>> {
+    let mut warnings = Vec::new();
+    let mut units: Vec<UnitDef> = ini
         .sections
         .iter()
         .filter(|s| s.get("GlobalIndex").is_some())
-        .map(UnitDef::from_section)
-        .collect::<Result<Vec<_>, _>>()?;
+        .filter_map(|s| UnitDef::from_section(s, &mut warnings))
+        .collect();
     let by_name: BTreeMap<String, u32> = units.iter().map(|u| (u.name.clone(), u.id)).collect();
     for u in &mut units {
         for up in &mut u.upgrades {
             up.target = by_name.get(&up.target_name).copied();
+            if up.target.is_none() {
+                warnings.push(format!("{} (GlobalIndex {}): upgrade to {}: no unit of that name", u.name, u.id, up.target_name));
+            }
         }
     }
-    Ok(units)
+    Loaded { value: units, warnings }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -730,27 +796,31 @@ pub struct ArtefactDef {
 }
 
 impl ArtefactDef {
-    fn from_section(sec: &Section) -> Result<ArtefactDef, DtError> {
+    /// The artefact of `sec`, or `None` (with a warning) when it has no usable
+    /// `GlobalIndex` or `Type`.
+    fn from_section(sec: &Section, warnings: &mut Vec<String>) -> Option<ArtefactDef> {
         let f = Fields::new(sec);
-        let id = f.required_int("GlobalIndex")?;
-        let kind = f
-            .enum_opt("Type", ArtefactType::parse)?
-            .ok_or_else(|| DtError::Missing { section: sec.name.clone(), key: "Type".into() })?;
+        let id = f.global_index().map_err(|w| warnings.push(w)).ok()?;
+        let Some(kind) = f.str("Type").and_then(ArtefactType::parse) else {
+            warnings.push(format!("[{}] Type={}: not an item type, entry skipped", sec.name, sec.get("Type").unwrap_or("")));
+            return None;
+        };
         let def = ArtefactDef {
-            id: u32::try_from(id).map_err(|_| sec.bad_value("GlobalIndex", &id.to_string()))?,
+            id,
             name: f.string("Name"),
             description: f.string("Descript"),
             icon: f.string("Icon"),
-            cost: f.int("Cost")?,
+            cost: f.int("Cost"),
             kind,
             bonus: f.str("Bonus").map(Bonus::parse),
-            magic: f.enum_opt("Magic", MagicSchool::parse)?,
-            add: f.mods("d-")?,
-            percent: f.mods("p-")?,
-            fixed: f.mods("f-")?,
+            magic: f.enum_opt("Magic", MagicSchool::parse),
+            add: f.mods("d-"),
+            percent: f.mods("p-"),
+            fixed: f.mods("f-"),
             extra: BTreeMap::new(),
         };
-        Ok(ArtefactDef { extra: f.extra(), ..def })
+        f.warnings_into(warnings);
+        Some(ArtefactDef { extra: f.extra(), ..def })
     }
 
     /// A personal item (negative price): cannot be sold or taken away.
@@ -760,12 +830,15 @@ impl ArtefactDef {
 }
 
 /// All artefacts of `Rus_Artefacts.ini`, in file order.
-pub fn parse_artefacts(ini: &Ini) -> Result<Vec<ArtefactDef>, DtError> {
-    ini.sections
+pub fn parse_artefacts(ini: &Ini) -> Loaded<Vec<ArtefactDef>> {
+    let mut warnings = Vec::new();
+    let value = ini
+        .sections
         .iter()
         .filter(|s| s.get("GlobalIndex").is_some())
-        .map(ArtefactDef::from_section)
-        .collect()
+        .filter_map(|s| ArtefactDef::from_section(s, &mut warnings))
+        .collect();
+    Loaded { value, warnings }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -788,7 +861,9 @@ impl SpellEffect {
     fn parse(s: &str) -> Option<SpellEffect> {
         let parts: Vec<&str> = s.split(',').map(str::trim).collect();
         let [file, rest @ ..] = parts.as_slice() else { return None };
-        let n: Vec<i32> = rest.iter().map(|x| x.parse().ok()).collect::<Option<_>>()?;
+        // A blank number counts as 0: the Evolution mod leaves the start time empty
+        // (`Effect2=S-Light-Back,255,0,0,2000,47,1500,`) and the original plays it.
+        let n: Vec<i32> = rest.iter().map(|x| if x.is_empty() { Some(0) } else { x.parse().ok() }).collect::<Option<_>>()?;
         let [r, g, b, duration_ms, y_offset, scale_milli, start_ms] = n.as_slice().try_into().ok()?;
         Some(SpellEffect { file: file.to_string(), rgb: [r, g, b], duration_ms, y_offset, scale_milli, start_ms })
     }
@@ -835,43 +910,42 @@ pub struct SpellDef {
 }
 
 impl SpellDef {
-    fn from_section(sec: &Section, id: u32) -> Result<SpellDef, DtError> {
+    fn from_section(sec: &Section, id: u32, warnings: &mut Vec<String>) -> SpellDef {
         let f = Fields::new(sec);
         let mut icons: [SpellIcon; 3] = Default::default();
         let mut effects: [Option<SpellEffect>; 3] = Default::default();
         for i in 0..3 {
             let n = i + 1;
             icons[i].image = f.str(&format!("Icon{n}")).map(str::to_string);
-            let color_key = format!("ColorC{n}");
-            if let Some(list) = sec.get_int_list(&color_key)? {
-                f.mark(&color_key);
-                let rgb: [i32; 3] = list.try_into().map_err(|_| sec.bad_value(&color_key, sec.get(&color_key).unwrap_or("")))?;
-                icons[i].tint = Some(rgb);
-            }
+            icons[i].tint = f.int_array(&format!("ColorC{n}"));
             let effect_key = format!("Effect{n}");
             if let Some(v) = f.str(&effect_key) {
-                effects[i] = Some(SpellEffect::parse(v).ok_or_else(|| sec.bad_value(&effect_key, v))?);
+                effects[i] = SpellEffect::parse(v);
+                if effects[i].is_none() {
+                    f.warn(&effect_key, v, "not an effect, ignored");
+                }
             }
         }
         let spell = SpellDef {
             id,
             name: f.string("Name"),
-            cost_gold: f.int("CostGold")?,
-            cost_mana: f.int("CostMana")?,
-            school: f.enum_opt("Type", MagicSchool::parse)?,
-            time_work: f.opt_int("TimeWork")?,
-            time_cast: f.opt_int("TimeCast")?,
-            target: f.enum_opt("Target", SpellTarget::parse)?,
+            cost_gold: f.int("CostGold"),
+            cost_mana: f.int("CostMana"),
+            school: f.enum_opt("Type", MagicSchool::parse),
+            time_work: f.opt_int("TimeWork"),
+            time_cast: f.opt_int("TimeCast"),
+            target: f.enum_opt("Target", SpellTarget::parse),
             icons,
             effects,
-            delta_fixed_hits: f.opt_int("DeltaFixedHits")?,
-            delta_percent_hits: f.opt_int("DeltaPercentHits")?,
-            add: f.mods("d-")?,
-            percent: f.mods("p-")?,
-            life_lose_percent: f.opt_int("p-LifeLose")?,
+            delta_fixed_hits: f.opt_int("DeltaFixedHits"),
+            delta_percent_hits: f.opt_int("DeltaPercentHits"),
+            add: f.mods("d-"),
+            percent: f.mods("p-"),
+            life_lose_percent: f.opt_int("p-LifeLose"),
             extra: BTreeMap::new(),
         };
-        Ok(SpellDef { extra: f.extra(), ..spell })
+        f.warnings_into(warnings);
+        SpellDef { extra: f.extra(), ..spell }
     }
 }
 
@@ -887,7 +961,7 @@ fn is_template(sec: &Section) -> bool {
 
 /// All spells of `Rus_Spells.ini`. The id is the 1-based position among spell sections;
 /// `[MapEditorSpecialOptions]` and the trailing empty template section are skipped.
-pub fn parse_spells(ini: &Ini) -> Result<Vec<SpellDef>, DtError> {
+pub fn parse_spells(ini: &Ini) -> Loaded<Vec<SpellDef>> {
     let mut secs: Vec<&Section> = ini
         .sections
         .iter()
@@ -896,7 +970,9 @@ pub fn parse_spells(ini: &Ini) -> Result<Vec<SpellDef>, DtError> {
     while secs.last().is_some_and(|s| is_template(s)) {
         secs.pop();
     }
-    secs.iter().enumerate().map(|(i, s)| SpellDef::from_section(s, i as u32 + 1)).collect()
+    let mut warnings = Vec::new();
+    let value = secs.iter().enumerate().map(|(i, s)| SpellDef::from_section(s, i as u32 + 1, &mut warnings)).collect();
+    Loaded { value, warnings }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1049,89 +1125,92 @@ impl Default for GlobalOptions {
 }
 
 impl GlobalOptions {
-    /// Read `_Global.ini`. Missing keys keep their vanilla defaults.
-    pub fn from_ini(ini: &Ini) -> Result<GlobalOptions, DtError> {
+    /// Read `_Global.ini`. Missing keys, and values that cannot be read, keep their vanilla
+    /// defaults.
+    pub fn from_ini(ini: &Ini) -> Loaded<GlobalOptions> {
         let mut o = GlobalOptions::default();
+        let mut warnings = Vec::new();
         if let Some(sec) = ini.section("Costs") {
-            o.ship_cost = sec.int_or("ShipCost", o.ship_cost)?;
+            let f = Fields::new(sec);
+            o.ship_cost = f.opt_int("ShipCost").unwrap_or(o.ship_cost);
+            f.warnings_into(&mut warnings);
         }
         if let Some(sec) = ini.section("AIArmyGeneration") {
-            for (k, _) in &sec.entries {
-                let ids = sec.get_int_list(k)?.unwrap_or_default();
-                let ids = ids.into_iter().map(|i| u32::try_from(i).map_err(|_| sec.bad_value(k, &i.to_string())));
-                o.army_generation.push((k.clone(), ids.collect::<Result<_, _>>()?));
+            for (k, v) in &sec.entries {
+                let mut ids = Vec::new();
+                for x in v.split(',').map(str::trim).filter(|x| !x.is_empty()) {
+                    match x.parse() {
+                        Ok(id) => ids.push(id),
+                        Err(_) => warnings.push(format!("[{}] {k}={v}: {x} is not a unit id, ignored", sec.name)),
+                    }
+                }
+                o.army_generation.push((k.clone(), ids));
             }
         }
-        let Some(sec) = ini.section("GlobalOptions") else { return Ok(o) };
+        let Some(sec) = ini.section("GlobalOptions") else { return Loaded { value: o, warnings } };
         let f = Fields::new(sec);
-        let set = |v: &mut i32, key: &str| -> Result<(), DtError> {
-            if let Some(x) = f.opt_int(key)? {
+        let set = |v: &mut i32, key: &str| {
+            if let Some(x) = f.opt_int(key) {
                 *v = x;
             }
-            Ok(())
         };
-        set(&mut o.wizard_main_spell, "WizardMainSpell")?;
-        set(&mut o.bless_main_spell, "BlessMainSpell")?;
-        set(&mut o.bless_next_spell, "BlessNextSpell")?;
-        set(&mut o.curse_main_spell, "CurseMainSpell")?;
-        set(&mut o.curse_next_spell, "CurseNextSpell")?;
-        set(&mut o.dec_spell_life, "DecSpellLife")?;
-        set(&mut o.dec_spell_death, "DecSpellDeath")?;
-        set(&mut o.dec_spell_elemental, "DecSpellElemental")?;
-        set(&mut o.min_spell_life, "MinSpellLife")?;
-        set(&mut o.min_spell_death, "MinSpellDeath")?;
-        set(&mut o.min_spell_elemental, "MinSpellElemental")?;
-        set(&mut o.crazy_ai, "CrazyAI")?;
-        set(&mut o.row2_def, "Row2Def")?;
-        set(&mut o.battle_end_turn, "BattleEndTurn")?;
-        set(&mut o.zero_density, "ZeroDensity")?;
-        set(&mut o.healing_const, "HealingConst")?;
-        set(&mut o.healing_time, "HealingTime")?;
-        set(&mut o.resurect_const, "ResurectConst")?;
-        set(&mut o.max_time_resurection, "MaxTimeResurection")?;
-        set(&mut o.need_upkeep_day, "NeedUpkeepDay")?;
-        set(&mut o.max_time_not_upkeep, "MaxTimeNotUpkeep")?;
-        set(&mut o.victory_gold_div, "VictoryGoldDiv")?;
-        set(&mut o.min_victory_gold, "MinVictoryGold")?;
-        set(&mut o.cost_recrut_div, "CostRecrutDiv")?;
-        set(&mut o.cost_mercenary_div, "CostMercenaryDiv")?;
-        set(&mut o.max_day_count_for_new_unit, "MaxDayCountForNewUnit")?;
-        set(&mut o.garrison_auto_heal, "GarrisonAutoHeal")?;
-        set(&mut o.shot_weapon_range, "ShotWeaponRange")?;
+        set(&mut o.wizard_main_spell, "WizardMainSpell");
+        set(&mut o.bless_main_spell, "BlessMainSpell");
+        set(&mut o.bless_next_spell, "BlessNextSpell");
+        set(&mut o.curse_main_spell, "CurseMainSpell");
+        set(&mut o.curse_next_spell, "CurseNextSpell");
+        set(&mut o.dec_spell_life, "DecSpellLife");
+        set(&mut o.dec_spell_death, "DecSpellDeath");
+        set(&mut o.dec_spell_elemental, "DecSpellElemental");
+        set(&mut o.min_spell_life, "MinSpellLife");
+        set(&mut o.min_spell_death, "MinSpellDeath");
+        set(&mut o.min_spell_elemental, "MinSpellElemental");
+        set(&mut o.crazy_ai, "CrazyAI");
+        set(&mut o.row2_def, "Row2Def");
+        set(&mut o.battle_end_turn, "BattleEndTurn");
+        set(&mut o.zero_density, "ZeroDensity");
+        set(&mut o.healing_const, "HealingConst");
+        set(&mut o.healing_time, "HealingTime");
+        set(&mut o.resurect_const, "ResurectConst");
+        set(&mut o.max_time_resurection, "MaxTimeResurection");
+        set(&mut o.need_upkeep_day, "NeedUpkeepDay");
+        set(&mut o.max_time_not_upkeep, "MaxTimeNotUpkeep");
+        set(&mut o.victory_gold_div, "VictoryGoldDiv");
+        set(&mut o.min_victory_gold, "MinVictoryGold");
+        set(&mut o.cost_recrut_div, "CostRecrutDiv");
+        set(&mut o.cost_mercenary_div, "CostMercenaryDiv");
+        set(&mut o.max_day_count_for_new_unit, "MaxDayCountForNewUnit");
+        set(&mut o.garrison_auto_heal, "GarrisonAutoHeal");
+        set(&mut o.shot_weapon_range, "ShotWeaponRange");
         for (i, d) in o.ai_distance.iter_mut().enumerate() {
-            set(d, &format!("AIDistance{i}"))?;
+            set(d, &format!("AIDistance{i}"));
         }
-        set(&mut o.ai_get_path_distance, "AIGetPathDistance")?;
-        set(&mut o.main_exp_correction, "MainExpCorrection")?;
-        set(&mut o.exp_correction, "ExpCorrection")?;
-        set(&mut o.ai_experience_percent, "AIExpiriencePercent")?;
-        set(&mut o.hero_experience_modificator, "HeroExpirienceModificator")?;
-        set(&mut o.item_sale_cost, "ItemSaleCost")?;
-        let prio = |key: &str| -> Result<Option<ModelPriorities>, DtError> {
-            f.mark(key);
-            match sec.get_int_list(key)? {
-                None => Ok(None),
-                Some(v) => v.try_into().map(Some).map_err(|_| sec.bad_value(key, sec.get(key).unwrap_or(""))),
-            }
-        };
+        set(&mut o.ai_get_path_distance, "AIGetPathDistance");
+        set(&mut o.main_exp_correction, "MainExpCorrection");
+        set(&mut o.exp_correction, "ExpCorrection");
+        set(&mut o.ai_experience_percent, "AIExpiriencePercent");
+        set(&mut o.hero_experience_modificator, "HeroExpirienceModificator");
+        set(&mut o.item_sale_cost, "ItemSaleCost");
+        let prio = |key: &str| -> Option<ModelPriorities> { f.int_array(key) };
         o.ai_targets = AiTargets {
-            min_attack_army: prio("MinAtackArmyTarget")?,
-            min_attack_castle: prio("MinAtackCastleTarget")?,
-            min_random: prio("MinRandomTarget")?,
-            min_talking: prio("MinTalkingTarget")?,
-            min_healing: prio("MinHealingTarget")?,
-            max_healing: prio("MaxHealingTarget")?,
-            min_garrison: prio("MinGarrisonTarget")?,
-            max_garrison: prio("MaxGarrisonTarget")?,
-            min_purchase: prio("MinPurchaseTarget")?,
-            max_purchase: prio("MaxPurchaseTarget")?,
-            gold_purchase: prio("GoldPurchaseTarget")?,
-            min_village: prio("MinVillageTarget")?,
-            max_village: prio("MaxVillageTarget")?,
-            gold_village: prio("GoldVillageTarget")?,
+            min_attack_army: prio("MinAtackArmyTarget"),
+            min_attack_castle: prio("MinAtackCastleTarget"),
+            min_random: prio("MinRandomTarget"),
+            min_talking: prio("MinTalkingTarget"),
+            min_healing: prio("MinHealingTarget"),
+            max_healing: prio("MaxHealingTarget"),
+            min_garrison: prio("MinGarrisonTarget"),
+            max_garrison: prio("MaxGarrisonTarget"),
+            min_purchase: prio("MinPurchaseTarget"),
+            max_purchase: prio("MaxPurchaseTarget"),
+            gold_purchase: prio("GoldPurchaseTarget"),
+            min_village: prio("MinVillageTarget"),
+            max_village: prio("MaxVillageTarget"),
+            gold_village: prio("GoldVillageTarget"),
         };
         o.extra = f.extra();
-        Ok(o)
+        f.warnings_into(&mut warnings);
+        Loaded { value: o, warnings }
     }
 
     /// Per-turn magic power loss for a school.
@@ -1187,7 +1266,9 @@ Evasion=15\r\n";
 
     #[test]
     fn units_parse_fields_mods_and_upgrades() {
-        let units = parse_units(&Ini::parse(UNITS)).unwrap();
+        let loaded = parse_units(&Ini::parse(UNITS));
+        assert_eq!(loaded.warnings, ["Hero (GlobalIndex 1): upgrade to Nobody: no unit of that name"]);
+        let units = loaded.value;
         assert_eq!(units.len(), 2);
         let h = &units[0];
         assert_eq!((h.id, h.cost, h.hits, h.attack_blow, h.start_experience, h.level_multiplier), (1, 280, 80, 45, 100, 150));
@@ -1212,11 +1293,29 @@ Evasion=15\r\n";
     }
 
     #[test]
-    fn bad_enum_value_is_an_error() {
-        let ini = Ini::parse("[x]\nGlobalIndex=1\nNature=Martian\n");
-        assert!(matches!(parse_units(&ini), Err(DtError::BadValue { .. })));
-        let ini = Ini::parse("[x]\nGlobalIndex=abc\n");
-        assert!(matches!(parse_units(&ini), Err(DtError::BadValue { .. })));
+    fn unreadable_values_read_as_absent() {
+        let ini = Ini::parse("[x]\nGlobalIndex=1\nNature=Martian\nHits=lots\nd-Hits=2\nd-AttackBlow=?\nCost=40\n");
+        let loaded = parse_units(&ini);
+        let u = &loaded.value[0];
+        assert_eq!((u.nature, u.hits, u.cost), (Nature::Normal, 0, 40));
+        assert_eq!(u.level_up, StatMods::from([(Stat::Hits, 2)]));
+        assert_eq!(
+            loaded.warnings,
+            [
+                "[x] Hits=lots: not a number, ignored",
+                "[x] Nature=Martian: unknown value, ignored",
+                "[x] d-AttackBlow=?: not a number, ignored",
+            ]
+        );
+    }
+
+    #[test]
+    fn entry_without_usable_id_is_skipped() {
+        let ini = Ini::parse("[a]\nGlobalIndex=abc\n[b]\nGlobalIndex=-4\n[c]\nGlobalIndex=\n[d]\nGlobalIndex=7\n");
+        let loaded = parse_units(&ini);
+        assert_eq!(loaded.value.iter().map(|u| u.id).collect::<Vec<_>>(), [7]);
+        assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
+        assert!(loaded.strict().is_err());
     }
 
     #[test]
@@ -1250,7 +1349,7 @@ Evasion=15\r\n";
             "[5 Sword]\nGlobalIndex=5\nName=Sword\nIcon=A005.Tga\nCost=-1700\nType=BlowWeapon\n\
              f-AttackBlow=55\nd-Initiative=-1\np-Hits=10\nMagic=LifeMagic\nBonus=ArmorIgnore\n",
         );
-        let a = &parse_artefacts(&ini).unwrap()[0];
+        let a = &parse_artefacts(&ini).strict().unwrap()[0];
         assert_eq!((a.id, a.cost, a.kind), (5, -1700, ArtefactType::BlowWeapon));
         assert!(a.is_personal() && a.kind.is_weapon());
         assert_eq!(a.fixed, StatMods::from([(Stat::AttackBlow, 55)]));
@@ -1258,8 +1357,16 @@ Evasion=15\r\n";
         assert_eq!(a.percent, StatMods::from([(Stat::Hits, 10)]));
         assert_eq!(a.magic, Some(MagicSchool::Life));
         assert_eq!(a.bonus, Some(Bonus::ArmorIgnore));
-        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n");
-        assert!(matches!(parse_artefacts(&ini), Err(DtError::Missing { .. })));
+        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n[6 Axe]\nGlobalIndex=6\nType=Spoon\n[7 Mace]\nGlobalIndex=7\nType=BlowWeapon\n");
+        let loaded = parse_artefacts(&ini);
+        assert_eq!(loaded.value.iter().map(|a| a.id).collect::<Vec<_>>(), [7]);
+        assert_eq!(
+            loaded.warnings,
+            [
+                "[5 Sword] Type=: not an item type, entry skipped",
+                "[6 Axe] Type=Spoon: not an item type, entry skipped",
+            ]
+        );
     }
 
     const SPELLS: &str = "\
@@ -1302,7 +1409,7 @@ Generated=1\r\n";
 
     #[test]
     fn spells_by_order_skipping_template() {
-        let spells = parse_spells(&Ini::parse(SPELLS)).unwrap();
+        let spells = parse_spells(&Ini::parse(SPELLS)).strict().unwrap();
         assert_eq!(spells.len(), 2);
         let a = &spells[0];
         assert_eq!((a.id, a.cost_gold, a.cost_mana, a.time_work, a.time_cast), (1, 150, 200, None, Some(4)));
@@ -1323,9 +1430,18 @@ Generated=1\r\n";
     }
 
     #[test]
-    fn bad_effect_is_an_error() {
+    fn bad_effect_is_ignored() {
         let ini = Ini::parse("[S]\nName=x\nCostGold=1\nEffect1=file,1,2\n");
-        assert!(matches!(parse_spells(&ini), Err(DtError::BadValue { .. })));
+        let loaded = parse_spells(&ini);
+        assert_eq!(loaded.value[0].effects[0], None);
+        assert_eq!(loaded.warnings, ["[S] Effect1=file,1,2: not an effect, ignored"]);
+    }
+
+    #[test]
+    fn blank_effect_number_is_zero() {
+        let ini = Ini::parse("[S]\nName=x\nCostGold=1\nEffect2=file,255,0,0,2000,47,1500,\n");
+        let spell = &parse_spells(&ini).strict().unwrap()[0];
+        assert_eq!(spell.effects[1].as_ref().map(|e| (e.scale_milli, e.start_ms)), Some((1500, 0)));
     }
 
     #[test]
@@ -1335,7 +1451,7 @@ Generated=1\r\n";
              MinAtackArmyTarget=1,1,100,50,50\nMixHealingTarget=50,150,1,50,50\nNewKey=3\n\
              [AIArmyGeneration]\nNormal=4,5,6\nUndead=43\n",
         );
-        let o = GlobalOptions::from_ini(&ini).unwrap();
+        let o = GlobalOptions::from_ini(&ini).strict().unwrap();
         assert_eq!((o.ship_cost, o.row2_def, o.dec_spell_elemental), (300, 7, 9));
         assert_eq!(o.dec_spell(MagicSchool::Elemental), 9);
         assert_eq!(o.battle_end_turn, 25);
@@ -1344,8 +1460,18 @@ Generated=1\r\n";
         assert!(o.extra.contains_key("MixHealingTarget") && o.extra.contains_key("NewKey"));
         assert_eq!(o.extra.len(), 2);
         assert_eq!(o.army_generation, vec![("Normal".to_string(), vec![4, 5, 6]), ("Undead".to_string(), vec![43])]);
-        let bad = Ini::parse("[GlobalOptions]\nMinRandomTarget=1,2\n");
-        assert!(GlobalOptions::from_ini(&bad).is_err());
+        let bad = Ini::parse("[GlobalOptions]\nMinRandomTarget=1,2\nRow2Def=x\n[AIArmyGeneration]\nNormal=4,x,6,\n");
+        let loaded = GlobalOptions::from_ini(&bad);
+        assert_eq!((loaded.value.ai_targets.min_random, loaded.value.row2_def), (None, 5));
+        assert_eq!(loaded.value.army_generation, vec![("Normal".to_string(), vec![4, 6])]);
+        assert_eq!(
+            loaded.warnings,
+            [
+                "[AIArmyGeneration] Normal=4,x,6,: x is not a unit id, ignored",
+                "[GlobalOptions] Row2Def=x: not a number, ignored",
+                "[GlobalOptions] MinRandomTarget=1,2: not 5 numbers, ignored",
+            ]
+        );
     }
 }
 

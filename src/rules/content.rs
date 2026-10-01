@@ -172,9 +172,9 @@ impl Content {
     /// content). The options are the vanilla defaults except for faster XP (the player's
     /// modifier and the difficulty factor at 100%), so the short demo shows levels.
     pub fn builtin() -> Content {
-        let mut units = parse_units(&Ini::parse(BUILTIN_UNITS)).unwrap_or_else(|e| panic!("data/units.ini: {e}"));
-        let mut items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).unwrap_or_else(|e| panic!("data/items.ini: {e}"));
-        let mut spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
+        let mut units = parse_units(&Ini::parse(BUILTIN_UNITS)).strict().unwrap_or_else(|e| panic!("data/units.ini: {e}"));
+        let mut items = parse_artefacts(&Ini::parse(BUILTIN_ITEMS)).strict().unwrap_or_else(|e| panic!("data/items.ini: {e}"));
+        let mut spells = parse_spells(&Ini::parse(BUILTIN_SPELLS)).strict().unwrap_or_else(|e| panic!("data/spells.ini: {e}"));
         // The demo's texts in the interface language: `NameRu=` / `DescriptRu=` (our own).
         if crate::i18n::lang() == crate::i18n::Lang::Ru {
             let ru = |extra: &BTreeMap<String, String>, key: &str, text: &mut String| {
