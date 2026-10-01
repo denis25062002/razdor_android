@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.2.1 — 2026-10-01
+
 ### New
 - **A macOS program**, `razdor-macos`: one universal file for Apple Silicon and Intel Macs
   (macOS 11 and later), built by the release pipeline on a Mac (`scripts/dist-macos.sh`) and
