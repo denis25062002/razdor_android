@@ -381,8 +381,8 @@ and `ui/items_view.rs`) as read on 2026-10-01.
 | Tactical cost | as §1, cached per type and level; `CostMultipler` 0 read as 100 | 0 stays 0 (then 1) | none in the data |
 | Army strength (event condition) | sum of the living units' tactical cost, building defence 0 (`script.rs` `army_strength`, marked a guess) | sum of +0x1AE over every record, the dead included, with the army's building defence | **dead units missing** |
 | Side strength | rows, back-row doubling, `f`, lone ÷5, HP-scaled; surrendered fighters counted | the same; a surrendered side is 0 | surrender |
-| Pre-simulation | none | a full AI-vs-AI run, its HP loss kept as the prediction | **missing** |
-| Pool | `E₀ div 20 × HP kept` | three branches with prediction and largest turn loss (§3) | **differs when the prediction > 0** |
+| Pre-simulation | a full AI-vs-AI run on a copy at `begin()` (no Splash), its HP loss kept as the prediction | a full AI-vs-AI run, its HP loss kept as the prediction | none |
+| Pool | the three branches with the prediction and the largest finished turn's loss (`battle_pool`) | three branches with prediction and largest turn loss (§3) | none |
 | Share | `t·((4−row) + row·useful/(taken+left))`, below 0.5 → 1 | the same | none |
 | Surrendering side | paid its share | shares computed, then the units are removed: nothing | differs (AI battles) |
 | Player modifier | × F × correction / 10⁶, abs, cap 5256; correction 0 read as 100 | the same, 0 used as it is | correction 0 |

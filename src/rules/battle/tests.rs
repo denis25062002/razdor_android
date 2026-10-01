@@ -1259,8 +1259,16 @@ fn the_battle_grid_is_kept_after_the_battle() {
 /// The player: warrior 10 in front, shooter 11 behind; the enemy: four punching bags in
 /// front. A bag: D = round((e⁰/1.17 + e⁰/1.07)·200) = 358, H = 558, A = 11,
 /// T = round(3.2·558·12/200) = 107; the enemy side 428.
+/// Without the pre-simulation, so the pool has no predicted loss.
 fn xp_battle() -> Battle {
-    battle(&[(10, f(2)), (11, b(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))])
+    unpredicted(&[(10, f(2)), (11, b(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))])
+}
+
+fn unpredicted(player: &[(u32, Slot)], enemies: &[(u32, Slot)]) -> Battle {
+    let mut bt = prepared(&content_with(vec![], Formation::WIDE), player, enemies, Team::Player);
+    bt.skip_prediction();
+    bt.begin();
+    bt
 }
 
 fn win(bt: &mut Battle) {
@@ -1303,7 +1311,7 @@ fn xp_counts_activity_and_hit_points_lost() {
 
 #[test]
 fn the_dead_get_nothing_but_count_and_only_victory_pays_the_player() {
-    let mut bt = battle(&[(10, f(2)), (11, b(2)), (11, b(3))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))]);
+    let mut bt = unpredicted(&[(10, f(2)), (11, b(2)), (11, b(3))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))]);
     bt.fighters[2].hp = 0;
     win(&mut bt);
     let xp = bt.xp_awards(Team::Player);
@@ -1450,7 +1458,7 @@ fn real_armies_auto_battle_terminates() {
             }
             outcomes[bt.outcome() as usize] += 1;
             assert!(bt.round <= 25);
-            let pool = experience::battle_pool(bt.start_of(Team::Enemy).strength, bt.start_of(Team::Player).hp, 0).max(1);
+            let pool = bt.pool(Team::Player).max(1);
             // A share below 0.5 becomes 1, but one of exactly 0.5 rounds (half to even) to 0.
             for a in bt.xp_awards(Team::Player) {
                 assert!(a.xp >= 0 && a.xp as i64 <= pool, "battle {n}: share {} of pool {pool}", a.xp);
@@ -1564,7 +1572,7 @@ fn real_fort_battle_pays_the_videos_xp() {
     let mut b = g.start_battle();
     b.begin();
     let e0 = b.strength_now(Team::Enemy);
-    let pool = crate::rules::experience::battle_pool(e0, 1, 0);
+    let pool = crate::rules::experience::battle_pool(e0, 1, 0, 0, 0);
     assert_eq!((e0, pool), (1516, 75));
     // Three units in the video's army; one that attacked with every action.
     let share = crate::rules::experience::share(pool, 3, Front, 1, 1, 0);
@@ -1931,4 +1939,47 @@ fn row44_off_screen_both_sides_are_auto_arranged_with_the_wide_blocks() {
     bt.auto_arrange(Team::Player);
     assert_eq!((bt.fighters[0].slot, bt.fighters[1].slot), (b(3), f(3)));
     assert!(!bt.is_open(Team::Player, b(0)), "side 1 gets the blocks of an auto-arranged grid");
+}
+
+#[test]
+fn row43_the_pre_simulation_predicts_each_sides_loss_for_the_pool() {
+    let army = (vec![(10, f(2)), (11, b(2))], vec![(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))]);
+    let c = content_with(vec![], Formation::WIDE);
+    let mut bt = prepared(&c, &army.0, &army.1, Team::Player);
+    bt.begin();
+    // The prediction is the loss of the same battle played out by the AI on both sides.
+    let mut alone = prepared(&c, &army.0, &army.1, Team::Player);
+    alone.skip_prediction();
+    alone.auto_play_to_end();
+    let lost = |b: &Battle, t: Team| b.fighters.iter().filter(|f| f.team == t).map(|f| f.lost as i64).sum::<i64>();
+    let pred = bt.predicted_loss(Team::Player);
+    assert!(pred > 0);
+    assert_eq!((pred, bt.predicted_loss(Team::Enemy)), (lost(&alone, Team::Player), lost(&alone, Team::Enemy)));
+    assert_eq!((bt.round, bt.active()), (1, Some(0)), "the battle itself has not started moving");
+    // Nothing lost in the real battle: 3 × pred + E₀ div 20.
+    win(&mut bt);
+    assert_eq!(bt.pool(Team::Player), 3 * pred + 428 / 20);
+}
+
+#[test]
+fn row43_the_largest_loss_in_one_turn_counts_in_the_pool() {
+    let c = content_with(vec![], Formation::WIDE);
+    let battle = || {
+        let mut bt = prepared(&c, &[(10, f(2)), (11, b(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(4))], Team::Player);
+        bt.begin();
+        turn_of(&mut bt, 2);
+        assert_eq!(bt.act(0).unwrap().amount, 5, "a bag hits the warrior: 10 − 5");
+        bt
+    };
+    // pred·q + E₀ div 20 + the largest loss of a finished turn, with q = pred/lost at most 3.
+    let mut bt = battle();
+    let pred = bt.predicted_loss(Team::Player) as f64;
+    to_round(&mut bt, 2);
+    win(&mut bt);
+    let q = (pred / 5.0).clamp(0.8, 3.0);
+    assert_eq!(bt.pool(Team::Player), crate::rules::experience::round_half_even(pred * q + 21.0 + 5.0));
+    // The turn in progress at the end is never folded in.
+    let mut bt = battle();
+    win(&mut bt);
+    assert_eq!(bt.pool(Team::Player), crate::rules::experience::round_half_even(pred * q + 21.0));
 }

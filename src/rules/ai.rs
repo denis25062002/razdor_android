@@ -510,6 +510,7 @@ pub fn simulate(c: &Arc<Content>, mine: &[Unit], theirs: &[Unit], defence: i32) 
     // The same engine as the off-screen battle (4a0710): AI mode 0, no Splash, both sides
     // auto-arranged. Its pre-simulation only predicts the XP, unused here, so it is not run.
     b.set_simulation();
+    b.skip_prediction();
     if defence > 0 {
         b.set_building_defence(Team::Enemy, defence);
     }

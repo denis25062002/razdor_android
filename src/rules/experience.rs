@@ -258,13 +258,25 @@ pub fn side_strength(units: &[SideUnit]) -> i64 {
     total
 }
 
-/// A side's XP pool: a twentieth of the enemy's strength at the start (integer division),
-/// times the share of the side's starting HP that was not lost:
-/// `round(E₀ div 20 × max(0, (HP₀ − lost)/HP₀))`. The exe also derives a strength-ratio
-/// term from `MainExpCorrection` and `ExpCorrection`, but never uses it.
-pub fn battle_pool(enemy_start_strength: i64, start_hp: i64, hp_lost: i64) -> i64 {
+/// A side's XP pool (48bb10), from `base` = a twentieth of the enemy's strength at the
+/// start (integer division), the HP lost, the pre-simulation's predicted loss `pred` and the
+/// largest loss in one turn:
+/// - lost, no prediction: `base × max(0, (HP₀ − lost)/HP₀)`;
+/// - lost and a prediction: `pred × q + base + maxTurn` with `q = pred/lost` in [0.8, 3];
+/// - nothing lost: `3 × pred + base + maxTurn`;
+///
+/// rounded half to even. The exe also derives a strength-ratio term from
+/// `MainExpCorrection` and `ExpCorrection`, but never uses it.
+pub fn battle_pool(enemy_start_strength: i64, start_hp: i64, hp_lost: i64, predicted: i64, max_turn_loss: i64) -> i64 {
     let base = enemy_start_strength / 20;
-    if hp_lost <= 0 || start_hp <= 0 {
+    if hp_lost <= 0 {
+        return 3 * predicted + base + max_turn_loss;
+    }
+    if predicted > 0 {
+        let q = (predicted as f64 / hp_lost as f64).clamp(0.8, 3.0);
+        return round_half_even(predicted as f64 * q + base as f64 + max_turn_loss as f64);
+    }
+    if start_hp <= 0 {
         return base;
     }
     let kept = ((start_hp - hp_lost) as f64 / start_hp as f64).max(0.0);
@@ -427,9 +439,14 @@ mod tests {
 
     #[test]
     fn pool_from_enemy_strength_and_hp_kept() {
-        assert_eq!(battle_pool(2019, 500, 0), 100, "2019 div 20");
-        assert_eq!(battle_pool(2000, 500, 125), 75);
-        assert_eq!(battle_pool(2000, 500, 900), 0);
+        assert_eq!(battle_pool(2019, 500, 0, 0, 0), 100, "2019 div 20");
+        assert_eq!(battle_pool(2000, 500, 125, 0, 0), 75);
+        assert_eq!(battle_pool(2000, 500, 900, 0, 0), 0);
+        // The worked example: base 50, pred 120, lost 60 → q = 2, maxTurn 40: 120·2 + 50 + 40.
+        assert_eq!(battle_pool(1000, 500, 60, 120, 40), 330);
+        assert_eq!(battle_pool(1000, 500, 600, 120, 40), 120 * 4 / 5 + 50 + 40, "q at least 0.8");
+        assert_eq!(battle_pool(1000, 500, 10, 120, 40), 120 * 3 + 50 + 40, "q at most 3");
+        assert_eq!(battle_pool(1000, 500, 0, 120, 0), 3 * 120 + 50, "nothing lost");
     }
 
     #[test]

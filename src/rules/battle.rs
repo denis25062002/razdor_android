@@ -422,6 +422,7 @@ enum Plan {
     Pass,
 }
 
+#[derive(Clone)]
 pub struct Battle {
     content: Arc<Content>,
     pub formation: Formation,
@@ -466,6 +467,14 @@ pub struct Battle {
     hunger_seen: usize,
     /// Mana a side's surrender gives the winner.
     surrender_mana: [i32; 2],
+    /// The pre-simulation (48b75c): played before the first turn unless switched off.
+    predict: bool,
+    /// Each side's HP lost in the pre-simulation, the predicted loss of the XP pool (side +8).
+    predicted: [i64; 2],
+    /// Each side's HP lost this turn, and the most it lost in one turn before this one (side
+    /// +0x10, +0x14; the turn in progress at the end is never counted).
+    turn_lost: [i64; 2],
+    max_turn_lost: [i64; 2],
 }
 
 /// A fighter in its side's strength sum.
@@ -571,6 +580,10 @@ impl Battle {
             ai_level: 1,
             hunger_seen: 0,
             surrender_mana: [0; 2],
+            predict: true,
+            predicted: [0; 2],
+            turn_lost: [0; 2],
+            max_turn_lost: [0; 2],
         };
         b.fit_to_formation();
         b
@@ -610,6 +623,12 @@ impl Battle {
     pub fn set_simulation(&mut self) {
         self.interactive = false;
         self.ai_level = 0;
+    }
+
+    /// No pre-simulation: for battles whose XP nobody receives (the AI's target scoring),
+    /// where its only result, the predicted loss, would go unused.
+    pub fn skip_prediction(&mut self) {
+        self.predict = false;
     }
 
     /// "Improved enemy AI in battle" (`OptValue9`): the enemy also counts a target as
@@ -841,6 +860,26 @@ impl Battle {
             (f.ai_power, f.ai_role) = ai_power_role(&f.base);
         }
         self.hunger_seen = self.fighters.iter().filter(|f| f.alive()).count();
+        // The pre-simulation (48b75c): the whole battle is first played once with the AI on
+        // both sides and without Splash (the on-screen flag is set only afterwards); only
+        // each side's HP lost is kept, as the XP pool's predicted loss.
+        if self.predict {
+            let mut sim = self.clone();
+            sim.interactive = false;
+            sim.start_turn();
+            sim.advance();
+            for _ in 0..AUTO_PLAY_STEPS {
+                if sim.outcome() != Outcome::Ongoing {
+                    break;
+                }
+                if sim.ai_step().is_none() {
+                    sim.skip();
+                }
+            }
+            for team in Team::BOTH {
+                self.predicted[team.index()] = sim.side_lost(team);
+            }
+        }
         self.start_turn();
         self.advance();
     }
@@ -938,6 +977,10 @@ impl Battle {
         self.first_threshold = 0;
         self.cursor = (0, 0);
         self.log.push(crate::trf!("-- Turn {round} --", round));
+        for t in 0..2 {
+            self.max_turn_lost[t] = self.max_turn_lost[t].max(self.turn_lost[t]);
+            self.turn_lost[t] = 0;
+        }
         let mut initiative = [0.0f64; 2];
         for i in 0..self.fighters.len() {
             if !self.fighters[i].alive() {
@@ -2010,6 +2053,12 @@ impl Battle {
         let f = &mut self.fighters[i];
         f.hp -= amount;
         f.lost += amount;
+        self.turn_lost[f.team.index()] += amount as i64;
+    }
+
+    /// HP `team` lost through the damage routine so far (side +0xC).
+    fn side_lost(&self, team: Team) -> i64 {
+        self.fighters.iter().filter(|f| f.team == team).map(|f| f.lost as i64).sum()
     }
 
     /// After a hit: true if `i` died. `FateGift` saves a unit once from a hit (`savable`):
@@ -2043,6 +2092,7 @@ impl Battle {
             if curse {
                 let kf = &mut self.fighters[k];
                 kf.lost += kf.hp;
+                self.turn_lost[kf.team.index()] += kf.hp as i64;
                 kf.hp = 0;
                 let msg = crate::trf!("{name} dies by {caster}'s curse", name = self.fighters[k].name, caster = self.fighters[i].name);
                 self.log.push(msg);
@@ -2569,8 +2619,7 @@ impl Battle {
             return Vec::new();
         }
         let own = self.start[team.index()];
-        let lost: i64 = self.fighters.iter().filter(|f| f.team == team).map(|f| f.lost as i64).sum();
-        let pool = experience::battle_pool(self.start[team.other().index()].strength, own.hp, lost);
+        let pool = self.pool(team);
         (0..self.fighters.len())
             .filter(|&i| self.fighters[i].team == team && self.present(i))
             .map(|i| {
@@ -2578,6 +2627,18 @@ impl Battle {
                 XpAward { fighter: i, xp: experience::share(pool, own.count, f.slot.row, f.useful, f.taken, f.actions.max(0)) }
             })
             .collect()
+    }
+
+    /// `team`'s XP pool (experience.md §3): from the enemy's starting strength, the HP it
+    /// lost, the pre-simulation's predicted loss and its largest loss in one turn.
+    pub fn pool(&self, team: Team) -> i64 {
+        let t = team.index();
+        experience::battle_pool(self.start[team.other().index()].strength, self.start[t].hp, self.side_lost(team), self.predicted[t], self.max_turn_lost[t])
+    }
+
+    /// The pre-simulation's HP loss of `team` (0 before [`Battle::begin`] or without one).
+    pub fn predicted_loss(&self, team: Team) -> i64 {
+        self.predicted[team.index()]
     }
 
     /// What the player's survivors gain: only after a victory, each share ×

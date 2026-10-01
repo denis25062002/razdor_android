@@ -66,6 +66,9 @@ old id, and their versions give both.
   meets his whole army.
 - After a battle the army keeps the cells its units ended on; units that did not fight, then
   the fallen, take free cells from the reserve forward.
+- Before every battle the original plays it once in secret, the AI on both sides, and the
+  losses it predicts feed the battle XP; Razdor does the same now, so the XP pool follows
+  the original's formula with the predicted loss and the worst turn's loss.
 
 ## 0.2.2 — 2026-10-01
 
