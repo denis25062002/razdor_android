@@ -645,37 +645,43 @@ start of section 11. **code**
 
 ## Razdor now → original (src/rules/battle.rs, magic.rs, economy.rs, events.rs, src/ui)
 
-Most Community rules are implemented. The rows below are where Razdor's current code still differs.
+Most Community rules are implemented. The rows below are those where Razdor's code differed;
+the Status column says where it stands now.
 
-| # | Topic | Razdor now | Original (this exe) | § |
-|---|---|---|---|---|
-| 1 | Splash outside interactive battles | No scaling (`splash_pct` returns 100 unless `interactive`) | 80% malus in every battle and in AI estimates; no follow-ups | 6 |
-| 2 | Splash 40% rounding | `x × 40 / 100` | `floor(0.4x)`, but multiples of 5 give one less (10 → 3, 100 → 39); negative attacks wrap | 6 |
-| 3 | Splash follow-ups | Each neighbour gets only the hit and its on-hit effects; the primary target's Counterblow is at 100%; no counters or preventive strikes from neighbours | Each follow-up re-runs the whole action case: neighbour PreventiveStrike and Counterblow (at 40%), vampirism, BloodThrist per kill; the primary target's counter is also at 40%. The two neighbours are taken in slot-index order (each side once), not left before right | 6 |
-| 4 | Splash heal on crippled units | Skips crippled neighbours | Heals or blesses them (follow-ups bypass the cell filter) | 6, 7 |
-| 5 | PreventiveStrike before spells | Shoots first if it has AttackShot | Never: only before melee and shots | 7 |
-| 6 | Flying shooters and mages | Shot or spell wins on the three facing front cells | Those cells become melee only, for every Flying unit in rows 1–2 | 7 |
-| 7 | Stun amount | 30% of effective initiative (base + modifier): each hit takes less | 30% of current initiative (base + turn-1 Artillery/FirstShot bonus), the same each hit | 5 |
-| 8 | ArmorBreaker rounding | `x × 3 / 4` (floor) | `x − floor(x/4)` (5 → 4, 1 → 1) | 5 |
-| 9 | FateGift vs Neutralize | Neutralize clears the bonus before the death check, so FateGift no longer saves | FateGift is checked first and saves; Neutralize then clears an already erased bonus | 5 |
-| 10 | Mage poison threshold | Power after Splash, protection and Potent > 15 | `MP × (99 − prot) / 100` (Elemental: `/114`), raw MP, protection always applied, > 15 | 5 |
-| 11 | Assault damage taken | ×2/3 if the attacker's side has building defence > 0 **and** its initiative modifier ≥ 0 | ×2/3 if the attacker's building defence is 1–127, or it has none and its initiative modifier is < 0 (or ≥ 4096) | 6 |
-| 12 | Turn start order | All resets, then all drains and regen ticks, then all bonuses | Per unit: reset, bonuses, drain, own regen tick (with removal), then the next unit. Berserk uses HP before the unit's own tick; Hunger sees only earlier units' deaths | 3 |
-| 13 | Berserk on spells vs Drying | Drying applied before the Berserk recompute | Berserk recomputed before Drying's loss | 5 |
-| 14 | Hunger kill heal | Heals on a melee kill of the primary target | Tests a wrong address (unknown outcome); melee only, also per splash follow-up. Keep Razdor's reading as the documented guess | 5 |
-| 15 | BloodThrist | +1 action for the primary target's kill only | +1 per killing hit, splash follow-ups included, in all three paths | 5 |
-| 16 | Suicide | Removed at the end of its action; never countered | HP 0 and off the grid but not removed until the next turn start; can still be countered (then removed), healed by its own vampirism, and scored oddly by the AI | 5, 11 |
-| 17 | Undead Death floor | +25 even with an explicit `MinMagicPower` | +25 only when the default floor is used | 10 |
-| 18 | Drain for types without MagicPower | Drains with the school defaults once the unit has MP | No drain, no floor (both 0) | 10 |
-| 19 | Magic Bleed on a bleeding target | Bleed stays at 75 | The patch faults (access violation). Razdor should **not** reproduce this; keep as a documented deviation | 5 |
-| 20 | Cripple marks after deaths | Stay on the unit | Stay on the slot index, so they can pass to another unit | 7 |
-| 21 | AI vs Manevres-0 targets | Manevres 0 counts as 1 | Factor ≈ 1.75×10⁹ with 32-bit wrap: erratic. Keeping Razdor's choice is reasonable | 11 |
-| 22 | Flock sizes | Fighters at battle start | Living counts of the interactive battle's two sides as of its last completed action (the starting counts on turn 1), so deaths during the current turn start are not seen yet; simulations see the interactive battle's counts | 3 |
-| 23 | Hunger counter | Reset per battle | Global, persists across battles (only matters on coincidences) | 9 |
-| 24 | Keys | F1 help, F2 language, F5 quick save, F9 quick load (`ui/hotkeys.rs`) | F1/F2 load lists (autosave / private), F3 save window, F4/F5 endless wait on/off | 12 |
-| 25 | AnimationSpeed option | Not present | Slider in the options; caps two animation delays at (100 − S)·5 and ·3 | 12 |
-| 26 | Info card Bleed and Evasion lines | Bleeding shown as a battle status | Card lines with the value (with two off-by-one slips) | 12 |
-| 27 | Tripwires | Not reproduced | Hangs or crashes on certain ini values. Deliberately not reproduced | 12 |
+| # | Topic | Razdor now | Original (this exe) | § | Status |
+|---|---|---|---|---|---|
+| 1 | Splash outside interactive battles | The 80% malus in every battle and in the AI's estimates (`attack_factor`, `cast_power`); off screen no follow-ups for melee, shots and spells | 80% malus in every battle and in AI estimates; no follow-ups | 6 | Matches |
+| 2 | Splash 40% rounding | The patch's multiply-high constants (`splash_scale`): 10 → 3, 100 → 39; negative attacks wrap | `floor(0.4x)`, but multiples of 5 give one less (10 → 3, 100 → 39); negative attacks wrap | 6 | Matches |
+| 3 | Splash follow-ups | The splash state machine: each follow-up re-runs the whole case (preventive strike, chain, vampirism, counter blow, kill check) at 40% for any attacker while the state is set; the primary's counter at 40%, the second neighbour's at full; neighbours in record order, each side once | Each follow-up re-runs the whole action case: neighbour PreventiveStrike and Counterblow (at 40%), vampirism, BloodThrist per kill; the primary target's counter is also at 40%. The two neighbours are taken in slot-index order (each side once), not left before right | 6 | Matches |
+| 4 | Splash heal on crippled units | Follow-ups bypass the cell filter and heal or bless them | Heals or blesses them (follow-ups bypass the cell filter) | 6, 7 | Matches |
+| 5 | PreventiveStrike before spells | Never | Never: only before melee and shots | 7 | Matches |
+| 6 | Flying shooters and mages | The three facing front cells are melee only | Those cells become melee only, for every Flying unit in rows 1–2 | 7 | Matches |
+| 7 | Stun amount | 30% of the base initiative with the turn-1 bonus, the same each hit | 30% of current initiative (base + turn-1 Artillery/FirstShot bonus), the same each hit | 5 | Matches |
+| 8 | ArmorBreaker rounding | `x − x×25/100` (5 → 4, 1 → 1) | `x − floor(x/4)` (5 → 4, 1 → 1) | 5 | Matches |
+| 9 | FateGift vs Neutralize | FateGift in the on-hit block, after KillingStrike and before Neutralize | FateGift is checked first and saves; Neutralize then clears an already erased bonus | 5 | Matches |
+| 10 | Mage poison threshold | `poison_power`: raw MP × (99 − prot) / 100 (Elemental `/114`), unsigned for Life and Elemental, > 15 | `MP × (99 − prot) / 100` (Elemental: `/114`), raw MP, protection always applied, > 15 | 5 | Matches |
+| 11 | Assault damage taken | The misaligned dword test: building byte and the initiative modifier's top bytes, ≥ 16 | ×2/3 if the attacker's building defence is 1–127, or it has none and its initiative modifier is < 0 (or ≥ 4096) | 6 | Matches |
+| 12 | Turn start order | Per unit: reset, bonuses, drain, own regen tick (with removal) | Per unit: reset, bonuses, drain, own regen tick (with removal), then the next unit. Berserk uses HP before the unit's own tick; Hunger sees only earlier units' deaths | 3 | Matches |
+| 13 | Berserk on spells vs Drying | Berserk recomputed before Drying's loss | Berserk recomputed before Drying's loss | 5 | Matches |
+| 14 | Hunger kill heal | Heals on a melee kill, per hit (a follow-up would count, but one bonus per unit rules Splash out) | Tests a wrong address (unknown outcome); melee only, also per splash follow-up | 5 | Guess kept |
+| 15 | BloodThrist | +1 per killing hit in all three paths, follow-ups included; not for a target FateGift saves | +1 per killing hit, splash follow-ups included, in all three paths | 5 | Matches |
+| 16 | Suicide | HP 0, regen −99, no actions, stays in its side's list (counts, holds its cell) until a counter blow or the next turn start removes it; its vampirism can heal it. It cannot be targeted (guess) | HP 0 and off the grid but not removed until the next turn start; can still be countered (then removed), healed by its own vampirism, and scored oddly by the AI | 5, 11 | Matches (targeting a guess) |
+| 17 | Undead Death floor | +25 only on the default floor | +25 only when the default floor is used | 10 | Matches |
+| 18 | Drain for types without MagicPower | Per type (`drain_of`): no drain, no floor | No drain, no floor (both 0) | 10 | Matches |
+| 19 | Magic Bleed on a bleeding target | Bleed stays at 75 | The patch faults (access violation). Razdor should **not** reproduce this; keep as a documented deviation | 5 | Deviation kept |
+| 20 | Cripple marks after deaths | A table by side and record index, not shifted | Stay on the slot index, so they can pass to another unit | 7 | Matches |
+| 21 | AI vs Manevres-0 targets | Manevres 0 counts as 1 | Factor ≈ 1.75×10⁹ with 32-bit wrap: erratic. Keeping Razdor's choice is reasonable | 11 | Razdor's kept |
+| 22 | Flock sizes | The side blocks of the battle on screen (`PatchGlobals`), refreshed after each of its actions; off-screen battles read them | Living counts of the interactive battle's two sides as of its last completed action (the starting counts on turn 1), so deaths during the current turn start are not seen yet; simulations see the interactive battle's counts | 3 | Matches |
+| 23 | Hunger counter | Global (`PatchGlobals`, 3 at start, never reset); every removal stores the living count of the battle on screen; turn 1 only looks | Global, persists across battles (only matters on coincidences) | 9 | Matches |
+| 24 | Keys | F1 help, F2 language, F5 quick save, F9 quick load (`ui/hotkeys.rs`) | F1/F2 load lists (autosave / private), F3 save window, F4/F5 endless wait on/off | 12 | Interface, left |
+| 25 | AnimationSpeed option | Not present | Slider in the options; caps two animation delays at (100 − S)·5 and ·3 | 12 | Presentation, left |
+| 26 | Info card Bleed and Evasion lines | Bleeding shown as a battle status | Card lines with the value (with two off-by-one slips) | 12 | Presentation, left |
+| 27 | Tripwires | Not reproduced | Hangs or crashes on certain ini values. Deliberately not reproduced | 12 | Deviation kept |
+
+Also brought in line with these: the bleed loss and Flock's step divide unsigned (a negative
+sum kills, a negative attack gives a huge step), the bleed shift clears the enemy's first
+bleeding when the player's 12th record goes, Evasion is a byte and divides unsigned, the hit
+chains test a strike's damage (not its power) in the on-hit block, and Bastion's doubling wraps.
 
 Already matching (checked against the code): Berserk, Fortify, the Garrison fix, FirstShot, Bastion,
 FasterAttack, Assault doubling, Exhaustion, Drying amount, CtrPoison, PoisonS, PoisonArmorIgnore, the

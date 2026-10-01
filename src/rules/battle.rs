@@ -40,9 +40,22 @@ const FORTIFY_PERCENT: i32 = 25;
 const FORTIFY_TURNS: i32 = 5;
 /// Most steps [`Battle::auto_play_to_end`] plays (as the AI's simulated battles).
 pub const AUTO_PLAY_STEPS: usize = 20_000;
-/// `Splash`: the first hit and the neighbours' hits, % of attack or power.
-const SPLASH_MAIN: i32 = 80;
-const SPLASH_SIDE: i32 = 40;
+/// `Splash`: the first hit's ×80% and the follow-ups' ×40%, the patch's 32-bit multiply-high
+/// constants (see [`splash_scale`]).
+const SPLASH_MAIN: u64 = 0xCCCC_CCCD;
+const SPLASH_SIDE: u64 = 0x6666_6666;
+/// The Splash states (c26f16): the kind of action being splashed.
+const SPLASH_MELEE: u8 = 1;
+const SPLASH_SHOT: u8 = 2;
+const SPLASH_MAGIC: u8 = 3;
+const SPLASH_FRIENDLY: u8 = 4;
+/// `Suicide`: the regeneration its unit is left with, which removes it at the next turn start.
+const SUICIDE_REGEN: i32 = -99;
+/// A side has at most 12 battle records.
+const RECORDS: usize = 12;
+/// The drain loader's floor for a type with magic power but no school: the unused slot of the
+/// floor table holds these bytes (c28480).
+const SCHOOLLESS_FLOOR: i32 = 16_777_215;
 /// `KillingStrike`: a target left at or below this % of max HP dies.
 const KILLING_STRIKE_PERCENT: i32 = 25;
 /// `Bleed`: the bleeding value a hit sets; each action start costs this % of AB + AS + MP.
@@ -247,8 +260,10 @@ pub struct Fighter {
     pub bleed: i32,
     /// May still move into or out of the reserve this turn.
     reserve_move: bool,
-    /// Community `NoHeal`: hit by a crippling weapon; no heal or blessing this battle.
-    pub crippled: bool,
+    /// Community `Suicide`: struck its blow and waits for its removal. Its HP is 0 (unless its
+    /// vampirism gave some back), it has no actions, it cannot be targeted, but it still
+    /// holds its cell and counts in its side's list until a removal.
+    pub suicided: bool,
     /// `Surrender` of its type; a side left with only such units gives up.
     pub surrender: i32,
     /// Left the field by surrendering.
@@ -300,7 +315,7 @@ impl Fighter {
             turn_initiative: 0,
             bleed: 0,
             reserve_move: true,
-            crippled: false,
+            suicided: false,
             // A byte: the side test is "not 0" and the mana adds the bytes (48b6ba, 48bfb4).
             surrender: content.unit(unit.def).surrender as u8 as i32,
             surrendered: false,
@@ -317,6 +332,16 @@ impl Fighter {
 
     pub fn alive(&self) -> bool {
         self.hp > 0
+    }
+
+    /// Still in its side's list of records: alive, or a `Suicide` unit not removed yet.
+    pub fn listed(&self) -> bool {
+        self.alive() || self.suicided
+    }
+
+    /// On the field and able to be targeted or to act: alive and not waiting for removal.
+    fn standing(&self) -> bool {
+        self.alive() && !self.suicided
     }
 
     pub fn max_hp(&self) -> i32 {
@@ -365,10 +390,11 @@ pub struct Hit {
     /// Blessing or curse applied.
     pub buff: Buff,
     pub killed: bool,
-    /// Counterblow (after) or PreventiveStrike (before) damage taken by the actor.
+    /// Counterblow (after) and PreventiveStrike (before) damage taken by the actor, summed
+    /// over the Splash follow-ups.
     pub counter: Option<i32>,
-    /// The actor died: killed a `DeathCurse`/`Ghost` unit, fell to the counterblow, the
-    /// preventive strike or its bleeding, or it is a `Suicide` unit.
+    /// The actor is down: killed a `DeathCurse`/`Ghost` unit, fell to the counterblow, the
+    /// preventive strike or its bleeding, or it is a `Suicide` unit at 0 HP.
     pub actor_died: bool,
     /// Community `Splash`: the neighbours' damage or healing (fighter, amount).
     pub splash: Vec<(usize, i32)>,
@@ -436,6 +462,80 @@ enum Plan {
     Pass,
 }
 
+/// The Community `Splash` state, globals in `.mod` (c26f16 …): the kind of action being
+/// splashed (0 for none), the primary target's side, row and column, the follow-ups made, the
+/// two neighbours already taken, and the attacker's column at its last melee hit (c273c4).
+#[derive(Clone, Copy, Debug, Default)]
+struct Splash {
+    state: u8,
+    line: Option<(Team, Row)>,
+    col: i32,
+    count: u8,
+    left: bool,
+    right: bool,
+    actor_col: i32,
+}
+
+/// The Community patch's globals that outlive a battle (`.mod`), shared by every battle, the
+/// AI's off-screen ones included. Nothing resets them between battles and saves do not hold
+/// them, as in the original.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatchGlobals {
+    /// `Hunger`: the living count stored at each removal (c252e4) and the value the Hunger
+    /// units last saw (c2525f). Both are 3 in the file.
+    pub hunger_counter: usize,
+    pub hunger_seen: usize,
+    /// Both living counts summed, of the battle object of the battle on screen (668cf8): the
+    /// player's battle and its pre-simulation. An off-screen battle's removal stores this.
+    pub screen_living: usize,
+    /// The two side blocks the battle on screen is built from (669df8, 66a64c), whose living
+    /// counts `Flock` compares: refreshed after each of its actions only (48bb10).
+    pub side_blocks: [usize; 2],
+}
+
+impl PatchGlobals {
+    const START: PatchGlobals = PatchGlobals { hunger_counter: 3, hunger_seen: 3, screen_living: 0, side_blocks: [0; 2] };
+}
+
+thread_local! {
+    static PATCH: std::cell::Cell<PatchGlobals> = const { std::cell::Cell::new(PatchGlobals::START) };
+}
+
+/// The Community patch's globals now.
+pub fn patch_globals() -> PatchGlobals {
+    PATCH.with(|g| g.get())
+}
+
+fn patch_update(f: impl FnOnce(&mut PatchGlobals)) {
+    PATCH.with(|g| {
+        let mut v = g.get();
+        f(&mut v);
+        g.set(v);
+    });
+}
+
+/// `x` × 80% or × 40% as the patch computes it (c270ae, c27337, c27374): a 32-bit unsigned
+/// multiply-high. 80% is exactly ⌊0.8x⌋; the 40% constant is a hair low, so a multiple of 5
+/// gives one less (10 → 3, 100 → 39). A negative `x` wraps around: ×80% gives a huge negative
+/// value, ×40% about +1.7 billion (the original's).
+fn splash_scale(x: i32, factor: u64) -> i32 {
+    ((x as u32 as u64 * factor) >> 32) as u32 as i32
+}
+
+/// What one run of an action's case did to its target.
+struct Struck {
+    kind: ActionKind,
+    amount: i32,
+    buff: Buff,
+    killed: bool,
+}
+
+impl Struck {
+    fn new(kind: ActionKind) -> Struck {
+        Struck { kind, amount: 0, buff: Buff::default(), killed: false }
+    }
+}
+
 #[derive(Clone)]
 pub struct Battle {
     content: Arc<Content>,
@@ -472,13 +572,22 @@ pub struct Battle {
     start: [SideStart; 2],
     /// The beaten army's experience correction for the player's XP (100 for a garrison).
     xp_correction: i32,
-    /// A battle on screen (Splash works only there, 4ed424); false for AI-vs-AI battles.
+    /// A battle on screen (4ed424): only there do melee, shots and hostile spells record a
+    /// Splash, and only its actions refresh Flock's side blocks. False for AI-vs-AI battles
+    /// and the pre-simulation.
     interactive: bool,
+    /// Played in the battle object of the battle on screen (668cf8): the player's battle and
+    /// its pre-simulation, not the AI's off-screen battles. Its removals set Hunger's counter
+    /// from its own living counts.
+    screen_object: bool,
+    /// Community `Splash` in progress.
+    splash: Splash,
+    /// Community `NoHeal` marks, by side and record index (c29600): they stay on the index
+    /// when a death moves the records, so a mark can pass to another unit.
+    crippled: [[bool; RECORDS]; 2],
     /// The AI's level (battle B+5): 1 normally, 2 with "improved enemy AI" (`OptValue9`), 0
     /// between AI armies. It decides when a target counts as killable.
     pub(crate) ai_level: u8,
-    /// Community `Hunger`: the living-unit count it last saw (shared by all Hunger units).
-    hunger_seen: usize,
     /// Mana a side's surrender gives the winner.
     surrender_mana: [i32; 2],
     /// The pre-simulation (48b75c): played before the first turn unless switched off.
@@ -594,8 +703,10 @@ impl Battle {
             start: [SideStart::default(); 2],
             xp_correction: 100,
             interactive: true,
+            screen_object: true,
+            splash: Splash::default(),
+            crippled: [[false; RECORDS]; 2],
             ai_level: 1,
-            hunger_seen: 0,
             surrender_mana: [0; 2],
             predict: true,
             predicted: [0; 2],
@@ -636,10 +747,12 @@ impl Battle {
         self.xp_correction = percent;
     }
 
-    /// A battle between AI armies, played off screen: no `Splash`, and the AI counts a
-    /// target as killable only by one hit (B+5 = 0).
+    /// A battle between AI armies, played off screen in a battle object of its own: no
+    /// `Splash` follow-ups but for heals and blessings, and the AI counts a target as
+    /// killable only by one hit (B+5 = 0).
     pub fn set_simulation(&mut self) {
         self.interactive = false;
+        self.screen_object = false;
         self.ai_level = 0;
     }
 
@@ -814,9 +927,10 @@ impl Battle {
         self.deploying
     }
 
-    /// Living fighter of `team` standing on `slot`.
+    /// Fighter of `team` holding `slot`: a living one, or a `Suicide` unit waiting for its
+    /// removal (its grid cell still holds it, c2633c).
     pub fn at(&self, team: Team, slot: Slot) -> Option<usize> {
-        self.fighters.iter().position(|f| f.alive() && f.team == team && f.slot == slot)
+        self.fighters.iter().position(|f| f.listed() && f.team == team && f.slot == slot)
     }
 
     /// Deploy phase: move a player card to `to`, swapping with whoever is there.
@@ -884,10 +998,19 @@ impl Battle {
             // The battle AI's roles, from the setup's stats (483ecc → 4836cc).
             (f.ai_power, f.ai_role) = ai_power_role(&f.base);
         }
-        self.hunger_seen = self.fighters.iter().filter(|f| f.alive()).count();
+        // The battle on screen is built from its two side blocks, whose living counts Flock
+        // reads until the first action refreshes them.
+        let counts = Team::BOTH.map(|t| self.living(t).count());
+        if self.screen_object {
+            patch_update(|g| g.screen_living = counts[0] + counts[1]);
+        }
+        if self.interactive {
+            patch_update(|g| g.side_blocks = counts);
+        }
         // The pre-simulation (48b75c): the whole battle is first played once with the AI on
-        // both sides and without Splash (the on-screen flag is set only afterwards); only
-        // each side's HP lost is kept, as the XP pool's predicted loss.
+        // both sides and in the same battle object, without the on-screen flag (set only
+        // afterwards), so with no Splash follow-ups but for heals and blessings; only each
+        // side's HP lost is kept, as the XP pool's predicted loss.
         if self.predict {
             let mut sim = self.clone();
             sim.interactive = false;
@@ -904,6 +1027,11 @@ impl Battle {
             for team in Team::BOTH {
                 self.predicted[team.index()] = sim.side_lost(team);
             }
+            // The battle object is restored after it (Hunger's counter keeps what the
+            // pre-simulation's removals stored).
+            if self.screen_object {
+                patch_update(|g| g.screen_living = counts[0] + counts[1]);
+            }
         }
         self.start_turn();
         self.advance();
@@ -913,12 +1041,25 @@ impl Battle {
         &self.content.options
     }
 
+    /// `team`'s list of records: its living units and any `Suicide` unit not removed yet.
     fn living(&self, team: Team) -> impl Iterator<Item = &Fighter> {
-        self.fighters.iter().filter(move |f| f.alive() && f.team == team)
+        self.fighters.iter().filter(move |f| f.listed() && f.team == team)
     }
 
     fn living_ids(&self, team: Team) -> Vec<usize> {
-        (0..self.fighters.len()).filter(|&i| self.fighters[i].alive() && self.fighters[i].team == team).collect()
+        (0..self.fighters.len()).filter(|&i| self.fighters[i].listed() && self.fighters[i].team == team).collect()
+    }
+
+    /// The record index (0-based) of fighter `i` in its side's list.
+    fn record_index(&self, i: usize) -> usize {
+        let team = self.fighters[i].team;
+        self.fighters[..i].iter().filter(|f| f.listed() && f.team == team).count()
+    }
+
+    /// Fighter `i` stands on a slot marked by a `NoHeal` weapon.
+    pub fn crippled(&self, i: usize) -> bool {
+        let f = &self.fighters[i];
+        self.crippled[f.team.index()].get(self.record_index(i)).copied().unwrap_or(false)
     }
 
     fn turn_limit(&self) -> u32 {
@@ -1008,7 +1149,7 @@ impl Battle {
         }
         let mut initiative = [0.0f64; 2];
         for i in 0..self.fighters.len() {
-            if !self.fighters[i].alive() {
+            if !self.fighters[i].listed() {
                 continue;
             }
             let f = &mut self.fighters[i];
@@ -1046,20 +1187,35 @@ impl Battle {
     /// 0, for units with power; the floor also raises weak casters. Concentration adds the
     /// drain instead.
     fn drain(&mut self, i: usize) {
-        let f = &self.fighters[i];
-        let Some(school) = f.base.magic else { return };
-        if f.power <= 0 {
+        if self.fighters[i].power <= 0 {
             return;
         }
-        let o = self.opt();
-        let dec = f.base.mana_drain.filter(|&v| v != 0).unwrap_or(o.dec_spell(school));
-        let mut floor = f.base.min_magic_power.filter(|&v| v != 0).unwrap_or(o.min_spell(school));
-        if school == MagicSchool::Death && f.base.nature == Nature::Undead {
-            floor += UNDEAD_DEATH_FLOOR;
-        }
+        let (dec, floor) = self.drain_of(self.fighters[i].unit);
         let f = &mut self.fighters[i];
-        f.power = if f.has(Bonus::Concentration) { f.power + dec } else { f.power - dec };
+        f.power = if f.has(Bonus::Concentration) { f.power.wrapping_add(dec) } else { f.power.wrapping_sub(dec) };
         f.power = f.power.max(floor).max(0);
+    }
+
+    /// The drain and floor of a unit type, as the patch computes them once at load (c283dc):
+    /// `ManaDrain` and `MinMagicPower` when not 0, else the school's `DecSpell…` and
+    /// `MinSpell…`, the latter +25 for an undead Death type (only on this default path). A
+    /// type without magic power of its own has neither, even if a unit of it gains some later;
+    /// a type with power but no school drains 0 and gets the floor table's unused slot.
+    fn drain_of(&self, unit: UnitId) -> (i32, i32) {
+        let def = self.content.unit(unit);
+        if def.stat(Stat::MagicPower) == 0 {
+            return (0, 0);
+        }
+        let o = self.opt();
+        let dec = def.mana_drain.filter(|&v| v != 0).unwrap_or_else(|| def.magic.map_or(0, |s| o.dec_spell(s)));
+        let floor = match def.min_magic_power.filter(|&v| v != 0) {
+            Some(v) => v,
+            None => match def.magic {
+                None => SCHOOLLESS_FLOOR,
+                Some(school) => o.min_spell(school) + if school == MagicSchool::Death && def.nature == Nature::Undead { UNDEAD_DEATH_FLOOR } else { 0 },
+            },
+        };
+        (dec, floor)
     }
 
     /// Regeneration and poison from turn 2: `HP += round(maxHP × regen / 100)`, capped at
@@ -1091,20 +1247,30 @@ impl Battle {
     /// before this turn's regeneration or poison.
     fn turn_bonus(&mut self, i: usize) {
         let round = self.round as i32;
-        let living = self.fighters.iter().filter(|f| f.alive()).count();
-        let starts = [self.start[0].count, self.start[1].count];
         let team = self.fighters[i].team;
         let own_building = self.building_defence[team.index()];
         let their_building = self.building_defence[team.other().index()];
+        if round == 1 {
+            // Cleared on turn 1, once per unit (c29fbb, c2a5ca).
+            self.crippled = [[false; RECORDS]; 2];
+            for f in &mut self.fighters {
+                f.bleed = 0;
+            }
+        }
+        let g = patch_globals();
         let f = &mut self.fighters[i];
         if round == 1 && (f.has(Bonus::Artillery) || f.has(Bonus::FirstShot)) {
             // To the current initiative, not to the modifier (484365, c28935).
             f.turn_initiative += FIRST_TURN_INITIATIVE * if own_building >= 10 { 2 } else { 1 };
         }
-        // Hunger: the unit count changed since the last look: healed to full.
-        if round >= 2 && f.has(Bonus::Hunger) && living != self.hunger_seen {
-            self.hunger_seen = living;
-            f.hp = f.base.max_hp();
+        // Hunger: a removal since the last look (anywhere: the counter is global) heals it to
+        // full, except on turn 1, where it only looks. One look for all Hunger units, so only
+        // the first one processed heals (c25370).
+        if f.has(Bonus::Hunger) && g.hunger_counter != g.hunger_seen {
+            patch_update(|g| g.hunger_seen = g.hunger_counter);
+            if round != 1 {
+                f.hp = f.base.max_hp();
+            }
         }
         if f.has(Bonus::Berserk) {
             f.mods.attack = berserk(f);
@@ -1116,10 +1282,11 @@ impl Battle {
         if f.has(Bonus::Garrison) && own_building == 10 {
             f.mods.attack += f.base[Stat::AttackShot];
         }
-        // Bastion doubles its attacks and defences every turn, with no building check.
+        // Bastion doubles its attacks and defences every turn, with no building check; the
+        // 32-bit values wrap after enough turns.
         if f.has(Bonus::Bastion) {
             for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-                f.base[st] *= 2;
+                f.base[st] = f.base[st].wrapping_mul(2);
             }
         }
         if round <= 2 && f.has(Bonus::FasterAttack) {
@@ -1130,15 +1297,18 @@ impl Battle {
                 f.base[st] *= 2;
             }
         }
+        // Flock compares the living counts of the side blocks of the battle on screen, as of
+        // its last action (c29d08): deaths since, a turn start's included, are not seen yet.
+        // The step divides unsigned, so a negative attack gives a huge step (the original's).
         if f.has(Bonus::Flock) {
-            let (own, other) = (starts[team.index()], starts[team.other().index()]);
-            let of = if f.base[Stat::AttackBlow] > 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
-            let step = of * FLOCK_PERCENT / 100;
-            f.mods.attack += match own.cmp(&other) {
-                std::cmp::Ordering::Greater => step,
-                std::cmp::Ordering::Less => -step,
-                std::cmp::Ordering::Equal => 0,
-            };
+            let (own, other) = (g.side_blocks[team.index()], g.side_blocks[team.other().index()]);
+            let of = if f.base[Stat::AttackBlow] != 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
+            let step = (of.wrapping_mul(FLOCK_PERCENT) as u32 / 100) as i32;
+            match own.cmp(&other) {
+                std::cmp::Ordering::Greater => f.mods.attack = f.mods.attack.wrapping_add(step),
+                std::cmp::Ordering::Less => f.mods.attack = f.mods.attack.wrapping_sub(step),
+                std::cmp::Ordering::Equal => {}
+            }
         }
     }
 
@@ -1198,12 +1368,12 @@ impl Battle {
         s[Stat::Regen] = f.regen;
         for st in [Stat::AttackBlow, Stat::AttackShot] {
             if s[st] > 0 {
-                s[st] += f.mods.attack;
+                s[st] = s[st].wrapping_add(f.mods.attack);
             }
         }
-        s[Stat::DefenceBlow] += f.mods.defence;
-        s[Stat::DefenceShot] += f.mods.defence;
-        s[Stat::Initiative] += f.mods.initiative + f.turn_initiative;
+        s[Stat::DefenceBlow] = s[Stat::DefenceBlow].wrapping_add(f.mods.defence);
+        s[Stat::DefenceShot] = s[Stat::DefenceShot].wrapping_add(f.mods.defence);
+        s[Stat::Initiative] = s[Stat::Initiative].wrapping_add(f.mods.initiative.wrapping_add(f.turn_initiative));
         s.clamp();
         s[Stat::Regen] = f.regen;
         f.stats = s;
@@ -1232,7 +1402,7 @@ impl Battle {
         side[0] = side[r];
         side[r] = [true; 6];
         let mut moved = false;
-        for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team && f.slot.row == from) {
+        for f in self.fighters.iter_mut().filter(|f| f.listed() && f.team == team && f.slot.row == from) {
             f.slot.row = Row::Front;
             if from == Row::Reserve {
                 f.actions = 0;
@@ -1250,9 +1420,27 @@ impl Battle {
         }
     }
 
-    /// A unit has just died: it leaves the field, and its side's rows may collapse.
+    /// Unit `i` is removed (489f50): it leaves its side's list, Hunger's counter takes the
+    /// living count of the battle on screen, and its side's rows may collapse. The bleed
+    /// values move with the records (c2a95a), but the shift always copies one value: when
+    /// the player's 12th record goes, the enemy's first unit stops bleeding (the original's).
     fn died(&mut self, i: usize) {
         let team = self.fighters[i].team;
+        let index = self.record_index(i);
+        self.fighters[i].suicided = false;
+        if team == Team::Player && index == RECORDS - 1 {
+            if let Some(&e) = self.living_ids(Team::Enemy).first() {
+                self.fighters[e].bleed = 0;
+            }
+        }
+        let living = self.fighters.iter().filter(|f| f.listed()).count();
+        let own = self.screen_object;
+        patch_update(|g| {
+            if own {
+                g.screen_living = living;
+            }
+            g.hunger_counter = g.screen_living;
+        });
         self.collapse(team);
     }
 
@@ -1270,7 +1458,7 @@ impl Battle {
             .collect();
         for &team in &giving_up {
             let mut mana = 0;
-            for f in self.fighters.iter_mut().filter(|f| f.alive() && f.team == team) {
+            for f in self.fighters.iter_mut().filter(|f| f.listed() && f.team == team) {
                 mana += f.surrender;
                 f.surrendered = true;
                 f.surrender_hp = f.hp;
@@ -1342,7 +1530,9 @@ impl Battle {
     fn option_at(&self, id: usize, from: Slot, target: usize) -> Option<ActionKind> {
         use ActionKind::*;
         let (f, t) = (&self.fighters[id], &self.fighters[target]);
-        if !f.alive() || !t.alive() {
+        // A Suicide unit waiting for its removal is neither an actor nor a target (guess: the
+        // original's grid cell still holds it, community-patches.md, Unknowns).
+        if !f.standing() || !t.standing() {
             return None;
         }
         let s = &f.stats;
@@ -1400,7 +1590,7 @@ impl Battle {
             } else {
                 // NoHeal's mark is tested only here: a reserve caster still tends a marked
                 // reserve unit (c2967a).
-                if !t.slot.row.is_active() || (t.blessed && !t.wounded()) || t.crippled {
+                if !t.slot.row.is_active() || (t.blessed && !t.wounded()) || self.crippled(target) {
                     return None;
                 }
                 if self.school(id) == Some(MagicSchool::Elemental) && t.base.magic == Some(MagicSchool::Elemental) && !t.wounded() {
@@ -1442,7 +1632,7 @@ impl Battle {
     /// the reserve (with the same permission): any cell of rows 1 and 2. No swaps.
     pub fn moves(&self, id: usize) -> Vec<Slot> {
         let f = &self.fighters[id];
-        if !f.alive() {
+        if !f.standing() {
             return Vec::new();
         }
         let from = f.slot;
@@ -1464,29 +1654,33 @@ impl Battle {
         self.knight[team.index()]
     }
 
-    fn splash_pct(&self, a: usize) -> i32 {
-        if self.interactive && self.fighters[a].has(Bonus::Splash) {
-            SPLASH_MAIN
+    /// The Splash factor on `a`'s attack for a physical hit of `kind` (c270ae, c2731a,
+    /// c27337), ungated, so in every battle and in the AI's estimates: ×40% for any attacker
+    /// while a splash of that kind is under way (a melee splash for blows, any splash for
+    /// shots), else ×80% for a `Splash` unit.
+    fn attack_factor(&self, a: usize, kind: ActionKind) -> Option<u64> {
+        let state = self.splash.state;
+        let follow_up = if kind == ActionKind::Shot { state != 0 } else { state == SPLASH_MELEE };
+        if follow_up {
+            Some(SPLASH_SIDE)
         } else {
-            100
+            self.fighters[a].has(Bonus::Splash).then_some(SPLASH_MAIN)
         }
     }
 
-    /// Physical damage of `a` on `t` (before capping at the target's HP). A `Splash` unit's
-    /// first hit uses 80% of its attack.
+    /// Physical damage of `a` on `t` (before capping at the target's HP), 485908: the same
+    /// routine for blows, shots, counter blows, preventive strikes and the AI's estimates.
     pub fn physical_damage(&self, a: usize, t: usize, kind: ActionKind) -> i32 {
-        self.physical_damage_at(a, t, kind, self.splash_pct(a))
-    }
-
-    /// Physical damage with `pct`% of the attacker's attack (485908).
-    fn physical_damage_at(&self, a: usize, t: usize, kind: ActionKind, pct: i32) -> i32 {
         let (af, tf) = (&self.fighters[a], &self.fighters[t]);
         let (s, ts) = (&af.stats, &tf.stats);
         let shot = kind == ActionKind::Shot;
         let building = self.building_defence[tf.team.index()];
         // The attack modifier is added even to an attack of 0 (a counter blow of a unit
         // without one, a flying shooter's blow).
-        let mut atk = (if shot { af.base[Stat::AttackShot] } else { af.base[Stat::AttackBlow] } + af.mods.attack) * pct / 100;
+        let mut atk = (if shot { af.base[Stat::AttackShot] } else { af.base[Stat::AttackBlow] }).wrapping_add(af.mods.attack);
+        if let Some(factor) = self.attack_factor(a, kind) {
+            atk = splash_scale(atk, factor);
+        }
         let mut def = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] };
         if shot {
             if s.has_any(&PIERCE_SHOT) {
@@ -1505,36 +1699,49 @@ impl Battle {
             if kind == ActionKind::LongStrike {
                 def /= 2;
                 if s.has(&Bonus::FlankStrike) {
-                    atk *= 2;
+                    atk = atk.wrapping_mul(2);
                 }
             }
         }
         def += building;
-        let mut dmg = if atk > def { atk - def } else { 1 };
-        // Assault takes ×2/3 from a garrison (the misaligned test at c2a403, medium).
-        let assaulted = ts.has(&Bonus::Assault) && self.building_defence[af.team.index()] > 0 && af.mods.initiative >= 0;
+        let mut dmg = if atk > def { atk.wrapping_sub(def) } else { 1 };
+        // Assault's ×2/3 tests a misaligned dword of the attacker's record (c2a403): its top
+        // byte is the attacker's building defence, the three below are the top three bytes of
+        // its initiative modifier, and the test is "≥ 16". So it applies from a building of
+        // 1–127, or in the open with a modifier below 0 or from 4096 (the original's).
+        let probe = (((self.building_defence[af.team.index()] as u8 as u32) << 24) | (af.mods.initiative as u32 >> 8)) as i32;
+        let assaulted = ts.has(&Bonus::Assault) && probe >= 16;
         if ts.has_any(&[Bonus::Evasive, Bonus::VampirsGist, Bonus::OldVampirsGist]) || assaulted {
-            dmg = dmg * 2 / 3;
+            dmg = dmg.wrapping_mul(2) / 3;
         }
         if ts.has(&Bonus::Garrison) && building >= 10 {
-            dmg = dmg * 2 / 3;
+            dmg = dmg.wrapping_mul(2) / 3;
         }
         if shot && ts.has_any(&[Bonus::Dead, Bonus::FastDead]) {
-            dmg = dmg * 3 / 10;
+            dmg = dmg.wrapping_mul(3) / 10;
         }
         if self.has_knight(tf.team) {
-            dmg = dmg * KNIGHT_PERCENT / 100;
+            dmg = dmg.wrapping_mul(KNIGHT_PERCENT) / 100;
         }
         // The invulnerable (and ghosts, immune to weapons) are hit for 1, whatever the blow
         // pierces; GodAnger and GodStrike still add their 10 or 20 on top (485a8e).
         if ts.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
             dmg = 1;
         }
-        dmg += god_bonus(s);
+        dmg = dmg.wrapping_add(god_bonus(s));
         if dmg == 0 {
             dmg = 1;
         }
-        (dmg * (100 - ts.evasion.clamp(0, 100)) / 100).max(1)
+        // Evasion, last (c2a802): the type's value is a byte, so the ini's modulo 256, and it
+        // divides unsigned, so a value above 100 gives garbage (the original's).
+        let evasion = ts.evasion as u8 as i32;
+        if evasion != 0 {
+            dmg = (dmg.wrapping_mul(100 - evasion) as u32 / 100) as i32;
+            if dmg == 0 {
+                dmg = 1;
+            }
+        }
+        dmg
     }
 
     /// The caster's school. A caster with power but no school (a Ghost can be one) is not
@@ -1557,9 +1764,32 @@ impl Battle {
         round_even(p as i64 * (100 - prot) as i64, 100) as i32
     }
 
-    /// The power `a` casts with at `pct`% (Splash).
-    fn power_at(&self, a: usize, pct: i32) -> i32 {
-        self.fighters[a].power * pct / 100
+    /// The power `a` casts with (485b3c, c27374), for every kind of spell: ×40% for any caster
+    /// while a splash is under way, else ×80% for a `Splash` caster.
+    fn cast_power(&self, a: usize) -> i32 {
+        let p = self.fighters[a].power;
+        if self.splash.state != 0 {
+            splash_scale(p, SPLASH_SIDE)
+        } else if self.fighters[a].has(Bonus::Splash) {
+            splash_scale(p, SPLASH_MAIN)
+        } else {
+            p
+        }
+    }
+
+    /// The "power after protection" both mage poisons test against 15 (c26c9f): the caster's
+    /// magic power, without Splash or Potent, × (99 − the target's protection) / 100, or / 114
+    /// against Elemental protection. Life (and a caster without a school) and Elemental
+    /// divide unsigned, so a protection above 99 makes it huge and the poison works; Death
+    /// divides signed (the original's).
+    fn poison_power(&self, a: usize, t: usize) -> i32 {
+        let mp = self.fighters[a].power;
+        let ts = &self.fighters[t].stats;
+        match self.school(a) {
+            Some(MagicSchool::Death) => mp.wrapping_mul(99 - ts[Stat::ProtectDeath]) / 100,
+            Some(MagicSchool::Elemental) => (mp.wrapping_mul(99 - ts[Stat::ProtectElemental]) as u32 / 114) as i32,
+            _ => (mp.wrapping_mul(99 - ts[Stat::ProtectLife]) as u32 / 100) as i32,
+        }
     }
 
     /// Magic strike damage of hostile power `p`, before capping at HP: Life ×2 on undead,
@@ -1586,7 +1816,7 @@ impl Battle {
 
     /// A magic strike's damage on `t` as it would be cast now, `Drying` included.
     pub fn magic_strike(&self, a: usize, t: usize) -> i32 {
-        let p = self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a)));
+        let p = self.hostile_power_of(a, t, self.cast_power(a));
         self.strike_damage(a, t, p) + self.drying(a, t)
     }
 
@@ -1632,7 +1862,7 @@ impl Battle {
     /// The blessing `a` would give `t` now, as the hover shows it: no attack gain for a
     /// unit without an attack (485d58).
     pub fn bless_buff(&self, a: usize, t: usize) -> Buff {
-        let mut b = self.bless_of(a, t, self.power_at(a, self.splash_pct(a)));
+        let mut b = self.bless_of(a, t, self.cast_power(a));
         if !self.fighters[t].has_attack() {
             b.attack = 0;
         }
@@ -1641,7 +1871,7 @@ impl Battle {
 
     /// The curse `a` would put on `t` now, as the hover shows it.
     pub fn curse_buff(&self, a: usize, t: usize) -> Buff {
-        let mut b = self.curse_of(a, self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a))));
+        let mut b = self.curse_of(a, self.hostile_power_of(a, t, self.cast_power(a)));
         if !self.fighters[t].has_attack() {
             b.attack = 0;
         }
@@ -1651,11 +1881,10 @@ impl Battle {
     /// Expected effect of `kind` by `a` on `t`, for hover previews.
     pub fn preview(&self, a: usize, t: usize, kind: ActionKind) -> Preview {
         let target = &self.fighters[t];
-        let pct = self.splash_pct(a);
         match kind {
             ActionKind::Strike => Preview::Damage(self.magic_strike(a, t).min(target.hp)),
             ActionKind::Curse => Preview::Buff(self.curse_buff(a, t)),
-            ActionKind::Heal => Preview::Heal(self.heal_amount(a, t, self.power_at(a, pct)).min(target.max_hp() - target.hp)),
+            ActionKind::Heal => Preview::Heal(self.heal_amount(a, t, self.cast_power(a)).min(target.max_hp() - target.hp)),
             ActionKind::Bless => Preview::Buff(self.bless_buff(a, t)),
             k => Preview::Damage(self.physical_damage(a, t, k).min(target.hp)),
         }
@@ -1672,12 +1901,18 @@ impl Battle {
         f.actions -= 1;
         f.taken += 1;
         if f.bleed > 0 {
-            let loss = ((f.base[Stat::AttackBlow] + f.base[Stat::AttackShot] + f.power) * f.bleed / 100).clamp(0, f.hp);
+            // `(AB + AS + MP) × bleed / 100`, divided unsigned: a negative sum (EternalGift
+            // curses) bleeds about 43 million, so the unit dies (c2a53c, the original's).
+            let sum = f.base[Stat::AttackBlow].wrapping_add(f.base[Stat::AttackShot]).wrapping_add(f.power);
+            let loss = (sum.wrapping_mul(f.bleed) as u32 / 100) as i32;
+            let loss = loss.min(f.hp);
             if loss > 0 {
                 f.hp -= loss;
                 let msg = crate::trf!("{name} bleeds for {loss}", name = f.name, loss);
                 self.log.push(msg);
                 if !self.fighters[id].alive() {
+                    // Removed plainly (no on-kill effects), and its bleed is cleared.
+                    self.fighters[id].bleed = 0;
                     self.died(id);
                     return false;
                 }
@@ -1687,13 +1922,18 @@ impl Battle {
     }
 
     /// After every action: the actor's side collapses once it has used its last action
-    /// (48b5ac), the end check runs and the next actor is picked.
+    /// (48b5ac), the end check runs, the battle on screen copies its sides' living counts into
+    /// the side blocks (48bb10, which Flock reads) and the next actor is picked.
     fn finish_action(&mut self, id: usize) {
         if self.fighters[id].alive() && self.fighters[id].actions <= 0 {
             let team = self.fighters[id].team;
             self.collapse(team);
         }
         self.end_check();
+        if self.interactive {
+            let counts = Team::BOTH.map(|t| self.living(t).count());
+            patch_update(|g| g.side_blocks = counts);
+        }
         self.advance();
     }
 
@@ -1760,7 +2000,7 @@ impl Battle {
     }
 
     /// The active fighter does `kind` to `target` (it must be the cell's action); costs one
-    /// action.
+    /// action. The case of that kind runs (48a5c4), then the Splash neighbour loop.
     pub fn act_with(&mut self, target: usize, kind: ActionKind) -> Result<Hit, ActionError> {
         let id = self.active().ok_or(ActionError::NotYourTurn)?;
         if !self.options(id, target).contains(&kind) {
@@ -1769,142 +2009,167 @@ impl Battle {
         let mut hit = Hit::new(target, kind);
         if self.start_action(id) {
             self.fighters[id].useful += 1;
-            if kind.is_physical() {
-                self.physical_action(id, target, &mut hit);
-            } else if kind.is_hostile() {
-                self.hostile_action(id, target, &mut hit);
-            } else {
-                self.friendly_action(id, target, &mut hit);
-            }
-            // Suicide: gone after any hostile action of its own.
-            if kind.is_hostile() && self.fighters[id].alive() && self.fighters[id].has(Bonus::Suicide) {
-                let f = &mut self.fighters[id];
-                f.hp = 0;
-                let msg = crate::trf!("{name} gives its life", name = f.name);
-                self.log.push(msg);
-                self.died(id);
-            }
+            let s = self.run_case(id, target, kind, &mut hit.counter);
+            (hit.kind, hit.amount, hit.buff, hit.killed) = (s.kind, s.amount, s.buff, s.killed);
+            self.splash_follow_ups(id, kind, &mut hit);
         }
         hit.actor_died = !self.fighters[id].alive();
         self.finish_action(id);
         Ok(hit)
     }
 
-    /// Community `PreventiveStrike`: before a melee on it, it hits first (melee with an
-    /// AttackBlow, else a shot); before a shot or a hostile spell, it shoots first if it has
-    /// an AttackShot. False if the attacker died.
-    fn preventive_strike(&mut self, id: usize, target: usize, kind: ActionKind, hit: &mut Hit) -> bool {
+    /// One run of an action's case on `target`. Hostile magic decides between a strike and a
+    /// curse again, and friendly magic between a heal and a blessing, at each run.
+    fn run_case(&mut self, id: usize, target: usize, kind: ActionKind, counter: &mut Option<i32>) -> Struck {
+        match kind {
+            ActionKind::Melee | ActionKind::LongStrike => self.melee_case(id, target, kind, counter),
+            ActionKind::Shot => self.shot_case(id, target, counter),
+            ActionKind::Strike | ActionKind::Curse => self.magic_case(id, target),
+            ActionKind::Heal | ActionKind::Bless => self.friendly_case(id, target),
+        }
+    }
+
+    /// The Splash neighbour loop at the end of a hit action (c26fd2). While a splash is
+    /// recorded, the primary target's side is scanned in record order from the first record
+    /// each time, for a unit in the saved row (for melee also within one column of the
+    /// attacker) that is the left neighbour (column − 1, not taken yet) or else the right one
+    /// (+ 1): so the two are hit in record order, each once. The chosen one gets the whole
+    /// case again, with no action spent: its preventive strike, the full chain, its counter
+    /// blow and the kill check. The second follow-up's recording ends the splash, so its own
+    /// counter blow is at full strength.
+    fn splash_follow_ups(&mut self, id: usize, kind: ActionKind, hit: &mut Hit) {
+        while self.splash.state != 0 {
+            // The original goes on with the slot index of a removed attacker, now another
+            // unit's (unknown); Razdor ends the splash.
+            let Some((team, row)) = self.splash.line.filter(|_| self.fighters[id].listed()) else { break };
+            let (c, melee) = (self.splash.col, self.splash.state == SPLASH_MELEE);
+            let mut next = None;
+            for n in self.living_ids(team) {
+                let f = &self.fighters[n];
+                let col = f.slot.col as i32;
+                if !f.standing() || f.slot.row != row || (melee && (self.splash.actor_col - col).abs() >= 2) {
+                    continue;
+                }
+                if !self.splash.left && col == c - 1 {
+                    self.splash.left = true;
+                } else if !self.splash.right && col == c + 1 {
+                    self.splash.right = true;
+                } else {
+                    continue;
+                }
+                next = Some(n);
+                break;
+            }
+            let Some(n) = next else { break };
+            let again = match self.splash.state {
+                SPLASH_MELEE => kind,
+                SPLASH_SHOT => ActionKind::Shot,
+                SPLASH_MAGIC => ActionKind::Curse,
+                _ => ActionKind::Heal,
+            };
+            let s = self.run_case(id, n, again, &mut hit.counter);
+            hit.splash.push((n, s.amount));
+        }
+        self.splash = Splash::default();
+    }
+
+    /// A Splash unit's hit records itself (c26f2d, c270e5, c2718d, c27274): the first one of
+    /// its kind saves the target's row and column and sets the state; a follow-up counts, and
+    /// the second one ends the splash. Melee, shots and hostile spells record only in the
+    /// battle on screen; heals and blessings record in any battle (their hook has no gate).
+    fn splash_record(&mut self, id: usize, target: usize, state: u8) {
+        if !self.fighters[id].has(Bonus::Splash) || (state != SPLASH_FRIENDLY && !self.interactive) {
+            return;
+        }
+        let t = &self.fighters[target];
+        let sp = &mut self.splash;
+        if sp.state != state {
+            sp.line = Some((t.team, t.slot.row));
+            sp.col = t.slot.col as i32;
+            // An add, from 0 (c26f84).
+            sp.state += state;
+        } else {
+            sp.count += 1;
+            if sp.count == 2 {
+                (sp.state, sp.count, sp.left, sp.right) = (0, 0, false, false);
+            }
+        }
+    }
+
+    /// Community `PreventiveStrike` (c2a181, c28aea): before a melee on it, it strikes first
+    /// (a blow with an AttackBlow, else a shot); before a shot, it shoots first if it has an
+    /// AttackShot. Never before a spell: that copy (c28c00) has no caller. The full damage
+    /// formula with it as the attacker (Splash scaling included), no side effects, no limit
+    /// per turn. False if the attacker died: removed with no on-kill effects (its action is
+    /// over, the neighbour loop still runs).
+    fn preventive_strike(&mut self, id: usize, target: usize, kind: ActionKind, counter: &mut Option<i32>) -> bool {
         let t = &self.fighters[target];
         if !t.alive() || !t.has(Bonus::PreventiveStrike) {
             return true;
         }
         let answer = if kind.is_melee() {
-            Some(if t.is_warrior() { ActionKind::Melee } else { ActionKind::Shot })
+            Some(if t.base[Stat::AttackBlow] != 0 { ActionKind::Melee } else { ActionKind::Shot })
         } else {
-            t.is_shooter().then_some(ActionKind::Shot)
+            (t.base[Stat::AttackShot] != 0).then_some(ActionKind::Shot)
         };
         let Some(answer) = answer else { return true };
-        let dmg = self.physical_damage_at(target, id, answer, 100).min(self.fighters[id].hp);
+        let dmg = self.physical_damage(target, id, answer).min(self.fighters[id].hp.max(0));
         self.fighters[id].hp -= dmg;
-        hit.counter = Some(dmg);
+        *counter = Some(counter.unwrap_or(0) + dmg);
         self.log.push(crate::trf!("{name} strikes first for {dmg}", name = self.fighters[target].name, dmg));
-        // A death by it has no on-kill effects (c2a181 removes the unit directly).
-        !self.check_death(id, None, false)
+        if self.fighters[id].hp <= 0 {
+            self.died(id);
+            return false;
+        }
+        true
     }
 
-    fn physical_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        let kind = hit.kind;
-        if !self.preventive_strike(id, target, kind, hit) {
-            return;
+    /// The melee case (cell codes 4 and 5, 48b2f6): the target's preventive strike, the blow
+    /// and vanilla Poison, Berserk of the target, CtrPoison, Suicide and PoisonS, the Splash
+    /// recording, Stun, the on-hit block, vampirism, Hunger, the counter blow and the kill
+    /// check, in that order.
+    fn melee_case(&mut self, id: usize, target: usize, kind: ActionKind, counter: &mut Option<i32>) -> Struck {
+        let mut out = Struck::new(kind);
+        if !self.preventive_strike(id, target, kind, counter) {
+            return out;
         }
-        let pct = self.splash_pct(id);
-        let (dealt, killed) = self.physical_hit(id, target, kind, pct);
-        hit.amount = dealt;
-        hit.killed = killed;
-        if pct != 100 {
-            for n in self.splash_neighbours(id, target, kind) {
-                if self.fighters[id].alive() {
-                    let (d, _) = self.physical_hit(id, n, kind, SPLASH_SIDE);
-                    hit.splash.push((n, d));
-                }
-            }
+        let raw = self.physical_damage(id, target, kind);
+        out.amount = raw.min(self.fighters[target].hp);
+        self.wound(target, out.amount);
+        if raw > 1 && self.fighters[id].has(Bonus::Poison) {
+            self.fighters[target].regen = POISON_REGEN;
         }
-        self.after_kill(id, killed, kind);
-        // Counterblow: a surviving target answers a melee or long strike with melee damage.
-        let t = &self.fighters[target];
-        if kind.is_melee() && t.alive() && t.has(Bonus::Counterblow) && self.fighters[id].alive() && !self.fighters[id].has(Bonus::Suicide) {
-            let dmg = self.physical_damage_at(target, id, ActionKind::Melee, 100).min(self.fighters[id].hp);
-            self.fighters[id].hp -= dmg;
-            hit.counter = Some(dmg);
-            self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
-            // A death by the counter blow has no on-kill effects (48b4b3).
-            self.check_death(id, None, false);
-        }
-    }
-
-    /// BloodThrist (+1 action) and, for melee, Hunger (full HP) after a kill.
-    fn after_kill(&mut self, id: usize, killed: bool, kind: ActionKind) {
-        let f = &mut self.fighters[id];
-        if !killed || !f.alive() {
-            return;
-        }
-        if f.has(Bonus::BloodThrist) {
-            f.actions += 1;
-        }
-        if kind.is_melee() && f.has(Bonus::Hunger) {
-            f.hp = f.max_hp();
-        }
-    }
-
-    /// Living units beside `target` in its row (c ± 1); for melee also within one column of
-    /// the attacker.
-    fn splash_neighbours(&self, id: usize, target: usize, kind: ActionKind) -> Vec<usize> {
-        let (team, slot) = (self.fighters[target].team, self.fighters[target].slot);
-        let col = self.fighters[id].slot.col;
-        (0..self.fighters.len())
-            .filter(|&n| {
-                let f = &self.fighters[n];
-                n != target
-                    && f.alive()
-                    && f.team == team
-                    && f.slot.row == slot.row
-                    && f.slot.col.abs_diff(slot.col) == 1
-                    && (!kind.is_melee() || f.slot.col.abs_diff(col) <= 1)
-            })
-            .collect()
-    }
-
-    /// One physical hit and its effects on the target. Returns (damage dealt, killed).
-    fn physical_hit(&mut self, id: usize, target: usize, kind: ActionKind, pct: i32) -> (i32, bool) {
-        let raw = self.physical_damage_at(id, target, kind, pct);
-        let dealt = raw.min(self.fighters[target].hp);
-        self.wound(target, dealt);
-        let a = self.fighters[id].base.clone();
-        // Vanilla Poison and PoisonS: a hit of more than 1 sets the regeneration.
-        if raw > 1 {
-            let t = &mut self.fighters[target];
-            if a.has(&Bonus::Poison) {
-                t.regen = POISON_REGEN;
-            }
-            if a.has(&Bonus::PoisonS) {
-                t.regen = STRONG_POISON_REGEN;
-            }
-        }
-        // Vampirism on the uncapped damage, not from undead or elementals; after a melee or
-        // long strike only: the shot path never reaches it (48b3ce).
-        let vamp = self.fighters[id].stats[Stat::Vampirizm];
-        if kind.is_melee() && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
-            let f = &mut self.fighters[id];
-            f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
-        }
-        if kind.is_melee() && self.fighters[target].has(Bonus::CtrPoison) {
+        self.berserk_target(target);
+        // CtrPoison: each blow on it costs the striker 20 regeneration (stacks).
+        if self.fighters[target].has(Bonus::CtrPoison) {
             self.fighters[id].regen -= CTR_POISON_STEP;
             self.refresh(id);
         }
-        self.after_hit(id, target, raw);
+        self.suicide(id);
+        if raw > 1 && self.fighters[id].has(Bonus::PoisonS) {
+            self.fighters[target].regen = STRONG_POISON_REGEN;
+        }
+        self.splash.actor_col = self.fighters[id].slot.col as i32;
+        self.splash_record(id, target, SPLASH_MELEE);
+        self.stun(id, target);
+        self.on_hit(id, target, raw, false);
+        // Vampirism on the uncapped damage, not from undead or elementals; after a melee or
+        // long strike only: the shot path never reaches it (48b3ce).
+        let vamp = self.fighters[id].stats[Stat::Vampirizm];
+        if vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
+            let f = &mut self.fighters[id];
+            f.hp = f.hp.wrapping_add(raw.wrapping_mul(vamp) / 100).min(f.max_hp());
+        }
+        // Hunger: a melee kill heals the striker to full (c252e9). The original's test reads
+        // the HP at a wrong address (unknown outcome); this is the intended reading.
+        if !self.fighters[target].alive() && self.fighters[id].has(Bonus::Hunger) {
+            let f = &mut self.fighters[id];
+            f.hp = f.max_hp();
+        }
         let long = kind == ActionKind::LongStrike;
-        let killed = self.check_death(target, Some(id), true);
         let (name, tname) = (&self.fighters[id].name, &self.fighters[target].name);
+        let killed = !self.fighters[target].alive();
+        let dealt = out.amount;
         let msg = match (killed, long) {
             (true, false) => crate::trf!("{name} kills {tname} ({dealt})", name, tname, dealt),
             (true, true) => crate::trf!("{name} kills {tname} with a long strike ({dealt})", name, tname, dealt),
@@ -1912,51 +2177,85 @@ impl Battle {
             (false, true) => crate::trf!("{name} hits {tname} with a long strike for {dealt}", name, tname, dealt),
         };
         self.log.push(msg);
-        (dealt, killed)
-    }
-
-    fn hostile_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        if !self.preventive_strike(id, target, hit.kind, hit) {
-            return;
-        }
-        let pct = self.splash_pct(id);
-        let (amount, buff, killed) = self.hostile_spell(id, target, pct);
-        (hit.amount, hit.buff, hit.killed) = (amount, buff, killed);
-        if pct != 100 {
-            for n in self.splash_neighbours(id, target, hit.kind) {
-                if self.fighters[id].alive() {
-                    let (d, _, _) = self.hostile_spell(id, n, SPLASH_SIDE);
-                    hit.splash.push((n, d));
-                }
+        // Counterblow: a surviving target answers with a blow, even a Suicide striker waiting
+        // for its removal; a striker it kills is removed with no on-kill effects (48b4b3).
+        let t = &self.fighters[target];
+        if t.alive() && t.has(Bonus::Counterblow) {
+            let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp.max(0));
+            self.fighters[id].hp -= dmg;
+            *counter = Some(counter.unwrap_or(0) + dmg);
+            self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
+            if self.fighters[id].hp <= 0 {
+                self.died(id);
             }
+            return out;
         }
-        self.after_kill(id, killed, hit.kind);
+        out.killed = self.kill_check(target, id);
+        out
     }
 
-    /// A hostile spell at `pct`% power: a strike on a weakened target, else a curse, then the
-    /// spell's side effects. Returns (damage dealt, curse, killed).
-    fn hostile_spell(&mut self, id: usize, target: usize, pct: i32) -> (i32, Buff, bool) {
-        let p = self.hostile_power_of(id, target, self.power_at(id, pct));
+    /// The shot case (code 7, 48b214): the target's preventive shot, the shot and vanilla
+    /// Poison, Berserk of the target, Suicide and PoisonS, the Splash recording, Stun, the
+    /// on-hit block and the kill check. No vampirism, no counter blow.
+    fn shot_case(&mut self, id: usize, target: usize, counter: &mut Option<i32>) -> Struck {
+        let mut out = Struck::new(ActionKind::Shot);
+        if !self.preventive_strike(id, target, ActionKind::Shot, counter) {
+            return out;
+        }
+        let raw = self.physical_damage(id, target, ActionKind::Shot);
+        out.amount = raw.min(self.fighters[target].hp);
+        self.wound(target, out.amount);
+        if raw > 1 && self.fighters[id].has(Bonus::Poison) {
+            self.fighters[target].regen = POISON_REGEN;
+        }
+        self.berserk_target(target);
+        self.suicide(id);
+        if raw != 1 && self.fighters[id].has(Bonus::PoisonS) {
+            self.fighters[target].regen = STRONG_POISON_REGEN;
+        }
+        self.splash_record(id, target, SPLASH_SHOT);
+        self.stun(id, target);
+        self.on_hit(id, target, raw, true);
+        let (name, tname, dealt) = (&self.fighters[id].name, &self.fighters[target].name, out.amount);
+        let msg = if self.fighters[target].alive() {
+            crate::trf!("{name} hits {tname} for {dealt}", name, tname, dealt)
+        } else {
+            crate::trf!("{name} kills {tname} ({dealt})", name, tname, dealt)
+        };
+        self.log.push(msg);
+        out.killed = self.kill_check(target, id);
+        out
+    }
+
+    /// The hostile magic case (code 8, 48ac7e): a strike on a target with a negative modifier
+    /// this turn, else a curse; then Berserk of the target, Drying, the mage Poison, Suicide,
+    /// Exhaustion, PoisonS, Stun, the Splash recording, the on-hit block and the kill check.
+    /// The value the chain tests is the spell's power, for a curse too.
+    fn magic_case(&mut self, id: usize, target: usize) -> Struck {
+        let p = self.hostile_power_of(id, target, self.cast_power(id));
         let school = self.school(id);
         let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
-        let mut dealt = 0;
-        let mut buff = Buff::default();
+        let mut out = Struck::new(ActionKind::Curse);
+        let d;
         if self.fighters[target].weakened() {
+            out.kind = ActionKind::Strike;
             let raw = self.strike_damage(id, target, p);
-            dealt = raw.min(self.fighters[target].hp);
-            self.wound(target, dealt);
-            self.log.push(crate::trf!("{name} hits {tname} with magic for {dealt}", name, tname, dealt));
+            d = raw;
+            out.amount = raw.min(self.fighters[target].hp);
+            self.wound(target, out.amount);
+            self.log.push(crate::trf!("{name} hits {tname} with magic for {dealt}", name, tname, dealt = out.amount));
             // Vampirism on magic: Death strikes only, not from undead or elementals.
             let vamp = self.fighters[id].stats[Stat::Vampirizm];
             if school == Some(MagicSchool::Death) && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
                 let f = &mut self.fighters[id];
-                f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
+                f.hp = f.hp.wrapping_add(raw.wrapping_mul(vamp) / 100).min(f.max_hp());
             }
         } else {
-            buff = self.curse_of(id, p);
-            self.apply_buff(id, target, buff, false);
+            d = p;
+            out.buff = self.curse_of(id, p);
+            self.apply_buff(id, target, out.buff, false);
             self.fighters[target].cursed = true;
-            self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = buff.describe()));
+            self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = out.buff.describe()));
             // An undead caster's Elemental or Death curse drains life to it.
             if self.fighters[id].base.nature == Nature::Undead && matches!(school, Some(MagicSchool::Elemental | MagicSchool::Death)) {
                 // The target's loss is capped at its HP, but the caster gains the whole
@@ -1964,73 +2263,65 @@ impl Battle {
                 let drain = p / self.opt().curse_main_spell.max(1) / 2 + 1;
                 let loss = drain.min(self.fighters[target].hp);
                 self.wound(target, loss);
-                dealt += loss;
+                out.amount += loss;
                 let f = &mut self.fighters[id];
                 f.hp = (f.hp + drain).min(f.max_hp());
             }
         }
-        let a = self.fighters[id].base.clone();
+        // Berserk sees the HP before Drying's loss (c258bf).
+        self.berserk_target(target);
         let dry = self.drying(id, target).min(self.fighters[target].hp);
         if dry > 0 {
             self.fighters[target].hp -= dry;
-            dealt += dry;
+            out.amount += dry;
         }
-        // Poison works for mages whose power after protection is above 15.
-        if p > MAGE_POISON_POWER {
-            let t = &mut self.fighters[target];
-            if a.has(&Bonus::Poison) {
-                t.regen = POISON_REGEN;
-            }
-            if a.has(&Bonus::PoisonS) {
-                t.regen = STRONG_POISON_REGEN;
-            }
+        let poisoned = self.poison_power(id, target) > MAGE_POISON_POWER;
+        if poisoned && self.fighters[id].has(Bonus::Poison) {
+            self.fighters[target].regen = POISON_REGEN;
         }
-        if a.has(&Bonus::Exhaustion) {
+        self.suicide(id);
+        if self.fighters[id].has(Bonus::Exhaustion) {
             let t = &mut self.fighters[target];
             for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
                 t.base[st] = (t.base[st] - EXHAUSTION_POINTS).max(0);
             }
         }
-        // In this path the "damage" the hooks test is the spell's power.
-        self.after_hit(id, target, p);
-        let killed = self.check_death(target, Some(id), true);
-        if killed {
+        if poisoned && self.fighters[id].has(Bonus::PoisonS) {
+            self.fighters[target].regen = STRONG_POISON_REGEN;
+        }
+        self.stun(id, target);
+        self.splash_record(id, target, SPLASH_MAGIC);
+        // A Bleed caster's spell on a target that already bleeds makes the patch fault (an
+        // access violation, c29a14); Razdor keeps the bleeding at 75 instead (a deviation).
+        self.on_hit(id, target, d, false);
+        out.killed = self.kill_check(target, id);
+        if out.killed {
             self.log.push(crate::trf!("{name} kills {tname} with magic", name, tname));
         }
-        (dealt, buff, killed)
+        out
     }
 
-    fn friendly_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
-        let pct = self.splash_pct(id);
-        let (amount, buff) = self.friendly_spell(id, target, pct);
-        (hit.amount, hit.buff) = (amount, buff);
-        if pct != 100 {
-            for n in self.splash_neighbours(id, target, hit.kind) {
-                if !self.fighters[n].crippled {
-                    let (h, _) = self.friendly_spell(id, n, SPLASH_SIDE);
-                    hit.splash.push((n, h));
-                }
-            }
-        }
-    }
-
-    /// Heal a wounded ally (if the heal does anything), else bless it, at `pct`% power.
-    fn friendly_spell(&mut self, id: usize, target: usize, pct: i32) -> (i32, Buff) {
-        let p = self.power_at(id, pct);
+    /// The heal and bless case (code 9, 48a87c): a heal of a wounded ally (if the heal does
+    /// anything), else a blessing, then the Splash recording. No Community on-hit effects.
+    fn friendly_case(&mut self, id: usize, target: usize) -> Struck {
+        let p = self.cast_power(id);
         let (name, tname) = (self.fighters[id].name.clone(), self.fighters[target].name.clone());
         let t = &self.fighters[target];
         let heal = self.heal_amount(id, target, p);
+        let mut out = Struck::new(ActionKind::Heal);
         if t.wounded() && heal > 0 {
-            let healed = heal.min(t.max_hp() - t.hp);
-            self.fighters[target].hp += healed;
-            self.log.push(crate::trf!("{name} heals {tname} +{healed}", name, tname, healed));
-            return (healed, Buff::default());
+            out.amount = heal.min(t.max_hp() - t.hp);
+            self.fighters[target].hp += out.amount;
+            self.log.push(crate::trf!("{name} heals {tname} +{healed}", name, tname, healed = out.amount));
+        } else {
+            out.kind = ActionKind::Bless;
+            out.buff = self.bless_of(id, target, p);
+            self.apply_buff(id, target, out.buff, true);
+            self.fighters[target].blessed = true;
+            self.log.push(crate::trf!("{name} blesses {tname}: {what}", name, tname, what = out.buff.describe()));
         }
-        let buff = self.bless_of(id, target, p);
-        self.apply_buff(id, target, buff, true);
-        self.fighters[target].blessed = true;
-        self.log.push(crate::trf!("{name} blesses {tname}: {what}", name, tname, what = buff.describe()));
-        (0, buff)
+        self.splash_record(id, target, SPLASH_FRIENDLY);
+        out
     }
 
     /// A blessing or curse: added to this turn's modifiers, or with `EternalGift` to the
@@ -2057,41 +2348,102 @@ impl Battle {
         self.refresh(target);
     }
 
-    /// Per-hit effects on the target (Berserk-on-target, Stun and the Community on-hit
-    /// block). `v` is the damage, or the spell's power for magic.
-    fn after_hit(&mut self, id: usize, target: usize, v: i32) {
+    /// Community `Berserk` on the unit hit: its attack modifier is set anew from its HP lost,
+    /// overwriting a blessing's (c25777, c2581b, c258bf).
+    fn berserk_target(&mut self, target: usize) {
+        let t = &mut self.fighters[target];
+        if t.has(Bonus::Berserk) {
+            t.mods.attack = berserk(t);
+            self.refresh(target);
+        }
+    }
+
+    /// Community `Stun` (c27e5a, c2899a, c26e1f): every hit takes 30% of the target's current
+    /// initiative (its base with the turn-1 Artillery or FirstShot bonus, not lowered by the
+    /// earlier Stuns) off its initiative modifier, so each hit takes the same amount.
+    fn stun(&mut self, id: usize, target: usize) {
+        if self.fighters[id].has(Bonus::Stun) {
+            let t = &mut self.fighters[target];
+            t.mods.initiative -= (t.base[Stat::Initiative] + t.turn_initiative) * STUN_PERCENT / 100;
+            self.refresh(target);
+        }
+    }
+
+    /// Community `Suicide` after its unit's hostile hit (c2633c, c262a1, c261c1): HP 0,
+    /// regeneration −99, no manoeuvres and no actions left, off its record's row and column.
+    /// It is not removed: it waits in its side's list until a counter blow removes it or the
+    /// next turn start's regeneration tick does (the original's).
+    fn suicide(&mut self, id: usize) {
+        let f = &mut self.fighters[id];
+        if !f.has(Bonus::Suicide) {
+            return;
+        }
+        f.hp = 0;
+        f.regen = SUICIDE_REGEN;
+        f.base[Stat::Manevres] = 0;
+        f.actions = 0;
+        f.suicided = true;
+        let msg = crate::trf!("{name} gives its life", name = f.name);
+        self.log.push(msg);
+        self.refresh(id);
+    }
+
+    /// The Community on-hit block (c291d1, c296bc, c29984), in its order. `d` is the damage
+    /// before capping at the HP, or the spell's power. With `d > 1`: PoisonArmorIgnore,
+    /// Bleed (after a shot only on a target still alive), ArmorBreaker (each defence keeps
+    /// `x − x/4`, rounded up) and KillingStrike. Then FateGift saves a target at 0 HP, before
+    /// Neutralize can erase it; Neutralize and NoHeal work on every hit; BloodThrist gives an
+    /// action per killing hit.
+    fn on_hit(&mut self, id: usize, target: usize, d: i32, shot: bool) {
         let a = self.fighters[id].base.clone();
+        let mark = (self.fighters[target].team.index(), self.record_index(target));
         let finish = crate::trf!("{name} finishes {tname}", name = self.fighters[id].name, tname = self.fighters[target].name);
         let t = &mut self.fighters[target];
-        if t.has(Bonus::Berserk) && t.alive() {
-            t.mods.attack = berserk(t);
-        }
-        if a.has(&Bonus::Stun) {
-            t.mods.initiative -= t.stats[Stat::Initiative] * STUN_PERCENT / 100;
-        }
-        if v > 1 {
+        if d > 1 {
             if a.has(&Bonus::PoisonArmorIgnore) {
                 t.regen = t.regen.min(PIERCING_POISON_REGEN);
             }
-            if a.has(&Bonus::Bleed) {
-                t.bleed = BLEED_PERCENT;
+            if a.has(&Bonus::Bleed) && (!shot || t.alive()) {
+                t.bleed = t.bleed.max(BLEED_PERCENT);
             }
             if a.has(&Bonus::ArmorBreaker) {
-                t.base[Stat::DefenceBlow] = t.base[Stat::DefenceBlow] * 3 / 4;
-                t.base[Stat::DefenceShot] = t.base[Stat::DefenceShot] * 3 / 4;
+                for st in [Stat::DefenceShot, Stat::DefenceBlow] {
+                    t.base[st] -= t.base[st] * 25 / 100;
+                }
             }
-            if a.has(&Bonus::KillingStrike) && t.alive() && t.hp * 100 <= t.base.max_hp() * KILLING_STRIKE_PERCENT {
+            if a.has(&Bonus::KillingStrike) && t.base.max_hp() * KILLING_STRIKE_PERCENT / 100 >= t.hp {
+                if t.alive() {
+                    self.log.push(finish);
+                }
                 t.hp = 0;
-                self.log.push(finish);
             }
+        }
+        let t = &mut self.fighters[target];
+        if t.has(Bonus::FateGift) && !t.alive() {
+            t.base.bonuses.clear();
+            t.actions = t.base[Stat::Manevres];
+            for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
+                t.base[st] += FATE_PROTECTION;
+            }
+            t.regen += FATE_REGEN;
+            t.base[Stat::Hits] += t.base[Stat::Hits] * FATE_HP_PERCENT / 100;
+            t.hp = t.base.max_hp();
+            t.mods.initiative += FATE_INITIATIVE;
+            let msg = crate::trf!("{name} is spared by fate", name = t.name);
+            self.log.push(msg);
         }
         let t = &mut self.fighters[target];
         if a.has(&Bonus::Neutralize) {
             t.base.bonuses.clear();
         }
         if a.has(&Bonus::NoHeal) {
-            t.crippled = true;
             t.regen = t.regen.min(0);
+            if let Some(m) = self.crippled[mark.0].get_mut(mark.1) {
+                *m = true;
+            }
+        }
+        if a.has(&Bonus::BloodThrist) && !self.fighters[target].alive() {
+            self.fighters[id].actions += 1;
         }
         self.refresh(target);
     }
@@ -2110,42 +2462,26 @@ impl Battle {
         self.fighters.iter().filter(|f| f.team == team).map(|f| f.lost as i64).sum()
     }
 
-    /// After a hit: true if `i` died. `FateGift` saves a unit once from a hit (`savable`):
-    /// actions refilled, protections and regeneration +20, max HP +20% and full, initiative
-    /// +5 this turn, and the gift is gone. The killer of a `DeathCurse` unit dies; the killer
-    /// of a `Ghost` dies if its Death protection is below 30 × the ghost's actions (48a3f0).
-    fn check_death(&mut self, i: usize, killer: Option<usize>, savable: bool) -> bool {
+    /// The kill check at the end of a hit (48a3f0): true if the target is at 0 HP, and then
+    /// the on-kill effects and its removal. The killer of a `DeathCurse` unit dies; the killer
+    /// of a `Ghost` dies if its Death protection is below 30 × the ghost's actions.
+    fn kill_check(&mut self, i: usize, killer: usize) -> bool {
         if self.fighters[i].alive() {
             return false;
         }
-        let f = &mut self.fighters[i];
-        if savable && f.has(Bonus::FateGift) {
-            f.base.bonuses.clear();
-            f.actions = f.base[Stat::Manevres];
-            for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
-                f.base[st] += FATE_PROTECTION;
-            }
-            f.regen += FATE_REGEN;
-            f.base[Stat::Hits] += f.base[Stat::Hits] * FATE_HP_PERCENT / 100;
-            f.hp = f.base.max_hp();
-            f.mods.initiative += FATE_INITIATIVE;
-            let msg = crate::trf!("{name} is spared by fate", name = f.name);
-            self.log.push(msg);
-            self.refresh(i);
-            return false;
-        }
-        if let Some(k) = killer.filter(|&k| self.fighters[k].alive()) {
+        if self.fighters[killer].listed() {
             let dead = &self.fighters[i];
             let curse = dead.has(Bonus::DeathCurse)
-                || (dead.has(Bonus::Ghost) && self.fighters[k].stats[Stat::ProtectDeath] < 30 * dead.base[Stat::Manevres]);
+                || (dead.has(Bonus::Ghost) && self.fighters[killer].stats[Stat::ProtectDeath] < 30 * dead.base[Stat::Manevres]);
             if curse {
-                let kf = &mut self.fighters[k];
-                kf.lost += kf.hp;
-                self.turn_lost[kf.team.index()] += kf.hp as i64;
+                let kf = &mut self.fighters[killer];
+                let hp = kf.hp.max(0);
+                kf.lost += hp;
+                self.turn_lost[kf.team.index()] += hp as i64;
                 kf.hp = 0;
-                let msg = crate::trf!("{name} dies by {caster}'s curse", name = self.fighters[k].name, caster = self.fighters[i].name);
+                let msg = crate::trf!("{name} dies by {caster}'s curse", name = self.fighters[killer].name, caster = self.fighters[i].name);
                 self.log.push(msg);
-                self.died(k);
+                self.died(killer);
             }
         }
         self.died(i);
@@ -2194,8 +2530,8 @@ impl Battle {
     /// damage on the actor, else its power.
     fn return_threat(&self, id: usize, t: usize) -> i32 {
         match self.fighters[t].ai_role {
-            AiRole::Warrior => self.physical_damage_at(t, id, ActionKind::Melee, 100),
-            AiRole::Shooter => self.physical_damage_at(t, id, ActionKind::Shot, 100),
+            AiRole::Warrior => self.physical_damage(t, id, ActionKind::Melee),
+            AiRole::Shooter => self.physical_damage(t, id, ActionKind::Shot),
             AiRole::Mage => self.fighters[t].ai_power,
         }
     }
@@ -2432,9 +2768,9 @@ impl Battle {
                             if d > 0 { (top - f.hp as i64 / d).max(low) } else { low }
                         };
                         let th = match tf.ai_role {
-                            AiRole::Shooter => threat(self.physical_damage_at(t, id, ActionKind::Shot, 100) as i64, 16, 3),
+                            AiRole::Shooter => threat(self.physical_damage(t, id, ActionKind::Shot) as i64, 16, 3),
                             AiRole::Mage => threat(self.strike_power(t, id), 12, 2),
-                            AiRole::Warrior => threat(self.physical_damage_at(t, id, ActionKind::Melee, 100) as i64, 8, 1),
+                            AiRole::Warrior => threat(self.physical_damage(t, id, ActionKind::Melee) as i64, 8, 1),
                         };
                         (t, (tf.ai_power as i64 * ((kill + th) * v)) as f64)
                     }));

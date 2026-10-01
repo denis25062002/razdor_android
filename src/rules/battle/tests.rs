@@ -103,6 +103,12 @@ fn acts(id: u32, n: i32, base: UnitDef) -> UnitDef {
     UnitDef { id, manevres: n, ..base }
 }
 
+/// Marks fighter `i`'s record with NoHeal's cripple mark.
+fn cripple(bt: &mut Battle, i: usize) {
+    let (t, k) = (bt.fighters[i].team.index(), bt.record_index(i));
+    bt.crippled[t][k] = true;
+}
+
 /// 69: a heavy hitter, attack 100.
 fn hammer() -> UnitDef {
     warrior(69, 100, 0)
@@ -351,7 +357,7 @@ fn row9_vampirism_on_physical_hits_and_death_strikes_only() {
     for i in 0..3 {
         bt.fighters[i].hp = 10;
     }
-    bt.fighters[0].crippled = true;
+    cripple(&mut bt, 0);
     // Overkill counts: 30 on a 5-HP unit still heals 15. NoHeal does not stop it.
     bt.fighters[3].hp = 5;
     bt.act(3).unwrap();
@@ -957,32 +963,33 @@ fn suicide_unit_dies_after_its_attack() {
 
 #[test]
 fn row35_splash_80_40_on_melee_shots_and_heals_in_battles_on_screen_only() {
+    // 50 × 40% is 19: the patch's constant loses 1 on a multiple of 5.
     let sweep = bonus(67, Bonus::Splash, warrior(67, 50, 0));
     let mut bt = with(vec![sweep.clone()], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3)), (18, f(5)), (18, b(2))]);
     assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 40);
     let hit = bt.act(2).unwrap();
-    assert_eq!((hit.amount, hit.splash.clone()), (40, vec![(1, 20), (3, 20)]));
+    assert_eq!((hit.amount, hit.splash.clone()), (40, vec![(1, 19), (3, 19)]));
     assert_eq!([bt.fighters[4].hp, bt.fighters[5].hp], [200, 200]);
     // A melee neighbour must be within one column of the attacker too.
     let mut bt = with(vec![sweep.clone()], &[(67, f(1))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
-    assert_eq!(bt.act(2).unwrap().splash, vec![(1, 20)]);
+    assert_eq!(bt.act(2).unwrap().splash, vec![(1, 19)]);
     // Shots: both neighbours.
     let gun = bonus(68, Bonus::Splash, shooter(68, 50));
     let mut bt = with(vec![gun], &[(68, b(2)), (10, f(0))], &[(18, f(3)), (18, f(4)), (18, f(5))]);
-    assert_eq!(bt.act(3).unwrap().splash, vec![(2, 20), (4, 20)]);
-    // Heals: 80% and 40%.
+    assert_eq!(bt.act(3).unwrap().splash, vec![(2, 19), (4, 19)]);
+    // Heals: 80% and 40% (20 × 40% is 7).
     let medic = bonus(64, Bonus::Splash, mage(64, 20, MagicSchool::Life, MagicDirection::ToAlly));
     let mut bt = with(vec![medic], &[(64, b(2)), (10, f(1)), (10, f(2)), (10, f(3))], &[(18, f(5))]);
     for i in 1..4 {
         bt.fighters[i].hp = 10;
     }
     let hit = bt.act(2).unwrap();
-    assert_eq!((hit.kind, hit.amount, hit.splash), (ActionKind::Heal, 16, vec![(1, 8), (3, 8)]));
-    // Off screen (AI against AI): no splash.
+    assert_eq!((hit.kind, hit.amount, hit.splash), (ActionKind::Heal, 16, vec![(1, 7), (3, 7)]));
+    // Off screen (AI against AI): the 80% malus but no follow-ups.
     let mut bt = with(vec![sweep], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
     bt.set_simulation();
     let hit = bt.act(2).unwrap();
-    assert_eq!((hit.amount, hit.splash), (50, vec![]));
+    assert_eq!((hit.amount, hit.splash), (40, vec![]));
 }
 
 #[test]
@@ -1022,7 +1029,7 @@ fn row39_stun_cuts_30_percent_of_current_initiative_per_hit_this_turn() {
     bt.act(1).unwrap();
     assert_eq!(bt.fighters[1].stats[Stat::Initiative], 7);
     bt.act(1).unwrap();
-    assert_eq!(bt.fighters[1].stats[Stat::Initiative], 5, "cumulative: 7 − 2");
+    assert_eq!(bt.fighters[1].stats[Stat::Initiative], 4, "the same 3 again: 30% of the current initiative, 10");
     to_round(&mut bt, 2);
     assert_eq!(bt.fighters[1].stats[Stat::Initiative], 10);
 }
@@ -1099,20 +1106,20 @@ fn row44_preventive_strike_answers_first() {
     let hit = bt.act(4).unwrap();
     assert_eq!(hit.counter, None, "a shot on the guard: it has no shot to answer with");
     let hit = bt.act(5).unwrap();
-    assert_eq!((hit.kind, hit.counter), (ActionKind::Curse, Some(15)), "a spell on the archer: it shoots (20 − Row2Def)");
+    assert_eq!((hit.kind, hit.counter), (ActionKind::Curse, None), "never before a spell (c28c00 has no caller)");
 }
 
 #[test]
-fn row45_flock_moves_the_attack_by_a_quarter_by_the_starting_army_sizes() {
+fn row45_flock_moves_the_attack_by_a_quarter_by_the_side_blocks() {
     let wolf = bonus(80, Bonus::Flock, warrior(80, 40, 0));
     let mut bt = with(vec![wolf.clone()], &[(80, f(2)), (18, f(3))], &[(18, f(2))]);
-    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 50);
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 50, "2 against 1: +10");
     bt.fighters[1].hp = 0;
     to_round(&mut bt, 2);
-    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 50, "the sizes at the start count");
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 40, "the counts after the last action: 1 against 1");
     let bt = with(vec![wolf.clone()], &[(80, f(2))], &[(18, f(2)), (18, f(3))]);
     assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 30);
-    let bt = with(vec![wolf], &[(80, f(2))], &[(18, f(2))]);
+    let bt = with(vec![wolf.clone()], &[(80, f(2))], &[(18, f(2))]);
     assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 40);
 }
 
@@ -1131,7 +1138,7 @@ fn row47_no_heal_blocks_heals_blessings_and_regeneration() {
     let troll = UnitDef { regen: 10, hits: 200, ..warrior(88, 1, 0) };
     let mut bt = with(vec![cripple, troll], &[(87, f(2))], &[(88, f(2)), (13, b(1))]);
     bt.act(1).unwrap();
-    assert!(bt.fighters[1].crippled);
+    assert!(bt.crippled(1));
     assert!(bt.options(2, 1).is_empty(), "neither heal nor bless");
     to_round(&mut bt, 2);
     assert_eq!(bt.fighters[1].hp, 170, "no regeneration");
@@ -2013,10 +2020,10 @@ fn row38_a_reserve_unit_only_moves_even_a_ghost_that_could_cast() {
 fn row9_a_reserve_caster_still_tends_a_noheal_marked_unit() {
     let c = content_with(vec![], Formation::VANILLA);
     let mut bt = battle_in(&c, &[(10, f(1)), (13, r(1)), (10, r(2))], &[(18, f(1))]);
-    bt.fighters[2].crippled = true;
+    cripple(&mut bt, 2);
     bt.fighters[2].hp = 20;
     assert_eq!(bt.options(1, 2), vec![ActionKind::Heal], "the mark is read only for rows 1 and 2");
-    bt.fighters[0].crippled = true;
+    cripple(&mut bt, 0);
     bt.fighters[0].hp = 20;
     assert!(bt.options(1, 0).is_empty(), "the caster in the reserve tends only the reserve");
 }
@@ -2041,7 +2048,7 @@ fn row30_the_attack_modifier_counts_on_an_attack_of_0() {
     let mut bt = with(vec![archer], &[(10, f(2))], &[(38, f(2))]);
     bt.fighters[1].mods.attack = 20;
     bt.refresh(1);
-    assert_eq!(bt.physical_damage_at(1, 0, ActionKind::Melee, 100), 15);
+    assert_eq!(bt.physical_damage(1, 0, ActionKind::Melee), 15);
     // A blessing gives it the attack modifier too, though the hover shows none.
     let mut bt = with(vec![warrior(152, 0, 0)], &[(13, b(2)), (152, f(1))], &[(18, f(2))]);
     turn_of(&mut bt, 0);
@@ -2159,4 +2166,335 @@ fn row36_winning_with_only_surrendering_units_left_is_a_defeat() {
     bt.fighters[2].hp = 1;
     assert!(bt.act(2).unwrap().killed);
     assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Victory, Some(EndReason::Wiped)));
+}
+
+// --- community-patches.md, "Razdor now → original" ------------------------------------------
+
+/// Starts this thread's patch globals afresh, as the exe file holds them.
+fn fresh_globals() {
+    patch_update(|g| *g = PatchGlobals::START);
+}
+
+#[test]
+fn community_row1_2_the_splash_constants_and_the_malus_everywhere() {
+    assert_eq!([5, 10, 25, 100, 7, 50].map(|x| splash_scale(x, SPLASH_SIDE)), [1, 3, 9, 39, 2, 19]);
+    assert_eq!([5, 10, 7, 100].map(|x| splash_scale(x, SPLASH_MAIN)), [4, 8, 5, 80]);
+    assert!(splash_scale(-1, SPLASH_SIDE) > 1_700_000_000, "a negative attack wraps to a huge one at 40%");
+    assert!(splash_scale(-5, SPLASH_MAIN) < -800_000_000, "and to a huge negative one at 80%");
+    // Off screen, the malus counts in the AI's estimates as in the hits, but only heals and
+    // blessings get follow-ups (their recording has no gate).
+    let sweep = bonus(67, Bonus::Splash, warrior(67, 50, 0));
+    let mut bt = with(vec![sweep.clone()], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
+    bt.set_simulation();
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 40);
+    let medic = bonus(64, Bonus::Splash, mage(64, 20, MagicSchool::Life, MagicDirection::ToAlly));
+    let mut bt = with(vec![medic], &[(64, b(2)), (10, f(1)), (10, f(2)), (10, f(3))], &[(18, f(5))]);
+    bt.set_simulation();
+    for i in 1..4 {
+        bt.fighters[i].hp = 10;
+    }
+    assert_eq!(bt.act(2).unwrap().splash, vec![(1, 7), (3, 7)]);
+    // A Splash unit cursed below 0 attack: its first blow wraps to 1, its follow-ups to a
+    // killing blow.
+    let mut bt = with(vec![sweep], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
+    bt.fighters[0].mods.attack = -60;
+    bt.refresh(0);
+    let hit = bt.act(2).unwrap();
+    assert_eq!((hit.amount, hit.splash), (1, vec![(1, 200), (3, 200)]));
+}
+
+#[test]
+fn community_row3_each_follow_up_runs_the_whole_case_in_record_order() {
+    let sweep = bonus(67, Bonus::Splash, UnitDef { hits: 300, ..warrior(67, 50, 0) });
+    let chief = bonus(126, Bonus::Counterblow, UnitDef { hits: 300, ..warrior(126, 25, 0) });
+    // Records: the primary at 2, its right neighbour, then its left one.
+    let mut bt = with(vec![sweep.clone(), chief], &[(67, f(2))], &[(126, f(2)), (126, f(3)), (126, f(1))]);
+    let hit = bt.act(1).unwrap();
+    assert_eq!((hit.amount, hit.splash), (40, vec![(2, 19), (3, 19)]), "the lower record first");
+    // The primary's and the first neighbour's counter blows are at 40% (25 → 9); the second
+    // follow-up ends the splash before its counter, which is at full strength.
+    assert_eq!(hit.counter, Some(9 + 9 + 25));
+    assert_eq!(bt.fighters[0].hp, 300 - 43);
+    // Preventive strikes: the primary's at full strength, both neighbours' at 40%.
+    let guard = bonus(89, Bonus::PreventiveStrike, UnitDef { hits: 300, ..warrior(89, 25, 0) });
+    let mut bt = with(vec![sweep.clone(), guard], &[(67, f(2))], &[(89, f(1)), (89, f(2)), (89, f(3))]);
+    assert_eq!(bt.act(2).unwrap().counter, Some(25 + 9 + 9));
+    // Vampirism on every follow-up.
+    let leech = UnitDef { vampirism: 50, ..sweep };
+    let mut bt = with(vec![leech], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
+    bt.fighters[0].hp = 10;
+    bt.act(2).unwrap();
+    assert_eq!(bt.fighters[0].hp, 10 + 20 + 9 + 9);
+}
+
+#[test]
+fn community_row4_a_splash_heal_reaches_a_crippled_neighbour() {
+    let medic = bonus(64, Bonus::Splash, mage(64, 20, MagicSchool::Life, MagicDirection::ToAlly));
+    let mut bt = with(vec![medic], &[(64, b(2)), (10, f(1)), (10, f(2)), (10, f(3))], &[(18, f(5))]);
+    for i in 1..4 {
+        bt.fighters[i].hp = 10;
+    }
+    cripple(&mut bt, 1);
+    assert!(bt.options(0, 1).is_empty(), "no heal by a click");
+    assert_eq!(bt.act(2).unwrap().splash, vec![(1, 7), (3, 7)]);
+}
+
+#[test]
+fn community_row7_stun_takes_30_percent_of_the_current_initiative_with_the_turn_1_bonus() {
+    let mace = bonus(75, Bonus::Stun, acts(75, 2, warrior(75, 30, 0)));
+    let gun = bonus(24, Bonus::Artillery, UnitDef { hits: 300, ..shooter(24, 10) });
+    let slow = UnitDef { initiative: 1, ..warrior(99, 1, 0) };
+    let mut bt = with(vec![mace, gun, slow], &[(75, f(2)), (99, f(4))], &[(24, f(2))]);
+    turn_of(&mut bt, 0);
+    assert_eq!(bt.fighters[2].stats[Stat::Initiative], 40);
+    bt.act(2).unwrap();
+    bt.act(2).unwrap();
+    assert_eq!(bt.fighters[2].stats[Stat::Initiative], 40 - 12 - 12);
+}
+
+#[test]
+fn community_row8_armor_breaker_keeps_x_minus_a_quarter_rounded_down() {
+    let breaker = bonus(83, Bonus::ArmorBreaker, acts(83, 2, warrior(83, 30, 0)));
+    let plate = UnitDef { hits: 300, defence_shot: 1, ..warrior(84, 1, 5) };
+    let mut bt = with(vec![breaker, plate], &[(83, f(2))], &[(84, f(2))]);
+    bt.act(1).unwrap();
+    let s = |bt: &Battle| (bt.fighters[1].base[Stat::DefenceBlow], bt.fighters[1].base[Stat::DefenceShot]);
+    assert_eq!(s(&bt), (4, 1), "5 → 4, 1 → 1");
+    bt.act(1).unwrap();
+    assert_eq!(s(&bt), (3, 1));
+}
+
+#[test]
+fn community_row9_fate_gift_saves_from_a_neutralizing_blow() {
+    let null = bonus(90, Bonus::Neutralize, warrior(90, 100, 0));
+    let lucky = bonus(95, Bonus::FateGift, UnitDef { hits: 40, ..warrior(95, 20, 4) });
+    let mut bt = with(vec![null, lucky], &[(90, f(2))], &[(95, f(2))]);
+    let hit = bt.act(1).unwrap();
+    assert!(!hit.killed);
+    assert_eq!((bt.fighters[1].hp, bt.fighters[1].base.bonuses.len()), (48, 0));
+}
+
+#[test]
+fn community_row10_the_mage_poison_tests_its_own_power_after_protection() {
+    let warded = |id: u32, life: i32, death: i32| UnitDef { protect_life: life, protect_death: death, hits: 300, ..warrior(id, 1, 0) };
+    let poison = |id: u32, p: i32, school: MagicSchool| bonus(id, Bonus::Poison, mage(id, p, school, MagicDirection::ToEnemy));
+    let cases = [
+        (poison(100, 16, MagicSchool::Life), warded(110, 0, 0), false), // 16 × 99 / 100 = 15
+        (poison(101, 17, MagicSchool::Life), warded(111, 0, 0), true),
+        (poison(102, 18, MagicSchool::Elemental), warded(112, 0, 0), false), // 18 × 99 / 114 = 15
+        (poison(103, 19, MagicSchool::Elemental), warded(113, 0, 0), true),
+        (poison(104, 30, MagicSchool::Life), warded(114, 100, 0), true), // −30 unsigned: huge
+        (poison(105, 30, MagicSchool::Death), warded(115, 0, 100), false), // signed: 0
+    ];
+    for (caster, target, poisoned) in cases {
+        let (c, t) = (caster.id, target.id);
+        let mut bt = with(vec![caster, target.clone()], &[(c, b(2)), (10, f(5))], &[(t, f(2))]);
+        // Above the cap on a unit's percent stats, as items or FateGift can make it.
+        bt.fighters[2].base[Stat::ProtectLife] = target.protect_life;
+        bt.fighters[2].base[Stat::ProtectDeath] = target.protect_death;
+        bt.refresh(2);
+        bt.act(2).unwrap();
+        assert_eq!(bt.fighters[2].regen < 0, poisoned, "caster {c}");
+    }
+}
+
+#[test]
+fn community_row11_assault_reads_the_attackers_building_byte_and_initiative() {
+    let sapper = bonus(78, Bonus::Assault, UnitDef { hits: 300, ..warrior(78, 20, 5) });
+    let mut bt = with(vec![sapper, hammer()], &[(69, f(2))], &[(78, f(2))]);
+    let mut seen = vec![];
+    for (building, initiative) in [(0, 0), (0, -1), (0, 4095), (0, 4096), (5, 0), (128, 0)] {
+        bt.set_building_defence(Team::Player, building);
+        bt.fighters[0].mods.initiative = initiative;
+        seen.push(bt.physical_damage(0, 1, ActionKind::Melee));
+    }
+    assert_eq!(seen, vec![95, 63, 95, 63, 63, 95]);
+}
+
+#[test]
+fn community_row13_berserk_reads_the_hp_before_drying() {
+    let dry = bonus(63, Bonus::Drying, mage(63, 30, MagicSchool::Life, MagicDirection::ToEnemy));
+    let rage = bonus(61, Bonus::Berserk, UnitDef { hits: 100, ..warrior(61, 40, 0) });
+    let mut bt = with(vec![dry, rage], &[(63, b(2)), (10, f(5))], &[(61, f(2))]);
+    bt.act(2).unwrap();
+    assert_eq!((bt.fighters[2].hp, bt.fighters[2].mods.attack), (92, 0), "no HP lost yet when Berserk is recomputed");
+}
+
+#[test]
+fn community_row15_blood_thirst_counts_shot_and_spell_kills_but_not_a_saved_target() {
+    let hunter = bonus(93, Bonus::BloodThrist, shooter(93, 30));
+    let witch = bonus(94, Bonus::BloodThrist, mage(94, 30, MagicSchool::Death, MagicDirection::ToEnemy));
+    let lucky = bonus(95, Bonus::FateGift, UnitDef { hits: 40, ..warrior(95, 20, 4) });
+    let mut bt = with(vec![hunter, witch, lucky], &[(93, b(2)), (94, b(3)), (10, f(0))], &[(10, f(2)), (10, f(3)), (95, f(4))]);
+    bt.fighters[3].hp = 1;
+    assert!(bt.act(3).unwrap().killed);
+    assert_eq!((bt.active(), bt.actions_left()), (Some(0), 1));
+    bt.fighters[5].hp = 1;
+    assert!(!bt.act(5).unwrap().killed, "fate saves it");
+    assert_ne!(bt.active(), Some(0), "no action for a saved target");
+    turn_of(&mut bt, 1);
+    bt.fighters[4].hp = 1;
+    bt.fighters[4].mods.defence = -1;
+    bt.refresh(4);
+    assert!(bt.act(4).unwrap().killed);
+    assert_eq!((bt.active(), bt.actions_left()), (Some(1), 1), "a magic strike kill");
+}
+
+#[test]
+fn community_row16_a_suicide_unit_waits_for_its_removal() {
+    let bomber = bonus(66, Bonus::Suicide, warrior(66, 30, 0));
+    let mut bt = with(vec![bomber.clone()], &[(66, f(2)), (10, f(3))], &[(18, f(2)), (18, f(3))]);
+    let hit = bt.act(2).unwrap();
+    assert_eq!((hit.amount, hit.actor_died), (30, true));
+    let f0 = &bt.fighters[0];
+    assert!(f0.suicided && f0.listed() && !f0.alive());
+    assert_eq!((f0.regen, f0.base[Stat::Manevres], f0.actions), (-99, 0, 0));
+    assert_eq!(bt.living(Team::Player).count(), 2, "still in its side's list");
+    assert!(!bt.targets(2).contains(&0), "but no target");
+    to_round(&mut bt, 2);
+    assert!(!bt.fighters[0].listed(), "the regeneration tick removes it");
+    // Alone, it keeps its side in the battle until then.
+    let mut bt = with(vec![bomber.clone()], &[(66, f(2))], &[(18, f(2)), (18, f(3))]);
+    bt.act(1).unwrap();
+    assert_eq!(bt.outcome(), Outcome::Ongoing);
+    to_round(&mut bt, 2);
+    assert_eq!(bt.outcome(), Outcome::Defeat);
+    // A counter blow removes it at once.
+    let chief = bonus(126, Bonus::Counterblow, UnitDef { hits: 300, ..warrior(126, 25, 0) });
+    let mut bt = with(vec![bomber.clone(), chief], &[(66, f(2)), (10, f(3))], &[(126, f(2))]);
+    let hit = bt.act(2).unwrap();
+    assert_eq!(hit.counter, Some(0));
+    assert!(!bt.fighters[0].listed());
+    // Its own vampirism gives it HP back, but it still waits off the field.
+    let leech = UnitDef { vampirism: 50, ..bomber };
+    let mut bt = with(vec![leech], &[(66, f(2)), (10, f(3))], &[(18, f(2))]);
+    bt.act(2).unwrap();
+    assert_eq!((bt.fighters[0].hp, bt.fighters[0].suicided), (15, true));
+    assert_eq!(bt.active(), Some(1));
+    to_round(&mut bt, 2);
+    assert!(!bt.fighters[0].listed(), "15 − 50");
+}
+
+#[test]
+fn community_row17_18_the_drain_tables_are_per_type() {
+    // An explicit floor gets no +25; a type without power of its own neither drains nor
+    // floors, even with power from elsewhere.
+    let lich = UnitDef { nature: Nature::Undead, min_magic_power: Some(5), ..mage(49, 30, MagicSchool::Death, MagicDirection::ToEnemy) };
+    let squire = mage(57, 0, MagicSchool::Death, MagicDirection::ToEnemy);
+    let mut bt = with(vec![lich, squire], &[(49, b(1)), (57, b(2))], &[(18, f(5))]);
+    bt.fighters[1].power = 30;
+    for turn in 2..=15 {
+        to_round(&mut bt, turn);
+    }
+    assert_eq!((bt.fighters[0].power, bt.fighters[1].power), (5, 30));
+}
+
+#[test]
+fn community_row20_cripple_marks_stay_on_the_record_index() {
+    let cripple = bonus(87, Bonus::NoHeal, acts(87, 2, warrior(87, 30, 0)));
+    let mut bt = with(vec![cripple], &[(87, f(2))], &[(10, f(1)), (10, f(2)), (10, f(3))]);
+    bt.act(2).unwrap();
+    assert!(bt.crippled(2) && !bt.crippled(3));
+    bt.fighters[1].hp = 0;
+    bt.died(1);
+    assert!(!bt.crippled(2), "it moved to the first record");
+    assert!(bt.crippled(3), "the mark passed to the unit now in the second");
+}
+
+#[test]
+fn community_row22_flock_sees_deaths_only_after_an_action_of_the_battle_on_screen() {
+    // The player's poisoned unit dies at the turn-2 start, before the enemy wolf is
+    // processed: the side blocks still say 2 against 2.
+    let wolf = bonus(80, Bonus::Flock, warrior(80, 40, 0));
+    let mut bt = with(vec![wolf.clone()], &[(18, f(0)), (18, f(1))], &[(80, f(0)), (18, f(1))]);
+    bt.fighters[0].hp = 1;
+    bt.fighters[0].regen = -20;
+    to_round(&mut bt, 2);
+    assert!(!bt.fighters[0].alive());
+    assert_eq!(bt.fighters[2].mods.attack, 0);
+    to_round(&mut bt, 3);
+    assert_eq!(bt.fighters[2].mods.attack, 10);
+    // An off-screen battle reads the blocks of the battle on screen.
+    patch_update(|g| g.side_blocks = [5, 1]);
+    let c = content_with(vec![wolf], Formation::WIDE);
+    let mut bt = prepared(&c, &[(80, f(0))], &[(18, f(0)), (18, f(1))], Team::Player);
+    bt.set_simulation();
+    bt.begin();
+    assert_eq!(bt.fighters[0].mods.attack, 10, "5 against 1 there, though it is 1 against 2 here");
+    // A negative attack divides unsigned.
+    let mut bt = prepared(&c, &[(80, f(0))], &[(18, f(0))], Team::Player);
+    bt.set_simulation();
+    bt.fighters[0].base[Stat::AttackBlow] = -4;
+    bt.begin();
+    assert_eq!(bt.fighters[0].mods.attack, 42_949_671);
+}
+
+#[test]
+fn community_row23_hungers_counter_is_global_and_turn_1_only_looks() {
+    fresh_globals();
+    let hungry = bonus(60, Bonus::Hunger, warrior(60, 30, 0));
+    let c = content_with(vec![hungry], Formation::WIDE);
+    let mut bt = prepared(&c, &[(60, f(2))], &[(18, f(2)), (18, f(3))], Team::Player);
+    bt.skip_prediction();
+    bt.begin();
+    assert_eq!(patch_globals().screen_living, 3);
+    // An off-screen battle's removal stores the living count of the battle on screen.
+    let mut sim = prepared(&c, &[(10, f(2))], &[(10, f(2))], Team::Player);
+    sim.set_simulation();
+    sim.begin();
+    sim.fighters[1].hp = 1;
+    sim.act(1).unwrap();
+    assert_eq!(patch_globals().hunger_counter, 3, "not the simulation's own 1");
+    bt.fighters[0].hp = 10;
+    to_round(&mut bt, 2);
+    assert_eq!(bt.fighters[0].hp, 10, "the counter equals the value seen: 3 = 3");
+    patch_update(|g| g.hunger_counter = 7);
+    to_round(&mut bt, 3);
+    assert_eq!(bt.fighters[0].hp, 50, "any change, from any battle, heals");
+    // On turn 1 it only looks.
+    patch_update(|g| g.hunger_counter = 9);
+    let mut bt = prepared(&c, &[(60, f(2))], &[(18, f(2))], Team::Player);
+    bt.skip_prediction();
+    bt.fighters[0].hp = 10;
+    bt.begin();
+    assert_eq!((bt.fighters[0].hp, patch_globals().hunger_seen), (10, 9));
+}
+
+#[test]
+fn community_bleeding_with_a_negative_sum_kills_and_the_last_player_record_unbleeds_the_enemy() {
+    let knife = bonus(81, Bonus::Bleed, warrior(81, 30, 0));
+    let mut bt = with(vec![knife.clone()], &[(81, f(2))], &[(18, f(2))]);
+    bt.act(1).unwrap();
+    bt.fighters[1].base[Stat::AttackBlow] = -1;
+    bt.pass();
+    assert!(!bt.fighters[1].alive(), "(−1) × 75 / 100 unsigned is 42949672");
+    // Twelve player records; the 12th one's removal clears the enemy's first bleeding.
+    let mut player = vec![(81, f(2))];
+    player.extend((0..11).map(|k| (10, if k < 5 { b(k) } else { r(k - 5) })));
+    let c = content_with(vec![knife], Formation::WIDE);
+    let mut bt = battle_in(&c, &player, &[(18, f(2)), (18, f(3))]);
+    bt.act(12).unwrap();
+    assert_eq!(bt.fighters[12].bleed, 75);
+    bt.fighters[11].hp = 0;
+    bt.died(11);
+    assert_eq!(bt.fighters[12].bleed, 0);
+}
+
+#[test]
+fn community_evasion_is_a_byte_and_divides_unsigned() {
+    let slippery = |id: u32, e: i32| UnitDef { evasion: Some(e), hits: 300, ..warrior(id, 1, 0) };
+    let bt = with(vec![slippery(96, 266), slippery(97, 150)], &[(10, f(2))], &[(96, f(2)), (97, f(3))]);
+    assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 27, "266 is 10: 30 × 90%");
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), ((30i32 * -50) as u32 / 100) as i32);
+}
+
+#[test]
+fn community_a_strike_tests_its_damage_in_the_on_hit_block() {
+    // Power 1 is no "> 1", but a Life strike doubles on the undead: 2 is.
+    let needle = bonus(98, Bonus::PoisonArmorIgnore, mage(98, 1, MagicSchool::Life, MagicDirection::ToEnemy));
+    let mut bt = with(vec![needle], &[(98, b(2)), (10, f(5))], &[(16, f(2))]);
+    bt.fighters[2].mods.defence = -1;
+    bt.refresh(2);
+    let hit = bt.act(2).unwrap();
+    assert_eq!((hit.kind, bt.fighters[2].regen), (ActionKind::Strike, -10));
 }

@@ -94,6 +94,34 @@ old id, and their versions give both.
 - A new unit (hired, given by an event, or at the start of a map, for the AI too) takes the
   first free cell of the reserve, then of the back row, then of the front row, whatever it
   is, as in the original.
+- Community Splash as in the patch: the 80% malus counts in every battle and in the AI's
+  estimates, and the 40% loses one on a multiple of 5 (an attack of 10 gives 3). Each
+  neighbour gets the whole action again, in the order the units stand in their army: its
+  preventive strike and counter blow (at 40%), vampirism and the rest. The primary target
+  also strikes back at 40%, a splash heal reaches a NoHeal-marked neighbour, and off screen
+  heals and blessings still splash.
+- No preventive strike before a spell, only before blows and shots.
+- Stun takes the same 30% of the target's initiative with every hit; ArmorBreaker leaves
+  `x − x/4` of each defence (5 → 4, 1 → 1); FateGift saves a unit from a Neutralize blow;
+  Berserk is recomputed before Drying's loss; BloodThrist counts every killing hit and not a
+  target that fate saves.
+- A Poison mage poisons when its own power, cut by the target's protection as the patch
+  computes it (`× (99 − protection) / 100`, Elemental `/ 114`), is above 15, whatever Splash
+  or Potent do to the spell.
+- Assault's ×2/3 follows the patch's test of the attacker's building and initiative: from a
+  building of 1 to 127, or in the open while slowed (a negative initiative modifier).
+- A Suicide unit is not removed by its own blow: at 0 HP, with no actions left, it keeps its
+  side in the battle until a counter blow or the next turn start removes it, and its
+  vampirism can give it hit points back meanwhile.
+- The magic drain and floor are per unit type: a type without magic power of its own neither
+  drains nor floors, and an undead Death type with its own `MinMagicPower` gets no +25.
+- NoHeal's mark stays on the place in the army's list, so a death before the marked unit
+  passes the mark to the next one, as in the original.
+- Flock compares the two sides as they stood after the last action of the battle on screen
+  (battles between AI armies see that battle's counts too), and Hunger's count of removals is
+  shared by every battle and kept from one battle to the next.
+- Bleeding and Flock divide unsigned as the patch does, Evasion is read as a byte, and the
+  player's twelfth unit's death stops the enemy's first unit bleeding, all as in the patch.
 
 ## 0.2.2 — 2026-10-01
 
