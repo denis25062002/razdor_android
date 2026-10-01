@@ -869,13 +869,13 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
 | 36 | Surrender | Whole side gives up; Surrender sum as mana | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
-| 38 | AI framework and melee/shot scores | As section 4 | Same | 4 | Matches |
-| 39 | AI shot "Manevres 1 ÷2" | Applied to every target | Only to back-row mage targets | 4 | **Differs** |
-| 40 | AI front-row retreat | Stat test only (AB not above both MP and AS) | Also needs a non-warrior role | 4 | **Differs** (edge) |
-| 41 | AI "killable" (normal level, off-screen) | `HP ≤ dmg` of the real target | Reads the own unit with the target's index (bug) | 4 | **Differs** |
-| 42 | AI Life scoring | As section 4 | Medium confidence | 4 | Partly |
-| 42a | AI Elemental scoring | Haste or heal per ally, slow or strike per enemy; ÷10 when half the enemies are Unvulnerabe/Ghost; strike only with a spare action | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | **Differs** |
-| 42b | AI Death scoring | As section 4 | Same, except the self-target: the original picks its own cell even with no self-cast on offer (a pass) | 4 | Partly |
+| 38 | AI framework and melee/shot scores | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score | Same | 4 | Matches |
+| 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
+| 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role | Also needs a non-warrior role | 4 | Matches |
+| 41 | AI "killable" (normal level, off-screen) | Reads the own unit with the target's list index (an empty record past the list: HP 0) | Reads the own unit with the target's index (bug) | 4 | Matches |
+| 42 | AI Life scoring | As the code read (486bb9): heal, bless by rows with or without enemy shooters, the curse value with the DS/DB slip on the strike power, the cursed flag | Medium confidence | 4 | Matches the reading |
+| 42a | AI Elemental scoring | Main and alternative per side, cells scanned row by row; front-row haste scaled by hits-to-kill; the ÷10 rule with its exceptions; strike whenever a slow is impossible, slow + strike with a spare action; ×10 with an all-Ghost side; the turn's mean initiative | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | Matches |
+| 42b | AI Death scoring | As section 4 on the strike power; the self-target passes when no self-cast is offered; a threat of no damage is the role's minimum; blessings weigh the target's actions | Same, except the self-target: the original picks its own cell even with no self-cast on offer (a pass) | 4 | Matches |
 | 43 | Pre-simulation | Not played | A full AI-vs-AI copy before every battle; keeps only each side's simulated damage taken for the XP | 4, 9 | **Differs** (XP only) |
 | 44 | Off-screen battle | `set_simulation` (no Splash, simple AI), stored formations | Same flags; auto-arranged formations; attacker paid only | 10 | Partly |
 | 45 | AI target-scoring battle (`ai::simulate`) | Interactive settings (Splash on, normal AI) | Same engine as the off-screen battle: mode 0, no Splash | 10 | **Differs** |

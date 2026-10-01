@@ -1320,7 +1320,11 @@ fn the_dead_get_nothing_but_count_and_only_victory_pays_the_player() {
 
 #[test]
 fn row30_ai_melee_scores_damage_by_the_answer_and_prefers_kills() {
-    let mut bt = battle(&[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2))]);
+    // The improved AI judges a kill by the target's own HP (the normal one's slip: row 41).
+    let c = content_with(vec![], Formation::WIDE);
+    let mut bt = prepared(&c, &[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2))], Team::Player);
+    bt.set_improved_ai(true);
+    bt.begin();
     turn_of(&mut bt, 3);
     // All score 30 × (5 + 1) × 1: the tie goes to column 4, 3, 5 … (1-based) in that order.
     assert_eq!(bt.ai_choice(), Some((2, ActionKind::Melee)));
@@ -1774,4 +1778,118 @@ fn row46_berserk_at_a_turn_start_reads_the_hp_before_the_poison() {
     to_round(&mut bt, 2);
     // 30·75·25/50/100 = 11 from the 25 HP it had, then the poison takes 10.
     assert_eq!((bt.fighters[1].hp, bt.fighters[1].stats[Stat::AttackBlow]), (15, 41));
+}
+
+#[test]
+fn row41_the_normal_ai_reads_the_kill_hp_on_its_own_side() {
+    // The enemy (side 2) at the normal level tests HP ≤ dmg on *its own* unit with the
+    // target's list index (486d03): its own unit 1 is itself (50 HP), unit 2 its bag, and
+    // past its list the record is empty, so the 3rd bag looks killable whatever its HP.
+    let mut bt = battle(&[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2)), (18, b(2))]);
+    turn_of(&mut bt, 3);
+    assert_eq!(bt.ai_choice(), Some((2, ActionKind::Melee)), "the 3rd bag: own index 3 is empty");
+    // The 2nd bag is index 2, its own back-row bag (200 HP): no longer killable once it is
+    // there; the first one: killable when the attacker's own HP is down to its damage.
+    bt.fighters[2].hp = 0;
+    assert_eq!(bt.ai_choice(), Some((1, ActionKind::Melee)), "tie: the 2nd bag in column 3");
+    bt.fighters[3].hp = 30;
+    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Melee)), "its own 30 HP make the 1st bag killable");
+}
+
+#[test]
+fn row39_the_shot_scores_halve_for_one_manevres_only_on_back_row_mages() {
+    // A Manevres-1 bag (power 10: 11 × 20 × 1 = 220) against a Manevres-2 warrior of power 4
+    // (5 × 20 × 2 = 200): the bag is no longer halved, so it is the better target.
+    let pair = acts(139, 2, warrior(139, 4, 0));
+    let c = content_with(vec![pair], Formation::WIDE);
+    let mut bt = prepared(&c, &[(18, f(1)), (139, f(4))], &[(11, b(2)), (10, f(0))], Team::Player);
+    bt.set_improved_ai(true);
+    bt.begin();
+    turn_of(&mut bt, 2);
+    assert_eq!((bt.fighters[0].actions, bt.fighters[1].actions), (0, 0));
+    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Shot)));
+}
+
+#[test]
+fn row40_a_warrior_by_role_never_retreats() {
+    // AttackBlow 10 is not above AttackShot 10, but Counterblow makes it a warrior.
+    let guard = bonus(135, Bonus::Counterblow, UnitDef { attack_shot: 10, ..acts(135, 2, warrior(135, 10, 0)) });
+    let archer = acts(97, 2, shooter(97, 20));
+    let mut bt = with(vec![guard, archer], &[(10, f(0))], &[(135, f(2)), (10, f(3)), (97, f(4))]);
+    turn_of(&mut bt, 1);
+    assert!(!matches!(bt.ai_step(), Some(Step::Move { .. })), "the guard stays");
+    turn_of(&mut bt, 3);
+    assert!(matches!(bt.ai_step(), Some(Step::Move { to, .. }) if to.row == Back), "the archer steps back");
+}
+
+#[test]
+fn row42_life_scores_the_curse_with_the_original_slip() {
+    let target = UnitDef { defence_blow: 10, defence_shot: 0, ..warrior(138, 30, 0) };
+    let mut bt = with(vec![target], &[(15, b(1)), (10, f(0))], &[(138, f(2))]);
+    bt.fighters[0].actions = 1;
+    bt.fighters[2].actions = 1;
+    // q = 30 / 3 = 10: min(DB 10, 10) and, for DS 0 < 10, DB again: 3 × 20 + 1 = 61 (not 31);
+    // (DB + DS + power × actions) × 61 / 3 for an ordinary unit.
+    assert_eq!(bt.life_strike_score(0, 2), 40 * 61 / 3);
+    // A cursed target V can kill: V = actions × P = 30, ×3.
+    bt.fighters[2].cursed = true;
+    bt.fighters[2].hp = 20;
+    assert_eq!(bt.life_strike_score(0, 2), 40 * 30 * 3 / 3);
+}
+
+#[test]
+fn row42_life_blesses_by_the_originals_rows() {
+    // With enemy shooters a front-row ally is ×3 and a mage ×2.
+    let support = mage(140, 20, MagicSchool::Death, MagicDirection::ToEnemy);
+    let blocker = UnitDef { defence_blow: 5, defence_shot: 5, ..warrior(141, 30, 5) };
+    let priest = mage(143, 20, MagicSchool::Life, MagicDirection::ToAll);
+    let mut bt = with(vec![support, blocker, priest], &[(11, b(2)), (10, f(0))], &[(143, b(2)), (141, f(1)), (140, b(3))]);
+    turn_of(&mut bt, 2);
+    // The shooter is one of its hostile cells. Front warrior 30·100/30 = 100 → 300; back
+    // mage 20·100/20 = 100 → 200.
+    assert_eq!(bt.ai_choice(), Some((3, ActionKind::Bless)));
+}
+
+#[test]
+fn row42a_hits_to_kill_is_one_too_many_on_an_exact_multiple() {
+    let mut bt = battle(&[(11, b(2)), (10, f(1))], &[(18, f(1)), (10, f(2))]);
+    assert_eq!(bt.hits_to_kill(1, 1), 200 / 30 + 1, "blows of 30 on the bag");
+    assert_eq!(bt.hits_to_kill(0, 2), 50 / 15 + 1, "a shooter counts shots");
+    assert_eq!(bt.hits_to_kill(1, 0), 0, "nobody there");
+    bt.fighters[2].hp = 40;
+    assert_eq!(bt.hits_to_kill(0, 1), 3, "40 / 20 + 1: one too many");
+}
+
+#[test]
+fn row42a_elemental_strikes_when_a_slow_is_impossible() {
+    // One action, the only target has already acted: no slow, but the strike still counts.
+    let mut bt = battle(&[(10, f(2))], &[(12, b(2)), (18, f(0))]);
+    turn_of(&mut bt, 1);
+    assert_eq!(bt.fighters[0].actions, 0);
+    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Curse)));
+}
+
+#[test]
+fn row42a_elemental_haste_is_worth_nothing_facing_no_enemy() {
+    let sage = mage(136, 40, MagicSchool::Elemental, MagicDirection::ToAll);
+    let fast = UnitDef { initiative: 20, ..warrior(137, 30, 0) };
+    let mut bt = with(vec![sage, fast], &[(10, f(4))], &[(136, b(2)), (137, f(0)), (10, b(3))]);
+    turn_of(&mut bt, 1);
+    bt.fighters[2].actions = 1;
+    // The fast front unit has nobody in front of it (S = 0): its haste is 0. The back-row
+    // warrior's is round(1 × 30 × 10 / 11) = 27, below the strike's 30 on the player.
+    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Curse)));
+    // Facing an enemy at c±1 it would need 2 hits (S = 2 ≥ L = 2): the full round(600 / 11).
+    bt.fighters[0].slot = f(1);
+    assert_eq!(bt.ai_choice(), Some((2, ActionKind::Bless)));
+}
+
+#[test]
+fn row42b_a_nearly_dead_death_mage_passes_without_a_self_cast() {
+    let warded = UnitDef { protect_death: 80, ..warrior(142, 30, 0) };
+    let mut bt = with(vec![warded], &[(142, f(2))], &[(14, b(2)), (10, f(1))]);
+    turn_of(&mut bt, 1);
+    // Its best strike is 30 × 20% = 6 ≤ 30 / 5, with 10 HP of 50: its own cell, a pass.
+    bt.fighters[1].hp = 10;
+    assert_eq!(bt.ai_step(), Some(Step::Wait { actor: 1 }));
 }

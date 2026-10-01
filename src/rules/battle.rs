@@ -1983,12 +1983,19 @@ impl Battle {
     // AI (4864e0; notes in battle.md §4)
     // ------------------------------------------------------------------------------------
 
-    /// A target is killable by one hit, or (improved AI, or the player's side at the normal
-    /// level) by the actor's actions left.
+    /// "Killable" in the AI's melee and shot scores (486d03, 486feb). With the improved AI,
+    /// or for the player's side at the normal level, the actions left can do it:
+    /// `HP ≤ actions × dmg`. Otherwise the test is meant to be `HP ≤ dmg`, but the original
+    /// reads the HP of the unit with the target's list index on the actor's *own* side: an
+    /// original bug, kept. Past the end of that list the record is empty (HP 0, killable).
     fn killable(&self, id: usize, t: usize, dmg: i32) -> bool {
-        let smart = self.ai_level == 2 || (self.ai_level == 1 && self.fighters[id].team == Team::Player);
-        let hits = if smart { self.fighters[id].actions.max(1) } else { 1 };
-        self.fighters[t].hp <= hits * dmg
+        let f = &self.fighters[id];
+        if self.ai_level == 2 || (self.ai_level == 1 && f.team == Team::Player) {
+            return self.fighters[t].hp <= f.actions * dmg;
+        }
+        let index = self.living_ids(self.fighters[t].team).iter().position(|&i| i == t).unwrap_or(0);
+        let hp = self.living_ids(f.team).get(index).map_or(0, |&i| self.fighters[i].hp);
+        hp <= dmg
     }
 
     /// The best cell by the original's picker (4860cc): rows front to back, columns in the
@@ -2020,9 +2027,21 @@ impl Battle {
         }
     }
 
-    fn poisons(&self, id: usize, t: usize, dmg: i32) -> bool {
-        let a = &self.fighters[id];
-        (a.has(Bonus::Poison) || a.has(Bonus::PoisonS)) && self.fighters[t].regen >= 0 && dmg > 1
+    /// The AI's poison bonus: a vanilla `Poison` attacker (not `PoisonS`) whose hit of more
+    /// than 1 would poison a target that is not poisoned yet.
+    fn poisons(&self, id: usize, t: usize, dmg: i64) -> bool {
+        self.fighters[id].has(Bonus::Poison) && self.fighters[t].regen >= 0 && dmg > 1
+    }
+
+    /// Hits `u` needs to kill the enemy in the front row of `col` (4863e8): a blow if it has
+    /// no AttackShot, else a shot, whether it could reach that cell or not;
+    /// `⌊HP / dmg⌋ + 1`, one too many when the HP is a multiple of the damage. 0 with nobody
+    /// there.
+    fn hits_to_kill(&self, u: usize, col: u8) -> i64 {
+        let Some(e) = self.at(self.fighters[u].team.other(), Slot::new(Row::Front, col)) else { return 0 };
+        let kind = if self.fighters[u].base[Stat::AttackShot] < 1 { ActionKind::Melee } else { ActionKind::Shot };
+        let dmg = self.physical_damage(u, e, kind).max(1);
+        (self.fighters[e].hp / dmg + 1) as i64
     }
 
     fn ai_plan(&self) -> Option<Plan> {
@@ -2031,49 +2050,57 @@ impl Battle {
         if let Some(to) = self.ai_retreat(id) {
             return Some(Plan::Move(to));
         }
-        let pick = |kinds: &[ActionKind], score: &dyn Fn(usize, ActionKind) -> f64| {
-            self.pick(opts.iter().filter(|o| kinds.contains(&o.1)).map(|&(t, k)| (self.fighters[t].slot, score(t, k), (t, k))))
+        let pick = |kinds: &[ActionKind], score: &dyn Fn(usize, ActionKind) -> i64| {
+            self.pick(opts.iter().filter(|o| kinds.contains(&o.1)).map(|&(t, k)| (self.fighters[t].slot, score(t, k) as f64, (t, k))))
         };
-        // Melee on the enemy front row.
+        // Melee on the enemy front row: `dmg × (R + 1) × M`, ×2 for a poison; a kill
+        // replaces it with `100 × (R + 1) × M`.
         let melee = |t: usize, k: ActionKind| {
-            let dmg = self.physical_damage(id, t, k);
-            let m = self.fighters[t].base[Stat::Manevres].max(1);
-            let r = (self.return_threat(id, t) + 1) * m;
-            let mut s = if self.killable(id, t, dmg) { r as f64 * 100.0 } else { dmg as f64 * r as f64 };
+            let dmg = self.physical_damage(id, t, k) as i64;
+            // The Community's constant for a target with 0 Manevres is unread: 1 is a guess.
+            let m = self.fighters[t].base[Stat::Manevres].max(1) as i64;
+            let r = (self.return_threat(id, t) as i64 + 1) * m;
+            let mut s = dmg * r;
             if self.poisons(id, t, dmg) {
-                s *= 2.0;
+                s *= 2;
+            }
+            if self.killable(id, t, dmg as i32) {
+                s = 100 * r;
             }
             s
         };
         if let Some((_, (t, k))) = pick(&[ActionKind::Melee, ActionKind::LongStrike], &melee) {
             return Some(Plan::Act(t, k));
         }
+        // Shots, in integers after the first rounding (486f90).
         let shot = |t: usize, _| {
-            let dmg = self.physical_damage(id, t, ActionKind::Shot);
+            let dmg = self.physical_damage(id, t, ActionKind::Shot) as i64;
             let tf = &self.fighters[t];
             let m = tf.base[Stat::Manevres] as f64 + if tf.actions > 0 { (tf.actions as f64).sqrt() } else { 0.0 };
-            let mut s = ((tf.ai_power + 1) as f64 * dmg as f64 * m).round();
+            let mut s = experience::round_half_even((tf.ai_power + 1) as f64 * dmg as f64 * m);
             if self.poisons(id, t, dmg) {
-                s *= 2.0;
+                s *= 2;
             }
-            if self.killable(id, t, dmg) {
-                s *= 4.0;
+            if self.killable(id, t, dmg as i32) {
+                s *= 4;
             }
             if tf.slot.row == Row::Back {
-                s *= match tf.ai_role {
-                    AiRole::Warrior => 1.0 / 3.0,
-                    AiRole::Shooter => 1.5,
-                    AiRole::Mage => 1.75,
+                s = match tf.ai_role {
+                    AiRole::Warrior => s / 3,
+                    AiRole::Shooter => s * 3 / 2,
+                    AiRole::Mage => {
+                        // Only a back-row mage is halved for a hostile-only direction with the
+                        // actor's nature, and again for a single Manevres (487193).
+                        let mut v = s * 7 / 4;
+                        if tf.stats.magic_direction() == super::content::MagicDirection::ToEnemy && tf.base.nature == self.fighters[id].base.nature {
+                            v /= 2;
+                        }
+                        if tf.base[Stat::Manevres] == 1 {
+                            v /= 2;
+                        }
+                        v
+                    }
                 };
-                if tf.ai_role == AiRole::Mage
-                    && tf.stats.magic_direction() == super::content::MagicDirection::ToEnemy
-                    && tf.base.nature == self.fighters[id].base.nature
-                {
-                    s /= 2.0;
-                }
-            }
-            if tf.base[Stat::Manevres] == 1 {
-                s /= 2.0;
             }
             s
         };
@@ -2086,17 +2113,17 @@ impl Battle {
         Some(self.ai_move(id, &opts).unwrap_or(Plan::Pass))
     }
 
-    /// A non-warrior in the front row with more than one action steps back behind the
-    /// healthiest own front unit.
+    /// A front-row unit that is not a warrior, with more than one action and an AttackBlow
+    /// not above both its power and its AttackShot, steps back behind the healthiest own
+    /// front unit, if another own unit stands in front (or it is the side's lone mage).
     fn ai_retreat(&self, id: usize) -> Option<Slot> {
         let f = &self.fighters[id];
-        let s = &f.stats;
-        let warrior = s[Stat::AttackBlow] > s[Stat::MagicPower] && s[Stat::AttackBlow] > s[Stat::AttackShot];
-        if f.slot.row != Row::Front || f.has(Bonus::Ghost) || f.actions <= 1 || warrior {
+        let (ab, sh, mp) = (f.base[Stat::AttackBlow], f.base[Stat::AttackShot], f.power);
+        if f.slot.row != Row::Front || f.has(Bonus::Ghost) || f.actions <= 1 || f.ai_role == AiRole::Warrior || (ab > mp && ab > sh) {
             return None;
         }
         let others = self.living(f.team).filter(|o| o.slot.row == Row::Front).count() > 1;
-        let alone_mage = self.living(f.team).count() == 1 && s.is_mage();
+        let alone_mage = self.living(f.team).count() == 1 && f.ai_role == AiRole::Mage;
         if !others && !alone_mage {
             return None;
         }
@@ -2107,148 +2134,119 @@ impl Battle {
         self.pick(cands).map(|(_, m)| m)
     }
 
-    /// Magic by the caster's school (487244, 487c93, 488928).
+    /// The strike power of `a` on `t` (485b3c for a strike): protection, the nature table
+    /// and GodAnger/GodStrike, without Drying.
+    fn strike_power(&self, a: usize, t: usize) -> i64 {
+        self.strike_damage(a, t, self.hostile_power_of(a, t, self.fighters[a].power)) as i64
+    }
+
+    /// Magic by the caster's school (486bb9: Life, 487e99: Elemental, 488928: Death). It only
+    /// picks a cell; the cell's own action (heal or bless, curse or strike) is what is cast.
+    /// Every school scores the cells of rows 1 and 2.
     fn ai_magic(&self, id: usize, opts: &[(usize, ActionKind)]) -> Option<Plan> {
         let f = &self.fighters[id];
         if !f.stats.is_mage() {
             return None;
         }
-        let team = f.team;
-        let hostile: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Strike | ActionKind::Curse)).map(|o| o.0).collect();
-        let friendly: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Heal | ActionKind::Bless)).map(|o| o.0).collect();
+        let in_rows = |t: &usize| self.fighters[*t].slot.row.is_active();
+        let hostile: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Strike | ActionKind::Curse)).map(|o| o.0).filter(in_rows).collect();
+        let friendly: Vec<usize> = opts.iter().filter(|o| matches!(o.1, ActionKind::Heal | ActionKind::Bless)).map(|o| o.0).filter(in_rows).collect();
         let act = |t: usize| {
             let k = opts.iter().find(|o| o.0 == t).map(|o| o.1).expect("an option");
             Plan::Act(t, k)
         };
-        let mp = f.power;
-        let cms = self.opt().curse_main_spell.max(1);
-        let missing = |t: usize| (self.fighters[t].max_hp() - self.fighters[t].hp) as f64;
+        let mp = f.power as i64;
+        let dir = f.stats.magic_direction();
+        let cms = self.opt().curse_main_spell.max(1) as i64;
+        let wound = |t: usize| (self.fighters[t].max_hp() - self.fighters[t].hp) as i64;
+        let shielded = |t: usize| self.fighters[t].base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]);
         match self.school(id) {
             MagicSchool::Life => {
-                let ghostly = hostile.iter().any(|&t| self.fighters[t].base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]));
-                let shooters = hostile.iter().any(|&t| self.fighters[t].base[Stat::AttackShot] > 0);
-                if !ghostly {
+                let ghostly = hostile.iter().any(|&t| shielded(t));
+                let shooters = hostile.iter().any(|&t| self.fighters[t].base[Stat::AttackShot] >= 1);
+                if dir.helps_allies() && !ghostly {
+                    // The biggest wound, but not one below a quarter of the power, nor an
+                    // undead's.
                     let heal = self.pick_target(friendly.iter().map(|&t| {
-                        let m = missing(t);
-                        let small = mp as f64 > 4.0 * m || self.fighters[t].stats.nature == Nature::Undead;
-                        (t, if small { 0.0 } else { m })
+                        let v = wound(t);
+                        (t, if v * 4 < mp || self.fighters[t].stats.nature == Nature::Undead { 0.0 } else { v as f64 })
                     }));
                     if let Some((_, t)) = heal {
                         return Some(act(t));
                     }
                     let bless = self.pick_target(friendly.iter().map(|&t| {
                         let tf = &self.fighters[t];
-                        if tf.mods.defence > 0 || tf.actions <= 0 {
+                        if tf.mods.defence >= 1 || tf.actions <= 0 {
                             return (t, 0.0);
                         }
-                        let mut s = tf.ai_power as f64 * 100.0 * tf.base[Stat::Manevres] as f64
-                            / (tf.stats[Stat::DefenceBlow] + tf.stats[Stat::DefenceShot] + 20) as f64;
-                        if shooters {
-                            if tf.ai_role == AiRole::Mage {
-                                s *= 2.0;
+                        let d = (tf.base[Stat::DefenceBlow] + 20 + tf.base[Stat::DefenceShot]).max(1) as i64;
+                        let mut v = tf.ai_power as i64 * 100 * tf.base[Stat::Manevres] as i64 / d;
+                        if !shooters {
+                            if tf.slot.row == Row::Back {
+                                v /= 5;
                             }
+                        } else if tf.ai_role == AiRole::Mage {
+                            v *= 2;
                         } else if tf.slot.row == Row::Front {
-                            s *= 3.0;
-                        } else {
-                            s /= 5.0;
+                            v *= 3;
                         }
-                        (t, s)
+                        (t, v as f64)
                     }));
                     if let Some((_, t)) = bless {
                         return Some(act(t));
                     }
                 }
-                let life = (2 * cms / 3).max(1);
-                let strike = self.pick_target(hostile.iter().map(|&t| {
-                    let tf = &self.fighters[t];
-                    let p = self.hostile_power_of(id, t, mp);
-                    if p <= 0 {
-                        return (t, 0.0);
-                    }
-                    let (db, ds) = (tf.stats[Stat::DefenceBlow], tf.stats[Stat::DefenceShot]);
-                    let v = if tf.weakened() {
-                        (f.actions * p) as f64
-                    } else {
-                        // The second term compares with DefenceShot but adds DefenceBlow.
-                        let q = p / life;
-                        (3 * (q.min(db) + if q < ds { q } else { db }) + 1) as f64
-                    };
-                    let base = if tf.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
-                        3 * tf.ai_power
-                    } else {
-                        db + ds + tf.ai_power * tf.actions
-                    } as f64;
-                    let mut s = base * v;
-                    if tf.weakened() && tf.hp as f64 <= v && !tf.base.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) {
-                        s *= 3.0;
-                    }
-                    s *= match tf.stats.nature {
-                        Nature::Undead => 1.0,
-                        Nature::Elemental => 2.0 / 3.0,
-                        _ => 1.0 / 3.0,
-                    };
-                    (t, s)
-                }));
+                if !dir.hits_enemies() {
+                    return None;
+                }
+                let strike = self.pick_target(hostile.iter().map(|&t| (t, self.life_strike_score(id, t) as f64)));
                 strike.map(|(_, t)| act(t))
             }
-            MagicSchool::Elemental => {
-                let enemies: Vec<&Fighter> = self.living(team.other()).collect();
-                let avg_ini = (enemies.iter().map(|e| e.stats[Stat::Initiative]).sum::<i32>() as f64 / enemies.len().max(1) as f64).max(1.0);
-                let ghosts = enemies.iter().filter(|e| e.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost])).count();
-                let damp = if ghosts > 0 && enemies.len() / 2 <= ghosts { 0.1 } else { 1.0 };
-                let own = self.pick_target(friendly.iter().map(|&t| {
-                    let tf = &self.fighters[t];
-                    let haste = if t != id && tf.mods.initiative <= 0 && tf.base[Stat::Manevres] > 0 && tf.actions > 0 {
-                        (actions_of_power(mp) * tf.ai_power * tf.stats[Stat::Initiative]) as f64 / avg_ini
-                    } else {
-                        0.0
-                    };
-                    let heal = if tf.wounded() { (2 * mp / 3).min(tf.max_hp() - tf.hp) as f64 } else { 0.0 };
-                    (t, haste.max(heal) * damp)
-                }));
-                let foe = self.pick_target(hostile.iter().map(|&t| {
-                    let tf = &self.fighters[t];
-                    let p = self.hostile_power_of(id, t, mp);
-                    let slow = if tf.mods.initiative >= 0 && tf.actions > 0 { (actions_of_power(p) * tf.ai_power * tf.actions) as f64 } else { 0.0 };
-                    let strike = if f.actions > 1 { self.strike_damage(id, t, p) as f64 } else { 0.0 };
-                    (t, slow.max(strike))
-                }));
-                match (own, foe) {
-                    (Some((a, t)), Some((b, _))) if a > b => Some(act(t)),
-                    (_, Some((_, t))) => Some(act(t)),
-                    (Some((_, t)), None) => Some(act(t)),
-                    (None, None) => None,
-                }
-            }
+            MagicSchool::Elemental => self.ai_elemental(id, &hostile, &friendly).map(act),
             MagicSchool::Death => {
-                let best_strike = hostile.iter().map(|&t| self.strike_damage(id, t, self.hostile_power_of(id, t, mp))).max().unwrap_or(0);
-                if best_strike <= mp / cms && f.hp * 4 <= f.max_hp() && f.max_hp() - mp >= f.hp && friendly.contains(&id) {
-                    return Some(act(id));
-                }
-                let strike = self.pick_target(hostile.iter().map(|&t| {
-                    let tf = &self.fighters[t];
-                    let p = self.hostile_power_of(id, t, mp);
-                    if p <= 0 {
-                        return (t, 0.0);
+                if dir.hits_enemies() {
+                    // Nearly dead and too weak to strike well: it picks its own cell, a
+                    // self-cast if one is offered, else a pass.
+                    let best = self.pick_target(hostile.iter().map(|&t| (t, self.strike_power(id, t) as f64)));
+                    if let Some((p, _)) = best {
+                        let (hp, max) = (f.hp as i64, f.max_hp() as i64);
+                        if p as i64 <= mp / cms && hp <= max / 4 && max - mp >= hp {
+                            return Some(if friendly.contains(&id) { act(id) } else { Plan::Pass });
+                        }
                     }
-                    let n = f.actions;
-                    let v = if tf.weakened() { n * p } else { p / cms / 2 + 1 + (n - 1).max(0) * p };
-                    let u = if tf.hp <= v { 20 - 2 * (tf.hp / p) } else { 0 };
-                    let m = tf.base[Stat::Manevres].max(1);
-                    let threat = |dmg: i32, top: i32, low: i32| (top - f.hp / (dmg * m).max(1)).max(low);
-                    let th = match tf.ai_role {
-                        AiRole::Shooter => threat(self.physical_damage_at(t, id, ActionKind::Shot, 100), 16, 3),
-                        AiRole::Mage => threat(self.strike_damage(t, id, self.hostile_power_of(t, id, tf.power)), 12, 2),
-                        AiRole::Warrior => threat(self.physical_damage_at(t, id, ActionKind::Melee, 100), 8, 1),
-                    };
-                    (t, tf.ai_power as f64 * (u + th) as f64 * v as f64)
-                }));
-                if let Some((_, t)) = strike {
-                    return Some(act(t));
+                    let strike = self.pick_target(hostile.iter().map(|&t| {
+                        let tf = &self.fighters[t];
+                        let p = self.strike_power(id, t);
+                        if p <= 0 {
+                            return (t, 0.0);
+                        }
+                        let n = f.actions as i64;
+                        let v = if tf.weakened() { n * p } else { p / cms / 2 + 1 + (n - 1) * p };
+                        let kill = if tf.hp as i64 <= v { 20 - 2 * (tf.hp as i64 / p) } else { 0 };
+                        let m = tf.base[Stat::Manevres] as i64;
+                        // The threat: the target's damage on the caster times its Manevres; with
+                        // none, the role's minimum.
+                        let threat = |dmg: i64, top: i64, low: i64| {
+                            let d = dmg * m;
+                            if d > 0 { (top - f.hp as i64 / d).max(low) } else { low }
+                        };
+                        let th = match tf.ai_role {
+                            AiRole::Shooter => threat(self.physical_damage_at(t, id, ActionKind::Shot, 100) as i64, 16, 3),
+                            AiRole::Mage => threat(self.strike_power(t, id), 12, 2),
+                            AiRole::Warrior => threat(self.physical_damage_at(t, id, ActionKind::Melee, 100) as i64, 8, 1),
+                        };
+                        (t, (tf.ai_power as i64 * ((kill + th) * v)) as f64)
+                    }));
+                    if let Some((_, t)) = strike {
+                        return Some(act(t));
+                    }
+                }
+                if !dir.helps_allies() {
+                    return None;
                 }
                 let heal = self.pick_target(friendly.iter().map(|&t| {
                     let tf = &self.fighters[t];
-                    (t, if matches!(tf.stats.nature, Nature::Undead | Nature::Elemental) { missing(t) } else { 0.0 })
+                    (t, if matches!(tf.stats.nature, Nature::Undead | Nature::Elemental) { wound(t) as f64 } else { 0.0 })
                 }));
                 if let Some((_, t)) = heal {
                     return Some(act(t));
@@ -2256,11 +2254,129 @@ impl Battle {
                 let bless = self.pick_target(friendly.iter().map(|&t| {
                     let tf = &self.fighters[t];
                     let ok = !tf.blessed && tf.actions > 0 && tf.ai_role != AiRole::Mage;
-                    (t, if ok { (f.actions * tf.ai_power * tf.hp) as f64 } else { 0.0 })
+                    (t, if ok { (tf.actions as i64 * tf.ai_power as i64 * tf.hp as i64) as f64 } else { 0.0 })
                 }));
                 bless.map(|(_, t)| act(t))
             }
         }
+    }
+
+    /// A Life mage's score for an enemy cell (4879c0..487c93): the curse or strike value V
+    /// times the target's worth, ×3 for a cursed target V can kill, by nature.
+    fn life_strike_score(&self, id: usize, t: usize) -> i64 {
+        let tf = &self.fighters[t];
+        let life = (2 * self.opt().curse_main_spell / 3).max(1) as i64;
+        let p = self.strike_power(id, t);
+        let (db, ds) = (tf.base[Stat::DefenceBlow] as i64, tf.base[Stat::DefenceShot] as i64);
+        let v = if p < 1 {
+            0
+        } else if !tf.cursed {
+            // The second term compares DefenceShot but adds DefenceBlow (4879c0), an original
+            // slip, kept.
+            let q = p / life;
+            3 * ((if db < q { db } else { q }) + (if ds < q { db } else { q })) + 1
+        } else {
+            self.fighters[id].actions as i64 * p
+        };
+        let shielded = tf.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]);
+        let mut s = if shielded { 3 * tf.ai_power as i64 } else { db + ds + tf.ai_power as i64 * tf.actions as i64 };
+        s *= v;
+        if tf.hp as i64 <= v && tf.cursed && !tf.base.has_any(&[Bonus::DeathCurse, Bonus::Ghost]) {
+            s *= 3;
+        }
+        match tf.stats.nature {
+            Nature::Undead => s,
+            Nature::Elemental => s * 2 / 3,
+            _ => s / 3,
+        }
+    }
+
+    /// Elemental magic (487c93, 487e99): per side a main and an alternative value, the cells
+    /// scanned row by row and column by column (not in the picker's order), a strictly
+    /// higher value winning. Own side: haste (main) or heal (alternative); enemy side: slow
+    /// (main) or strike (alternative). The alternative replaces the main when strictly
+    /// higher, and the own side wins only when strictly higher than the enemy's.
+    fn ai_elemental(&self, id: usize, hostile: &[usize], friendly: &[usize]) -> Option<usize> {
+        let f = &self.fighters[id];
+        let team = f.team;
+        let mp = f.power as i64;
+        let tier = actions_of_power(f.power) as i64;
+        let by_cell = |v: &[usize]| {
+            let mut v = v.to_vec();
+            v.sort_by_key(|&t| (self.fighters[t].slot.row, self.fighters[t].slot.col));
+            v
+        };
+        let all_ghost = self.living(team).all(|u| u.has(Bonus::Ghost));
+        let enemies = self.living(team.other()).count() as i64;
+        let shields = self.living(team.other()).filter(|e| e.base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost])).count() as i64;
+        // ÷10 for the own side when half the enemies are shielded, unless the target has
+        // GodAnger or GodStrike, or it is a Life or Elemental mage while the *caster* can
+        // reach enemies (the original reads the caster's direction there).
+        let caster_hostile = f.stats.magic_direction().hits_enemies();
+        let shield_rule = |t: usize, v: i64| {
+            let tf = &self.fighters[t];
+            let life_or_elemental = matches!(tf.base.magic, Some(MagicSchool::Life | MagicSchool::Elemental));
+            if shields > 0 && enemies / 2 <= shields && !tf.base.has_any(&[Bonus::GodAnger, Bonus::GodStrike]) && (!life_or_elemental || !caster_hostile) {
+                v / 10
+            } else {
+                v
+            }
+        };
+        let (mut main, mut alt) = ([(0i64, None::<usize>); 2], [(0i64, None::<usize>); 2]);
+        let better = |slot: &mut (i64, Option<usize>), v: i64, t: usize| {
+            if v > slot.0 {
+                *slot = (v, Some(t));
+            }
+        };
+        let own = by_cell(friendly);
+        let mean = self.mean_initiative[team.other().index()];
+        for &t in &own {
+            let tf = &self.fighters[t];
+            // Haste: not the caster itself, not hasted yet, with an action left (a unit of 0
+            // Manevres passes the action test, Community c25da0).
+            if t == id || tf.mods.initiative >= 1 || (tf.actions <= 0 && tf.base[Stat::Manevres] != 0) {
+                continue;
+            }
+            let mut v = experience::round_half_even((tier * tf.ai_power as i64 * tf.base[Stat::Initiative] as i64) as f64 / mean);
+            if tf.slot.row == Row::Front {
+                // Scaled down by the hits it needs to kill the enemies facing it (4863e8).
+                let c = tf.slot.col as i32;
+                let s: i64 = (c - 1..=c + 1).filter(|&k| (0..self.formation.cols as i32).contains(&k)).map(|k| self.hits_to_kill(t, k as u8)).sum();
+                let l = tier + tf.actions as i64;
+                if s < l && l != 0 {
+                    v = experience::round_half_even(v as f64 * s as f64 / l as f64);
+                }
+            }
+            better(&mut main[0], shield_rule(t, v), t);
+        }
+        for &t in &own {
+            let tf = &self.fighters[t];
+            if tf.wounded() {
+                let v = (2 * mp / 3).min((tf.max_hp() - tf.hp) as i64);
+                better(&mut alt[0], shield_rule(t, v), t);
+            }
+        }
+        for &t in &by_cell(hostile) {
+            let tf = &self.fighters[t];
+            let s = actions_of_power(self.hostile_power_of(id, t, f.power)) as i64 * tf.ai_power as i64;
+            let ten = if all_ghost && tf.cursed { 10 } else { 1 };
+            if s < 1 || tf.mods.initiative < 0 || tf.actions < 1 {
+                better(&mut alt[1], self.strike_power(id, t) * ten, t);
+            } else {
+                let slow = tf.actions as i64 * s;
+                better(&mut main[1], slow, t);
+                if f.actions > 1 {
+                    better(&mut alt[1], (slow + self.strike_power(id, t)) * ten, t);
+                }
+            }
+        }
+        for side in 0..2 {
+            if main[side].0 < alt[side].0 {
+                main[side] = alt[side];
+            }
+        }
+        let side = if main[1].0 < main[0].0 { 0 } else { 1 };
+        main[side].1.filter(|_| main[side].0 > 0)
     }
 
     /// Moves when nothing else scored (489549). The AI never moves into the reserve.
