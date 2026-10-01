@@ -157,6 +157,14 @@ old id, and their versions give both.
   in the original's row-by-row order.
 - The hero's sight, speed and casting time stay those of the class he started with, whatever
   unit an event makes him; a Community speed event sets his speed.
+- Sight and lanterns explore exactly the original's cells (its soft half-cell stamp: the
+  archmage's 8 cells reach 8 more cells than before). A lantern without a radius lights
+  nothing.
+- The clock starts a minute after the map's start time, and the hero's first noon report is
+  always the next day's, even after a morning start.
+- An event that moves an army to the hero puts it on his cheapest free neighbour (a road
+  before grass, a building only as a last resort), moves its home there too, and leaves a
+  waiting army off the map.
 
 ## 0.2.2 — 2026-10-01
 

@@ -570,6 +570,7 @@ mod tests {
         village.gold_per_day = 500; // tribute, not income
         s.buildings = vec![fort, village];
         let mut g = start(&s);
+        g.first_noon_today();
         // Militia 50/2 × ¼ = 6.25 → 6. The bandit (a rogue) is a recruit too: 55/2 × ½ = 13.75 → 14.
         assert_eq!((g.wage(0), g.wage(1), g.wage(2)), (0, 6, 14));
         assert_eq!(g.squad[0].wage_kind, crate::rules::content::WageKind::Leader);
@@ -598,6 +599,7 @@ mod tests {
         s.header.heroes[0] = hero(2, 2, 0, &[troop(4, 0, 2)]);
         s.buildings = vec![town(BuildingType::Village, 12, 2, 1)];
         let mut g = start(&s);
+        g.first_noon_today();
         g.squad[1].items[0] = Some(ItemId(21));
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
@@ -634,6 +636,7 @@ mod tests {
         // Militia 6, archer 90/2 × ½ = 22.5 → 22, merchant 100/2 × ½ = 25.
         s.header.heroes[0] = hero(2, 2, 30, &[troop(4, 0, 1), troop(5, 0, 1), troop(7, 0, 1)]);
         let mut g = start(&s);
+        g.first_noon_today();
         assert_eq!(g.daily_wages(), 53);
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
@@ -677,6 +680,7 @@ mod tests {
         let mut s = map();
         s.header.heroes[0] = hero(2, 2, 100, &[troop(8, 0, 2), troop(4, 0, 1)]);
         let mut g = start(&s);
+        g.first_noon_today();
         g.mana = 30; // two golems want 20 each
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
@@ -698,6 +702,7 @@ mod tests {
         v.linked_building = 1;
         s.buildings = vec![castle, v];
         let mut g = start(&s);
+        g.first_noon_today();
         assert_eq!((g.daily_income(), g.daily_mana()), (30, 4), "its stock");
         let mut events = Vec::new();
         g.pass_time(3.0 * 60.0, &mut events);
@@ -993,6 +998,7 @@ mod tests {
         castle.faction = 1;
         s.buildings = vec![castle, town(BuildingType::Castle, 8, 2, 1)];
         let mut g = inside(&s);
+        g.first_noon_today();
         assert_eq!(g.leave_in_garrison(0), Err(ServiceError::Hero));
         g.squad[2].hp = 20; // of 40
         g.leave_in_garrison(2).unwrap();

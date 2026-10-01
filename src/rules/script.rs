@@ -18,10 +18,8 @@ use super::units::Unit;
 use super::world::{Army, EventInfo, Troop};
 use crate::dt::dtm::EventKind;
 
-/// Radius revealed around an army an event shows *(guess)*.
+/// Radius revealed around an army an event shows: 6 half-cells (world.md §3, 0x4ab6c3).
 const SHOW_ARMY_RADIUS: i32 = 3;
-/// Radius of a lantern whose point has none set *(guess)*.
-const LANTERN_RADIUS: i32 = 5;
 
 /// How the scenario ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -501,22 +499,45 @@ impl EventWorld for Game {
         }
     }
 
-    /// The army comes onto the map next to the hero *(guess: it is activated if waiting)*.
+    /// The army is moved next to the hero (world.md §4.4, 0x4980d8): of his 8 neighbours,
+    /// in the original's direction order, the one with the lowest score, its cost on the LAND
+    /// map (the SHIP map when he is at sea; blocked 100 000) + 50 000 on a building's cell +
+    /// 100 000 when someone stands there, the first lowest winning. Only a free, open cell
+    /// (below 100 000) is used: the army's position and home cell (its post) move there. A
+    /// waiting army is not brought onto the map.
     fn move_army_to_hero(&mut self, army: ArmyId) {
-        let Some(i) = self.activate(army) else { return };
+        const BLOCKED: i64 = 100_000;
         let here = self.tile();
-        let map = &self.world.map;
-        let spot = map.grid.neighbours(here).find(|&n| map.passable(n) && self.world.location_at(n).is_none());
-        if let Some(t) = spot {
-            let a = &mut self.world.armies[i];
-            a.pos = map.center(t);
+        let w = &self.world;
+        let map = &w.map;
+        let at_sea = self.aboard();
+        let parked = self.parked_ship();
+        let occupied = |t: super::map::Tile| t == here || parked == Some(t) || w.armies.iter().any(|a| a.tile(map) == t);
+        let mut best: Option<(i64, super::map::Tile)> = None;
+        for (dx, dy) in super::map::DIRECTIONS {
+            let t = (here.0 + dx, here.1 + dy);
+            if !map.in_bounds(t) {
+                continue;
+            }
+            let cost = if at_sea { map.water_cost(t) } else { map.cost(t) };
+            let score = cost.map_or(BLOCKED, i64::from) + if w.location_covering(t).is_some() { 50_000 } else { 0 } + if occupied(t) { BLOCKED } else { 0 };
+            if best.is_none_or(|(b, _)| score < b) {
+                best = Some((score, t));
+            }
+        }
+        let Some((_, t)) = best.filter(|&(score, _)| score < BLOCKED) else { return };
+        let pos = map.center(t);
+        if let Some(a) = self.army_mut(army) {
+            a.pos = pos;
+            a.post = t;
             a.path.clear();
         }
     }
 
     fn light_lantern(&mut self, point: u16) {
-        if let Some(p) = self.world.points.iter().find(|p| p.id as u16 == point).copied() {
-            self.reveal_area(p.tile, if p.radius > 0 { p.radius } else { LANTERN_RADIUS });
+        // A lantern without a radius reveals nothing (world.md §3, 0x4ab762).
+        if let Some(p) = self.world.points.iter().find(|p| p.id as u16 == point && p.radius > 0).copied() {
+            self.reveal_area(p.tile, p.radius);
         }
     }
 
@@ -1377,9 +1398,10 @@ mod tests {
     fn an_event_can_start_a_battle_and_delay_the_player() {
         let mut e = ev(EventKind::Global);
         e.results.start_battle_with = 5;
-        e.results.delay_hours = 5;
+        e.results.delay_hours = 15;
         let mut s = world(vec![e]);
-        s.header.start_time = 624_354_300 - 9 * 60 + 8 * 60; // 08:00
+        // 22:00: the delay runs into the next day's noon, the hero's first.
+        s.header.start_time = 624_354_300 - 11 * 60;
         let mut sleeper = army(5, 12, 10, -2, &[troop(4, 0, 1)]);
         sleeper.inactive = 1;
         s.armies = vec![sleeper];
@@ -1418,6 +1440,42 @@ mod tests {
         assert_eq!(shown.at, (10, 4));
         assert!(shown.cells.iter().all(|&t| g.fog.explored(t)), "only cells it uncovered, all lit now");
         assert!(!g.fog.enabled || g.fog.explored((10, 4)), "the lantern lights the fog");
+    }
+
+    #[test]
+    fn a_lantern_without_a_radius_reveals_nothing() {
+        // World.md §3: both lantern loops test radius > 0 (0x4ab762, 0x4b5a32).
+        let mut e = ev(EventKind::Global);
+        e.results.light_lanterns = [7, 0, 0, 0];
+        let mut s = world(vec![e]);
+        s.points = vec![point(7, 13, 9, 0)];
+        let g = start(&s);
+        assert!(g.pending_reveals.is_empty() && g.shown.is_empty());
+        assert!(!g.fog.explored((13, 9)));
+    }
+
+    #[test]
+    fn an_army_moved_to_the_hero_takes_the_cheapest_free_neighbour() {
+        // World.md §4.4 (0x4980d8): the hero at (2, 2); score = cost + 50 000 on a building +
+        // 100 000 when taken; the first lowest in direction order (NW, N, NE, E, SE, S, SW, W).
+        use crate::rules::events::EventWorld as _;
+        let mut s = world(vec![]);
+        // Road to the south-east (3) is the cheapest; a village on the road east is dearer.
+        set(&mut s, 3, 3, crate::dt::dtm::Surface::Road);
+        set(&mut s, 3, 2, crate::dt::dtm::Surface::Road);
+        s.buildings = vec![building(BuildingType::Village, 3, 2, (1, 1))];
+        s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1)]), army(3, 14, 2, 1, &[troop(4, 0, 1)])];
+        s.armies[1].inactive = 1;
+        let mut g = start(&s);
+        g.move_army_to_hero(2);
+        let a = &g.world.armies[0];
+        assert_eq!((a.tile(&g.world.map), a.post), ((3, 3), (3, 3)), "the road cell, home moved too");
+        // Taken now: the next one goes to the first grass neighbour, NW, though it waits off
+        // the map (it stays there).
+        g.move_army_to_hero(3);
+        let w = &g.world.inactive[0];
+        assert_eq!((w.tile(&g.world.map), w.post), ((1, 1), (1, 1)));
+        assert!(g.world.armies.iter().all(|a| a.id != 3), "not brought onto the map");
     }
 
     // --- Community Update opcodes ---------------------------------------------------------------

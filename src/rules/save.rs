@@ -602,6 +602,7 @@ pub(crate) mod tests {
     #[test]
     fn noon_asks_for_an_autosave_named_by_the_date() {
         let mut g = Game::new(demo(), HeroClass::Knight);
+        g.first_noon_today();
         g.world.armies.clear();
         g.wait(3);
         assert_eq!(g.autosave_due, None);

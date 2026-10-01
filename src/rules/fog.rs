@@ -8,8 +8,9 @@
 //! - Sight radius by class: knight 9, archmage 8, ranger 10 cells ([`sight_radius`]); the disc
 //!   is a circle in **cells** (an ellipse on the 32×22 px screen).
 //! - A lantern's radius (at most 24) is in cells too.
-//! - The original's edge is soft (a brightness per half-cell); a cell counts as explored within
-//!   about `r + 0.6` cells of the centre ([`EDGE`], M).
+//! - The original's edge is soft: a brightness per half-cell, and a cell counts as explored
+//!   when its four half-cells are bright enough ([`stamp`]); radius 8 explores 241 cells, 9
+//!   293, 10 349.
 //! - An unexplored cell is no target for a click, and the hero's planner treats it as closed
 //!   (`Game::plan`).
 //! - The built-in demo plays without fog ([`Fog::disabled`]).
@@ -22,13 +23,12 @@ use crate::dt::dtm::Scenario;
 use super::content::HeroClass;
 use super::map::{Tile, TileMap};
 
-/// Cells beyond the radius that still come into view: the original's soft edge, a cell being
-/// explored when the average brightness of its half-cells is high enough (world.md §3, M).
-pub const EDGE: f32 = 0.6;
 /// Largest lantern radius the editor allows.
 pub const MAX_LANTERN_RADIUS: i32 = 24;
 /// Point model of an active lantern (`.DTm` point byte 5).
 pub const LANTERN_MODEL: u8 = 8;
+/// Half-cells of the original's largest stamp (its masks run 0..=48).
+const MAX_HALF_RADIUS: usize = 48;
 
 /// How far the hero of `class` sees, in cells (world.md §3: 18, 16 and 20 half-cells).
 pub fn sight_radius(class: HeroClass) -> i32 {
@@ -39,11 +39,43 @@ pub fn sight_radius(class: HeroClass) -> i32 {
     }
 }
 
-/// Cell `b` lies within the disc of radius `r` cells around `a` (with the soft [`EDGE`]).
+/// The original's explored stamp for a radius of `half` half-cells (world.md §3, 0x4cf734):
+/// the cells, as offsets from the centre cell, that a reveal explores. Each half-cell of a
+/// 98 × 98 mask centred between its two middle pixels has the brightness
+/// `Round(15 − 8·(d − half))` clamped to 0..=15 (`d` its distance in half-cells, single
+/// precision, rounded half to even); a cell of the 49 × 49 explored mask is explored when the
+/// darkness `15 − b` of its four half-cells, scaled by 4096 and summed, shifted right by 14
+/// is below 10 (their brightness adds up to more than 20).
+pub fn stamp(half: usize) -> &'static [(i32, i32)] {
+    static STAMPS: std::sync::OnceLock<Vec<Vec<(i32, i32)>>> = std::sync::OnceLock::new();
+    let all = STAMPS.get_or_init(|| (0..=MAX_HALF_RADIUS).map(build_stamp).collect());
+    &all[half.min(MAX_HALF_RADIUS)]
+}
+
+fn build_stamp(half: usize) -> Vec<(i32, i32)> {
+    let brightness = |px: i32, py: i32| -> i32 {
+        let (dx, dy) = (px as f32 - 48.5, py as f32 - 48.5);
+        let d = (dx * dx + dy * dy).sqrt();
+        let v = 15.0 - 8.0 * (d as f64 - half as f64);
+        (v.round_ties_even() as i32).clamp(0, 15)
+    };
+    let mut out = Vec::new();
+    for j in 0..49 {
+        for i in 0..49 {
+            let dark: i32 = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(a, b)| (15 - brightness(2 * i + a, 2 * j + b)) << 12).sum();
+            if dark >> 14 < 10 {
+                out.push((i - 24, j - 24));
+            }
+        }
+    }
+    out
+}
+
+/// Cell `b` lies within the disc of radius `r` cells around `a` (the original's stamp of `2r`
+/// half-cells, [`stamp`]).
 pub fn within(a: Tile, b: Tile, r: i32) -> bool {
-    let (dx, dy) = ((a.0 - b.0) as f32, (a.1 - b.1) as f32);
-    let e = r.max(0) as f32 + EDGE;
-    dx * dx + dy * dy <= e * e
+    let off = (b.0 - a.0, b.1 - a.1);
+    stamp(2 * r.max(0) as usize).contains(&off)
 }
 
 /// Explored cells of a `w × h` map, one bit per cell (row by row).
@@ -97,17 +129,13 @@ impl Fog {
     }
 
     /// Explores the disc of radius `r` cells (at most [`MAX_LANTERN_RADIUS`]) around cell
-    /// `(x, y)`, a circle in cells ([`within`]): the hero's sight or a lantern. Returns true if
-    /// anything new was revealed.
+    /// `(x, y)`: the original's stamp of `2r` half-cells ([`stamp`]), the hero's sight or a
+    /// lantern. Returns true if anything new was revealed.
     pub fn reveal(&mut self, x: i32, y: i32, r: i32) -> bool {
-        let r = r.clamp(0, MAX_LANTERN_RADIUS);
+        let half = 2 * r.clamp(0, MAX_LANTERN_RADIUS) as usize;
         let mut new = false;
-        for cy in (y - r - 1).max(0)..=(y + r + 1).min(self.h - 1) {
-            for cx in (x - r - 1).max(0)..=(x + r + 1).min(self.w - 1) {
-                if within((x, y), (cx, cy), r) {
-                    new |= self.mark((cx, cy));
-                }
-            }
+        for &(dx, dy) in stamp(half) {
+            new |= self.mark((x + dx, y + dy));
         }
         new
     }
@@ -236,6 +264,22 @@ mod tests {
     }
 
     #[test]
+    fn the_stamps_explore_the_originals_cell_counts() {
+        // World.md §3: radius 8 cells (16 half-cells) → 241 cells, 9 → 293, 10 → 349,
+        // 24 → 1901.
+        assert_eq!([16, 18, 20, 48].map(|h| stamp(h).len()), [241, 293, 349, 1901]);
+        // No single disc fits every radius: the archmage's 8 includes (±7, ±5), which a disc
+        // of 8.6 cells leaves out.
+        assert!(stamp(16).contains(&(7, 5)) && stamp(16).contains(&(-5, -7)));
+        assert!(!stamp(18).contains(&(10, 0)) && stamp(18).contains(&(9, 0)));
+        assert_eq!(stamp(0), &[(0, 0)][..], "radius 0: its own cell");
+        let mut f = Fog::new(40, 40);
+        f.reveal(20, 20, 8);
+        assert_eq!(f.explored_count(), 241);
+        assert!(within((20, 20), (27, 25), 8) && !within((20, 20), (27, 26), 8));
+    }
+
+    #[test]
     fn reveal_is_a_circle_in_cells_and_stays() {
         let mut f = Fog::new(40, 40);
         assert_eq!(f.explored_count(), 0);
@@ -275,7 +319,7 @@ mod tests {
         let mut f = for_scenario(&m, Some(&s), true);
         assert!(f.explored((10, 10)) && f.explored((13, 10)) && !f.explored((14, 10)));
         assert!(f.explored((10, 13)) && !f.explored((10, 14)), "rows count as cells too");
-        assert!(f.explored((12, 12)) && !f.explored((13, 12)));
+        assert!(f.explored((13, 12)) && !f.explored((13, 13)), "the original's stamp, not a disc");
         assert!(!f.explored((40, 40)) && !f.explored((50, 10)));
         // Lighting one later (an event).
         let ((x, y), r) = lantern(&s, 2).unwrap();

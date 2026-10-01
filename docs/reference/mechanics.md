@@ -897,8 +897,9 @@ events only; texts are read from the scenario at runtime.
 Explored cells stay explored; there is no "seen before" state (the video).
 
 - **Sight** (world.md §3): the hero explores a circle in cells around him: 9 cells for the
-  knight, 8 for the archmage, 10 for the ranger (the original's 18/16/20 half-cells), plus
-  0.6 for its soft edge (M). On the 32×22 px screen that is an ellipse. He looks around at
+  knight, 8 for the archmage, 10 for the ranger (the original's 18/16/20 half-cells), by the
+  original's half-cell stamp (241, 293 and 349 cells). On the 32×22 px screen that is an
+  ellipse. He looks around at
   the start and after every step.
 - **Lanterns**: points with model 8 and the "active at start" flag light their radius when the
   game starts (9 on the 15 shipped maps). A radius `r` (cells, capped at 24) explores the same

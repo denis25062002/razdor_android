@@ -1098,6 +1098,9 @@ impl Game {
         for tick in self.clock.advance(minutes as f64) {
             match tick {
                 Tick::Midnight(_) => self.midnight(),
+                // The hero's first noon is the day after the start, even after a morning
+                // start (world.md §6.4, 0x4b4388); the AI's armies keep theirs.
+                Tick::Noon(day) if day <= self.start_day => self.ai_new_day(),
                 Tick::Noon(day) => {
                     let report = self.new_day(day);
                     events.push(Event::NewDay(report));
@@ -1648,6 +1651,12 @@ impl Game {
 
 #[cfg(test)]
 impl Game {
+    /// Tests of the noon's payments: the start day's 12:00 counts (the original's first
+    /// noon for the hero is the day after the start, world.md §6.4).
+    pub(crate) fn first_noon_today(&mut self) {
+        self.start_day = self.clock.day_index().saturating_sub(1);
+    }
+
     /// Walks towards `target` as a player would through the fog (tests on real maps): the
     /// target itself once it can be clicked, else the explored cell nearest it that has a
     /// route, leg after leg, until he is there, stopped by an army or a garrison, or stuck.
@@ -1802,6 +1811,7 @@ mod tests {
     #[test]
     fn noon_pays_income_and_wages_and_marks_unpaid() {
         let mut g = quiet_game(HeroClass::Knight);
+        g.first_noon_today();
         g.hire(unit(&g, "spearman")).unwrap();
         g.hire(unit(&g, "archer")).unwrap();
         g.gold = 0;
@@ -1834,6 +1844,20 @@ mod tests {
     }
 
     #[test]
+    fn the_first_noon_is_the_day_after_the_start_and_the_clock_starts_a_minute_late() {
+        // World.md §6.3–6.4: the clock reads the DTm start minute + 1; the next noon at the
+        // start is (start div 1440 + 1) × 1440 + 720, so a 09:00 start skips that day's noon.
+        let mut g = start(&strip());
+        let t0 = g.clock.total_minutes();
+        assert_eq!(t0, 624_354_300.0 + 1.0);
+        let mut events = Vec::new();
+        g.pass_time(4.0 * 60.0, &mut events);
+        assert!(events.is_empty(), "13:01 on the start day: no noon report");
+        g.pass_time(24.0 * 60.0, &mut events);
+        assert!(matches!(events.as_slice(), [Event::NewDay(r)] if r.day == g.start_day + 1), "{events:?}");
+    }
+
+    #[test]
     fn villages_refill_at_midnight() {
         let mut g = quiet_game(HeroClass::Knight);
         g.location = Some(g.world.index_of("Millbrook"));
@@ -1841,8 +1865,8 @@ mod tests {
         assert!(g.collect_tribute().is_some());
         assert_eq!(g.tribute_available(), None);
         let mut events = Vec::new();
-        g.pass_time(15.0 * 60.0, &mut events); // 08:00 -> 23:00: the noon report only
-        assert_eq!(events.len(), 1);
+        g.pass_time(15.0 * 60.0, &mut events); // 08:00 -> 23:00: no noon on the start day
+        assert!(events.is_empty());
         assert_eq!(g.tribute_available(), None);
         g.pass_time(60.0, &mut events); // 00:00
         assert_eq!(g.tribute_available(), Some(10));
@@ -1851,6 +1875,7 @@ mod tests {
     #[test]
     fn waiting_passes_time_and_moves_the_world() {
         let mut g = new_game(HeroClass::Knight, 3);
+        g.first_noon_today();
         let start = g.clock.total_minutes();
         let before: Vec<_> = g.world.armies.iter().map(|p| p.pos).collect();
         let events = g.wait(4);
@@ -1865,6 +1890,7 @@ mod tests {
     #[test]
     fn ranger_heals_the_army_every_day() {
         let mut g = quiet_game(HeroClass::Ranger);
+        g.first_noon_today();
         g.squad[0].hp = 10;
         let mut events = Vec::new();
         g.pass_time(4.0 * 60.0, &mut events); // noon
@@ -1941,6 +1967,7 @@ mod tests {
     #[test]
     fn castle_healing_is_paid() {
         let mut g = quiet_game(HeroClass::Knight);
+        g.first_noon_today();
         g.squad[0].hp = 5;
         g.set_destination(tile_of_location(&g, "Millbrook"));
         walk_until_stopped(&mut g);

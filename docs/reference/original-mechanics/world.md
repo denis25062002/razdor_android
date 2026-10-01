@@ -512,12 +512,12 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
 | Friendly meeting | talk counter per army: +1 per step, + relation + 1 next to him, greets above 0, then −500 | talk counters, −500 after each meeting, grow per AI step | Matches |
 | Sight radii | 9/8/10 cells | same | none |
-| Explored edge | Euclid `r + 0.6` | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | **fix** `fog::EDGE` (or port the rule) |
+| Explored edge | the original's half-cell stamps (`fog::stamp`): 241 / 293 / 349 cells for radius 8 / 9 / 10 | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | Matches |
 | Start reveal | instant | grows over ~0.4 s, camera on the hero | cosmetic |
 | Lantern radius unit | cells | cells | none |
 | No re-fogging | yes | yes | none |
-| Clock start | DTm start minute | start minute + 1 | 1 minute |
-| First noon | the first 12:00 crossed (start day if before noon) | always the next day's noon | **fix** for parity |
+| Clock start | DTm start minute + 1 | start minute + 1 | Matches |
+| First noon | always the next day's noon for the hero (the AI keeps its own) | always the next day's noon | Matches |
 | Day shown | 0-based (`Clock::day`) | 0-based | none |
 | Wait 1 h / 4 h | 2 / 8 ticks of 30 min | same | none |
 | F4 endless wait | not present (`hotkeys.rs`: F5 is quick save) | Community: F4 waits until F5 | Community extra, optional |
@@ -526,8 +526,8 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Ship purchase | no ship object; planner switches to MIXED in the shipyard; leaving it on land loses it | no ship object; planner switches to MIXED in the shipyard | Matches |
 | Landing | land or a building ahead ends the route on it, the ship parked on the water left; the land test reads the misplaced row (the bug); rows past the buffer read as water *(guess)* | same, but the landing test reads a cell further south (bug); building cells also land | Matches |
 | Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
-| Move army to hero | first passable non-building neighbour, army activated *(guess)*, home kept (`script.rs`) | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | small |
-| Event lantern radius 0 | 5 cells (`LANTERN_RADIUS`) | nothing revealed (radius 0 skipped) | small |
+| Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | small: Razdor's patrol box follows the moved post (it keeps no separate box) |
+| Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
 | AI attack while waiting | never: AI attacks and greetings only after a step of his | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
 | Chase target unreachable | chase ends and the hero stops; the new plan keeps the original click's buildings | chase ends and the hero stops | Matches |
 | Show army reveal | 3 cells | 3 cells (6 half-cells), growing | none |

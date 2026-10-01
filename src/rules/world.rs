@@ -729,7 +729,8 @@ impl World {
             .map(|o| Decoration { tile: (o.x as i32, o.y as i32), class: o.class, sprite: o.sprite })
             .collect();
         let map = TileMap::from_codes(Grid::Square8, w, h, &s.terrain, objects);
-        let start = if s.header.start_time > 0 { Clock::at_minutes(s.header.start_time as u64) } else { Clock::demo_start() };
+        // The original's clock reads the start minute plus 1 (world.md §6.3, 0x4b42d8).
+        let start = if s.header.start_time > 0 { Clock::at_minutes(s.header.start_time as u64 + 1) } else { Clock::demo_start() };
         let mut world = World::empty(&s.title, map, start);
         world.relations = s.header.relations;
         world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.title_text().trim().to_string() }).collect();
