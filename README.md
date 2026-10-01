@@ -140,9 +140,10 @@ Ubuntu 22.04, which makes it run on older distributions too, so releases take it
 
 `scripts/dist-macos.sh` builds `razdor-macos` on a Mac (it needs Apple's SDK, from Xcode or
 its Command Line Tools): one universal program for Apple Silicon and Intel, macOS 11 and
-later, added to `dist/SHA256SUMS`. The pipeline builds it on GitHub's macOS 15 runner; it
-depends on that runner's Xcode, so it is not rebuilt bit for bit elsewhere. It is not signed
-by a developer, so macOS blocks it once downloaded: run
+later, added to `dist/SHA256SUMS`. The pipeline builds it on GitHub's macOS 15 runner. Like
+the Linux program it depends on the system it is linked on (here Xcode's SDK and linker): the
+same commit on the same runner image gives the same SHA-256, another Xcode may not. It is
+not signed by a developer, so macOS blocks it once downloaded: run
 `xattr -d com.apple.quarantine razdor-macos` (or right click → Open in Finder) before the
 first start. Started by a double click, it opens in Terminal. Running the pipeline by hand
 (Actions → Release → Run workflow) builds the three programs of a commit as the run's
