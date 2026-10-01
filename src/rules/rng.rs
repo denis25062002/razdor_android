@@ -49,18 +49,21 @@ impl Rng {
         lo.saturating_add(self.random(n))
     }
 
-    /// The plant jitter of a map or save load (engine.md §3.3): for every cell in row-major
-    /// order whose object word (`cells`, `w` per row, class in the high byte) is a plant
+    /// The plant jitter of a map or save load (engine.md §3.3): for every cell of the plant
+    /// layer of a map `w` wide ([`plant_layer`]: `w + 8` cells per row, the original's cell
+    /// array) in row-major order whose object word (class in the high byte) is a plant
     /// (classes 9–11), the state is set from the cell's hash, then the x offset, the y offset
-    /// and the sway phase are drawn. Only the stream is kept (the offsets are not drawn on the
-    /// map yet). Returns whether any plant re-seeded it.
+    /// and the sway phase are drawn. The hash takes the column in that wider row, as the
+    /// original does. Only the stream is kept (the offsets are not drawn on the map yet).
+    /// Returns whether any plant re-seeded it.
     pub fn jitter_plants(&mut self, w: i32, cells: &[u16]) -> bool {
+        let stride = (w + CELL_PAD_X).max(1);
         let mut any = false;
         for (l, &word) in cells.iter().enumerate() {
             if !(9..=11).contains(&(word >> 8)) {
                 continue;
             }
-            let (x, y) = (l as i32 % w.max(1), l as i32 / w.max(1));
+            let (x, y) = (l as i32 % stride, l as i32 / stride);
             self.0 = plant_hash(x, y, word);
             // x offset: 4 + Random(16) on odd rows, 28 − Random(16) on even ones; then y
             // offset Random(11), sway phase Random(1000).
@@ -96,16 +99,23 @@ pub fn plant_hash(x: i32, y: i32, word: u16) -> u32 {
     v.trunc() as i64 as u32
 }
 
-/// The cells' plant layer of a map: the object word (`class << 8 | sprite`) of the last
-/// object of class 0 or 9 and above on each cell, objects at `y × w + x` in file order (an
-/// object past the row's end lands on the next row, as in the original).
+/// The original's cell array is 8 cells wider and 2 rows taller than the map (saves-data
+/// notes, map load step 4); the plant jitter walks all of it.
+pub const CELL_PAD_X: i32 = 8;
+pub const CELL_PAD_Y: i32 = 2;
+
+/// The cells' plant layer of a map `w × h`: the object word (`class << 8 | sprite`) of the
+/// last object of class 0 or 9 and above on each cell, objects at `y × (w + 8) + x` in file
+/// order, over the original's `(w + 8) × (h + 2)` cell array (so an object up to 7 columns
+/// past the map's edge keeps its row, and only one further out lands on the next row).
 pub fn plant_layer(w: i32, h: i32, objects: impl IntoIterator<Item = (i32, i32, u8, u8)>) -> Vec<u16> {
-    let mut cells = vec![0u16; (w.max(0) * h.max(0)) as usize];
+    let stride = (w + CELL_PAD_X).max(0);
+    let mut cells = vec![0u16; (stride * (h + CELL_PAD_Y).max(0)) as usize];
     for (x, y, class, sprite) in objects {
         if (1..=8).contains(&class) || x < 0 || y < 0 {
             continue;
         }
-        if let Some(c) = cells.get_mut((y * w + x) as usize) {
+        if let Some(c) = cells.get_mut((y * stride + x) as usize) {
             *c = (class as u16) << 8 | sprite as u16;
         }
     }
@@ -213,9 +223,12 @@ mod tests {
         // Cell (0, 2): sin 1600 × 10⁶ + cos 2 × 10⁴ + 2 = −805 384.26; the cut is toward
         // zero, and S keeps the low 32 bits.
         assert_eq!(plant_hash(0, 2, 2), (-805_384i32) as u32);
-        // Three draws after the last plant's seed; the cells before it do not matter.
+        // Three draws after the last plant's seed; the cells before it do not matter. The
+        // layer of a 3 × 2 map is 11 × 4 cells.
         let cells = plant_layer(3, 2, [(1, 0, 10, 5), (2, 1, 9, 7), (0, 1, 3, 1)]);
-        assert_eq!(cells, [0, 10 << 8 | 5, 0, 0, 0, 9 << 8 | 7]);
+        assert_eq!(cells.len(), 11 * 4);
+        assert_eq!((cells[1], cells[11 + 2]), (10 << 8 | 5, 9 << 8 | 7));
+        assert_eq!(cells.iter().filter(|&&c| c != 0).count(), 2);
         let mut r = Rng::new(77);
         assert!(r.jitter_plants(3, &cells));
         assert_eq!(r.state(), Rng::new(plant_hash(2, 1, 9 << 8 | 7)).tap(3).state());
@@ -232,13 +245,25 @@ mod tests {
         let r = Rng::save_load(4, &cells, 2);
         assert_eq!(r.state(), Rng::new(plant_hash(3, 1, 11 << 8 | 4)).tap(3 + 2 + 1).state());
         assert_eq!(Rng::save_load(4, &cells, 2).state(), r.state(), "the same save replays the same stream");
-        assert_eq!(Rng::save_load(4, &[0; 12], 0).state(), Rng::default().tap(1).state(), "no plants, no armies");
+        assert_eq!(Rng::save_load(4, &plant_layer(4, 3, []), 0).state(), Rng::default().tap(1).state(), "no plants, no armies");
     }
 
     #[test]
-    fn the_plant_layer_keeps_the_last_object_and_wraps_past_the_row() {
-        let cells = plant_layer(2, 2, [(0, 0, 9, 1), (0, 0, 11, 2), (0, 0, 4, 9), (2, 0, 10, 3)]);
-        assert_eq!(cells, [11 << 8 | 2, 0, 10 << 8 | 3, 0], "a massif keeps its own layer; x = 2 is the next row");
+    fn the_plant_layer_is_the_originals_wider_cell_array() {
+        // A 2 × 2 map has 10 × 4 cells: x = 2 (past the map's edge) keeps row 0, x = 10 is
+        // row 1; a massif (class 4) keeps its own layer; the last object on a cell wins.
+        let cells = plant_layer(2, 2, [(0, 0, 9, 1), (0, 0, 11, 2), (0, 0, 4, 9), (2, 0, 10, 3), (10, 0, 9, 4), (1, 3, 9, 5)]);
+        assert_eq!(cells.len(), 40);
+        assert_eq!([cells[0], cells[2], cells[10], cells[31]], [11 << 8 | 2, 10 << 8 | 3, 9 << 8 | 4, 9 << 8 | 5]);
+        assert_eq!(cells.iter().filter(|&&c| c != 0).count(), 4);
+        // The hash takes the column and row of the wider array: the last plant is (1, 3).
+        let mut r = Rng::new(0);
+        r.jitter_plants(2, &cells);
+        assert_eq!(r.state(), Rng::new(plant_hash(1, 3, 9 << 8 | 5)).tap(3).state());
+        let only = plant_layer(2, 2, [(10, 0, 9, 4)]);
+        let mut r = Rng::new(0);
+        r.jitter_plants(2, &only);
+        assert_eq!(r.state(), Rng::new(plant_hash(0, 1, 9 << 8 | 4)).tap(3).state(), "x = 10 is (0, 1), not (2, 5)");
     }
 
     #[test]
