@@ -809,6 +809,9 @@ mod tests {
         a.ai.aggression = 100;
         a.ai.no_random = true;
         a.patrols = false;
+        // Gold for its wages: its noon marks its pairs dirty, and an unpaid crew scores no
+        // battle (ai.md §4).
+        a.gold = 500;
         let mana = g.mana;
         let cast = g.cast(2, CastTarget::Own).unwrap();
         assert!(matches!(cast.outcome, CastOutcome::Done { .. }), "{:?}", cast.outcome);

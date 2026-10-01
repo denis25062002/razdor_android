@@ -278,6 +278,9 @@ impl Game {
                 }
             }
         }
+        // As every army's wage payment, the hero's ends by marking his pairs with the AI's
+        // armies to be rescored (0x4a26e8).
+        self.mark_dirty(super::ai::HERO);
         NoonPay { income, mana, wages, mana_wages, unpaid, deserted }
     }
 

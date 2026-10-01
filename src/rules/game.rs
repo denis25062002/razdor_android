@@ -976,6 +976,10 @@ impl Game {
             return;
         }
         self.visit_village(l);
+        // The building's window recomputes his army and marks his pairs with the AI's
+        // armies to be rescored on its hire, garrison and close tabs (0x4ba854 →
+        // 0x497240(0, 1)); time stands while it is open, so here is as good.
+        self.mark_dirty(ai::HERO);
         events.push(Event::Arrived(l));
         events.extend(self.auto_tribute(l));
         if before != Some(l) {
@@ -1833,6 +1837,22 @@ mod tests {
         assert!(matches!(events[n - 1], Event::Tribute { at, .. } if at == millbrook), "{events:?}");
         assert_eq!(g.location, Some(millbrook));
         assert!(g.clock.total_minutes() > Clock::demo_start().total_minutes() + 60.0);
+    }
+
+    #[test]
+    fn a_buildings_window_marks_the_heros_ai_pairs_dirty() {
+        // 0x4ba854 recomputes his army with 0x497240(0, 1): the AI rescores him at its next
+        // plan.
+        let mut g = new_game(HeroClass::Knight, 1);
+        g.world.armies.truncate(1);
+        let a = &mut g.world.armies[0];
+        (a.attitude, a.patrols, a.patrol_radius) = (3, true, 0);
+        a.pos = g.world.map.center((0, 0));
+        a.mind.clean.insert(ai::HERO);
+        assert!(g.set_destination(tile_of_location(&g, "Millbrook")));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.location, Some(g.world.index_of("Millbrook")));
+        assert!(!g.world.armies[0].mind.clean.contains(&ai::HERO));
     }
 
     #[test]
@@ -2839,6 +2859,9 @@ mod tests {
         // The AI goes only for battles it would win: a bold one for this; and no wandering.
         foe.aggression = 100;
         foe.no_random_targets = 1;
+        // Gold for its wages: its noon marks its pairs dirty, and an unpaid crew scores no
+        // battle (ai.md §4).
+        foe.gold_income = 500;
         s.armies = vec![foe];
         let mut g = start(&s);
         let events = g.wait(4);

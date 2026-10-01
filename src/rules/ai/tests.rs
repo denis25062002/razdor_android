@@ -643,6 +643,21 @@ fn no_shopping_when_the_cheapest_good_is_beyond_its_spare_gold() {
     assert_eq!(g.world.locations[0].shop.as_ref().unwrap().stock, [ItemId(11)]);
 }
 
+#[test]
+fn a_good_of_negative_price_is_bought_at_its_absolute_price() {
+    // The purchase table holds |RelationPrice(price)| of the raw price (0x4a548c): a ring
+    // priced −100 costs 100 at attitude 1.
+    let mut c = content();
+    c.items.iter_mut().find(|d| d.id == 11).unwrap().cost = -100;
+    let mut g = at_market(&[11]);
+    g.content = Arc::new(c);
+    g.world.armies[0].gold = 10_000;
+    arrive(&mut g, 1);
+    let a = &g.world.armies[0];
+    assert_eq!(a.troops[0].worn.iter().flatten().copied().collect::<Vec<_>>(), [ItemId(11)]);
+    assert_eq!(a.gold, 10_000 - 100);
+}
+
 /// A friendly church with services at (30, 10), barracks of unit 4, and army 1 in it.
 fn at_church(troops: &[DtTroop]) -> Game {
     let mut s = map();
@@ -935,6 +950,25 @@ fn an_armys_noon_is_lazy_and_counts_its_castles_stock() {
 }
 
 #[test]
+fn a_feudal_noon_and_the_heros_mark_their_pairs_dirty() {
+    // The wage payment ends with 0x4a26e8: a feudal army's pairs, both ways, are rescored at
+    // the next plan; a rogue's noon pays nothing and marks nothing. The hero's noon too.
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]), army(2, (32, 10), 2, ALLY, 1, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let now = g.clock.total_minutes();
+    let clean = |g: &Game, i: usize, key: u32| g.world.armies[i].mind.clean.contains(&key);
+    assert!(clean(&g, 0, 2) && clean(&g, 1, 1), "the map load scored the pair");
+    g.ai_noon(1, now);
+    assert!(clean(&g, 0, 2) && clean(&g, 1, 1), "a rogue's noon");
+    g.ai_noon(0, now);
+    assert!(!clean(&g, 0, 2) && !clean(&g, 1, 1));
+    g.world.armies[1].mind.clean.insert(HERO);
+    g.pay_noon();
+    assert!(!clean(&g, 1, HERO));
+}
+
+#[test]
 fn short_gold_at_noon_leaves_the_cheapest_unpaid_and_old_unpaid_ones_desert() {
     let mut s = map();
     let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1), troop(6, 0, 1)]);
@@ -1153,6 +1187,24 @@ fn ships_plan_on_the_ship_map() {
     for t in std::iter::once(g.world.armies[0].tile(&g.world.map)).chain(g.world.armies[0].path.iter().copied()) {
         assert!((10..20).contains(&t.0), "the ship stays at sea: {t:?}");
     }
+}
+
+#[test]
+fn only_a_bridge_keeps_an_army_on_water_from_being_a_ship() {
+    // The loader (0x4b4a90) tests the bridge types only: on water in a shipyard's footprint
+    // an army is a ship, on a bridge it is not.
+    let mut s = scenario(30, 10);
+    for y in 0..10 {
+        for x in 10..20 {
+            tk::set(&mut s, x, y, crate::dt::dtm::Surface::CoastalWater);
+        }
+    }
+    s.header.heroes[0] = hero(2, 2, 0, &[]);
+    s.buildings = vec![building(BuildingType::Shipyard, 12, 5, (1, 1)), building(BuildingType::WoodenBridge, 17, 5, (1, 1))];
+    s.armies = vec![army(1, (12, 5), 4, ENEMY, 0, &[troop(4, 0, 1)]), army(2, (17, 5), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let g = start(&s);
+    let sails = |id: u8| g.world.armies.iter().find(|a| a.id == id).map(|a| a.sails());
+    assert_eq!((sails(1), sails(2)), (Some(true), Some(false)));
 }
 
 #[test]

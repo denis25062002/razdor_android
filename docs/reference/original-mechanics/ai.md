@@ -190,7 +190,9 @@ army's cell. There is no stored "goal": the army follows whatever the latest flo
 For every army (and the player) within `AIDistance[style]` (index = A's style byte, 0x4a24f5)
 whose pair is marked **dirty**, the score of §4 is recomputed and the pair cleared. Pairs are
 marked dirty in both directions after a battle of either army, a respawn, hiring or healing,
-and when the player's army changes (0x4a26e8 callers). A pair out of range keeps its **last
+a feudal army's noon (its wage payment ends with it, 0x4a41d8), and when the player's army
+changes: after his battles, his noon, an event that took effect (0x4ab1ec) and in a
+building's window (0x4ba854), all through 0x497240(0, 1) or 0x4a26e8. A pair out of range keeps its **last
 score**, which is still used below: the range limits rescoring, not attraction.
 At map start (0x4a1ff0) each pair of AI armies within the first army's `AIDistance`, neither of
 them a stationary guard, is scored once and cleared; pairs with the player or a guard stay dirty.
@@ -543,14 +545,14 @@ after the parity pass.
 | Step cost | Cost of the cell left; a step into the hero's cell (or the one ahead of him) waits; an army with no path steps in place on its own cell's cost, each an arrival | Cost of the cell left; a step into the player's cell (or next cell) waits (§2) | Matches |
 | Stationary guards | Never bank, step, plan, arrive or get a noon | Never step, plan, arrive or get a noon (§2) | Matches |
 | Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
-| Range | Pair scores cached per army with dirty flags; only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
+| Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
 | Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
 | Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
 | Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |
 | Healing | The heal seed lowers the stored scores of friendly service buildings; heals priced by the current HP, `HealingTime` busy from the last; the dead raised dearest first in towns and churches | Heal seed lowers existing scores only (§7.2); heal cost uses current HP; busy `HealingTime` once (§9.4) | Matches |
 | Village gold | Feudal, any village it stands on, its mana thrown away; the village part for villages and its own buildings with stock | Feudal, any village it stands on (§9.2); score part for villages and own buildings with stock | Matches |
-| Shopping | Sells the pack at half, then buys by tactical gain above 5 while the spare gold covers it, values not recomputed (a good bought for a unit that can no longer wear it is paid and lost); markets and churches, or altars for an undead leader | Sell the pack at half, then buy by tactical-cost gain > 5 (§9.3); markets/churches or altars by leader nature | Matches |
+| Shopping | Sells the pack at half, then buys by tactical gain above 5 while the spare gold covers it, values not recomputed (a good bought for a unit that can no longer wear it is paid and lost), a good of negative price at its absolute price; markets and churches, or altars for an undead leader | Sell the pack at half, then buy by tactical-cost gain > 5 (§9.3); markets/churches or altars by leader nature | Matches |
 | Hiring | Role order by tactical sums, leader's Nature (unit 74 any non-undead), the cap of 8 set on entering the third role and tested only before a pass; kind 1 at home, 2 abroad; hire XP level by level | Role balancing, leader-Nature match (unit 74 exception), third role caps at 8 (§9.5); kind 1/2 by ownership | Matches |
 | Garrison | Buying while the spare gold is above a third of the starting gold (the price simply deducted), then the quota reshuffle by byte 82 and the defence | Buying and the quota reshuffle of §9.6, driven by byte 82 and the defence | Matches |
 | Contact | At every arrival: a hostile neighbour in no building, on a bridge or in its own is attacked when the cached score is positive and it is not ignored; in someone else's building both scores are tripled (cap 10000) | On arrival, hostile neighbour with a positive cached score, not ignored; no fight inside someone else's building (§8) | Matches |
@@ -572,8 +574,7 @@ original goes on with the dead army's record, which can fight again or collect v
 gold); the Community's mana bill taken from the player's mana at every AI noon, and its
 short-mana flag (economy.md §1); the barracks are read as a list without the empty slots
 between units (the original's slot positions only matter for the cap of 8 at the last
-slot); the hero's pairs are marked dirty only after his battles (the other callers of
-0x4a26e8 are not traced); an army takes all the steps of a slice before the next one
+slot); an army takes all the steps of a slice before the next one
 moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
 and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,
 "Stock growth").

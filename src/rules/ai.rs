@@ -1983,7 +1983,9 @@ impl Game {
                     if after > before {
                         value[k][u] = item_gain(&c, &tried, bd);
                     }
-                    price[k] = self.ai_price(i, l, c.item(item).cost).abs();
+                    // `|RelationPrice(price)|` of the raw price: a good of negative price
+                    // costs its absolute value (Round is symmetric).
+                    price[k] = self.ai_price(i, l, c.item(item).cost.abs());
                 }
             }
         }
@@ -2844,6 +2846,10 @@ impl Game {
         a.mind.income = income - delta;
         if a.ai.style == Style::Feudal {
             self.ai_pay_wages(i, stamp);
+            // The wage payment ends by marking its pairs to be rescored (0x4a26e8 at the end
+            // of 0x4a41d8's wage paths); the others' noon does not.
+            let uid = self.world.armies[i].uid;
+            self.mark_dirty(uid);
         } else {
             for t in self.world.armies[i].troops.iter_mut() {
                 t.unpaid = false;

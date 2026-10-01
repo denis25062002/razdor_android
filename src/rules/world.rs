@@ -890,8 +890,10 @@ impl World {
             troops.iter_mut().for_each(|t| t.last_paid = paid);
             let at = (a.x as i32, a.y as i32);
             // An army placed on water (terrain codes 0–2), not on a bridge, is a ship army
-            // for good; byte 72 only picks its picture (ai.md §13, 0x4b4a90).
-            let afloat = world.map.in_bounds(at) && is_water(world.map.surface(at)) && world.location_covering(at).is_none();
+            // for good, inside any other building's footprint too; byte 72 only picks its
+            // picture (ai.md §13, 0x4b4a90).
+            let on_bridge = world.location_covering(at).is_some_and(|l| world.locations[l].kind.is_bridge());
+            let afloat = world.map.in_bounds(at) && is_water(world.map.surface(at)) && !on_bridge;
             let ship = if afloat { a.ship.max(super::ships::kind::HERO) } else { 0 };
             let placed = if ship != 0 {
                 world.nearest_sea(at, PLACE_RADIUS)

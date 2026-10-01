@@ -212,6 +212,10 @@ old id, and their versions give both.
 - Units with two upgrade options keep them in the first and third slot, as the original's
   loader moves them.
 - Saves of the previous format still load; their AI armies start their plans afresh.
+- An AI army buys a good of negative price (a personal item) for its absolute price.
+- The AI rescores its battles against a feudal army after that army's noon, and against the
+  hero after his noon, an event that took effect and a visit to a building, as the original.
+- An army placed on water inside a building's footprint other than a bridge is a ship.
 
 ## 0.2.2 — 2026-10-01
 

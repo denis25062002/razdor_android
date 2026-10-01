@@ -90,6 +90,11 @@ impl Game {
 
     fn script_events(&mut self, out: Vec<EventOutcome>) -> Vec<Event> {
         self.record_outcomes(&out);
+        // An event that took effect ends with the army recomputed and the hero's pairs with
+        // the AI's armies marked to be rescored (0x4ab1ec → 0x497240(0, 1)).
+        if out.iter().any(|o| matches!(o, EventOutcome::Fired { .. })) {
+            self.mark_dirty(super::ai::HERO);
+        }
         let mut events: Vec<Event> = out.into_iter().map(Event::Script).collect();
         let effects = std::mem::take(&mut self.effect_events);
         // A battle an event started: against the army as it stands after all the effects.
@@ -1235,17 +1240,24 @@ mod tests {
         ask.question = "q".into();
         ask.results.gold = -40;
         ask.results.artifacts_add = [9, 0, 0, 0];
-        let mut g = start(&world(vec![ask.clone()]));
+        let mut s = world(vec![ask.clone()]);
+        s.armies = vec![army(1, 14, 10, 0, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
         assert_eq!(g.drain_events(), vec![Event::Script(EventOutcome::Question(1))]);
         assert_eq!(g.pending_question(), Some(1));
+        g.world.armies[0].mind.clean.insert(crate::rules::ai::HERO);
         let events = g.answer_question(true);
         assert_eq!(fired(&events), vec![1]);
         assert_eq!((g.gold, g.pack.clone()), (60, vec![ItemId(9)]));
         assert_eq!(g.pending_question(), None);
+        // The event took effect: the AI rescores the hero (0x4ab1ec → 0x497240(0, 1)).
+        assert!(!g.world.armies[0].mind.clean.contains(&crate::rules::ai::HERO));
 
-        let mut g = start(&world(vec![ask]));
+        let mut g = start(&s);
         g.drain_events();
+        g.world.armies[0].mind.clean.insert(crate::rules::ai::HERO);
         let events = g.answer_question(false);
+        assert!(g.world.armies[0].mind.clean.contains(&crate::rules::ai::HERO), "declined: no effect");
         assert_eq!(events, vec![Event::Script(EventOutcome::Declined(1))]);
         assert_eq!(g.gold, 100);
         assert_eq!(g.script().unwrap().happened(1), Some(Answer::No));
