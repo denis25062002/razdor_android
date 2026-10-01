@@ -35,6 +35,11 @@ old id, and their versions give both.
   An undead caster's draining curse heals it by the whole amount, even when the target had
   less left.
 - Vampirism heals only after melee and long strikes, never after a shot.
+- The invulnerable and ghosts still take 1 from any blow or shot, but GodAnger and GodStrike
+  add their 10 or 20 on top of it, as in the original. A unit with no attack of a kind
+  strikes back with its attack modifier (a blessing's attack counts), and a counter blow or
+  a preventive strike that kills the attacker sets off no death curse.
+- A caster in the reserve can heal and bless a reserve unit that a NoHeal weapon marked.
 - Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
 - Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
   for the battle XP.

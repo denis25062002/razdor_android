@@ -296,7 +296,8 @@ impl Fighter {
             bleed: 0,
             reserve_move: true,
             crippled: false,
-            surrender: content.unit(unit.def).surrender.max(0),
+            // A byte: the side test is "not 0" and the mana adds the bytes (48b6ba, 48bfb4).
+            surrender: content.unit(unit.def).surrender as u8 as i32,
             surrendered: false,
             surrender_hp: 0,
             tactical: 1,
@@ -1349,7 +1350,7 @@ impl Battle {
             }
             kind
         } else {
-            if !(s.is_mage() && s.magic_direction().helps_allies()) || t.crippled {
+            if !(s.is_mage() && s.magic_direction().helps_allies()) {
                 return None;
             }
             if from.row == Row::Reserve {
@@ -1363,10 +1364,12 @@ impl Battle {
                     return None;
                 }
             } else {
-                if !t.slot.row.is_active() || (t.blessed && !t.wounded()) {
+                // NoHeal's mark is tested only here: a reserve caster still tends a marked
+                // reserve unit (c2967a).
+                if !t.slot.row.is_active() || (t.blessed && !t.wounded()) || t.crippled {
                     return None;
                 }
-                if self.school(id) == MagicSchool::Elemental && t.base.magic == Some(MagicSchool::Elemental) && !t.wounded() {
+                if self.school(id) == Some(MagicSchool::Elemental) && t.base.magic == Some(MagicSchool::Elemental) && !t.wounded() {
                     return None;
                 }
             }
@@ -1447,7 +1450,9 @@ impl Battle {
         let (s, ts) = (&af.stats, &tf.stats);
         let shot = kind == ActionKind::Shot;
         let building = self.building_defence[tf.team.index()];
-        let mut atk = if shot { s[Stat::AttackShot] } else { s[Stat::AttackBlow] } * pct / 100;
+        // The attack modifier is added even to an attack of 0 (a counter blow of a unit
+        // without one, a flying shooter's blow).
+        let mut atk = (if shot { af.base[Stat::AttackShot] } else { af.base[Stat::AttackBlow] } + af.mods.attack) * pct / 100;
         let mut def = if shot { ts[Stat::DefenceShot] } else { ts[Stat::DefenceBlow] };
         if shot {
             if s.has_any(&PIERCE_SHOT) {
@@ -1486,10 +1491,10 @@ impl Battle {
         if self.has_knight(tf.team) {
             dmg = dmg * KNIGHT_PERCENT / 100;
         }
-        // The invulnerable (and ghosts, immune to weapons) lose 1 hit to any blow or shot,
-        // whatever it pierces or adds: a piercing blow, the Wrath or Anger of God.
+        // The invulnerable (and ghosts, immune to weapons) are hit for 1, whatever the blow
+        // pierces; GodAnger and GodStrike still add their 10 or 20 on top (485a8e).
         if ts.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
-            return 1;
+            dmg = 1;
         }
         dmg += god_bonus(s);
         if dmg == 0 {
@@ -1498,8 +1503,11 @@ impl Battle {
         (dmg * (100 - ts.evasion.clamp(0, 100)) / 100).max(1)
     }
 
-    fn school(&self, a: usize) -> MagicSchool {
-        self.fighters[a].stats.magic.unwrap_or(MagicSchool::Elemental)
+    /// The caster's school. A caster with power but no school (a Ghost can be one) is not
+    /// reduced by protection, has no nature table, heals by its whole power, and its
+    /// blessings and curses only set the flag (485b3c, 48a87c, 48ac7e).
+    fn school(&self, a: usize) -> Option<MagicSchool> {
+        self.fighters[a].stats.magic
     }
 
     /// Caster power `p` against `t` for hostile magic: reduced by the target's protection %,
@@ -1508,7 +1516,8 @@ impl Battle {
         if self.fighters[a].has(Bonus::Potent) {
             return p;
         }
-        let prot = self.fighters[t].stats.protection(self.school(a)).clamp(0, 100);
+        let Some(school) = self.school(a) else { return p };
+        let prot = self.fighters[t].stats.protection(school).clamp(0, 100);
         // `Round(P × (1 − prot/100))` on the FPU: Delphi's Round, half to even (485b84). The
         // FPU precision is unknown (engine.md), so the product is taken as exact.
         round_even(p as i64 * (100 - prot) as i64, 100) as i32
@@ -1526,9 +1535,10 @@ impl Battle {
         let nature = self.fighters[t].stats.nature;
         let dmg = match (self.school(a), nature) {
             _ if self.fighters[a].has(Bonus::Potent) => p,
-            (MagicSchool::Life, Nature::Undead) => 2 * p,
-            (MagicSchool::Death, Nature::Undead) => p / 2,
-            (MagicSchool::Elemental, _) | (_, Nature::Elemental) => p * 3 / 4,
+            (None, _) => p,
+            (Some(MagicSchool::Life), Nature::Undead) => 2 * p,
+            (Some(MagicSchool::Death), Nature::Undead) => p / 2,
+            (Some(MagicSchool::Elemental), _) | (_, Nature::Elemental) => p * 3 / 4,
             _ => p,
         };
         // GodAnger and GodStrike are added whenever the caster has magic power, even to a
@@ -1561,44 +1571,47 @@ impl Battle {
     fn heal_amount(&self, a: usize, t: usize, p: i32) -> i32 {
         let nature = self.fighters[t].stats.nature;
         match self.school(a) {
-            MagicSchool::Life if matches!(nature, Nature::Undead | Nature::Elemental) => 0,
-            MagicSchool::Life => p,
-            MagicSchool::Elemental => p / 2,
-            MagicSchool::Death if nature == Nature::Undead => p,
-            MagicSchool::Death => 0,
+            Some(MagicSchool::Life) if matches!(nature, Nature::Undead | Nature::Elemental) => 0,
+            Some(MagicSchool::Life) | None => p,
+            Some(MagicSchool::Elemental) => p / 2,
+            Some(MagicSchool::Death) if nature == Nature::Undead => p,
+            Some(MagicSchool::Death) => 0,
         }
     }
 
-    /// Blessing of power `p` by school (friendly: power not reduced).
+    /// Blessing of power `p` by school (friendly: power not reduced). The attack modifier is
+    /// given to a unit without an attack too: it counts in its counter blows.
     fn bless_of(&self, a: usize, t: usize, p: i32) -> Buff {
         let target = &self.fighters[t];
-        let mut b = match self.school(a) {
-            MagicSchool::Life if matches!(target.stats.nature, Nature::Undead | Nature::Elemental) => Buff::default(),
-            school => bless_effect(self.opt(), school, p),
-        };
-        if !target.has_attack() {
-            b.attack = 0;
+        match self.school(a) {
+            Some(MagicSchool::Life) if matches!(target.stats.nature, Nature::Undead | Nature::Elemental) => Buff::default(),
+            Some(school) => bless_effect(self.opt(), school, p),
+            None => Buff::default(),
         }
-        b
     }
 
     /// Curse of hostile power `p` by school.
-    fn curse_of(&self, a: usize, t: usize, p: i32) -> Buff {
-        let mut b = curse_effect(self.opt(), self.school(a), p);
+    fn curse_of(&self, a: usize, p: i32) -> Buff {
+        self.school(a).map_or(Buff::default(), |school| curse_effect(self.opt(), school, p))
+    }
+
+    /// The blessing `a` would give `t` now, as the hover shows it: no attack gain for a
+    /// unit without an attack (485d58).
+    pub fn bless_buff(&self, a: usize, t: usize) -> Buff {
+        let mut b = self.bless_of(a, t, self.power_at(a, self.splash_pct(a)));
         if !self.fighters[t].has_attack() {
             b.attack = 0;
         }
         b
     }
 
-    /// The blessing `a` would give `t` now.
-    pub fn bless_buff(&self, a: usize, t: usize) -> Buff {
-        self.bless_of(a, t, self.power_at(a, self.splash_pct(a)))
-    }
-
-    /// The curse `a` would put on `t` now.
+    /// The curse `a` would put on `t` now, as the hover shows it.
     pub fn curse_buff(&self, a: usize, t: usize) -> Buff {
-        self.curse_of(a, t, self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a))))
+        let mut b = self.curse_of(a, self.hostile_power_of(a, t, self.power_at(a, self.splash_pct(a))));
+        if !self.fighters[t].has_attack() {
+            b.attack = 0;
+        }
+        b
     }
 
     /// Expected effect of `kind` by `a` on `t`, for hover previews.
@@ -1761,7 +1774,8 @@ impl Battle {
         self.fighters[id].hp -= dmg;
         hit.counter = Some(dmg);
         self.log.push(crate::trf!("{name} strikes first for {dmg}", name = self.fighters[target].name, dmg));
-        !self.check_death(id, Some(target), false)
+        // A death by it has no on-kill effects (c2a181 removes the unit directly).
+        !self.check_death(id, None, false)
     }
 
     fn physical_action(&mut self, id: usize, target: usize, hit: &mut Hit) {
@@ -1789,7 +1803,8 @@ impl Battle {
             self.fighters[id].hp -= dmg;
             hit.counter = Some(dmg);
             self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
-            self.check_death(id, Some(target), false);
+            // A death by the counter blow has no on-kill effects (48b4b3).
+            self.check_death(id, None, false);
         }
     }
 
@@ -1899,17 +1914,17 @@ impl Battle {
             self.log.push(crate::trf!("{name} hits {tname} with magic for {dealt}", name, tname, dealt));
             // Vampirism on magic: Death strikes only, not from undead or elementals.
             let vamp = self.fighters[id].stats[Stat::Vampirizm];
-            if school == MagicSchool::Death && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
+            if school == Some(MagicSchool::Death) && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
                 let f = &mut self.fighters[id];
                 f.hp = (f.hp + raw * vamp / 100).min(f.max_hp());
             }
         } else {
-            buff = self.curse_of(id, target, p);
+            buff = self.curse_of(id, p);
             self.apply_buff(id, target, buff, false);
             self.fighters[target].cursed = true;
             self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = buff.describe()));
             // An undead caster's Elemental or Death curse drains life to it.
-            if self.fighters[id].base.nature == Nature::Undead && school != MagicSchool::Life {
+            if self.fighters[id].base.nature == Nature::Undead && matches!(school, Some(MagicSchool::Elemental | MagicSchool::Death)) {
                 // The target's loss is capped at its HP, but the caster gains the whole
                 // amount (48afce, 48b100).
                 let drain = p / self.opt().curse_main_spell.max(1) / 2 + 1;
@@ -1990,7 +2005,7 @@ impl Battle {
     /// take them below 0.
     fn apply_buff(&mut self, caster: usize, target: usize, b: Buff, bless: bool) {
         let eternal = self.fighters[caster].has(Bonus::EternalGift);
-        let life = self.school(caster) == MagicSchool::Life;
+        let life = self.school(caster) == Some(MagicSchool::Life);
         let t = &mut self.fighters[target];
         if eternal {
             let attack = if t.base[Stat::AttackBlow] > 0 { Stat::AttackBlow } else { Stat::AttackShot };
@@ -2288,7 +2303,7 @@ impl Battle {
         let cms = self.opt().curse_main_spell.max(1) as i64;
         let wound = |t: usize| (self.fighters[t].max_hp() - self.fighters[t].hp) as i64;
         let shielded = |t: usize| self.fighters[t].base.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]);
-        match self.school(id) {
+        match self.school(id)? {
             MagicSchool::Life => {
                 let ghostly = hostile.iter().any(|&t| shielded(t));
                 let shooters = hostile.iter().any(|&t| self.fighters[t].base[Stat::AttackShot] >= 1);

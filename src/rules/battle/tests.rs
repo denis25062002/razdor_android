@@ -1620,11 +1620,11 @@ fn a_piercing_blow_on_the_invulnerable_is_one_hit() {
         let hit = bt.act(1).unwrap();
         assert_eq!((hit.amount, bt.fighters[1].hp), (1, 49), "{target}: {hit:?}");
     }
-    // The Wrath and Anger of God add nothing to it either.
-    for god in [Bonus::GodAnger, Bonus::GodStrike] {
+    // The Wrath and Anger of God add their 10 or 20 on top of that 1 (485a8e).
+    for (god, dmg) in [(Bonus::GodAnger, 11), (Bonus::GodStrike, 21)] {
         let smiter = bonus(40, god.clone(), UnitDef { initiative: 30, ..warrior(40, 60, 0) });
         let bt = with(vec![smiter, stone.clone(), ghost.clone()], &[(40, f(2))], &[(31, f(2)), (33, f(3))]);
-        assert_eq!((bt.physical_damage(0, 1, ActionKind::Melee), bt.physical_damage(0, 2, ActionKind::Melee)), (1, 1), "{god:?}");
+        assert_eq!((bt.physical_damage(0, 1, ActionKind::Melee), bt.physical_damage(0, 2, ActionKind::Melee)), (dmg, dmg), "{god:?}");
     }
 }
 
@@ -2007,4 +2007,75 @@ fn row38_a_reserve_unit_only_moves_even_a_ghost_that_could_cast() {
     turn_of(&mut bt, 1);
     assert_eq!(bt.options(1, 0), vec![ActionKind::Curse], "it could cast from there");
     assert_eq!(bt.ai_step(), Some(Step::Move { actor: 1, from: r(2), to: b(2) }), "the nearest back-row cell");
+}
+
+#[test]
+fn row9_a_reserve_caster_still_tends_a_noheal_marked_unit() {
+    let c = content_with(vec![], Formation::VANILLA);
+    let mut bt = battle_in(&c, &[(10, f(1)), (13, r(1)), (10, r(2))], &[(18, f(1))]);
+    bt.fighters[2].crippled = true;
+    bt.fighters[2].hp = 20;
+    assert_eq!(bt.options(1, 2), vec![ActionKind::Heal], "the mark is read only for rows 1 and 2");
+    bt.fighters[0].crippled = true;
+    bt.fighters[0].hp = 20;
+    assert!(bt.options(1, 0).is_empty(), "the caster in the reserve tends only the reserve");
+}
+
+#[test]
+fn row30_a_counter_blow_kill_has_no_on_kill_effects() {
+    // The attacker carries DeathCurse: killed by a counter blow, it does not curse the
+    // counter-striker (no 48a3f0 for it).
+    let doomed = bonus(147, Bonus::DeathCurse, warrior(147, 30, 0));
+    let chief = bonus(126, Bonus::Counterblow, UnitDef { hits: 100, ..warrior(126, 25, 0) });
+    let mut bt = with(vec![doomed, chief], &[(147, f(2))], &[(126, f(2))]);
+    bt.fighters[0].hp = 10;
+    let hit = bt.act(1).unwrap();
+    assert!(hit.actor_died);
+    assert!(bt.fighters[1].alive(), "no curse from a counter blow kill");
+}
+
+#[test]
+fn row30_the_attack_modifier_counts_on_an_attack_of_0() {
+    // A Counterblow unit without AttackBlow answers with its attack modifier: 0 + 20 − 5.
+    let archer = bonus(38, Bonus::Counterblow, UnitDef { hits: 300, ..shooter(38, 20) });
+    let mut bt = with(vec![archer], &[(10, f(2))], &[(38, f(2))]);
+    bt.fighters[1].mods.attack = 20;
+    bt.refresh(1);
+    assert_eq!(bt.physical_damage_at(1, 0, ActionKind::Melee, 100), 15);
+    // A blessing gives it the attack modifier too, though the hover shows none.
+    let mut bt = with(vec![warrior(152, 0, 0)], &[(13, b(2)), (152, f(1))], &[(18, f(2))]);
+    turn_of(&mut bt, 0);
+    assert_eq!(bt.bless_buff(0, 1).attack, 0, "the hover hides it");
+    let hit = bt.act(1).unwrap();
+    assert_eq!(hit.kind, ActionKind::Bless);
+    assert_eq!(bt.fighters[1].mods.attack, 3 * 20 / 24, "Life: +3P/(2·BlessNextSpell)");
+}
+
+#[test]
+fn row36_surrender_is_a_byte() {
+    // 256 is 0 in its byte: no surrender; −1 is 255: it surrenders and prays 255 mana.
+    let monk = UnitDef { surrender: 256, ..warrior(148, 1, 0) };
+    let nun = UnitDef { surrender: -1, ..warrior(149, 1, 0) };
+    let mut bt = with(vec![monk, nun], &[(10, f(2))], &[(148, f(2)), (149, f(3))]);
+    bt.act(1).unwrap();
+    assert!(bt.end_reason().is_none(), "the 256 does not give up");
+    let nun = UnitDef { surrender: -1, ..warrior(149, 1, 0) };
+    let mut bt = with(vec![nun], &[(10, f(2))], &[(149, f(3))]);
+    bt.pass();
+    assert_eq!((bt.end_reason(), bt.surrender_mana(Team::Player)), (Some(EndReason::Surrender(Team::Enemy)), 255));
+}
+
+#[test]
+fn a_caster_without_a_school_is_not_reduced_and_curses_for_nothing() {
+    // No shipped unit is one; a Ghost with power and its school taken away here.
+    let ghost = bonus(150, Bonus::Ghost, mage(150, 30, MagicSchool::Death, MagicDirection::ToEnemy));
+    let warded = UnitDef { protect_life: 100, protect_death: 100, protect_elemental: 100, hits: 100, ..warrior(151, 20, 0) };
+    let mut bt = with(vec![ghost, warded], &[(150, b(2)), (10, f(0))], &[(151, f(2))]);
+    bt.fighters[0].base.magic = None;
+    bt.refresh(0);
+    assert_eq!(bt.magic_strike(0, 2), 30, "no protection, no nature table");
+    turn_of(&mut bt, 0);
+    let hit = bt.act(2).unwrap();
+    assert_eq!((hit.kind, hit.buff), (ActionKind::Curse, Buff::default()));
+    assert!(bt.fighters[2].cursed, "only the flag");
 }

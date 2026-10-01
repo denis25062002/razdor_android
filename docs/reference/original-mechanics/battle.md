@@ -834,13 +834,13 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 |---|---|---|---|---|---|
 | 1 | Buff/curse duration | Modifiers reset every turn | Until the start of the next turn | 1 | Matches |
 | 2 | Stacking | Additive; blessed allies untargetable unless wounded; curse then strike | Same | 1, 3 | Matches |
-| 3 | Bless and curse sizes | `bless_effect` / `curse_effect` with the ini divisors, Life curse ⌊2·CM/3⌋ and 10 | Same | 1 | Matches |
+| 3 | Bless and curse sizes | `bless_effect` / `curse_effect` with the ini divisors, Life curse ⌊2·CM/3⌋ and 10; the attack modifier given to units without an attack too (only the hover hides it); a caster with no school sets only the flag | Same | 1 | Matches |
 | 4 | EternalGift | Base stats, stacks, Life blessing lowers defences | Same | 1 | Matches |
 | 5 | Magic drain | `max(MP − drain, floor)` if MP > 0, Undead Death floor +25, Concentration adds | Same | 1 | Matches |
 | 6 | Hostile power rounding | `P·(100 − prot) / 100` rounded half to even (the product taken as exact; the FPU precision is unknown, engine.md) | Floating-point product, Delphi round half to even | 0 | Matches |
 | 7 | Strike with power 0 | GodAnger/GodStrike added whenever the caster has MP | GodAnger/GodStrike still added when the caster has MP | 0 | Matches |
 | 8 | Hostile mage action | Curse if no negative modifier, else strike; one action per cell | Same | 3 | Matches |
-| 9 | Friendly mage | Heal if wounded and heal > 0, else bless; reserve casters tend the reserve | Same | 3 | Matches |
+| 9 | Friendly mage | Heal if wounded and heal > 0, else bless; reserve casters tend the reserve, NoHeal-marked units too | Same | 3 | Matches |
 | 10 | Own-cell self-cast and the space key | Own card and space: one action, a self-cast if offered (a reserve caster's own cell only while wounded or unblessed), else a pass | Own cell and space are the same thing: **one** action, pass or self-cast | 2, 3 | Matches |
 | 11 | Edge columns | Columns 1 and last are never "clear" (`front_clear`) | Columns 1 and last are never "clear": front-row shooters there hit only c±1, front-row mages there cannot cast | 3 | Matches |
 | 12 | Map priority | Melee, then shot, then magic, later wins | Same | 3 | Matches |
@@ -859,15 +859,15 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 25 | Attacker +1 initiative | Side 1 (the player; the attacker off-screen) | Same | 8 | Matches |
 | 26 | Artillery | +30 (+60 with building defence ≥ 10) on turn 1; pierces shots | Same | 0, 8 | Matches |
 | 27 | Piercing set | Melee: ArmorIgnore, PoisonArmorIgnore, both vampire gifts; shots: ArmorIgnore, PoisonArmorIgnore, Artillery | Same | 0 | Matches |
-| 28 | Defence order | SpearDefense, piercing, long strike, then building (+Row2Def for shots) | Same | 0 | Matches |
+| 28 | Defence order | SpearDefense, piercing, long strike, then building (+Row2Def for shots); the attack modifier added to an attack of 0; Unvulnerabe/Ghost 1 with GodAnger/GodStrike on top | Same | 0 | Matches |
 | 29 | Knight | Any side whose first unit is of the Knight type, AI lords included | Any army whose first unit is of the Knight type, AI lords included | 0 | Matches |
-| 30 | Counterblow | Any Counterblow unit, after melee or a long strike | Same | 8 | Matches |
+| 30 | Counterblow | Any Counterblow unit, after melee or a long strike; its kill (and a preventive strike's) has no on-kill effects | Same | 8 | Matches |
 | 31 | Ghost | Killer dies if ProtectDeath < 30 × Manevres | Same | 8 | Matches |
 | 32 | Garrison | ×2 AB, DB, DS (≥ 10); Community +AS at exactly 10 | Same | 8, 7 | Matches |
 | 33 | Regen and poison | `round(maxHP × regen/100)`, half to even, no minimum | Same | 8 | Matches |
 | 34 | Damage-taken counters | Only the damage routine's wounds and a cursed killer's HP count in `lost`; counter blows, preventive strikes, poison, bleeding and the Community side effects do not | Not counted in the side's damage taken | 8 | Matches |
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
-| 36 | Surrender | Whole side gives up; Surrender sum as mana | Same; only the player can receive the mana | 5 | Matches |
+| 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte | Same; only the player can receive the mana | 5 | Matches |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
 | 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
