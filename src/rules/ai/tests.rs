@@ -1170,6 +1170,81 @@ fn an_ai_battle_beats_a_side_whose_end_strength_is_0() {
     assert!(g.world.armies.iter().all(|a| a.id != 2), "beaten and off the map");
 }
 
+/// [`content`] with unit 4 (the militia's number: slot 1 or 3 by the roll) able to become
+/// unit 6 from its first level on, so every roll promotes it.
+fn promoting_content() -> Content {
+    let mut c = content();
+    let up = |slot| crate::rules::content::Upgrade { target_name: String::new(), target: Some(6), level: 0, slot };
+    c.units[3].upgrades = vec![up(1), up(3)];
+    ck::content(c.units.clone(), c.items.clone())
+}
+
+#[test]
+fn a_surviving_sides_dead_draw_no_promotion_roll() {
+    // 0x4a4c68 calls 0x4a4a7c for the side's list after the battle, which has lost its
+    // dead: a corpse gains nothing and is not promoted, the survivors roll and are.
+    let mut s = map();
+    let mut weak = army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 3)]);
+    weak.leader_unit = 4;
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(5, 0, 1)]), weak];
+    let mut g = start_with(&s, promoting_content());
+    for t in g.world.armies[1].troops.iter_mut() {
+        t.hurt = 45;
+    }
+    assert!(!g.ai_battle(0, Defender::Army(1)));
+    let b = g.world.armies.iter().find(|a| a.id == 2).unwrap();
+    let fallen: Vec<&Troop> = b.troops.iter().filter(|t| t.died_at.is_some() || t.kept_death.is_some()).collect();
+    assert!(!fallen.is_empty(), "{:?}", b.troops);
+    assert!(fallen.iter().all(|t| t.unit == UnitId(4) && t.xp == 0), "{:?}", b.troops);
+    assert!(b.troops.iter().filter(|t| t.died_at.is_none() && t.kept_death.is_none()).all(|t| t.unit == UnitId(6)), "{:?}", b.troops);
+}
+
+#[test]
+fn the_players_units_in_a_garrison_gain_and_promote_by_the_ai_rule() {
+    // A garrison that holds out gains in 0x4a4c68, and the original keeps the player's units
+    // left in a building in that garrison record: they gain AIExpiriencePercent of their
+    // share and take the AI's roll in the upgrade tree, their items to the pool.
+    let mut s = map();
+    s.buildings = vec![building(BuildingType::Castle, 31, 10, (1, 1))];
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let mut g = start_with(&s, promoting_content());
+    let c = g.content.clone();
+    g.world.locations[0].garrison.clear();
+    let mut guard = Unit::new(&c, UnitId(4), slot(0));
+    guard.items[0] = Some(ItemId(7));
+    g.world.locations[0].stationed = vec![crate::rules::world::Stationed { unit: guard }];
+    g.world.armies[0].troops[0].hurt = 45;
+    let before = g.rng.state();
+    assert!(!g.ai_battle(0, Defender::Garrison(0)));
+    let u = &g.world.locations[0].stationed[0].unit;
+    assert!(u.alive());
+    assert_eq!((u.def, u.level, u.xp, u.items[0]), (UnitId(6), 1, 0, None));
+    assert_ne!(g.rng.state(), before);
+}
+
+#[test]
+fn hire_xp_takes_the_level_value_without_the_community_floor() {
+    // P sums mode 0 (+0x1aa) of the player's records: CostMultipler 0 makes it 0, where the
+    // battle value (+0x1ae) would be 1 by the Community hook. Two records, 30 XP: 30 div 4.
+    let mut c = content();
+    for u in c.units.iter_mut() {
+        u.cost_multiplier = 0;
+    }
+    let c = ck::content(c.units.clone(), c.items.clone());
+    let mut s = map();
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    a.exp_like_player = 1;
+    s.armies = vec![a];
+    let mut g = start_with(&s, c);
+    assert_eq!(g.squad.len(), 2);
+    g.squad[0].xp = 30;
+    assert_eq!(g.hire_base_xp(0), 7);
+    // X = P − 0 div 2: a hire is fed Rand(7) + 3.
+    let mut rng = g.rng.clone();
+    let want = rng.random(7) + 3;
+    assert_eq!(g.hire_xp(0, UnitId(4), 7), want);
+}
+
 #[test]
 fn hired_units_get_their_xp_level_by_level() {
     // X = (P − its tactical cost div 2 when P ≥ 1) + bonus; fed Rand(X) + X div 2.

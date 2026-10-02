@@ -387,7 +387,7 @@ and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-0
 | Surrendering side | no award (`xp_awards` takes the living only) | shares computed, then the units are removed: nothing | Matches |
 | Player modifier | × F × correction / 10⁶, low 32 bits, abs, cap 5256; correction 0 used as it is | the same, 0 used as it is | Matches |
 | Turn limit | counts as victory, XP paid | the same | none |
-| AI XP | AI-vs-AI only, ×AI% div 100, when end strength > 0; "beaten" and the loot pool by end strength (`ai_battle`) | the same | Matches |
+| AI XP | AI-vs-AI only, ×AI% div 100, when end strength > 0, survivors only (the dead draw no promotion roll); the player's units left in a building gain and roll with its garrison; "beaten" and the loot pool by end strength (`ai_battle`) | the same (the player's units are in the garrison record) | Matches |
 | Level-up HP | proportional rescale with the fractional carry after the gain (`Unit::gain_xp`, `troop_gain_xp`) | proportional rescale with a fractional carry at the next stat rebuild | Matches |
 | Percent stats | gap to 100 closes by `d`% per level in 32-bit floats, max 99 | the same | none |
 | Player promotion | any unit with a level, not the hero; level 1, XP 0; items stay worn; HP rescaled | the same rules; items stay worn; HP rescaled | Matches |
@@ -395,7 +395,7 @@ and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-0
 | Upgrade slots | normalised at load (`dt::data::normalise_upgrade_slots`) | normalised (lone → 2, pair → 1+3) | Matches |
 | Event XP | the hero, as it is; a new level shows on the map | the same | none |
 | Opcode 13 | XP banked, per unit or all units | the same; both all-units forms can write outside the army (§5) | Razdor is safe (keep) |
-| AI hires | bytes 14 and 19 as §5, `Random(X) + X div 2` from the game LCG, garrison purchases too | the same formula with the LCG; also garrison purchases | none |
+| AI hires | bytes 14 and 19 as §5 with the mode-0 level value (no Community floor, `experience::level_value`), `Random(X) + X div 2` from the game LCG, garrison purchases too | the same formula with the LCG; also garrison purchases | Matches |
 | Preset offset 8 / 12 | gold / mana; no starting XP | gold / mana | none |
 | Carry-over [3] | level and XP kept, else level 1 | the same | none |
 
@@ -405,8 +405,8 @@ and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-0
   precision of every float formula here (see §0). And if the exception masks stay
   Delphi's defaults, a side whose start strength rounds to 0 (all its units nearly dead)
   makes the unused ratio a division by zero that raises an exception (48bb85).
-- The prediction: Razdor has no AI-vs-AI pre-run; reproducing it exactly needs the
-  battle AI and the shared seed bit for bit (battle.md).
+- The prediction: Razdor runs the AI-vs-AI pre-run on a copy of the battle; its result
+  matches the original's only as far as the battle AI and the shared seed do (battle.md).
 - Whether any shipped map gives an army an XP correction of 0 (the original pays nothing
   for it; so does Razdor now).
 - The pool when a side had no HP at the start (cannot happen with `lost > 0`; with

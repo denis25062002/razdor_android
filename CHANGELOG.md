@@ -373,6 +373,14 @@ old id, and their versions give both.
   the hero stands in. The XP table takes `StartExpirience` and `LevelMultipler` as they
   are (a multiplier below 100 can stop a gain a level early, as in the original), and a
   `CostMultipler` of 0 counts as 0.
+- After an AI battle only the survivors gain XP and roll for promotion, as in the
+  original: a fallen unit is no longer promoted, nor does it draw from the game's random
+  numbers. The player's units left in a building gain XP when its garrison holds out
+  against an AI army, and the AI's roll in the upgrade tree can promote them (their worn
+  items then go to the battle's loot), since the original keeps them in the garrison's
+  record; the worn items of those that fall go to the loot too. The XP an AI army's hires
+  get from the player's army uses the units' level value without the Community "at least
+  1".
 
 ## 0.2.2 — 2026-10-01
 

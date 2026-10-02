@@ -2132,25 +2132,30 @@ impl Game {
     }
 
     /// `P` of the hire XP (experience.md §5): with "add experience like the player", the
-    /// player's units' `Σ (tactical cost + XP) div (units + 2)`, the dead included; else 0.
+    /// player's units' `Σ (level value + XP) div (units + 2)`, the dead included; else 0.
+    /// The level value is the tactical cost's mode 0 (+0x1aa), which the Community hook
+    /// never touches: a value of 0 stays 0 here.
     fn hire_base_xp(&self, i: usize) -> i32 {
         if !self.world.armies[i].ai.exp_like_player {
             return 0;
         }
         let c = &self.content;
-        let sum: i64 = self.squad.iter().map(|u| c.tactical_cost(u.def, u.level) as i64 + u.xp as i64).sum();
+        let sum: i64 = self.squad.iter().map(|u| super::experience::level_value(c, u.def, &u.base_stats(c)) + u.xp as i64).sum();
         (sum / (self.squad.len() as i64 + 2)) as i32
     }
 
     /// The XP a unit of `unit` hired by army `i` gets, given `P` (4a6b40): `X = (P − its
-    /// tactical cost div 2 when P ≥ 1, else 0) + the army's hire bonus`; when `X` > 0 it is
-    /// fed `Rand(X) + X div 2`, level by level. Only drawn when `P` or the bonus is positive.
+    /// level value (mode 0, no hook) div 2 when P ≥ 1, else 0) + the army's hire bonus`; when
+    /// `X` > 0 it is fed `Rand(X) + X div 2`, level by level. Only drawn when `P` or the bonus
+    /// is positive.
     fn hire_xp(&mut self, i: usize, unit: UnitId, p: i32) -> i32 {
         let bonus = self.world.armies[i].ai.hire_bonus_exp;
         if p <= 0 && bonus <= 0 {
             return 0;
         }
-        let x = if p < 1 { 0 } else { p - self.content.tactical_cost(unit, 1) / 2 } + bonus;
+        let c = &self.content;
+        let value = super::experience::level_value(c, unit, &super::units::Stats::of_level(c, unit, 1)) as i32;
+        let x = if p < 1 { 0 } else { p - value / 2 } + bonus;
         if x <= 0 {
             return 0;
         }
@@ -2552,6 +2557,11 @@ impl Game {
                 (self.garrison_side(l), fought)
             }
         };
+        // The player's units left in a garrison that fight, after its own troops.
+        let fought_s: Vec<usize> = match def {
+            Defender::Garrison(l) => (0..self.world.locations[l].stationed.len()).filter(|&k| self.world.locations[l].stationed[k].unit.alive()).collect(),
+            Defender::Army(_) => Vec::new(),
+        };
         let bt = fight(&c, &side_a, &side_b, true);
         let na = side_a.units.len();
         drop((side_a, side_b));
@@ -2625,7 +2635,9 @@ impl Game {
             }
         } else {
             let pct = o.ai_experience_percent;
-            for (n, &k) in fought_a.iter().enumerate() {
+            // Only the survivors: the original walks the side's list, from which the dead
+            // were taken during the battle, so a corpse draws no promotion roll.
+            for (n, &k) in fought_a.iter().enumerate().filter(|&(n, _)| bt.fighters[n].alive()) {
                 let xp = award(Team::Player, n);
                 let t = &mut self.world.armies[att].troops[k];
                 ai_gain_xp(&c, &mut self.rng, t, xp, pct, &mut pool);
@@ -2684,7 +2696,7 @@ impl Game {
             let pct = o.ai_experience_percent;
             match def {
                 Defender::Army(j) => {
-                    for (n, &k) in fought_b.iter().enumerate() {
+                    for (n, &k) in fought_b.iter().enumerate().filter(|&(n, _)| bt.fighters[na + n].alive()) {
                         let xp = award(Team::Enemy, na + n);
                         ai_gain_xp(&c, &mut self.rng, &mut self.world.armies[j].troops[k], xp, pct, &mut pool);
                     }
@@ -2695,13 +2707,22 @@ impl Game {
                     }
                 }
                 Defender::Garrison(l) => {
-                    for (n, &k) in fought_b.iter().enumerate() {
+                    for (n, &k) in fought_b.iter().enumerate().filter(|&(n, _)| bt.fighters[na + n].alive()) {
                         let xp = award(Team::Enemy, na + n);
                         ai_gain_xp(&c, &mut self.rng, &mut self.world.locations[l].garrison[k], xp, pct, &mut pool);
                     }
+                    // The player's units left here are in the same garrison record in the
+                    // original: its survivors gain, and roll for promotion, by the AI's rule.
+                    let first = na + fought_b.len();
                     let loc = &mut self.world.locations[l];
+                    for (m, &k) in fought_s.iter().enumerate().filter(|&(m, _)| bt.fighters.get(first + m).is_some_and(|f| f.alive())) {
+                        stationed_gain_xp(&c, &mut self.rng, &mut loc.stationed[k].unit, award(Team::Enemy, first + m), pct, &mut pool);
+                    }
                     for t in loc.garrison.iter_mut().filter(|t| !t.alive()) {
                         pool.extend(t.worn.iter_mut().filter_map(Option::take));
+                    }
+                    for s in loc.stationed.iter_mut().filter(|s| !s.unit.alive()) {
+                        pool.extend(s.unit.items.iter_mut().filter_map(Option::take));
                     }
                     loc.stationed.retain(|s| s.unit.alive());
                 }
@@ -3116,12 +3137,26 @@ fn ai_hire_gain(c: &Content, rng: &mut Rng, t: &mut Troop, xp: i32, pool: &mut V
 /// taken when its `NextUnitNLevel` is at most the unit's 0-based level: the unit becomes that
 /// class at level 1 (the original's 0) with no XP, its worn items to the pool.
 fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop, pool: &mut Vec<ItemId>) -> bool {
-    let def = c.unit(t.unit);
+    let Some(target) = ai_pick(c, rng, t.unit, t.level) else { return false };
+    let before = troop_hp(c, t);
+    t.unit = target;
+    t.level = 1;
+    t.xp = 0;
+    pool.extend(t.worn.iter_mut().filter_map(Option::take));
+    follow_rebuild(c, t, before);
+    true
+}
+
+/// The class a unit of type `unit` at `level` (1 = as hired) takes by the AI's roll in the
+/// upgrade tree ([`ai_promote`]), if the pick is open to it. The roll is made whenever the
+/// type has an option, so it always advances the seed then.
+fn ai_pick(c: &Content, rng: &mut Rng, unit: UnitId, level: i32) -> Option<UnitId> {
+    let def = c.unit(unit);
     let slots: [Option<&super::content::Upgrade>; 3] = [1u8, 2, 3].map(|n| def.upgrades.iter().find(|u| u.slot == n && u.target.is_some()));
     if slots.iter().all(Option::is_none) {
-        return false;
+        return None;
     }
-    let pick = match t.unit.0 {
+    let pick = match unit.0 {
         4 => {
             if rng.random(3) == 0 {
                 1
@@ -3145,18 +3180,27 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop, pool: &mut Vec<ItemId>)
     };
     // Militia and Infantry always hold two options, in slots 1 and 3 (the loader's moves);
     // were one empty, the original would turn the unit into an invalid class.
-    let Some(up) = slots[pick - 1] else { return false };
-    let Some(target) = up.target.map(UnitId).filter(|&id| c.try_unit(id).is_some()) else { return false };
-    if up.level > t.level - 1 {
-        return false;
+    let up = slots[pick - 1]?;
+    let target = up.target.map(UnitId).filter(|&id| c.try_unit(id).is_some())?;
+    // `NextUnitNLevel ≤ L` with the 0-based L = level − 1.
+    (up.level < level).then_some(target)
+}
+
+/// One of the player's units left in a building gains as the building's garrison does when
+/// it holds out against an AI army (0x4a4c68 → 0x4a4a7c): the share × `AIExpiriencePercent`
+/// div 100, then the AI's roll in the upgrade tree, which may promote it, its worn items to
+/// the battle's pool. The original keeps the player's units in the garrison record, so the
+/// AI's rule reaches them too.
+fn stationed_gain_xp(c: &Content, rng: &mut Rng, u: &mut Unit, award: i32, pct: i32, pool: &mut Vec<ItemId>) {
+    u.gain_xp(c, (pct as i64 * award as i64 / 100) as i32);
+    if let Some(target) = ai_pick(c, rng, u.def, u.level) {
+        let before = u.max_hp(c);
+        u.def = target;
+        u.level = 1;
+        u.xp = 0;
+        pool.extend(u.items.iter_mut().filter_map(Option::take));
+        u.follow_max(c, before);
     }
-    let before = troop_hp(c, t);
-    t.unit = target;
-    t.level = 1;
-    t.xp = 0;
-    pool.extend(t.worn.iter_mut().filter_map(Option::take));
-    follow_rebuild(c, t, before);
-    true
 }
 
 fn army_name(a: &Army) -> String {
