@@ -235,7 +235,7 @@ fn unit_row(assets: &Assets, label: &str, units: &[UnitId], x: f32, y: f32) -> f
 }
 
 /// Draws `d` centred on the screen; returns how it was closed: OK (or Enter, Escape), or for
-/// a question Yes or No (Esc No, any other key Yes, as the original's box: `answer_key`).
+/// a question Yes or No (Esc or N No, any other key Yes: `answer_key`).
 pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     let (sw, sh) = (screen_width(), screen_height());
     chrome::under_message();

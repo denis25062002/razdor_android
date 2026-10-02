@@ -395,19 +395,22 @@ old id, and their versions give both.
 - Save format 9: a game keeps the front-row width it was started with, and a load plays on
   with it whatever the option says now, as the original takes it from the save's header.
   Older saves load with the wide row they were made with.
-- The map's mouse and keys as in the original: a left click or any key while the hero
-  walks stops him at the end of the step he is taking (no longer on the spot), the right
-  button stops nothing and no longer drags the map, and the tooltip of an army or a
-  building shows only while the right button is held. While he walks or waits no other
-  key or click acts, and the view stays on him. The held arrow key and the mouse at a
-  screen edge (5 px) scroll by the original's scroll speed. Esc opens the game menu even
-  with the minimap open.
+- The map's mouse and keys as in the original, Razdor's own kept: a left click, a right
+  click, Space or any other key while the hero walks stops him at the end of the step he
+  is taking (no longer on the spot); Razdor's keys that only change the view (zoom, M,
+  Tab), the music or the help leave him walking. The tooltip of an army or a building
+  shows only while the right button is held still; held and moved, it drags the map as
+  before. Space or a right click still ends a wait or a reading at once and drops the
+  route shown, and Esc still closes the minimap first. While he walks the view stays on
+  him. The held arrow key and the mouse at a screen edge (5 px) scroll the idle map by the
+  original's scroll speed.
 - Esc in the main menu quits the game at once, and Back or Esc on the hero choice returns
-  to the main menu, as in the original. A Yes / No question takes Esc as No and any other
-  key as Yes (N included), except Tab, Alt and the Up and Down arrows.
+  to the main menu, as in the original. A Yes / No question takes Esc and Razdor's N as No
+  and any other key as Yes, except Tab, Alt and the Up and Down arrows.
 - A battle starts as soon as its window opens, as in the original: there is no deployment
-  step (the formation is the one set in the army window). Finish automatically (Q) still
-  plays a battle under way out at once.
+  step (the formation is the one set in the army window). Until anyone has acted, Quick
+  battle (Q / Enter) plays it out at once, as on the old deploy screen; later Finish
+  automatically (Q) plays out the rest.
 - The music as in the original, and its draws from the game's random numbers: a map
   starts with `BkgMap2`, then a new track is drawn on a timer per track among the seven
   map themes and the credits theme (never the same twice), each looping until the next.
@@ -416,8 +419,9 @@ old id, and their versions give both.
   credits play their own theme. An event's window, a village's and a shipyard's open with
   one of the three chords drawn from the game's random numbers. Like the original, these
   draws shift the rolls that follow.
-- Opening a window from the bar while the hero walks no longer stops him on the spot: as in
-  the original, he finishes the step under way when the map is back, and a wait goes on.
+- Opening a window from the bar (or with its keys J, B, A, Esc) while the hero walks no
+  longer stops him on the spot: as in the original, he finishes the step under way when the
+  map is back, and a wait goes on.
 - F4 on the idle map waits without end, half an hour at a time, through any event's
   message, until F5 is pressed (the Community's endless wait); F5 saves as before when no
   such wait runs.

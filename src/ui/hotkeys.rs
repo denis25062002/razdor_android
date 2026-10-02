@@ -3,8 +3,8 @@
 //! for). A screen's own keys live in its module; this one only lists them for the overlay.
 //!
 //! No key fires while the player types (the class screen's hero name, the save name, an
-//! editor field) or while a dialog or question is open (there Esc means "No" and any other
-//! key "Yes", as in the original).
+//! editor field) or while a dialog or question is open (there Esc and N mean "No" and any
+//! other key "Yes", as in the original but for Razdor's N).
 
 use macroquad::prelude::*;
 
@@ -112,7 +112,9 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
         Place::WorldMap => vec![
             (n_("Click"), n_("show the route; a second click on the spot: walk there")),
             (n_("Click / any key while walking"), n_("stop after the step under way")),
+            (n_("Right click / Space"), n_("stop (a walk after its step, a wait at once); drop the route shown")),
             (n_("Right button held"), n_("what stands there")),
+            (n_("Right button held and moved"), n_("drag the map")),
             (n_("Arrow keys, screen edges"), n_("scroll the map")),
             (n_("Wheel, + / -"), n_("zoom")),
             ("1 / 4", n_("wait 1 or 4 hours")),
@@ -125,7 +127,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             ("B", n_("spell book")),
             ("A", n_("hero and army")),
             ("F5 / F9", n_("quick save / quick load")),
-            ("Esc", n_("the game menu")),
+            ("Esc", n_("close the minimap, else the game menu")),
         ],
         Place::Building => vec![(n_("Click"), n_("tabs and buttons")), ("F5", n_("quick save")), ("Esc", n_("back to the map"))],
         Place::Army => vec![(n_("Click"), n_("a unit, an item")), ("F5", n_("quick save")), ("A / Esc", n_("close"))],
@@ -135,6 +137,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             (n_("Click your own card"), n_("pass one action")),
             (n_("Space"), n_("as a click on the unit's own card")),
             ("Q", n_("finish the battle automatically")),
+            ("Enter", n_("before the first move: quick battle")),
             ("Esc", n_("ways out of the battle")),
             ("Enter", n_("OK on the result")),
         ],

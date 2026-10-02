@@ -132,6 +132,10 @@ pub struct BattleView {
     exit_asking: bool,
     /// What that window chose, for the app to carry out.
     pub exit: Option<super::saves::ExitChoice>,
+    /// The battle as it began (the log's length, who acts, his actions left, the turn):
+    /// until one changes nobody has acted, and the quick battle of Razdor's old deploy
+    /// screen (Q / Enter) is offered.
+    begun: (usize, Option<usize>, i32, u32),
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -224,7 +228,19 @@ impl BattleView {
     /// the one set in the army window beforehand (interface.md §12, 0x4daa80).
     pub fn new(mut battle: Battle) -> Self {
         battle.begin();
-        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
+        let begun = Self::moment(&battle);
+        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None, begun }
+    }
+
+    /// Nobody has acted yet: the battle's first moment, where Razdor's deploy screen stood
+    /// before the parity pass. Its quick battle is offered there (Q or Enter, the button
+    /// "Quick battle"); afterwards Q and "Finish automatically" play out the rest.
+    fn untouched(&self) -> bool {
+        Self::moment(&self.battle) == self.begun && self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing
+    }
+
+    fn moment(b: &Battle) -> (usize, Option<usize>, i32, u32) {
+        (b.log.len(), b.active(), b.actions_left(), b.round)
     }
 
     /// The battle is won and its result is up: the triumph has started.
@@ -290,7 +306,7 @@ impl BattleView {
         if exiting {
             // The battle stands still under the window.
             set_input_blocked(true);
-        } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Q) {
+        } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && (key(KeyCode::Q) || (self.untouched() && (key(KeyCode::Enter) || key(KeyCode::KpEnter)))) {
             self.quick_battle();
         } else if self.fx.is_none() {
             if let Some(active) = self.battle.active() {
@@ -329,10 +345,10 @@ impl BattleView {
         world_view::backdrop(game, assets);
         self.draw(&l, game, assets);
 
-        // Quick battle (a Razdor extra the players asked for): the battle under way finished
-        // at once.
+        // Quick battle (a Razdor extra the players asked for): the battle played out at once,
+        // from its first moment or the rest of it.
         if !over && self.battle.outcome() == Outcome::Ongoing {
-            let label = tr("Finish automatically (Q)");
+            let label = if self.untouched() { tr("Quick battle (Q)") } else { tr("Finish automatically (Q)") };
             let q = l.quick;
             if button(q.x, q.y, q.w, q.h, label, self.fx.is_none()) {
                 self.quick_battle();
@@ -780,5 +796,22 @@ mod tests {
         let view = BattleView::new(battle);
         assert!(!view.battle.is_deploying(), "no deployment step");
         assert!(view.battle.active().is_some(), "the first unit acts at once");
+    }
+
+    #[test]
+    fn the_quick_battle_is_offered_until_someone_acts() {
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        let mut view = BattleView::new(g.start_battle());
+        assert!(view.untouched(), "the deploy screen's moment: Q / Enter for a quick battle");
+        let active = view.battle.active().unwrap();
+        if view.battle.fighters[active].team == Team::Player {
+            view.battle.act_with(active, view.battle.options(active, active)[0]).unwrap();
+        } else {
+            view.battle.ai_step();
+        }
+        assert!(!view.untouched(), "once someone acted, Q finishes the rest");
+        view.quick_battle();
+        assert_ne!(view.battle.outcome(), Outcome::Ongoing);
     }
 }

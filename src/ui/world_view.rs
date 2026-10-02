@@ -67,12 +67,111 @@ pub struct MapView {
     /// then (0x4cc18f), so the first frame back from a window counts the window's time too,
     /// as in the original.
     last_frame_ms: Option<i64>,
+    /// A right-button drag of the map (a Razdor extra), from its press until its release.
+    grab: Option<Grab>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None, last_frame_ms: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None, last_frame_ms: None, grab: None }
     }
+}
+
+/// Pixels the mouse must move with the right button held before it drags the map.
+const GRAB_START: f32 = 4.0;
+
+/// A right-button press on the map: where the mouse and the camera (world units) were when
+/// it went down, and whether it has moved past [`GRAB_START`] (then it drags the map).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Grab {
+    start: Vec2,
+    from: Vec2,
+    moved: bool,
+}
+
+/// What a frame of a right-button press does ([`Grab::step`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GrabStep {
+    /// Held still: the original's tooltip shows.
+    Held,
+    /// Held and moved: the camera looks at this world point, the ground following the mouse.
+    Drag(Vec2),
+    /// Let go without moving: a right click (Razdor's stop).
+    Click,
+    /// Let go after a drag: the camera stays where it was dragged.
+    Dropped,
+}
+
+impl Grab {
+    /// The press with the pointer at `at` and the button `down` or not, at `scale` screen
+    /// pixels per world unit.
+    fn step(&mut self, at: Vec2, down: bool, scale: f32) -> GrabStep {
+        if !down {
+            return if self.moved { GrabStep::Dropped } else { GrabStep::Click };
+        }
+        let d = at - self.start;
+        self.moved |= d.length() > GRAB_START;
+        if self.moved {
+            GrabStep::Drag(self.from - d / scale)
+        } else {
+            GrabStep::Held
+        }
+    }
+}
+
+/// The right button on the map (Razdor extras kept from before the parity pass): pressed,
+/// held and moved, it drags the map with the mouse under a hand cursor, and the camera stays
+/// there, as after the minimap, until a click on the map or Tab; let go without moving, it is
+/// a right click, returned true (Razdor's stop). Held still it shows the original's tooltip
+/// (`frame`). Not while the hero walks: the view is locked on him then.
+fn grab_map(game: &Game, view: &mut MapView, cam: &Camera, off_map: bool) -> bool {
+    use macroquad::miniquad::{window::set_mouse_cursor, CursorIcon};
+    let m = Vec2::from(pointer());
+    let Some(mut grab) = view.grab else {
+        if right_clicked() && !off_map && cam.view.contains(m) && view.shows.is_empty() && !game.moving() {
+            view.grab = Some(Grab { start: m, from: view.look.unwrap_or(game.display_pos()).into(), moved: false });
+        }
+        return false;
+    };
+    let down = is_mouse_button_down(MouseButton::Right) && !input_blocked();
+    match grab.step(m, down, cam.scale) {
+        GrabStep::Held => view.grab = Some(grab),
+        GrabStep::Drag(at) => {
+            set_mouse_cursor(CursorIcon::Pointer);
+            view.look = Some(Camera::looking_at(game, view.zoom, at.into()).centre());
+            view.grab = Some(grab);
+        }
+        GrabStep::Click => {
+            view.grab = None;
+            return !input_blocked();
+        }
+        GrabStep::Dropped => {
+            view.grab = None;
+            set_mouse_cursor(CursorIcon::Default);
+        }
+    }
+    false
+}
+
+/// Razdor's stop (Space or a right click on the map, as before the parity pass): a walk is
+/// cut at the step under way, as the original's own stop does, and a wait (the endless one
+/// too) or a spell being read ends at once.
+fn razdor_stop(game: &mut Game) {
+    if game.moving() {
+        game.cut_walk();
+    } else if game.waiting() || game.endless_waiting() || game.reading().is_some() {
+        game.stop();
+    }
+}
+
+/// Whether `k` held while the hero walks cuts his walk (the original: any key). Razdor's keys
+/// that only change the view, the sound or the help (zoom, the minimap, Tab, the music, F1,
+/// F2) and the quick save leave him walking, as they did before the parity pass.
+fn cuts_walk(k: KeyCode) -> bool {
+    !matches!(
+        k,
+        KeyCode::Equal | KeyCode::Minus | KeyCode::KpAdd | KeyCode::KpSubtract | KeyCode::M | KeyCode::Tab | KeyCode::N | KeyCode::F1 | KeyCode::F2 | KeyCode::F5
+    )
 }
 
 /// The original's scroll speed setting (`[Options] ScrollSpeed` of the interface ini,
@@ -1097,7 +1196,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
 
 /// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
 /// minimap was toggled.
-fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool, map_idle: bool) -> (Option<Screen>, bool) {
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
     let idle = game.foe.is_none();
     let modal = input_blocked();
     let look = |b: BarButton| match b {
@@ -1107,11 +1206,12 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
         _ => Look::Normal,
     };
     let mut pressed = game_bar::draw(game, look);
-    // Keys act only on the idle map: while the hero walks a key stops him (`frame`).
-    if pressed.is_none() && map_idle {
-        // Esc opens the exit menu, the minimap open or not (0x4cd021).
+    // The bar's keys (Razdor's) act as its buttons, also while the hero walks or waits: the
+    // key held has cut his walk (`frame`), as the original's any key does.
+    if pressed.is_none() {
+        // Esc closes the minimap first (Razdor's); the menu only when nothing else is open.
         pressed = if key(KeyCode::Escape) {
-            Some(BarButton::Menu)
+            Some(esc_on_map(minimap_open))
         } else if idle && key(KeyCode::B) {
             Some(BarButton::Spells)
         } else if key(KeyCode::J) {
@@ -1146,6 +1246,16 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
         game.stop();
     }
     (next, pressed == Some(BarButton::Map))
+}
+
+/// What Esc on the map presses: Razdor's Esc closes the minimap first (the original opens the
+/// exit menu over it); with nothing open, the exit menu.
+fn esc_on_map(minimap_open: bool) -> BarButton {
+    if minimap_open {
+        BarButton::Map
+    } else {
+        BarButton::Menu
+    }
 }
 
 /// What a left click on a target cell of the idle map does (interface.md §7.3).
@@ -1190,20 +1300,20 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let dt_ms = now_ms - view.last_frame_ms.unwrap_or(now_ms);
     view.last_frame_ms = Some(now_ms);
 
-    // Zoom: mouse wheel or +/-.
-    let wheel = if idle { wheel() } else { 0.0 };
+    // Zoom: mouse wheel or +/- (Razdor's, also while he walks or waits).
+    let wheel = wheel();
     if wheel != 0.0 {
         view.zoom = (view.zoom * if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.4, 2.0);
     }
-    if idle && (key(KeyCode::Equal) || key(KeyCode::KpAdd)) {
+    if key(KeyCode::Equal) || key(KeyCode::KpAdd) {
         view.zoom = (view.zoom * 1.2).min(2.0);
     }
-    if idle && (key(KeyCode::Minus) || key(KeyCode::KpSubtract)) {
+    if key(KeyCode::Minus) || key(KeyCode::KpSubtract) {
         view.zoom = (view.zoom / 1.2).max(0.4);
     }
 
     // M toggles the minimap.
-    if idle && key(KeyCode::M) {
+    if key(KeyCode::M) {
         view.minimap = !view.minimap;
     }
     // Places the scenario has just shown wait in line (dark until their turn). Tab or a
@@ -1212,15 +1322,15 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for shown in std::mem::take(&mut game.shown) {
         view.shows.push_back(Showing::new(game, &shown));
     }
-    if idle && (!view.shows.is_empty() || view.returning.is_some()) && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
+    if (!view.shows.is_empty() || view.returning.is_some()) && !input_blocked() && ((idle && clicked()) || key(KeyCode::Tab)) {
         view.shows.clear();
         view.returning = None;
         view.look = None;
     }
-    if idle && key(KeyCode::Tab) {
+    if key(KeyCode::Tab) {
         view.look = None;
     }
-    if idle && dialogs.is_empty() {
+    if idle && dialogs.is_empty() && view.grab.is_none() {
         scroll(game, view, dt_ms);
     }
     // While he walks the view is locked on him (interface.md §8).
@@ -1229,12 +1339,15 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
+    let clock = game_bar::time_panel();
+    let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     let mut reopened = None;
     if !idle {
         // A left click or any key held while he walks cuts his route: he finishes the step
-        // under way and stops (0x4cd132). The right button does nothing; a wait goes on.
-        if game.moving() && (clicked() || held_key().is_some()) {
+        // under way and stops (0x4cd132). Razdor's view keys leave him walking
+        // ([`cuts_walk`]); a wait goes on.
+        if game.moving() && (clicked() || held_key().is_some_and(cuts_walk)) {
             game.cut_walk();
             view.preview = None;
         }
@@ -1265,6 +1378,17 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             }
             view.look = None;
         }
+    }
+    // Razdor's stop: Space, or a right click on the map (the right button dragged moves the
+    // map instead); either also drops the route shown.
+    let right_click = if game.moving() {
+        right_clicked() && !on_minimap && !on_clock && cam.view.contains(Vec2::from(pointer()))
+    } else {
+        grab_map(game, view, &cam, on_minimap || on_clock)
+    };
+    if key(KeyCode::Space) || right_click {
+        razdor_stop(game);
+        view.preview = None;
     }
     // A planned route belongs to where the hero stood: the end of a walk forgets it
     // (0x4ae5d8).
@@ -1341,8 +1465,6 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
     // time, a 30-minute tick every 150 ms (`Game::tick`).
     let can_wait = idle && game.foe.is_none();
-    let clock = game_bar::time_panel();
-    let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
     if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {
         game.begin_wait(1);
     }
@@ -1361,7 +1483,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         }
     }
 
-    let (bar, toggle_map) = bottom_bar(game, message, view.minimap, idle);
+    let (bar, toggle_map) = bottom_bar(game, message, view.minimap);
     next = next.or(bar);
     if toggle_map {
         view.minimap = !view.minimap;
@@ -1372,8 +1494,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         }
     }
     // The right button held (the left one up) shows the tooltip of the army or building
-    // under it; it is never a command (interface.md §7.4).
-    let right_held = !input_blocked() && is_mouse_button_down(MouseButton::Right) && !is_mouse_button_down(MouseButton::Left);
+    // under it, as in the original (interface.md §7.4), unless it drags the map.
+    let dragging = view.grab.is_some_and(|g| g.moved);
+    let right_held = !input_blocked() && !dragging && is_mouse_button_down(MouseButton::Right) && !is_mouse_button_down(MouseButton::Left);
     if let Some(t) = hover_tooltip(game, &cam).filter(|_| idle && right_held && !on_minimap) {
         draw_tooltip(game, assets, &t);
     }
@@ -1406,6 +1529,55 @@ mod tests {
         assert_eq!(scroll_step(0, 5.0), (2.0, 2.0));
         // F = 1.25 at 50.
         assert_eq!(scroll_step(50, 10.0), (8.0, 6.0));
+    }
+
+    #[test]
+    fn the_right_button_drags_the_map_or_clicks() {
+        // Held still: the tooltip; let go: a click (Razdor's stop).
+        let mut g = Grab { start: vec2(100.0, 100.0), from: vec2(10.0, 10.0), moved: false };
+        assert_eq!(g.step(vec2(102.0, 101.0), true, 32.0), GrabStep::Held);
+        assert_eq!(g.step(vec2(102.0, 101.0), false, 32.0), GrabStep::Click);
+        // Moved past the threshold it drags: the ground follows the mouse, the camera goes
+        // the other way, and it stays a drag back at the start.
+        let mut g = Grab { start: vec2(100.0, 100.0), from: vec2(10.0, 10.0), moved: false };
+        assert_eq!(g.step(vec2(164.0, 100.0), true, 32.0), GrabStep::Drag(vec2(8.0, 10.0)));
+        assert_eq!(g.step(vec2(100.0, 100.0), true, 32.0), GrabStep::Drag(vec2(10.0, 10.0)));
+        assert_eq!(g.step(vec2(100.0, 100.0), false, 32.0), GrabStep::Dropped, "a drag is no click");
+    }
+
+    #[test]
+    fn razdor_keys_on_the_map_are_back() {
+        // Esc closes the minimap first.
+        assert_eq!(esc_on_map(true), BarButton::Map);
+        assert_eq!(esc_on_map(false), BarButton::Menu);
+        // Zoom, minimap, Tab, music, help, language and the quick save leave a walk alone;
+        // other keys cut it as in the original.
+        for k in [KeyCode::Equal, KeyCode::Minus, KeyCode::KpAdd, KeyCode::KpSubtract, KeyCode::M, KeyCode::Tab, KeyCode::N, KeyCode::F1, KeyCode::F2, KeyCode::F5] {
+            assert!(!cuts_walk(k), "{k:?}");
+        }
+        for k in [KeyCode::Space, KeyCode::J, KeyCode::A, KeyCode::B, KeyCode::Escape, KeyCode::Left, KeyCode::Key1] {
+            assert!(cuts_walk(k), "{k:?}");
+        }
+    }
+
+    #[test]
+    fn razdor_stop_cuts_a_walk_and_ends_a_wait() {
+        use std::sync::Arc;
+        use razdor::rules::content::Content;
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        let here = g.tile();
+        let target = (here.0 + 4, here.1);
+        assert!(g.set_destination(target), "the demo has open ground east of the start");
+        razdor_stop(&mut g);
+        assert_eq!(g.path.len(), 1, "he finishes the step under way");
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        g.begin_wait(4);
+        assert!(g.waiting());
+        razdor_stop(&mut g);
+        assert!(!g.waiting());
+        g.begin_endless_wait();
+        razdor_stop(&mut g);
+        assert!(!g.endless_waiting());
     }
 
     #[test]

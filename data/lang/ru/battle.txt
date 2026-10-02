@@ -21,6 +21,7 @@ Click to move "{name}" here = Щёлкните, чтобы переставит�
 # Battle screen: title, buttons, strip
 the enemy = врага
 Battle: the army of hero {hero} against {enemy}! = Битва: армия героя {hero} против: {enemy}!
+Quick battle (Q) = Быстрый бой (Q)
 Finish automatically (Q) = Доиграть самим (Q)
 Turn {round}/{limit} = Ход {round}/{limit}
 XP +{xp} = Опыт +{xp}

@@ -190,8 +190,9 @@ pub fn held_key() -> Option<KeyCode> {
 }
 
 /// The keys of the original's Yes / No box (interface.md §11, 0x4c811c): Esc answers No and
-/// any other key Yes (Enter, Space, N or a letter alike), except Tab, Alt and the Up and
-/// Down arrows, which do nothing. `None` while no such key went down this frame.
+/// any other key Yes (Enter, Space, Y or a letter alike), except Tab, Alt and the Up and
+/// Down arrows, which do nothing. N answers No, as it did in Razdor before the parity pass
+/// (the original takes it for Yes). `None` while no such key went down this frame.
 pub fn answer_key() -> Option<bool> {
     if input_blocked() {
         return None;
@@ -202,7 +203,7 @@ pub fn answer_key() -> Option<bool> {
 fn answer_of(keys: impl Iterator<Item = KeyCode>) -> Option<bool> {
     let ignored = |k: &KeyCode| matches!(k, KeyCode::Tab | KeyCode::LeftAlt | KeyCode::RightAlt | KeyCode::F10 | KeyCode::Up | KeyCode::Down);
     let keys: Vec<KeyCode> = keys.filter(|k| !ignored(k)).collect();
-    if keys.contains(&KeyCode::Escape) {
+    if keys.contains(&KeyCode::Escape) || keys.contains(&KeyCode::N) {
         Some(false)
     } else if keys.is_empty() {
         None
@@ -746,7 +747,8 @@ mod tests {
     fn the_question_box_takes_any_key_but_four_as_yes() {
         use KeyCode::*;
         assert_eq!(answer_of([Escape].into_iter()), Some(false));
-        for k in [Enter, Space, Y, N, A, F1, Left, LeftShift] {
+        assert_eq!(answer_of([N].into_iter()), Some(false), "Razdor's N is No");
+        for k in [Enter, Space, Y, A, F1, Left, LeftShift] {
             assert_eq!(answer_of([k].into_iter()), Some(true), "{k:?}");
         }
         for k in [Tab, LeftAlt, RightAlt, Up, Down] {
