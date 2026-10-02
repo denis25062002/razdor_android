@@ -123,6 +123,8 @@ const DRAG_START: f32 = 5.0;
 
 thread_local! {
     static HELD: std::cell::Cell<Option<Held>> = const { std::cell::Cell::new(None) };
+    /// The unit whose Dismiss (or Bury) was pressed: confirm or cancel (0x4c3744).
+    static CONFIRM: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 /// Squad member `unit` wears or drinks the pack item at `i`; the message to show, if any.
@@ -371,14 +373,27 @@ pub fn squad(
         let label = if u.alive() { own("Dismiss", n_("Dismiss")) } else { own("Bury", n_("Bury")) };
         let label = label.as_str();
         let b = Rect::new(face.x + face.w + 12.0 * k, row.y + 14.0 * k, row.w - face.w - 24.0 * k, row.h - 28.0 * k);
-        if button(b.x, b.y, b.w, b.h, label, true) {
-            let name = u.name(&c).to_string();
-            *message = Some(match game.dismiss(sel) {
-                Ok(()) if u.alive() => razdor::trf!("{name} leaves your army.", name),
-                Ok(()) => razdor::trf!("{name} is laid to rest.", name),
-                Err(e) => service_error(e),
-            });
-            *selected = sel - 1;
+        // One confirmation step, as the original's confirm and cancel buttons.
+        let confirming = CONFIRM.with(|c| c.get()) == Some(sel);
+        if !confirming {
+            if button(b.x, b.y, b.w, b.h, label, true) {
+                CONFIRM.with(|c| c.set(Some(sel)));
+            }
+        } else {
+            let half = (b.w - 6.0 * k) / 2.0;
+            if button(b.x, b.y, half, b.h, tr("Confirm"), true) {
+                CONFIRM.with(|c| c.set(None));
+                let name = u.name(&c).to_string();
+                *message = Some(match game.dismiss(sel) {
+                    Ok(()) if u.alive() => razdor::trf!("{name} leaves your army.", name),
+                    Ok(()) => razdor::trf!("{name} is laid to rest.", name),
+                    Err(e) => service_error(e),
+                });
+                // The hero is selected after it.
+                *selected = 0;
+            } else if button(b.x + half + 6.0 * k, b.y, half, b.h, tr("Cancel"), true) {
+                CONFIRM.with(|c| c.set(None));
+            }
         }
     }
 

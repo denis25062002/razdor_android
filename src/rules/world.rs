@@ -230,11 +230,10 @@ impl Recruit {
     }
 }
 
-/// A player's unit left in a garrison, and the game minute it was left there.
+/// A player's unit left in a garrison (its whole record: kind, paid mark, last pay).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stationed {
     pub unit: Unit,
-    pub since: u64,
 }
 
 /// A scenario event id (1-based, file order), as buildings list them.

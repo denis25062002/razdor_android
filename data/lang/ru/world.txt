@@ -103,7 +103,7 @@ Not offered here. = Здесь этого не предлагают.
 You cannot afford it. = Вам это не по карману.
 Not wounded. = Не ранен.
 Alive and well. = Жив и здоров.
-The dead cannot stand guard. = Мёртвые не несут стражу.
+A named hero stays with the army. = Именной герой остаётся в армии.
 Your army is full. = Ваша армия полна.
 The garrison is full. = Гарнизон полон.
 The hero stays with his army. = Герой остаётся со своей армией.
@@ -145,13 +145,15 @@ Raise = Воскресить
 {name} is healed. = {name}: исцелён.
 
 # Building window: garrison
-paid until the next noon = оплачен до следующего полудня
-no wage while on guard = на страже без жалованья
+paid = оплачен
+unpaid = не оплачен
+Unpaid: {price} gold to take back. = Не оплачен: вернуть за {price} золота.
+Pay {price} gold to take {name} back? = Заплатить {price} золота, чтобы вернуть: {name}?
+Confirm = Подтвердить
 {hp}/{max} HP, {paid} = Жизнь {hp}/{max}, {paid}
 {hp}/{max} HP, wage {wage} = Жизнь {hp}/{max}, жалованье {wage}
 Back in your army. = Снова в вашей армии.
-{name} stays on guard. = {name}: остаётся на страже.
-Units on guard are paid for their first day only and heal {pct}% a day. = Стражникам платят только за первый день; они исцеляются на {pct}% в день.
+Units on guard draw no wage and heal {pct}% a day. = Стража не получает жалованья и исцеляется на {pct}% в день.
 
 # Building window: market and sanctuary
 Name = Название

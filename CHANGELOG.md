@@ -261,6 +261,13 @@ old id, and their versions give both.
   for mana after a gold check, the Community's slip; an elemental's healing is checked
   against the gold and paid in mana.
 - Ruins keep only their first five goods as treasure.
+- The garrison as in the original: one click selects a unit, the second moves it to an
+  empty cell or swaps it with a unit of the other grid, free and unpaid as it was (the only
+  way into a full army). Taking back a unit that went unpaid and was parked for less than
+  a day costs one day's wage; the hero and named units stay with the army; corpses can be
+  left. Opening the tab sets the guards' paid marks.
+- Dismiss and Bury ask for a confirmation, and the unit leaves with its worn items; the
+  pack is not touched.
 
 ## 0.2.2 — 2026-10-01
 

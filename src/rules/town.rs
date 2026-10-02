@@ -6,9 +6,10 @@
 //! (economy.md §7): an ill-disposed building trades, hires and heals, dearer at its market
 //! (see `economy::relation_price`).
 
+use super::clock::MINUTES_PER_DAY;
 use super::content::{Content, SpellDef};
 use super::formation::Slot;
-use super::game::{Event, Game, Price, PACK_SIZE, SPELL_BOOK_SIZE};
+use super::game::{Event, Game, Price, SPELL_BOOK_SIZE};
 use super::units::Stats;
 use super::world::{EventId, Location, LocationKind, Stationed};
 
@@ -39,15 +40,16 @@ pub enum ServiceError {
     CannotAfford,
     NotWounded,
     NotDead,
-    /// The dead cannot be left in a garrison.
-    Dead,
     SquadFull,
     GarrisonFull,
     /// The hero cannot be left, dismissed or healed away from his army.
     Hero,
+    /// A named character cannot be left in a garrison.
+    Named,
+    /// An unpaid garrison unit costs this much gold to take back.
+    Unpaid(i32),
     AlreadyKnown,
     BookFull,
-    PackFull,
     NoSuchUnit,
 }
 
@@ -199,9 +201,37 @@ impl Game {
         }
     }
 
-    /// Leaves squad member `i` in the garrison of the castle or fort here. It keeps its
-    /// items; a garrison is never paid, and it heals `GarrisonAutoHeal`% every midnight.
-    pub fn leave_in_garrison(&mut self, i: usize) -> Result<(), ServiceError> {
+    /// Opens the garrison tab here (0x4ba854 tab 2): every unit of the hero's army is
+    /// stamped with now, and the paid mark of every garrison unit is set, the only place it
+    /// is: paid when last paid less than 1441 minutes ago, or when 1440 minutes or more
+    /// passed since its stamp (units placed at map load have none, so they are always paid).
+    /// A unit put into the garrison during the visit keeps the mark it had in the army.
+    pub fn open_garrison(&mut self) {
+        let Some(l) = self.location.filter(|_| self.offers(Tab::Garrison)) else { return };
+        let now = self.clock.total_minutes() as u64;
+        for u in self.squad.iter_mut() {
+            u.seen = now;
+        }
+        for s in self.world.locations[l].stationed.iter_mut() {
+            let u = &mut s.unit;
+            u.unpaid = !(now.saturating_sub(u.last_paid) < MINUTES_PER_DAY + 1 || now.saturating_sub(u.seen) >= MINUTES_PER_DAY);
+        }
+    }
+
+    /// The garrison here, if the tab is offered, and its free cell for a unit of `row` that
+    /// wants `cell`: that cell when given and free, else its own cell or the first free one.
+    fn free_cell(units: &[Slot], f: super::formation::Formation, want: Slot, row: super::formation::Row) -> Option<Slot> {
+        if units.len() >= f.capacity() {
+            return None;
+        }
+        if units.contains(&want) { f.free_slot(units, row) } else { Some(want) }
+    }
+
+    /// Leaves squad member `i` in the garrison of the castle or fort here, at `cell` (an empty
+    /// one; `None`: its own or the first free). The hero and named units are refused
+    /// (0x4c6f50); a corpse can be left. The whole record moves, paid mark and last pay
+    /// included; a garrison is never paid, and it heals `GarrisonAutoHeal`% every midnight.
+    pub fn leave_in_garrison(&mut self, i: usize, cell: Option<Slot>) -> Result<(), ServiceError> {
         if !self.offers(Tab::Garrison) {
             return Err(ServiceError::NotHere);
         }
@@ -209,45 +239,106 @@ impl Game {
             return Err(ServiceError::Hero);
         }
         let u = self.squad.get(i).ok_or(ServiceError::NoSuchUnit)?;
-        if !u.alive() {
-            return Err(ServiceError::Dead);
+        if u.named > 0 {
+            return Err(ServiceError::Named);
         }
         let l = self.location.ok_or(ServiceError::NotHere)?;
         let taken: Vec<Slot> = self.world.locations[l].stationed.iter().map(|s| s.unit.slot).collect();
-        let f = self.content.formation;
-        if taken.len() >= f.capacity() {
-            return Err(ServiceError::GarrisonFull);
-        }
         let row = Stats::of_level(&self.content, u.def, u.level).preferred_row();
-        let slot = if taken.contains(&u.slot) { f.free_slot(&taken, row).ok_or(ServiceError::GarrisonFull)? } else { u.slot };
+        let slot = Self::free_cell(&taken, self.content.formation, cell.unwrap_or(u.slot), row).ok_or(ServiceError::GarrisonFull)?;
         let mut unit = self.squad.remove(i);
         unit.slot = slot;
-        let since = self.clock.total_minutes() as u64;
-        self.world.locations[l].stationed.push(Stationed { unit, since });
+        self.world.locations[l].stationed.push(Stationed { unit });
         Ok(())
     }
 
-    /// Takes garrison unit `j` of the castle or fort here back into the squad.
-    pub fn take_from_garrison(&mut self, j: usize) -> Result<(), ServiceError> {
+    /// What taking garrison unit `j` into an empty cell of the army costs: nothing when it
+    /// is paid, else one day's kind-1 wage of its type (0x4acff4).
+    pub fn garrison_price(&self, j: usize) -> Option<i32> {
+        let u = &self.garrison_here().get(j)?.unit;
+        Some(if u.unpaid { self.content.wage(u.def) } else { 0 })
+    }
+
+    /// Takes garrison unit `j` of the castle or fort here into an empty cell of the army
+    /// (`None`: its own or the first free; the army must have room). A paid unit comes free,
+    /// its last pay now; an unpaid one only with `pay`, for [`Game::garrison_price`], asked
+    /// only when that is strictly below the gold, and it comes paid with its last pay now.
+    pub fn take_from_garrison(&mut self, j: usize, cell: Option<Slot>, pay: bool) -> Result<(), ServiceError> {
         if !self.offers(Tab::Garrison) {
             return Err(ServiceError::NotHere);
         }
         let l = self.location.ok_or(ServiceError::NotHere)?;
-        let s = self.world.locations[l].stationed.get(j).ok_or(ServiceError::NoSuchUnit)?;
-        let taken: Vec<Slot> = self.squad.iter().map(|u| u.slot).collect();
+        let price = self.garrison_price(j).ok_or(ServiceError::NoSuchUnit)?;
+        if price > 0 && !pay {
+            return Err(ServiceError::Unpaid(price));
+        }
+        if price > 0 && price >= self.gold {
+            return Err(ServiceError::CannotAfford);
+        }
         if self.squad.len() >= self.max_squad() {
             return Err(ServiceError::SquadFull);
         }
+        let s = &self.world.locations[l].stationed[j];
+        let taken: Vec<Slot> = self.squad.iter().map(|u| u.slot).collect();
         let row = Stats::of_level(&self.content, s.unit.def, s.unit.level).preferred_row();
-        let slot = if taken.contains(&s.unit.slot) {
-            self.content.formation.free_slot(&taken, row).ok_or(ServiceError::SquadFull)?
-        } else {
-            s.unit.slot
-        };
+        let slot = Self::free_cell(&taken, self.content.formation, cell.unwrap_or(s.unit.slot), row).ok_or(ServiceError::SquadFull)?;
         let mut unit = self.world.locations[l].stationed.remove(j).unit;
         unit.slot = slot;
+        if price > 0 {
+            self.gold -= price;
+            unit.unpaid = false;
+        }
+        unit.last_paid = self.clock.total_minutes() as u64;
         self.squad.push(unit);
         Ok(())
+    }
+
+    /// Swaps squad member `i` with garrison unit `j` (0x4c653c, 0x4c6f50): the two records
+    /// change places, each taking the other's cell, with no price and no question, so an
+    /// unpaid garrison unit comes in unpaid; it is also the only way into a full army. The
+    /// army's unit must not be the hero or a named unit. Only when the garrison unit was
+    /// selected first does it get its last pay now, and only if it is paid (the original's
+    /// two click handlers differ).
+    pub fn swap_with_garrison(&mut self, i: usize, j: usize, garrison_first: bool) -> Result<(), ServiceError> {
+        if !self.offers(Tab::Garrison) {
+            return Err(ServiceError::NotHere);
+        }
+        let l = self.location.ok_or(ServiceError::NotHere)?;
+        if i == 0 {
+            return Err(ServiceError::Hero);
+        }
+        let u = self.squad.get(i).ok_or(ServiceError::NoSuchUnit)?;
+        if u.named > 0 {
+            return Err(ServiceError::Named);
+        }
+        let g = &mut self.world.locations[l].stationed;
+        if j >= g.len() {
+            return Err(ServiceError::NoSuchUnit);
+        }
+        let (army_cell, guard_cell) = (self.squad[i].slot, g[j].unit.slot);
+        std::mem::swap(&mut self.squad[i], &mut g[j].unit);
+        self.squad[i].slot = army_cell;
+        g[j].unit.slot = guard_cell;
+        if garrison_first && !self.squad[i].unpaid {
+            self.squad[i].last_paid = self.clock.total_minutes() as u64;
+        }
+        Ok(())
+    }
+
+    /// Moves garrison unit `j` to `cell` of the garrison here, swapping with a unit there
+    /// (only the formation changes).
+    pub fn move_guard(&mut self, j: usize, cell: Slot) -> bool {
+        let Some(l) = self.location.filter(|_| self.offers(Tab::Garrison)) else { return false };
+        let g = &mut self.world.locations[l].stationed;
+        if j >= g.len() || !self.content.formation.slots().any(|s| s == cell) {
+            return false;
+        }
+        let from = g[j].unit.slot;
+        if let Some(other) = g.iter().position(|s| s.unit.slot == cell) {
+            g[other].unit.slot = from;
+        }
+        g[j].unit.slot = cell;
+        true
     }
 
     /// Spells the sanctuary here teaches.
@@ -281,19 +372,18 @@ impl Game {
         Ok(())
     }
 
-    /// Sends squad member `i` away (the army screen's "dismiss"), or buries a corpse. Its
-    /// items go to the pack, so the pack must have room for them.
+    /// Sends squad member `i` away (the army screen's "dismiss"), or buries a corpse: the
+    /// same action (0x4b1778). Only the hero is refused; named and event units go too. No
+    /// refund, no cost, and its worn items are lost with it: the original's Army_RemoveUnit
+    /// moves nothing to the pack.
     pub fn dismiss(&mut self, i: usize) -> Result<(), ServiceError> {
         if i == 0 {
             return Err(ServiceError::Hero);
         }
-        let u = self.squad.get(i).ok_or(ServiceError::NoSuchUnit)?;
-        let items: Vec<_> = u.items.iter().flatten().copied().collect();
-        if self.pack.len() + items.len() > PACK_SIZE {
-            return Err(ServiceError::PackFull);
+        if i >= self.squad.len() {
+            return Err(ServiceError::NoSuchUnit);
         }
         self.squad.remove(i);
-        self.pack.extend(items);
         Ok(())
     }
 }
@@ -787,7 +877,7 @@ mod tests {
         let mut g = inside(&s);
         g.squad[2].wage_kind = crate::rules::content::WageKind::Event;
         assert_eq!((g.wage(0), g.wage(1), g.wage(2)), (0, 6, 0));
-        g.leave_in_garrison(1).unwrap();
+        g.leave_in_garrison(1, None).unwrap();
         assert_eq!(g.daily_wages(), 0);
     }
 
@@ -1148,9 +1238,9 @@ mod tests {
         s.buildings = vec![castle, town(BuildingType::Castle, 8, 2, 1)];
         let mut g = inside(&s);
         g.first_noon_today();
-        assert_eq!(g.leave_in_garrison(0), Err(ServiceError::Hero));
+        assert_eq!(g.leave_in_garrison(0, None), Err(ServiceError::Hero));
         g.squad[2].hp = 20; // of 40
-        g.leave_in_garrison(2).unwrap();
+        g.leave_in_garrison(2, None).unwrap();
         assert_eq!((g.squad.len(), g.garrison_here().len()), (2, 1));
         assert_eq!(g.daily_wages(), 6, "the garrison is not paid");
         let mut events = Vec::new();
@@ -1159,11 +1249,86 @@ mod tests {
         assert_eq!(g.garrison_here()[0].unit.hp, 20, "no heal at noon");
         g.pass_time(12.0 * 60.0, &mut events); // midnight
         assert_eq!(g.garrison_here()[0].unit.hp, 24, "GarrisonAutoHeal 10%");
-        g.take_from_garrison(0).unwrap();
+        g.take_from_garrison(0, None, false).unwrap();
         assert_eq!((g.squad.len(), g.squad[2].hp), (3, 24));
-        assert_eq!(g.take_from_garrison(0), Err(ServiceError::NoSuchUnit));
+        assert_eq!(g.take_from_garrison(0, None, false), Err(ServiceError::NoSuchUnit));
         g.location = Some(1);
-        assert_eq!(g.leave_in_garrison(1), Err(ServiceError::NotHere), "not the player's castle");
+        assert_eq!(g.leave_in_garrison(1, None), Err(ServiceError::NotHere), "not the player's castle");
+    }
+
+    /// The knight in his own castle (building 0) with 1000 gold and two militia.
+    fn in_own_castle() -> Game {
+        let mut s = map();
+        let mut castle = town(BuildingType::Castle, 2, 2, 3);
+        castle.faction = 1;
+        s.buildings = vec![castle];
+        inside(&s)
+    }
+
+    #[test]
+    fn an_unpaid_unit_parked_for_less_than_a_day_costs_a_days_wage_to_take_back() {
+        let mut g = in_own_castle();
+        let day = MINUTES_PER_DAY;
+        g.pass_time(3.0 * day as f32, &mut Vec::new());
+        let now = g.clock.total_minutes() as u64;
+        // Left unpaid by short noons: last paid three days ago.
+        (g.squad[1].unpaid, g.squad[1].last_paid) = (true, now - 3 * day);
+        g.open_garrison();
+        assert!(g.squad.iter().all(|u| u.seen == now), "the tab stamps the hero's army");
+        g.leave_in_garrison(1, None).unwrap();
+        assert!(g.garrison_here()[0].unit.unpaid, "it keeps its mark until the tab opens again");
+        // Opening again the same day: last paid over 1440 minutes ago, stamped under a day ago.
+        g.pass_time(600.0, &mut Vec::new());
+        g.open_garrison();
+        assert!(g.garrison_here()[0].unit.unpaid);
+        // One day's kind-1 wage of its type: militia 6, asked only below the gold.
+        assert_eq!(g.garrison_price(0), Some(6));
+        assert_eq!(g.take_from_garrison(0, None, false), Err(ServiceError::Unpaid(6)));
+        g.gold = 6;
+        assert_eq!(g.take_from_garrison(0, None, true), Err(ServiceError::CannotAfford), "strictly below the gold");
+        g.gold = 7;
+        g.take_from_garrison(0, None, true).unwrap();
+        let now = g.clock.total_minutes() as u64;
+        assert_eq!((g.gold, g.squad[2].unpaid, g.squad[2].last_paid), (1, false, now));
+        // Parked a whole day since its stamp, it is paid again: free.
+        (g.squad[2].unpaid, g.squad[2].last_paid) = (true, now - 3 * day);
+        g.open_garrison();
+        g.leave_in_garrison(2, None).unwrap();
+        g.pass_time(day as f32, &mut Vec::new());
+        g.open_garrison();
+        assert_eq!(g.garrison_price(0), Some(0));
+        g.take_from_garrison(0, None, false).unwrap();
+        assert_eq!(g.squad[2].last_paid, g.clock.total_minutes() as u64);
+    }
+
+    #[test]
+    fn a_swap_with_the_garrison_is_free_and_named_units_and_corpses() {
+        let mut g = in_own_castle();
+        g.squad[2].hp = 0; // a corpse can be left
+        g.leave_in_garrison(2, None).unwrap();
+        g.squad[1].named = 1;
+        assert_eq!(g.leave_in_garrison(1, None), Err(ServiceError::Named), "named units stay");
+        g.squad[1].named = 0;
+        let l = g.location.unwrap();
+        g.world.locations[l].stationed[0].unit.hp = 40;
+        let guard = &mut g.world.locations[l].stationed[0].unit;
+        (guard.unpaid, guard.last_paid) = (true, 5);
+        let (army_cell, guard_cell) = (g.squad[1].slot, g.garrison_here()[0].unit.slot);
+        // The two records change places, each in the other's cell, with no price: the unpaid
+        // guard comes in unpaid, and (the army's unit clicked first) nobody's pay refreshed.
+        let gold = g.gold;
+        g.swap_with_garrison(1, 0, false).unwrap();
+        assert_eq!((g.squad[1].unpaid, g.squad[1].last_paid, g.squad[1].slot, g.gold), (true, 5, army_cell, gold));
+        assert_eq!(g.garrison_here()[0].unit.slot, guard_cell);
+        assert_eq!(g.swap_with_garrison(0, 0, true), Err(ServiceError::Hero));
+        // The garrison's unit clicked first: it gets its last pay now, if it is paid.
+        g.swap_with_garrison(1, 0, true).unwrap();
+        assert_eq!(g.squad[1].last_paid, g.clock.total_minutes() as u64);
+        g.squad[1].unpaid = true;
+        g.squad[1].last_paid = 7;
+        g.swap_with_garrison(1, 0, false).unwrap();
+        g.swap_with_garrison(1, 0, true).unwrap();
+        assert_eq!(g.squad[1].last_paid, 7, "unpaid: not refreshed");
     }
 
     #[test]
@@ -1352,15 +1517,18 @@ mod tests {
     }
 
     #[test]
-    fn dismissing_a_unit_returns_its_items() {
+    fn a_dismissed_unit_takes_its_worn_items() {
+        // Army_RemoveUnit moves nothing to the pack (0x4b1778); no refund, no cost.
         let mut g = start(&map());
         g.squad[1].items[0] = Some(ItemId(20));
+        g.squad[1].named = 1;
         assert_eq!(g.dismiss(0), Err(ServiceError::Hero));
+        let gold = g.gold;
         g.dismiss(1).unwrap();
-        assert_eq!((g.squad.len(), g.pack.clone()), (2, vec![ItemId(20)]));
-        g.squad[1].items[0] = Some(ItemId(21));
-        g.pack = vec![ItemId(22); PACK_SIZE];
-        assert_eq!(g.dismiss(1), Err(ServiceError::PackFull));
+        assert_eq!((g.squad.len(), g.pack.clone(), g.gold), (2, vec![], gold));
+        g.squad[1].hp = 0;
+        g.dismiss(1).unwrap();
+        assert_eq!(g.squad.len(), 1, "a corpse is buried the same way");
     }
 
     #[test]

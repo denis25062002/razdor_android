@@ -199,6 +199,10 @@ pub struct Unit {
     pub named: u8,
     /// Joined through a scenario event (events can take such units away again).
     pub from_event: bool,
+    /// The last time the garrison tab opened while it was in the hero's army (unit+0x1bb):
+    /// a garrison unit counts as paid a day after it (economy.md §2). 0: never, as a hire.
+    #[serde(default)]
+    pub seen: u64,
 }
 
 impl Unit {
@@ -219,6 +223,7 @@ impl Unit {
             potions: Vec::new(),
             named: 0,
             from_event: false,
+            seen: 0,
         }
     }
 

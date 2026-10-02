@@ -9,7 +9,6 @@ use macroquad::prelude::*;
 use razdor::i18n::{n_, tr};
 use razdor::rules::battle::Team;
 use razdor::trf;
-use razdor::rules::clock::MINUTES_PER_DAY;
 use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
 use razdor::rules::game::{Currency, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
@@ -44,11 +43,15 @@ pub struct BuildingView {
     pub scroll: usize,
     /// The market shows the "sell" shop (the pack) instead of the goods.
     pub selling: bool,
+    /// The garrison tab's selected unit: (in the garrison, index).
+    pub garrison_sel: Option<(bool, usize)>,
+    /// The garrison unit being bought back: (index, cell, price), waiting for the answer.
+    pub garrison_buy: Option<(usize, Slot, i32)>,
 }
 
 impl BuildingView {
     pub fn new(tab: Tab) -> BuildingView {
-        BuildingView { tab, pick: None, scroll: 0, selling: false }
+        BuildingView { tab, pick: None, scroll: 0, selling: false, garrison_sel: None, garrison_buy: None }
     }
 
     fn switch(&mut self, tab: Tab) {
@@ -83,13 +86,13 @@ pub fn service_error(e: ServiceError) -> String {
         ServiceError::CannotAfford => tr("You cannot afford it.").into(),
         ServiceError::NotWounded => tr("Not wounded.").into(),
         ServiceError::NotDead => tr("Alive and well.").into(),
-        ServiceError::Dead => tr("The dead cannot stand guard.").into(),
         ServiceError::SquadFull => tr("Your army is full.").into(),
         ServiceError::GarrisonFull => tr("The garrison is full.").into(),
         ServiceError::Hero => tr("The hero stays with his army.").into(),
         ServiceError::AlreadyKnown => tr("Already in your book.").into(),
         ServiceError::BookFull => tr("No room in the book.").into(),
-        ServiceError::PackFull => tr("The pack is full.").into(),
+        ServiceError::Named => tr("A named hero stays with the army.").into(),
+        ServiceError::Unpaid(price) => trf!("Unpaid: {price} gold to take back.", price),
         ServiceError::NoSuchUnit => tr("Nobody there.").into(),
     }
 }
@@ -484,8 +487,16 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
 }
 
 /// A 2×6 grid of the army screen's cards (portrait and stat strip) at `rel_y` of the building
-/// window (video pixels); empty cells show their row's icon. Returns the unit under the mouse.
-fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit]) -> Option<usize> {
+/// Where the pointer is over a card grid: a unit's card, or an empty cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hit {
+    Unit(usize),
+    Cell(Slot),
+}
+
+/// The army screen's cards for `units` in the formation, `rel_y` below the content's top;
+/// `selected` is framed. Returns what the pointer is over.
+fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], selected: Option<usize>) -> Option<Hit> {
     let k = chrome::k();
     let c = &game.content;
     let form = c.formation;
@@ -498,13 +509,16 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()
     };
+    let mut hovered = None;
     for slot in form.slots() {
         if !units.iter().any(|u| u.slot == slot) {
             let p = cell_at(slot);
             chrome::empty_cell(Rect::new(p.x, p.y, card.x, card.y), chrome::CellIcon::of(form, slot), true);
+            if mouse_in(p.x, p.y, card.x, card.y) {
+                hovered = Some(Hit::Cell(slot));
+            }
         }
     }
-    let mut hovered = None;
     for (i, u) in units.iter().enumerate() {
         let p = cell_at(u.slot);
         let sq = Rect::new(p.x, p.y, card.x, card.x);
@@ -514,57 +528,122 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let vs = u.stats(c);
         super::unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, false);
+        if !u.alive() {
+            draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
+        } else if u.unpaid {
+            chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
+        }
+        if selected == Some(i) {
+            chrome::glow_frame(sq, Color::new(1.0, 0.85, 0.3, 0.95), false);
+        }
         if mouse_in(p.x, p.y, card.x, card.y) {
             chrome::glow_frame(sq, Color::new(0.35, 0.55, 1.0, 0.9), false);
-            hovered = Some(i);
+            hovered = Some(Hit::Unit(i));
         }
     }
     hovered
 }
 
-/// Garrison, as the original's: the troops left here on top, the hero's army below; a click
-/// moves a unit across.
-fn garrison(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<String>) {
+/// Garrison, as the original's (0x4c653c, 0x4c6f50): the troops left here on top, the
+/// hero's army below. One click selects a unit, a second acts: a unit of the other grid
+/// swaps the two, an empty cell of the other grid moves it across (buying back an unpaid
+/// guard asks first), the same grid changes its cell.
+fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, message: &mut Option<String>) {
+    let k = chrome::k();
     let c = game.content.clone();
-    let now = game.clock.total_minutes() as u64;
     let guards: Vec<_> = game.garrison_here().to_vec();
+    let sel = view.garrison_sel.filter(|&(g, n)| if g { n < guards.len() } else { n < game.squad.len() });
     let mut hover = Vec::new();
-    let mut take = None;
     let guard_units: Vec<&Unit> = guards.iter().map(|s| &s.unit).collect();
-    if let Some(j) = card_grid(game, assets, f, 32.0, &guard_units) {
-        let s = &guards[j];
-        let paid = if now.saturating_sub(s.since) < MINUTES_PER_DAY { tr("paid until the next noon") } else { tr("no wage while on guard") };
-        let lv = level_label(s.unit.level, s.unit.xp, s.unit.xp_to_next(&c));
-        hover = vec![(s.unit.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, {paid}", hp = s.unit.hp, max = s.unit.max_hp(&c), paid), INK)];
-        hover.push((trf!("Units on guard are paid for their first day only and heal {pct}% a day.", pct = c.options.garrison_auto_heal), DIM));
-        if clicked() {
-            take = Some(j);
-        }
+    let top = card_grid(game, assets, f, 32.0, &guard_units, sel.filter(|s| s.0).map(|s| s.1));
+    if let Some(Hit::Unit(j)) = top {
+        let u = &guards[j].unit;
+        let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
+        let paid = if u.unpaid { tr("unpaid") } else { tr("paid") };
+        hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, {paid}", hp = u.hp.max(0), max = u.max_hp(&c), paid), INK)];
+        hover.push((trf!("Units on guard draw no wage and heal {pct}% a day.", pct = c.options.garrison_auto_heal), DIM));
     }
     chrome::divider(at(f, 250.0, 302.0, 584.0, 16.0));
     let squad = game.squad.clone();
     let army: Vec<&Unit> = squad.iter().collect();
-    let mut leave = None;
-    if let Some(i) = card_grid(game, assets, f, 330.0, &army) {
+    let bottom = card_grid(game, assets, f, 330.0, &army, sel.filter(|s| !s.0).map(|s| s.1));
+    if let Some(Hit::Unit(i)) = bottom {
         let u = &squad[i];
         let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
-        hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, wage {wage}", hp = u.hp, max = u.max_hp(&c), wage = game.wage(i)), INK)];
-        if clicked() {
-            leave = Some(i);
+        hover = vec![(u.name(&c).to_string(), ACCENT), (lv, XP_COLOR), (trf!("{hp}/{max} HP, wage {wage}", hp = u.hp.max(0), max = u.max_hp(&c), wage = game.wage(i)), INK)];
+    }
+    if let Some((j, cell, price)) = view.garrison_buy {
+        // The purchase question (the garrison move event, 0x4acff4).
+        let r = at(f, 250.0, 290.0, 584.0, 44.0);
+        draw_rectangle(r.x, r.y, r.w, r.h, PANEL);
+        let name = guards.get(j).map_or_else(String::new, |s| s.unit.name(&c).to_string());
+        text(&trf!("Pay {price} gold to take {name} back?", price, name), r.x + 10.0 * k, r.y + 28.0 * k, 18.0 * k, ACCENT);
+        if button(r.x + r.w - 190.0 * k, r.y + 6.0 * k, 85.0 * k, 32.0 * k, tr("Yes"), true) {
+            view.garrison_buy = None;
+            *message = Some(match game.take_from_garrison(j, Some(cell), true) {
+                Ok(()) => tr("Back in your army.").into(),
+                Err(e) => service_error(e),
+            });
+        } else if button(r.x + r.w - 95.0 * k, r.y + 6.0 * k, 85.0 * k, 32.0 * k, tr("No"), true) {
+            view.garrison_buy = None;
         }
+        tooltip(&hover);
+        return;
     }
-    if let Some(j) = take {
-        *message = Some(match game.take_from_garrison(j) {
-            Ok(()) => tr("Back in your army.").into(),
-            Err(e) => service_error(e),
-        });
-    }
-    if let Some(i) = leave {
-        let name = game.squad[i].name(&c).to_string();
-        *message = Some(match game.leave_in_garrison(i) {
-            Ok(()) => trf!("{name} stays on guard.", name),
-            Err(e) => service_error(e),
-        });
+    if clicked() {
+        let mut done = true;
+        let result: Option<Result<(), ServiceError>> = match (sel, top, bottom) {
+            (Some((true, j)), Some(Hit::Unit(n)), _) if n == j => None,
+            (Some((false, i)), _, Some(Hit::Unit(n))) if n == i => None,
+            (None, Some(Hit::Unit(j)), _) => {
+                view.garrison_sel = Some((true, j));
+                done = false;
+                None
+            }
+            (None, _, Some(Hit::Unit(i))) => {
+                view.garrison_sel = Some((false, i));
+                done = false;
+                None
+            }
+            (Some((true, j)), Some(Hit::Unit(n)), _) => {
+                game.move_guard(j, guards[n].unit.slot);
+                None
+            }
+            (Some((true, j)), Some(Hit::Cell(cell)), _) => {
+                game.move_guard(j, cell);
+                None
+            }
+            (Some((false, i)), _, Some(Hit::Unit(n))) => {
+                game.move_unit(i, squad[n].slot);
+                None
+            }
+            (Some((false, i)), _, Some(Hit::Cell(cell))) => {
+                game.move_unit(i, cell);
+                None
+            }
+            (Some((false, i)), Some(Hit::Unit(j)), _) => Some(game.swap_with_garrison(i, j, false)),
+            (Some((true, j)), _, Some(Hit::Unit(i))) => Some(game.swap_with_garrison(i, j, true)),
+            (Some((false, i)), Some(Hit::Cell(cell)), _) => Some(game.leave_in_garrison(i, Some(cell))),
+            (Some((true, j)), _, Some(Hit::Cell(cell))) => match game.take_from_garrison(j, Some(cell), false) {
+                Err(ServiceError::Unpaid(price)) if price < game.gold => {
+                    view.garrison_buy = Some((j, cell, price));
+                    None
+                }
+                Err(ServiceError::Unpaid(_)) => Some(Err(ServiceError::CannotAfford)),
+                r => Some(r),
+            },
+            _ => {
+                done = false;
+                None
+            }
+        };
+        if done {
+            view.garrison_sel = None;
+        }
+        // The hero and named units are refused without a word, as in the original.
+        if let Some(Err(e)) = result.filter(|r| !matches!(r, Err(ServiceError::Hero | ServiceError::Named))) {
+            *message = Some(service_error(e));
+        }
     }
     tooltip(&hover);
 }
@@ -902,6 +981,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         if tab_button(tab_label(t), Some(t), r, view.tab == t) && view.tab != t {
             view.switch(t);
             *message = None;
+            if t == Tab::Garrison {
+                game.open_garrison();
+            }
         }
     }
     let exit = tab_button(tr("Exit"), None, Rect::new(tx, col.y + col.h - th - 10.0 * k, tw, th), false);
@@ -910,7 +992,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     match view.tab {
         Tab::MainHall => next = next.or(main_hall(game, assets, &f, view, message, dialogs)),
         Tab::Barracks => next = next.or(barracks(game, assets, &f, message, dialogs)),
-        Tab::Garrison => garrison(game, assets, &f, message),
+        Tab::Garrison => garrison(game, assets, &f, view, message),
         Tab::Market => next = market(game, assets, &f, view, message),
         Tab::Sanctuary => sanctuary(game, &f, view, message),
         Tab::Tribute => tribute(game, &f, message),

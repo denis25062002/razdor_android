@@ -450,11 +450,10 @@ impl Game {
         g.squad.iter_mut().for_each(|u| u.last_paid = now);
         // The scenario garrisons of the player's own buildings are his troops there (never
         // paid).
-        let since = now;
         let c = g.content.clone();
         for l in g.world.locations.iter_mut().filter(|l| l.owned() && !l.garrison.is_empty()) {
             let troops = std::mem::take(&mut l.garrison);
-            l.stationed.extend(troops.iter().map(|t| Stationed { unit: troop_unit(&c, t), since }));
+            l.stationed.extend(troops.iter().map(|t| Stationed { unit: troop_unit(&c, t) }));
         }
         // The map load's draws (engine.md §3.2): the state is 1, the markets are stocked,
         // then the world music draws its first change time.
