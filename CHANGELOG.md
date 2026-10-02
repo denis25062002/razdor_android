@@ -288,8 +288,7 @@ old id, and their versions give both.
   may teach more.
 - An event's spell on the army resets its time instead of adding to it, a spell number past
   the last spell casts the last one, and a spell that kills the whole army loses the game.
-  The dead keep their items, and a dead unit still holding a spell is raised by a new cast
-  of it.
+  The dead keep their items.
 - **Stats rebuilt as the original:** the spells' flat changes come before every percent, the
   initiative and actions are worked in hundredths (actions rounded half up), a percent on a
   protection, regeneration or vampirism adds points both ways (protections 0–99), a unit with
@@ -297,17 +296,15 @@ old id, and their versions give both.
   and a hero at 1 HP has initiative 1. A unit carries one bonus: an item's replaces its own.
   When the maximum HP changes, a wounded unit's hit points follow it proportionally.
 - Item wear rules as the original: an item of a magic school only for a unit of that school
-  (it no longer gives its school), holy items barred for Undead by Nature, the crown for the
-  unit types the original's code lets wear it. Potions add up in one block; a potion's
-  magic power never takes effect, its protections replace what an earlier potion gave, and a
+  (it no longer gives its school), holy items barred for Undead by Nature. Potions add up in
+  one block; a potion's protections replace what an earlier potion gave, and a
   potion of 1000 healing or more raises the dead. An unknown item type reads as a potion.
 - Save format 7: spells, drains and hit point fractions are kept per unit; older saves load
   with their army's spells moved onto its units.
-- An event that casts a spell while the hero reads one turns his spell onto his own army, for
-  free, as the original does; the event's spell lands after it. An event's spell now lands
-  after its other results (a unit it adds is hit too) and before its delay passes.
-- A spell that leaves someone of the army it hit alive gives a fallen hero 1 HP before the
-  army is rebuilt, a curse on an enemy army included. After a battle, the player's dead
+- An event that casts a spell while the hero reads one lands it after his. An event's spell
+  now lands after its other results (a unit it adds is hit too) and before its delay passes.
+- A spell that leaves someone of the army it hit alive gives its fallen hero or leader 1 HP
+  before the army is rebuilt. After a battle, the player's dead
   units lose their spells.
 - An event whose "no meeting" byte is 1 teaches no spell, opcode or not. A spell's price in a
   sanctuary is exactly its cost, a negative one included. Item types and spell targets are
@@ -483,6 +480,14 @@ now fixed with the rule the original evidently meant:
 - A market whose list of candidates runs out leaves the place empty (the original's bug read
   on past the list: the first item of the game), and a building's mana stock stops at its
   maximum (the original's bug wrapped it past 255).
+- World spells: a spell the hero reads lands on its target even when an event casts a spell
+  meanwhile (the original's bug turned it onto his own army, for free), a new cast no longer
+  raises a dead unit still holding the spell, and a spell on an enemy army that leaves a
+  survivor raises that army's fallen leader, not the player's fallen hero (both the
+  original's bugs). The Caster discount keeps a negative cost negative.
+- The crown is worn by the unit types its list names, the knights, royals and undead lords
+  (the original's off-by-one bug gave it to the next type of each), and a potion's magic
+  power takes effect (the original's bug never applied it).
 
 ## 0.2.2 — 2026-10-01
 

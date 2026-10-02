@@ -96,16 +96,25 @@ pub struct CastCost {
 }
 
 /// The cost function of the Community build (0xc27448): `x div 2` for the Archmage (who
-/// ignores Caster), else with the Caster flag `floor(4x/5)` as an unsigned multiply by
-/// 0xcccccccd (a negative `x` comes out huge, as in the original), else `x`.
+/// ignores Caster), else with the Caster flag `floor(4x/5)` as a multiply by 0xcccccccd,
+/// else `x`. Razdor fixes the original's bug: the multiply was unsigned, so a negative `x`
+/// came out huge; here it keeps its sign.
 pub fn discounted(x: i32, archmage: bool, caster: bool) -> i32 {
     if archmage {
         x / 2
     } else if caster {
-        ((x as u32 as u64 * 0xcccc_cccd) >> 32) as u32 as i32
+        let scaled = ((x.unsigned_abs() as u64 * 0xcccc_cccd) >> 32) as i32;
+        if x < 0 { -scaled } else { scaled }
     } else {
         x
     }
+}
+
+/// The casting time the spell card shows, in hours: [`discounted`] `TimeCast` (0x49bbe0, not
+/// doubled), which is half an hour short of the real wait with Caster, and for the Archmage
+/// whenever `TimeCast` is odd (the original's: the card shows whole hours).
+pub fn card_cast_hours(spell: &SpellDef, archmage: bool, caster: bool) -> i32 {
+    discounted(spell.time_cast.unwrap_or(0), archmage, caster)
 }
 
 /// The mana ([`discounted`] `CostMana`) and the half-hour steps ([`discounted`]
@@ -115,12 +124,6 @@ pub fn cast_cost(spell: &SpellDef, archmage: bool, caster: bool) -> CastCost {
     CastCost { mana: discounted(spell.cost_mana, archmage, caster), minutes: steps.max(0) as u64 * CAST_STEP_MINUTES }
 }
 
-/// The casting time the spell card shows, in hours: [`discounted`] `TimeCast` (0x49bbe0, not
-/// doubled), which is half an hour short of the real wait with Caster, and for the Archmage
-/// whenever `TimeCast` is odd (the original's).
-pub fn card_cast_hours(spell: &SpellDef, archmage: bool, caster: bool) -> i32 {
-    discounted(spell.time_cast.unwrap_or(0), archmage, caster)
-}
 
 /// Casts on an enemy army (`Enemy` and `OneEnemy`); everything else on the hero's own army.
 pub fn targets_enemy(spell: &SpellDef) -> bool {
@@ -136,9 +139,9 @@ pub fn is_lasting(spell: &SpellDef) -> bool {
 /// What a spell does to one unit (0x4900fc, magic-items.md §4.1), `max` being its maximum
 /// HP before the cast. Expired slots are emptied; the slot holding the spell gets another
 /// `TimeWork` hours, else the first free slot gets it for `TimeWork` hours; with neither,
-/// nothing happens to the unit at all (false). The instant part follows on a new slot only
-/// for the living, but on a recast with no HP test, so a dead unit still holding the spell
-/// is raised by a heal (the original's). `event_reset`: an event's or a village's own-army
+/// nothing happens to the unit at all (false). The instant part follows only for the living.
+/// Razdor fixes the original's bug: its recast branch had no HP test, so a dead unit still
+/// holding the spell was raised by a heal. `event_reset`: an event's or a village's own-army
 /// spell, whose end is then set to now + 10 × `TimeWork` hours (× 5 from 8 h), replacing
 /// what a recast added.
 fn spell_on_unit(spell: &SpellDef, u: &mut Unit, max: i32, now: u64, event_reset: bool) -> bool {
@@ -148,16 +151,11 @@ fn spell_on_unit(spell: &SpellDef, u: &mut Unit, max: i32, now: u64, event_reset
     let k = u.spells.iter().position(|s| s.is_some_and(|s| s.spell == spell.id)).or_else(|| u.spells.iter().position(Option::is_none));
     let Some(k) = k else { return false };
     match &mut u.spells[k] {
-        Some(slot) => {
-            slot.until = (slot.until as i64 + work * MINUTES_PER_HOUR as i64).max(0) as u64;
-            instant_part(spell, u, max, now);
-        }
-        empty => {
-            *empty = Some(SpellSlot { spell: spell.id, until: end(work) });
-            if u.hp != 0 {
-                instant_part(spell, u, max, now);
-            }
-        }
+        Some(slot) => slot.until = (slot.until as i64 + work * MINUTES_PER_HOUR as i64).max(0) as u64,
+        empty => *empty = Some(SpellSlot { spell: spell.id, until: end(work) }),
+    }
+    if u.hp != 0 {
+        instant_part(spell, u, max, now);
     }
     if event_reset {
         let hours = work * if work < 8 { 10 } else { 5 };
@@ -166,6 +164,17 @@ fn spell_on_unit(spell: &SpellDef, u: &mut Unit, max: i32, now: u64, event_reset
         }
     }
     true
+}
+
+/// Someone of the army a spell hit lives: its first unit (the hero, a leader) at 0 HP gets 1.
+/// Razdor fixes the original's bug: 0x4900fc tested the *player's* hero whatever army was
+/// hit, so a curse on an enemy that left a survivor raised his fallen hero, and not the
+/// enemy's leader.
+fn raise_leader(units: &mut [Unit]) {
+    if let Some(h) = units.first_mut().filter(|h| h.hp == 0) {
+        h.hp = 1;
+        h.died_at = None;
+    }
 }
 
 /// The instant part of a spell on a unit of maximum `max` (magic-items.md §4.1 step 4): a
@@ -444,25 +453,23 @@ impl Game {
     }
 
     /// The reading ended (its ticks all played, an event fired, or an enemy fell on the
-    /// hero): the spell lands, or is lost; then the spells events cast meanwhile land.
+    /// hero): the spell lands on its target, or is lost; then the spells events cast
+    /// meanwhile land.
     ///
-    /// An event that casts a spell leaves the original's target code at 1, "an event's
-    /// cast" (0x68eca4, 0x4ab1ec tail), and the reading's spell reads that code when it lands
-    /// (0x4af2f8): it hits the player's own army whatever its target, as an event's cast —
-    /// for free, an own-army spell with the event's 10× (5×) time. The original's.
+    /// Razdor fixes the original's bug: an event that cast a spell left the target code at 1,
+    /// "an event's cast" (0x68eca4, 0x4ab1ec tail), and the reading's spell read that code
+    /// when it landed (0x4af2f8), so it hit the player's own army whatever its target, as an
+    /// event's cast (for free, an own-army spell with the event's 10× or 5× time).
     pub(crate) fn end_reading(&mut self, events: &mut Vec<Event>) {
         let queued = std::mem::take(&mut self.queued_casts);
         if let Some(r) = self.reading.take() {
             self.wait_ticks = 0;
-            let redirected = !queued.is_empty();
-            let target = if redirected { CastTarget::Own } else { r.target };
             let outcome = match self.spell(r.spell).cloned() {
                 _ if self.foe.is_some() => CastOutcome::Interrupted,
-                Some(def) if redirected => self.spell_on_player(&def, true),
                 Some(def) => self.land_spell(&def, r.target),
                 None => CastOutcome::TargetLost,
             };
-            events.push(Event::SpellCast { spell: r.spell, target, outcome });
+            events.push(Event::SpellCast { spell: r.spell, target: r.target, outcome });
         }
         for id in queued {
             if let Some(def) = self.spell(id).cloned() {
@@ -538,7 +545,7 @@ impl Game {
         let reset = by_event && !targets_enemy(spell);
         let (alive, max) = spell_on_units(&c, spell, &mut self.squad, now, reset);
         if alive {
-            self.raise_hero();
+            raise_leader(&mut self.squad);
             rebuild_after_spell(&c, &mut self.squad, &max, now);
         }
         let hits = self.squad.iter().zip(&before).map(|(u, b)| u.hp - b.0).sum();
@@ -546,15 +553,6 @@ impl Game {
         CastOutcome::Done { hits, killed, destroyed: !alive }
     }
 
-    /// Someone of the army a spell hit lives: the player's hero at 0 HP gets 1 (0x4900fc
-    /// tests the player's hero whatever army was hit, so a curse on an enemy that leaves a
-    /// survivor raises a fallen hero too, the original's).
-    fn raise_hero(&mut self) {
-        if let Some(h) = self.squad.first_mut().filter(|h| h.hp == 0) {
-            h.hp = 1;
-            h.died_at = None;
-        }
-    }
 
     /// The spell takes effect on army `i` of the map ([`spell_on_units`]); an army with
     /// nobody left alive is destroyed as beaten by the player, with no loot and no XP.
@@ -565,7 +563,7 @@ impl Game {
         let before: Vec<(i32, bool)> = units.iter().map(|u| (u.hp, u.alive())).collect();
         let (alive, max) = spell_on_units(&c, spell, &mut units, now, false);
         if alive {
-            self.raise_hero();
+            raise_leader(&mut units);
             rebuild_after_spell(&c, &mut units, &max, now);
         }
         for (t, u) in self.world.armies[i].troops.iter_mut().zip(&units) {
@@ -671,6 +669,8 @@ mod tests {
         // Caster: floor(4x/5) of the mana and of the 8 half-hour steps.
         assert_eq!(cast_cost(&s, false, true), CastCost { mana: 160, minutes: 180 }, "Caster: -20%");
         assert_eq!(cast_cost(&s, true, true), CastCost { mana: 100, minutes: 120 }, "they do not stack");
+        // A negative cost keeps its sign (the original's unsigned multiply made it huge).
+        assert_eq!(discounted(-10, false, true), -8);
 
         let mut g = game(HeroClass::Archmage);
         assert_eq!(g.hero_class(), Some(HeroClass::Archmage));
@@ -764,33 +764,39 @@ mod tests {
     }
 
     #[test]
-    fn the_fallen_hero_gets_1_hp_before_the_rebuild_whatever_army_was_hit() {
-        // 0x4900fc: someone of the army hit lives and the player's hero is at 0 HP: he gets 1,
-        // then the army is rebuilt and his 1 HP follows his new maximum. Here a dead hero
-        // still holding the lifting has his drain lowered by its recast, 90 → 70: his maximum
-        // goes from 10 to 30, so 1 HP becomes 3.
+    fn the_fallen_leader_of_the_army_hit_gets_1_hp_before_the_rebuild() {
+        // 0x4900fc: someone of the army hit lives and its first unit is at 0 HP: it gets 1,
+        // then the army is rebuilt and its 1 HP follows its new maximum. A dead hero still
+        // holding the lifting gets no instant part from its recast (drain 90, maximum 10).
         let mut g = game(HeroClass::Knight);
         g.squad[0].def = UnitId(14);
         (g.squad[0].drain, g.squad[0].hp) = (90, 0);
         g.squad[0].spells[0] = Some(slot(6, now(&g) + 600));
         let lift = g.spell(6).unwrap().clone();
         g.apply_spell_to_army(&lift);
-        assert_eq!((g.squad[0].drain, g.squad[0].max_hp(&g.content), g.squad[0].hp), (70, 30, 3));
+        assert_eq!((g.squad[0].drain, g.squad[0].max_hp(&g.content), g.squad[0].hp), (90, 10, 1));
         assert!(g.squad[0].spells.iter().all(Option::is_none), "dead when the slots were stripped");
-        // A curse on an enemy that leaves a survivor raises the player's fallen hero too.
+        // A curse on an enemy that leaves a survivor raises the enemy's fallen leader, not the
+        // player's fallen hero (the original's bug tested the player's hero whatever army was
+        // hit).
         g.squad[0].hp = 0;
-        let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 1)]);
+        let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 2)]);
         g.world.armies[0].ignore_until = f64::MAX;
+        let max = crate::rules::ai::troop_max_hp(&g.content, &g.world.armies[0].troops[0]);
+        g.world.armies[0].troops[0].hurt = max;
+        g.world.armies[0].troops[0].died_at = Some(1);
         let cast = g.cast(3, CastTarget::Army(uid)).unwrap();
         assert!(matches!(cast.outcome, CastOutcome::Done { destroyed: false, .. }), "{cast:?}");
-        assert_eq!(g.squad[0].hp, 1);
+        assert_eq!(g.squad[0].hp, 0);
+        assert!(g.world.armies[0].troops[0].alive(), "the enemy's leader at 1 HP");
     }
 
     #[test]
-    fn an_event_casting_while_the_hero_reads_turns_his_spell_onto_his_own_army() {
-        // An event's cast sets the original's target code to 1 (0x4ab1ec), and the hero's
-        // spell lands on whatever that code is (0x4af2f8): his lightning strikes his own
-        // army, for free, before the event's heal lands.
+    fn an_event_casting_while_the_hero_reads_leaves_his_spell_on_its_target() {
+        // The original's bug: an event's cast set the target code to 1 (0x4ab1ec), and the
+        // hero's spell landed on whatever that code was (0x4af2f8), so his lightning struck
+        // his own army for free. Razdor fixes it: it strikes the enemy, paid, and then the
+        // event's heal lands.
         use crate::rules::events::EventWorld;
         let mut g = game(HeroClass::Knight);
         let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 1)]);
@@ -802,15 +808,16 @@ mod tests {
         assert_eq!(g.squad[1].hp, max - 10, "the event's heal waits behind the reading");
         let mut events = Vec::new();
         g.end_reading(&mut events);
-        assert!(matches!(events[..], [Event::SpellCast { spell: 3, target: CastTarget::Own, outcome: CastOutcome::Done { killed: 0, .. } }]), "{events:?}");
-        assert_eq!(g.squad[1].hp, max, "−15, then +30 (the heal first would leave max − 15)");
-        assert_eq!((g.mana, g.world.armies[0].troops[0].hurt), (1000, 0), "free; the enemy is untouched");
-        // An own-army spell read meanwhile lands as an event's cast: 5 × its 10 h.
-        let t = now(&g);
+        assert!(matches!(events[..], [Event::SpellCast { spell: 3, target: CastTarget::Army(_), outcome: CastOutcome::Done { .. } }]), "{events:?}");
+        assert_eq!(g.squad[1].hp, max, "healed by the event");
+        assert!(g.mana < 1000 && g.world.armies[0].troops[0].hurt > 0, "paid; the enemy is struck");
+        // An own-army spell read meanwhile lands with its own time, paid: 10 h.
+        let (t, mana) = (now(&g), g.mana);
         g.begin_cast(2, CastTarget::Own).unwrap();
         g.apply_spell(1);
         g.end_reading(&mut events);
-        assert_eq!((g.active_spells(), g.mana), (vec![slot(2, t + 50 * 60)], 1000));
+        assert_eq!(g.active_spells(), vec![slot(2, t + 10 * 60)]);
+        assert!(g.mana < mana);
     }
 
     #[test]
@@ -943,13 +950,14 @@ mod tests {
         let uid = with_enemy(&mut g, (5, 2), &[troop(13, 0, 2), troop(4, 0, 1)]);
         g.world.armies[0].ignore_until = f64::MAX;
         let cast = g.cast(3, CastTarget::Army(uid)).unwrap();
-        assert_eq!(cast.outcome, CastOutcome::Done { hits: -35, killed: 2, destroyed: false });
+        // The fallen leader is left at 1 HP, as someone survives.
+        assert_eq!(cast.outcome, CastOutcome::Done { hits: -34, killed: 1, destroyed: false });
         let a = &g.world.armies[0];
         let dead: Vec<bool> = a.troops.iter().map(|t| !t.alive()).collect();
-        assert_eq!((dead, a.troops[2].hurt), (vec![true, true, false], 15), "the dead stay in the record");
+        assert_eq!((dead, a.troops[2].hurt), (vec![false, true, false], 15), "the dead stay in the record");
         g.foe = Some(Foe::Army(0));
         let b = g.start_battle();
-        let e = b.fighters.iter().find(|f| f.team == Team::Enemy).unwrap();
+        let e = b.fighters.iter().find(|f| f.team == Team::Enemy && f.hp > 1).unwrap();
         assert_eq!(e.hp, e.max_hp() - 15, "fights wounded");
         g.foe = None;
         // The warrior has 50 HP: three more bolts end the army, beaten by the player.
@@ -1081,16 +1089,15 @@ mod tests {
     }
 
     #[test]
-    fn a_recast_raises_a_dead_unit_that_still_holds_the_spell() {
-        // 0x4900fc's recast branch has no HP test (the original's slip).
+    fn a_recast_leaves_a_dead_unit_that_still_holds_the_spell_dead() {
+        // The original's bug: 0x4900fc's recast branch had no HP test, so this raised it.
         let mut g = game(HeroClass::Knight);
         let mend = SpellDef { id: 2, delta_fixed_hits: Some(20), ..g.spell(2).unwrap().clone() };
         g.apply_spell_to_army(&mend);
         g.squad[1].hp = 0; // died some other way, its slot kept
         g.squad[1].died_at = Some(1);
         g.apply_spell_to_army(&mend);
-        assert_eq!(g.squad[1].hp, 20);
-        assert!(g.squad[1].died_at.is_none());
+        assert_eq!((g.squad[1].hp, g.squad[1].died_at), (0, Some(1)));
         // A dead unit with a new slot is not raised, and the dead lose their slots.
         g.squad[2].hp = 0;
         g.squad[2].spells = [None; SPELL_SLOTS];

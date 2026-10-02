@@ -430,18 +430,18 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Target moves during the cast | Lost only if it leaves the map (removed from it, destroyed or deactivated) | Lost only if it leaves the map or is destroyed | §3.2 | Matches |
 | Mana short at the end | The cost, worked out again when the spell lands, is subtracted with no check; mana may go negative | Mana is subtracted anyway and can go negative | §3.4 | Matches |
 | Event during the cast | An event that fires in a casting step ends the wait; the spell lands at once | The wait ends early and the spell lands at once | §3.2 | Matches |
-| Event spell during the cast | The hero's spell lands on his own army as an event's cast (free; an own-army spell gets the 10× / 5× time), then the event's spell (`Game::end_reading`) | The event's cast leaves the target code at 1, and the hero's spell lands on that code: his own army, unpaid, with the event's duration; the event's spell lands after it | §3.2, §3.4 | Matches |
+| Event spell during the cast | The hero's spell lands on its target, paid, then the event's spell (`Game::end_reading`) | The event's cast leaves the target code at 1, and the hero's spell lands on that code: his own army, unpaid, with the event's duration (bug); the event's spell lands after it | §3.2, §3.4 | Razdor fixes the original's bug |
 | Noon during the cast | Held back while a spell is read (`Game::cast` reads too) | Held back until the cast ends | §3.2 | Matches |
-| Caster discount | Any unit of the hero's army, dead or alive, with Caster as its type's or its current (item) bonus; `floor(4x/5)` as the unsigned multiply | A global flag from the last army recomputed (often an AI army); dead units count | §3.3 | Differs: the global flag's call points are not mirrored |
+| Caster discount | Any unit of the hero's army, dead or alive, with Caster as its type's or its current (item) bonus; `floor(4x/5)`, a negative value keeping its sign (the original's unsigned multiply made it huge: Razdor fixes the original's bug) | A global flag from the last army recomputed (often an AI army); dead units count | §3.3 | Differs: the global flag's call points are not mirrored |
 | Displayed cast time | The card shows the cost function of `TimeCast` in hours (`card_cast_hours`) | The card shows the function of `TimeCast`, which can be 30 min short with Caster, or for the Archmage with an odd `TimeCast` | §3.3 | Matches |
 | Event `Enemy` spell | Hits the hero's army with its normal duration | Same | §3.6 | Matches |
 | Event spell number | Held to the number of spells | Clamped to the spell count | §3.6 | Matches |
 | Event recast duration | Resets to now + 10× (5×) | Resets to now + 10× (5×) | §4.1 | Matches |
 | When an event's spell lands | After every other result of the event (units it added included), before its delay passes | Queued by the results, cast in the event's finish before the delay's wait | §3.6 | Matches |
 | Spell killing the whole player army | The hero gets 1 HP only if someone else survives; otherwise the game is lost (`Game::army_fallen`) | The hero gets 1 HP only if someone else survives; otherwise game over | §4.3 | Matches |
-| Hero at 0 HP after a spell | Set to 1 before the rebuild (so it follows his maximum), whichever army was hit, an enemy's included | The same test on the player's hero for any army hit, before the recompute | §4.3 | Matches |
+| Hero at 0 HP after a spell | The first unit of the army hit (the hero, a leader) set to 1 before the rebuild (so it follows its maximum) | The same test on the player's hero for any army hit, before the recompute (bug: a curse on an enemy raises him) | §4.3 | Razdor fixes the original's bug |
 | Spell destroying an enemy army | Beaten by the player, no loot, no XP; its dead stay in the record until then | Destroyed as beaten by the player, no loot, no XP (code) | §4.3 | Matches |
-| Spell kills | The dead keep their items; recast on a dead holder raises it | The effect routine moves no items; the recast branch has no HP test | §4.1 | Matches |
+| Spell kills | The dead keep their items; a recast on a dead holder leaves it dead | The effect routine moves no items; the recast branch has no HP test (bug: it raises the dead holder) | §4.1 | Razdor fixes the original's bug (the recast) |
 | `p-LifeLose` | A permanent unit percentage D (`Unit::drain`) that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly; carried to the next campaign map | A permanent unit percentage D that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly | §4.1, §4.3 | Matches |
 | Spell school (`Type`) | Shown in the book; no rule reads it | Ignored by every rule | §1.1 | Matches |
 | Event learning past 15 | No cap; only the first 15 can be cast; the shop refuses a book of 15 or more | No cap; spells past 15 are known but not castable; the shop refuses only at exactly 15 (bug) | §2 | Razdor fixes the original's bug (the shop) |
@@ -460,12 +460,12 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Item `Type` | An unknown string reads as a potion (compared case-sensitively); an empty one skips the item | An unknown or empty string means Potion; a section without Type is skipped | §1.2 | Matches |
 | Spell `Target` | Compared case-sensitively; anything but `Enemy` and `OneEnemy` is the hero's army | The same exact string compare | §1.1 | Matches |
 | Holy items | Refused for every unit of Nature Undead | Refused for every unit of Nature Undead (23 types) | §5.3 | Matches |
-| Crown wearers | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | §5.3 | Matches |
+| Crown wearers | GlobalIndex = listed (1, 2, 3, 11, …: the knights, royals and undead lords) | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one (bug) | §5.3 | Razdor fixes the original's bug |
 | Wear test order | Crown, dead, potion/goods, shield, holy, class, school, weapon, type, slot | Same order | §5.3 | Matches |
 | Dead units and potions | A potion with `f-Hits` ≥ 1000 revives to max·f/10000 HP; any other is refused | A potion with `f-Hits` ≥ 1000 revives to max·f/10000 HP | §7.1 | Matches |
 | Potion `f-` protections/regen/vampirism | Replace the stored value, then `p-` adds (`PotionBlock`) | Replace the stored value, then `p-` adds | §7.1 | Matches |
 | Potion percents | Summed into one block, applied once | Summed into one block, applied once | §7.1 | Matches |
-| Potion magic power | Never takes effect | Never takes effect | §7.1 | Matches |
+| Potion magic power | `d-` and `p-MagicPower` add like any stat (for a unit with a school) | Never takes effect (bug: stored only under a school byte nothing sets) | §7.1 | Razdor fixes the original's bug |
 | Potion clearing | After every battle of the player, then a rebuild (HP follows the maximum) | After every battle of the player, for the player's army | §7.2 | Matches |
 | Pack full on gain | Events drop the item silently; battle loot still counts what did not fit (battle.md) | Item silently lost | §5.1 | Matches for events |
 | Equip slot choice (hero window) | `Game::equip_at` puts the item in the given empty slot; the army-card drop takes the first free one. The items screen has no drop on a worn slot yet | The clicked empty slot; the army-card drop uses the first free one | §5.2 | Rule matches; the screen is left for later |
@@ -478,7 +478,8 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 
 - What the player sees when an event fires during a cast (the spell lands while the event
   dialog is open; the order of the dialog and the effect animation is not traced).
-- Whether the crown off-by-one is intended (the code is unambiguous; the data suggest a slip).
+- Whether the crown off-by-one is intended (the code is unambiguous; the data suggest a slip,
+  which Razdor fixes).
 - Whether a potion still active at a campaign map change is carried into the next map.
 - The meaning of the unit fields cleared together with the potions (+0xc5, +0xc9) and of the
   unused "locked slots" count (+0x18).

@@ -40,10 +40,11 @@ pub enum EquipError {
 }
 
 /// The potions a unit drank since its army's last battle, as the one block the original
-/// keeps (unit +0x44, 0x48fdd0): the `d-` and `p-` of Hits, attacks, defences, Initiative and
-/// Manevres add up; for the protections, regeneration and vampirism an `f-` value replaces
-/// what is stored, then the `p-` value adds. Magic power never: the drink stores it only
-/// when a school byte of the block is set, and nothing sets it (the original's slip).
+/// keeps (unit +0x44, 0x48fdd0): the `d-` and `p-` of Hits, attacks, defences, magic power,
+/// Initiative and Manevres add up; for the protections, regeneration and vampirism an `f-`
+/// value replaces what is stored, then the `p-` value adds. Razdor fixes the original's
+/// bug: its drink stored the magic power only when a school byte of the block was set, and
+/// nothing set it, so a potion's magic power never took effect.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PotionBlock {
     pub add: StatMods,
@@ -55,15 +56,12 @@ impl PotionBlock {
         let mut b = PotionBlock::default();
         for d in potions.iter().filter_map(|&p| content.try_item(p)) {
             for (&st, &v) in &d.add {
-                if st != Stat::MagicPower && !is_percent_stat(st) && v != 0 {
+                if !is_percent_stat(st) && v != 0 {
                     *b.add.entry(st).or_default() += v;
                 }
             }
             for st in Stat::ALL {
                 let p = d.percent.get(&st).copied().unwrap_or(0);
-                if st == Stat::MagicPower {
-                    continue;
-                }
                 if is_percent_stat(st) {
                     if let Some(&f) = d.fixed.get(&st).filter(|&&f| f != 0) {
                         b.percent.insert(st, f);
@@ -166,7 +164,7 @@ pub fn rebuild_stats(content: &Content, unit: &Unit, spells: &[&SpellDef]) -> St
 /// Items the undead cannot wear (0x49765c bit set 0x4979b4, by item number).
 const HOLY: [u32; 13] = [12, 46, 59, 72, 73, 74, 75, 76, 77, 85, 94, 120, 131];
 /// «Королевская корона»: on a unit other than the hero or an army leader, only for these
-/// unit type indexes (bit set 0x4979a4, indexes 0–103).
+/// unit types (`GlobalIndex`; the bit set 0x4979a4).
 const CROWN: u32 = 154;
 const CROWN_TYPES: [u32; 23] = [1, 2, 3, 11, 13, 15, 36, 42, 45, 46, 48, 49, 53, 56, 58, 69, 70, 72, 73, 77, 89, 97, 99];
 
@@ -193,9 +191,9 @@ pub fn take_off(content: &Content, unit: &mut Unit, slot: usize) -> Option<ItemI
 
 /// The original's wear test (0x49765c, magic-items.md §5.3): the slot `item` would go into
 /// on `unit` (the lowest empty one), or the first rule it breaks, in the original's order:
-/// the crown on a unit other than the hero or a leader needs one of its unit types — the
-/// code compares the type's index, GlobalIndex − 1, with the list, so the types that may
-/// wear it are the listed numbers + 1 (the original's off-by-one); the dead take nothing
+/// the crown on a unit other than the hero or a leader needs one of its unit types (Razdor
+/// fixes the original's off-by-one bug: the code compared the type's index, GlobalIndex − 1,
+/// with the list, so the listed numbers + 1 could wear it); the dead take nothing
 /// but a reviving potion; potions and trade goods are not worn; a shield needs melee
 /// attack at the unit's level; no holy item on a unit of Nature Undead; a melee weapon needs
 /// melee attack, a ranged weapon ranged attack and a type `AttackShot` not above
@@ -203,11 +201,8 @@ pub fn take_off(content: &Content, unit: &mut Unit, slot: usize) -> Option<ItemI
 /// school; one weapon (staffs included); one item of each type.
 pub fn slot_for(content: &Content, unit: &Unit, item: ItemId) -> Result<usize, EquipError> {
     let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
-    if item.0 == CROWN && unit.wage_kind != WageKind::Leader {
-        let index = unit.def.0.wrapping_sub(1);
-        if index >= 104 || !CROWN_TYPES.contains(&index) {
-            return Err(EquipError::NotAllowed);
-        }
+    if item.0 == CROWN && unit.wage_kind != WageKind::Leader && !CROWN_TYPES.contains(&unit.def.0) {
+        return Err(EquipError::NotAllowed);
     }
     if !unit.alive() && !revives(def) {
         return Err(EquipError::Dead);
@@ -252,9 +247,8 @@ pub fn heal_amount(def: &ArtefactDef) -> i32 {
 /// A potion leaves something in the unit's potion block (0x48fdd0 sets its flag only for a
 /// non-zero lasting value; magic power is never stored).
 fn has_lasting_effect(def: &ArtefactDef) -> bool {
-    let lasting = |st: &Stat| *st != Stat::MagicPower;
-    def.add.iter().any(|(st, &v)| lasting(st) && !is_percent_stat(*st) && v != 0)
-        || def.percent.iter().any(|(st, &v)| lasting(st) && v != 0)
+    def.add.iter().any(|(st, &v)| !is_percent_stat(*st) && v != 0)
+        || def.percent.iter().any(|(_, &v)| v != 0)
         || def.fixed.iter().any(|(st, &v)| is_percent_stat(*st) && v != 0)
 }
 
@@ -608,13 +602,12 @@ mod tests {
         assert_eq!(slot_for(&c, &u(5), ItemId(73)), Ok(0));
         assert_eq!(slot_for(&c, &u(7), ItemId(73)), Err(EquipError::Unholy), "Nature Undead: «Святое писание» is holy");
         assert_eq!(slot_for(&c, &u(9), ItemId(73)), Ok(0), "the Dead bonus alone is no bar");
-        // The crown's list is compared with the type index, GlobalIndex − 1: listed 1 and 11
-        // let GlobalIndex 2 and 12 wear it, not 1 and 11 (the original's off-by-one).
+        // The crown's list names GlobalIndex 1 and 11 (the original's off-by-one bug compared
+        // it with GlobalIndex − 1, so 2 and 12 wore it instead).
         assert_eq!(slot_for(&c, &u(5), ItemId(154)), Err(EquipError::NotAllowed), "type 5 may not wear the crown");
-        assert_eq!(slot_for(&c, &u(1), ItemId(154)), Err(EquipError::NotAllowed), "nor GlobalIndex 1 as an ordinary unit");
-        assert_eq!(slot_for(&c, &u(2), ItemId(154)), Ok(0));
-        assert_eq!(slot_for(&c, &u(11), ItemId(154)), Err(EquipError::NotAllowed));
-        assert_eq!(slot_for(&c, &u(12), ItemId(154)), Ok(0));
+        assert_eq!(slot_for(&c, &u(1), ItemId(154)), Ok(0), "GlobalIndex 1 as an ordinary unit");
+        assert_eq!(slot_for(&c, &u(12), ItemId(154)), Err(EquipError::NotAllowed));
+        assert_eq!(slot_for(&c, &u(11), ItemId(154)), Ok(0));
         let mut leader = u(5);
         leader.wage_kind = crate::rules::content::WageKind::Leader;
         assert_eq!(slot_for(&c, &leader, ItemId(154)), Ok(0), "the hero or a leader may");
@@ -685,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn potions_add_up_in_one_block_and_never_touch_magic_power() {
+    fn potions_add_up_in_one_block_and_raise_magic_power() {
         // Two p-Hits +20 potions make one +40% (50 → 70), not 50 → 60 → 72. f-ProtectLife
         // replaces what is stored, then p- adds: 30 + 5, then 10 replaces it.
         let mut vigour = item(1, ArtefactType::Potion);
@@ -709,8 +702,9 @@ mod tests {
         assert_eq!(u.stats(&c)[Stat::ProtectLife], 10);
         let mut m = Unit::new(&c, UnitId(3), Slot::new(Row::Back, 0));
         drink(&c, &mut m, ItemId(4), 0).unwrap();
-        assert!(m.potions.is_empty(), "nothing lasting is stored");
-        assert_eq!(m.stats(&c)[Stat::MagicPower], 10);
+        // (10 + 5) × 150% (the original's bug never let a potion touch the magic power).
+        assert_eq!(m.potions, vec![ItemId(4)]);
+        assert_eq!(m.stats(&c)[Stat::MagicPower], 22);
     }
 
     #[test]
