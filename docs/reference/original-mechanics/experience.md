@@ -376,7 +376,7 @@ and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-0
 |---|---|---|---|
 | Level numbering | 1 as hired; event level condition uses `level − 1` | 0 as hired, shown +1 | none |
 | XP needed | partial sums in 64-bit floats of the raw `StartExpirience` and `LevelMultipler` (`experience::xp_to_next`) | 80-bit sums, raw values | Matches (a need of 0 or less stops the gain instead of hanging) |
-| Gain loop | the original's loop, comparing the previous need; a gain below 1 adds nothing (`experience::add_xp`) | the same, comparing the previous need | Matches |
+| Gain loop | levels while the next need is covered; a gain below 1 adds nothing (`experience::add_xp`) | the same, but comparing the previous need, so a `LevelMultipler` below 100 can stop a level early (bug) | Razdor fixes the original's bug |
 | Last gain | the battle screen shows the award | +8 set by every gain, zeroed for the army before battle XP | display only |
 | Tactical cost | as §1, cached per type and level; `CostMultipler` as it is, then 0 → 1 and a negative `x` → its absolute value + 1 | 0 stays 0 (then 1) | Matches |
 | Army strength (event condition) | tactical cost of every record, the dead included, with the defence of the building the hero stands in (`script.rs` `army_strength`) | sum of +0x1AE over every record, the dead included, with the army's building defence | Matches |
@@ -385,7 +385,7 @@ and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-0
 | Pool | the three branches with the prediction and the largest finished turn's loss (`battle_pool`) | three branches with prediction and largest turn loss (§3) | none |
 | Share | `t·((4−row) + row·useful/(taken+left))`, below 0.5 → 1 | the same | none |
 | Surrendering side | no award (`xp_awards` takes the living only) | shares computed, then the units are removed: nothing | Matches |
-| Player modifier | × F × correction / 10⁶, low 32 bits, abs, cap 5256; correction 0 used as it is | the same, 0 used as it is | Matches |
+| Player modifier | × F × correction / 10⁶, abs, cap 5256; correction 0 used as it is | the same, but the low 32 bits taken before abs and the cap (bug: a huge product wraps); 0 used as it is | Razdor fixes the original's bug (the wrap) |
 | Turn limit | counts as victory, XP paid | the same | none |
 | AI XP | AI-vs-AI only, ×AI% div 100, when end strength > 0, survivors only (the dead draw no promotion roll); the player's units left in a building gain and roll with its garrison; "beaten" and the loot pool by end strength (`ai_battle`) | the same (the player's units are in the garrison record) | Matches |
 | Level-up HP | proportional rescale with the fractional carry after the gain (`Unit::gain_xp`, `troop_gain_xp`) | proportional rescale with a fractional carry at the next stat rebuild | Matches |

@@ -22,8 +22,7 @@ old id, and their versions give both.
   barracks slot always rolls, even when it is certain to grow.
 - AI armies draw their four wander points as the original does: anywhere in their patrol
   box (or on the whole map), not only on cells they can walk to.
-- The Community events' random flag (opcode 18) uses the Community's own generator,
-  including its slip in the retry loop.
+- The Community events' random flag (opcode 18) uses the Community's own generator.
 - Village offers roll as in the original: every roll is drawn until one is offered, also
   the one for the kind offered last time, and a visit with no offer lets that kind come
   back. The innkeeper and the priest compare with half the army rounded down, and the
@@ -358,8 +357,7 @@ old id, and their versions give both.
   or mage standing; the stronger side, not the one with more HP, takes the loot. The
   event condition on army strength counts the dead too, with the defence of the building
   the hero stands in. The XP table takes `StartExpirience` and `LevelMultipler` as they
-  are (a multiplier below 100 can stop a gain a level early, as in the original), and a
-  `CostMultipler` of 0 counts as 0.
+  are, and a `CostMultipler` of 0 counts as 0.
 - After an AI battle only the survivors gain XP and roll for promotion, as in the
   original: a fallen unit is no longer promoted, nor does it draw from the game's random
   numbers. The player's units left in a building gain XP when its garrison holds out
@@ -393,8 +391,7 @@ old id, and their versions give both.
   its first scramble mode read too.
 - Autosaves take the original's 12 slots: the autosave before a battle reuses the one of
   the same name, a noon autosave the one of the same name on the same map; otherwise a new
-  one is made, or the oldest is overwritten once there are 12. A noon autosave on day 9
-  of a month is named without the leading zero, as in the original.
+  one is made, or the oldest is overwritten once there are 12.
 - The noon autosave is written only when the noon report opens: a noon with no wages and
   no income makes none, as in the original.
 - Save format 9: a game keeps the front-row width it was started with, and a load plays on
@@ -491,6 +488,16 @@ now fixed with the rule the original evidently meant:
   cell whose route was dropped plans it again (the original's bug made it do nothing until
   a click elsewhere). The route planner keeps the lower of two targets on one cell (the
   original's off-by-one bug kept a later one 1 above).
+- Events: a repeating question without a message asks again on its next firing (the
+  original's bug let it fire without its question), and `-X^` on a counter that is not set
+  changes nothing (the original's bug changed an unrelated flag). The Community event
+  generator keeps its limit when it retries (the original's slip could take a rejected
+  value).
+- XP: a gain levels up while the next level's need is covered (the original's bug compared
+  the previous need, so a `LevelMultipler` below 100 stopped a level early), and a huge
+  battle award no longer wraps around before the 5256 cap (the original's 32-bit slip).
+- The noon autosave on day 9 of a month is named with its leading zero (the original's
+  padding slip printed `9`).
 
 ## 0.2.2 — 2026-10-01
 

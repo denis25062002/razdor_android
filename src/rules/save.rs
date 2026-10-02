@@ -148,16 +148,16 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 /// The original's autosave name for a moment: "1204.06.03, 12 h" ("…, 12 час" in Russian),
-/// the month 1-based, the day 0-based. The original pads the day only when its index is
-/// below 9 (0x49ce20 tests the index, not the printed value), so day 9 prints as `9`.
+/// the month 1-based, the day 0-based, both of two digits. Razdor fixes the original's
+/// padding bug: it padded the day only when its index was below 9 (0x49ce20 tests the index
+/// against 9, not 10), so day 9 printed as `9`.
 pub fn date_name(clock: &Clock) -> String {
     // Under an hour since year 0 (a map whose header time is 0) the original names it by its
     // "less than an hour" text instead.
     if clock.total_minutes() < 60.0 {
         return tr(LESS_THAN_AN_HOUR).to_string();
     }
-    let day = if clock.day() < 9 { format!("{:02}", clock.day()) } else { clock.day().to_string() };
-    let date = format!("{}.{:02}.{day}", clock.year(), clock.month());
+    let date = format!("{}.{:02}.{:02}", clock.year(), clock.month(), clock.day());
     crate::trf!("{date}, {hour} h", date, hour = clock.hour())
 }
 
@@ -577,9 +577,9 @@ pub(crate) mod tests {
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(date_name(&Clock::at(1204, 6, 3, 12)), "1204.06.03, 12 h");
-        // 0x49ce20 pads the day when its 0-based index is below 9: day 9 prints unpadded.
+        // Day 9 is padded too (the original's bug, 0x49ce20, printed `9`).
         assert_eq!(date_name(&Clock::at(1204, 6, 8, 7)), "1204.06.08, 7 h");
-        assert_eq!(date_name(&Clock::at(1204, 10, 9, 12)), "1204.10.9, 12 h");
+        assert_eq!(date_name(&Clock::at(1204, 10, 9, 12)), "1204.10.09, 12 h");
         assert_eq!(date_name(&Clock::at(1204, 9, 29, 0)), "1204.09.29, 0 h");
         // Under 60 minutes since year 0 the "less than an hour" text (a map starting at 0).
         assert_eq!(date_name(&Clock::at_minutes(59)), "Less than an hour");

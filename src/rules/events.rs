@@ -950,8 +950,8 @@ impl EventEngine {
     /// `+X` appends X when it does not occur yet; `-X` removes the first occurrence and the
     /// character after it. The `^` form keeps a digit: `+X^` appends X1, or raises the
     /// character after X; `-X^` lowers it and removes the entry at 0. As in the original,
-    /// the `^` is taken to be the last character, and `-X^` does not check that X occurs
-    /// (then it lowers the character at X's length, and removes nothing).
+    /// the `^` is taken to be the last character. Razdor fixes the original's bug: its `-X^`
+    /// did not check that X occurs (it then lowered the character at X's length).
     fn flag_action(&mut self, action: &str) {
         let a = crate::dt::text::encode(action);
         if a.len() <= 2 {
@@ -985,15 +985,12 @@ impl EventEngine {
             }
             b'-' if self.flags.is_empty() => {}
             b'-' if counter => {
-                // Not found, the original's index is X's length − 1 (Pos gave 0).
-                let at = p.map_or(s.len().wrapping_sub(1), |p| p + s.len());
-                if let Some(c) = self.flags.get_mut(at) {
+                let Some(p) = p else { return };
+                if let Some(c) = self.flags.get_mut(p + s.len()) {
                     *c = c.wrapping_sub(1);
                     if *c == b'0' {
-                        if let Some(p) = p {
-                            let end = (p + s.len() + 2).min(self.flags.len());
-                            self.flags.drain(p..end);
-                        }
+                        let end = (p + s.len() + 2).min(self.flags.len());
+                        self.flags.drain(p..end);
                     }
                 }
             }
@@ -1104,8 +1101,10 @@ impl EventEngine {
             self.set_event_field(id, 141, (again ^ 1) as i64);
             if self.ev(id).message.is_empty() {
                 // No message: finished at once, its artifacts, units and spells never
-                // applied. With 149 the original's "ask again" write lands outside the event
-                // table (the event was closed): the event keeps ask = 0.
+                // applied; ask is set back for later firings. Razdor fixes the original's
+                // bug: its "ask again" write landed outside the event table (the event was
+                // closed), so a repeating event kept ask = 0 and fired without its question.
+                self.set_event_field(id, 76, 1);
                 out.push(EventOutcome::Fired { event: id, message: false });
                 self.finish(id, w, &mut out, 0);
             } else {
@@ -2580,10 +2579,11 @@ mod tests {
         g.flag_action("-Foo^");
         g.flag_action("-Foo^");
         assert_eq!(g.flag_string(), "");
-        // -X^ without X lowers the character at X's length (the original checks nothing).
+        // -X^ without X changes nothing (the original's bug lowered the character at X's
+        // length: "Aacd").
         g.set_flag_string("Abcd\u{a0}");
         g.flag_action("-Zz^");
-        assert_eq!(g.flag_string(), "Aacd\u{a0}");
+        assert_eq!(g.flag_string(), "Abcd\u{a0}");
     }
 
     /// Saves before format 8 kept a list of flag names.
@@ -2831,12 +2831,13 @@ mod tests {
     }
 
     /// Yes (0x4c2100): once := not "repeat after yes" (149). Without 149 an answered event
-    /// is done, whatever its once box; with it the event repeats and asks again when it has
-    /// a message, but without a message it keeps ask = 0 (the original's write misses it).
+    /// is done, whatever its once box; with it the event repeats and asks again, with a
+    /// message or without (the original's bug: without one its write missed the event,
+    /// which then fired without its question).
     #[test]
     fn a_yes_rewrites_once_and_ask() {
         let mut w = MockWorld::new();
-        for (message, repeat, again) in [(true, 0, None), (false, 0, None), (true, 1, Some(true)), (false, 1, Some(false))] {
+        for (message, repeat, again) in [(true, 0, false), (false, 0, false), (true, 1, true), (false, 1, true)] {
             let mut e = many(asking(global()));
             e.results.repeat_after_yes = repeat;
             if message {
@@ -2848,10 +2849,10 @@ mod tests {
             g.answer(&mut w, true);
             w.now = DAY;
             let out = g.tick(&mut w);
-            match again {
-                None => assert!(out.is_empty(), "done after a Yes ({message}, {repeat})"),
-                Some(true) => assert_eq!(out, vec![EventOutcome::Question(1)]),
-                Some(false) => assert_eq!(fired(&out), vec![1], "fires without its question"),
+            if again {
+                assert_eq!(out, vec![EventOutcome::Question(1)], "asks again ({message})");
+            } else {
+                assert!(out.is_empty(), "done after a Yes ({message}, {repeat})");
             }
         }
     }

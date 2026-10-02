@@ -53,10 +53,10 @@ pub fn xp_to_next(start: i32, multiplier: i32, level: i32) -> i32 {
 }
 
 /// The original's gain rule (0x49273c): a gain below 1 counts as nothing; otherwise the XP
-/// grows by it and levels follow while the need of the level just left is still covered by
-/// what remains. That test reads the old need, not the next one, so with a `LevelMultipler`
-/// below 100 the loop can stop a level early (the original's behaviour). A need of 0 or less
-/// would loop for ever in the original; here it stops. `need(level)` is the XP from `level`
+/// grows by it and levels follow while the next level's need is covered by what remains.
+/// Razdor fixes the original's bug: its test read the need of the level just left, not the
+/// next one, so with a `LevelMultipler` below 100 the loop could stop a level early. A need
+/// of 0 or less would loop for ever in the original; here it stops. `need(level)` is the XP from `level`
 /// (1 = as hired) to the next. Returns the new level, XP and the levels gained.
 pub fn add_xp(level: i32, xp: i32, gain: i32, need: impl Fn(i32) -> i32) -> (i32, i32, i32) {
     if gain < 1 {
@@ -65,17 +65,12 @@ pub fn add_xp(level: i32, xp: i32, gain: i32, need: impl Fn(i32) -> i32) -> (i32
     let (mut level, mut t, mut gained) = (level, xp.saturating_add(gain), 0);
     loop {
         let n = need(level);
-        if n <= 0 {
+        if n <= 0 || n > t {
             break;
         }
-        if n <= t {
-            level += 1;
-            gained += 1;
-            t -= n;
-        }
-        if n > t {
-            break;
-        }
+        level += 1;
+        gained += 1;
+        t -= n;
     }
     (level, t, gained)
 }
@@ -340,11 +335,12 @@ pub fn share(pool: i64, start_count: usize, row: Row, useful: i32, taken: i32, l
 /// `round(share × HeroExpirienceModificator × F × correction / 1 000 000)`, its low 32 bits
 /// made positive (c25264), at most [`MAX_BATTLE_XP`]. `correction` is the beaten army's
 /// experience correction byte as it is, so 0 pays nothing (100 for a garrison); F the
-/// difficulty factor. The low word of `i32::MIN` stays negative and so gains nothing, as in
-/// the original.
+/// difficulty factor. Razdor fixes the original's bug: it kept only the low 32 bits of the
+/// rounded product before making it positive and capping it, so a huge product wrapped
+/// (the low word of `i32::MIN` stayed negative and gained nothing); here the cap comes first.
 pub fn player_gain(share: i32, hero_modificator: i32, difficulty: i32, correction: i32) -> i32 {
     let x = share as f64 * hero_modificator as f64 * difficulty as f64 * correction as f64 / 1_000_000.0;
-    (round_half_even(x) as i32).wrapping_abs().min(MAX_BATTLE_XP)
+    round_half_even(x).unsigned_abs().min(MAX_BATTLE_XP as u64) as i32
 }
 
 /// What an AI unit gains from its share: `share × AIExpiriencePercent div 100`.
@@ -386,16 +382,16 @@ mod tests {
     }
 
     #[test]
-    fn gain_rule_compares_the_old_need() {
+    fn gain_rule_compares_the_next_need() {
         let table = |l: i32| xp_to_next(60, 140, l);
         assert_eq!(add_xp(1, 0, 59, table), (1, 59, 0));
         assert_eq!(add_xp(1, 0, 60 + 84 + 10, table), (3, 10, 2), "several levels, the rest kept");
         assert_eq!(add_xp(1, 10, 0, table), (1, 10, 0));
         assert_eq!(add_xp(1, 10, -5, table), (1, 10, 0), "below 1 counts as nothing");
-        // Multiplier 50: needs 100, 50, 25. 160 pays level 1 (60 left); the old need 100 is
-        // above 60, so the loop stops though 60 would pay level 2's 50.
+        // Multiplier 50: needs 100, 50, 25. 160 pays level 1 (60 left), then level 2's 50 (10
+        // left). The original's bug compared the old need 100 with the 60 and stopped there.
         let shrinking = |l: i32| xp_to_next(100, 50, l);
-        assert_eq!(add_xp(1, 0, 160, shrinking), (2, 60, 1));
+        assert_eq!(add_xp(1, 0, 160, shrinking), (3, 10, 2));
         // A need of 0 would hang the original; here nothing happens.
         assert_eq!(add_xp(1, 0, 50, |_| 0), (1, 50, 0));
     }
@@ -543,6 +539,8 @@ mod tests {
         assert_eq!(player_gain(1_000_000, 100, 100, 100), MAX_BATTLE_XP, "Community cap");
         assert_eq!(player_gain(40, 50, 120, 0), 0, "a correction of 0 pays nothing");
         assert_eq!(player_gain(40, -50, 120, 100), 24, "the result is made positive");
+        // 2³² + 12 no longer wraps to 12 (the original's bug kept the low 32 bits).
+        assert_eq!(player_gain(1_073_741_827, 4, 1_000, 1_000), MAX_BATTLE_XP);
         assert_eq!(ai_gain(40, 100), 40);
         assert_eq!(ai_gain(45, 50), 22);
     }

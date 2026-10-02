@@ -151,22 +151,21 @@ impl EventRng {
     }
 
     /// `lo..=hi`: draws until the state falls below the largest multiple of `n = hi − lo + 1`
-    /// (unsigned), then `lo + state mod n`. The original's retry loop jumps back one step too
-    /// far, so after a rejection the limit becomes the rejected state × n (kept). A range of
-    /// 2³² values (n = 0) divides by zero there; this returns `lo` *(guess)*.
+    /// (unsigned), then `lo + state mod n`. Razdor fixes the original's bug: its retry loop
+    /// jumped back one step too far, so after a rejection the limit became the rejected
+    /// state × n. A range of 2³² values (n = 0) divides by zero there; this returns `lo`
+    /// *(guess)*.
     pub fn range(&mut self, lo: i32, hi: i32) -> i32 {
         let n = (hi.wrapping_sub(lo) as u32).wrapping_add(1);
         if n == 0 {
             return lo;
         }
-        let mut q = u32::MAX / n;
+        let limit = (u32::MAX / n).wrapping_mul(n);
         loop {
-            let limit = q.wrapping_mul(n);
             let s = self.step();
             if s < limit {
                 return lo.wrapping_add((s % n) as i32);
             }
-            q = s;
         }
     }
 }
@@ -273,24 +272,24 @@ mod tests {
     }
 
     #[test]
-    fn the_event_generator_and_its_retry_slip() {
+    fn the_event_generator_retries_below_its_limit() {
         let step = |s: u32| s.wrapping_mul(0x0166_4525).wrapping_add(0x1390_4223);
         let mut e = EventRng::new(5);
         let s1 = step(5);
         assert_eq!(e.range(10, 19), 10 + (s1 % 10) as i32);
-        // n = 2³¹ + 1: the limit is n itself, so a state at or above it is rejected and the
-        // next limit is that state × n.
-        // A state that the true limit would reject again but the slipped one accepts.
+        // n = 2³¹ + 1: the limit is n itself, so a state at or above it is rejected. The
+        // limit stays n: a second state above it is rejected too (the original's bug made
+        // the next limit the rejected state × n, which could accept it).
         let n = 0x8000_0001u32;
         let seed = (0u32..)
             .find(|&s| {
-                let (r, t) = (step(s), step(step(s)));
-                r >= n && t >= n && t < r.wrapping_mul(n)
+                let (r, t, u) = (step(s), step(step(s)), step(step(step(s))));
+                r >= n && t >= n && t < r.wrapping_mul(n) && u < n
             })
             .unwrap();
         let mut e = EventRng::new(seed);
-        assert_eq!(e.range(0, i32::MIN), (step(step(seed)) - n) as i32);
-        assert_eq!(e.0, step(step(seed)), "two draws, not three");
+        assert_eq!(e.range(0, i32::MIN), step(step(step(seed))) as i32);
+        assert_eq!(e.0, step(step(step(seed))), "three draws");
         assert_eq!(EventRng::new(9).range(4, 3), 4, "n = 0: lo");
     }
 }
