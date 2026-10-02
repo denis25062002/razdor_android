@@ -651,7 +651,7 @@ the Status column says where it stands now.
 | # | Topic | Razdor now | Original (this exe) | § | Status |
 |---|---|---|---|---|---|
 | 1 | Splash outside interactive battles | The 80% malus in every battle and in the AI's estimates (`attack_factor`, `cast_power`); off screen no follow-ups for melee, shots and spells | 80% malus in every battle and in AI estimates; no follow-ups | 6 | Matches |
-| 2 | Splash 40% rounding | The patch's multiply-high constants (`splash_scale`): 10 → 3, 100 → 39; negative attacks wrap | `floor(0.4x)`, but multiples of 5 give one less (10 → 3, 100 → 39); negative attacks wrap | 6 | Matches |
+| 2 | Splash 40% rounding | The patch's multiply-high constants (`splash_scale`): 10 → 3, 100 → 39; a negative attack scales by its absolute value, sign kept | `floor(0.4x)`, but multiples of 5 give one less (10 → 3, 100 → 39); negative attacks wrap (bug) | 6 | Matches; Razdor fixes the original's bug (the wrap) |
 | 3 | Splash follow-ups | The splash state machine: each follow-up re-runs the whole case (preventive strike, chain, vampirism, counter blow, kill check) at 40% for any attacker while the state is set; the primary's counter at 40%, the second neighbour's at full; neighbours in record order, each side once | Each follow-up re-runs the whole action case: neighbour PreventiveStrike and Counterblow (at 40%), vampirism, BloodThrist per kill; the primary target's counter is also at 40%. The two neighbours are taken in slot-index order (each side once), not left before right | 6 | Matches |
 | 4 | Splash heal on crippled units | Follow-ups bypass the cell filter and heal or bless them | Heals or blesses them (follow-ups bypass the cell filter) | 6, 7 | Matches |
 | 5 | PreventiveStrike before spells | Never | Never: only before melee and shots | 7 | Matches |
@@ -659,7 +659,7 @@ the Status column says where it stands now.
 | 7 | Stun amount | 30% of the current initiative (`cur_initiative`: the base as of the turn start, with the turn-1 bonus), the same each hit | 30% of current initiative (base + turn-1 Artillery/FirstShot bonus), the same each hit | 5 | Matches |
 | 8 | ArmorBreaker rounding | `x − x×25/100` (5 → 4, 1 → 1) | `x − floor(x/4)` (5 → 4, 1 → 1) | 5 | Matches |
 | 9 | FateGift vs Neutralize | FateGift in the on-hit block, after KillingStrike and before Neutralize | FateGift is checked first and saves; Neutralize then clears an already erased bonus | 5 | Matches |
-| 10 | Mage poison threshold | `poison_power`: raw MP × (99 − prot) / 100 (Elemental `/114`), unsigned for Life and Elemental, > 15 | `MP × (99 − prot) / 100` (Elemental: `/114`), raw MP, protection always applied, > 15 | 5 | Matches |
+| 10 | Mage poison threshold | `poison_power`: raw MP × (99 − prot) / 100 (Elemental `/114`), signed for every school, > 15 | `MP × (99 − prot) / 100` (Elemental: `/114`), raw MP, protection always applied, > 15; unsigned for Life and Elemental (bug: a protection above 99 poisons) | 5 | Razdor fixes the original's bug (the unsigned division) |
 | 11 | Assault damage taken | The misaligned dword test: building byte and the initiative modifier's top bytes, ≥ 16 | ×2/3 if the attacker's building defence is 1–127, or it has none and its initiative modifier is < 0 (or ≥ 4096) | 6 | Matches |
 | 12 | Turn start order | Per unit: reset, bonuses, drain, own regen tick (with removal) | Per unit: reset, bonuses, drain, own regen tick (with removal), then the next unit. Berserk uses HP before the unit's own tick; Hunger sees only earlier units' deaths | 3 | Matches |
 | 13 | Berserk on spells vs Drying | Berserk recomputed before Drying's loss | Berserk recomputed before Drying's loss | 5 | Matches |
@@ -678,10 +678,13 @@ the Status column says where it stands now.
 | 26 | Info card Bleed and Evasion lines | Bleeding shown as a battle status | Card lines with the value (with two off-by-one slips) | 12 | Presentation, left |
 | 27 | Tripwires | Not reproduced | Hangs or crashes on certain ini values. Deliberately not reproduced | 12 | Deviation kept |
 
-Also brought in line with these: the bleed loss and Flock's step divide unsigned (a negative
-sum kills, a negative attack gives a huge step), the bleed shift clears the enemy's first
-bleeding when the player's 12th record goes, Evasion is a byte and divides unsigned, the hit
-chains test a strike's damage (not its power) in the on-hit block, and Bastion's doubling wraps.
+Also brought in line with these: Evasion is a byte, and the hit chains test a strike's damage
+(not its power) in the on-hit block. Razdor fixes the original's bugs next to them: the bleed
+loss and Flock's step divided unsigned (a negative sum killed, a negative attack gave a huge
+step; now a negative sum bleeds nothing and the step keeps its sign), the bleed shift cleared
+the enemy's first bleeding when the player's 12th record went (now the bleeding stays with its
+unit), Evasion divided unsigned (above 100 the damage is now the floor of 1), and Bastion's
+doubling, Berserk's product and the damage multiplies wrapped at 32 bits (now they saturate).
 EternalGift's attack is AB unless AB is 0 (an AB cursed below 0 still takes it), and its
 initiative change reaches the turn order and Stun only at the next turn start, since both read
 the current initiative.

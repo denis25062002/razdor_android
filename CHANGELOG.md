@@ -43,16 +43,13 @@ old id, and their versions give both.
 - Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
 - Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
   for the battle XP.
-- A side left with only surrender-capable units gives up even when its last action wins the
-  battle: a player whose hero has fallen and whose priests or mages kill the last enemy
-  surrenders and loses, as in the original.
 - The space key in battle does what a click on the unit's own card does: one action, a
   spell on itself when it can cast one, else a pass. It no longer skips the whole turn.
 - A front-row shooter or mage in the first or last column never sees a clear front, as in
   the original: the shooter hits only the enemies next to it, the mage cannot cast.
 - A flying shooter or mage strikes in melee at the three front cells opposite instead of
   shooting or casting there. A Ghost casts at them whatever its magic direction, as long as
-  the low byte of its power is positive.
+  it has magic power.
 - Rows collapse only after a death or a unit's last action, as in the original, never when
   a battle or a turn starts. When a battle starts with nobody in the player's front row, his
   back row moves up (and stays there); his reserve and the enemy do not move.
@@ -63,9 +60,7 @@ old id, and their versions give both.
 - The turn-1 initiative of Artillery and FirstShot units is part of their initiative, not a
   modifier: an Elemental mage of the AI may haste such a unit on turn 1, and the panel no
   longer lists it under "this turn".
-- The battle AI follows the original's scores to the letter, its slips included: the normal
-  AI judges a kill by the hit points of its own unit at the target's place in the list, Life
-  mages score curses with the original's defence mix-up, Elemental mages weigh a front-row
+- The battle AI follows the original's scores: Elemental mages weigh a front-row
   haste by the blows needed to kill the enemies facing it, and a nearly dead Death mage with
   no spell for itself passes. The halving for a single action counts only for back-row mages,
   and a unit the AI counts as a warrior never steps back.
@@ -120,8 +115,7 @@ old id, and their versions give both.
 - Flock compares the two sides as they stood after the last action of the battle on screen
   (battles between AI armies see that battle's counts too), and Hunger's count of removals is
   shared by every battle and kept from one battle to the next.
-- Bleeding and Flock divide unsigned as the patch does, Evasion is read as a byte, and the
-  player's twelfth unit's death stops the enemy's first unit bleeding, all as in the patch.
+- Evasion is read as a byte, as in the patch.
 - An EternalGift change to a unit's initiative moves it in the turn order only from the next
   turn, and Stun keeps taking 30% of the initiative the unit started the turn with. An
   EternalGift blessing or curse on a unit cursed below 0 attack still changes that attack,
@@ -461,6 +455,25 @@ old id, and their versions give both.
   restart or campaign map is played with it, as in the original.
 - Restart on a campaign map starts it again with what the map before carried over (army,
   gold, mana, book, pack, flags), as the original's restart snapshot, which saves keep.
+
+### Fixed
+Bugs of the original game that Razdor reproduced while it followed the original one to one,
+now fixed with the rule the original evidently meant:
+- Battle: a side whose last action wins the battle no longer surrenders: a player whose
+  priests or mages kill the last enemy wins (the original's bug made it a defeat).
+- Battle: an EternalGift Life blessing raises the defences, as every blessing does (the
+  original's bug lowered them).
+- Battle: a Ghost casts with any magic power (the original's bug read only the power's low
+  byte, so a power of 128 to 256 could not cast).
+- Battle AI: the normal AI judges a kill by the target's own hit points (the original's bug
+  read its own unit at the target's place in the list), and a Life mage scores a curse on
+  both defences (the original's bug counted the melee defence twice).
+- Battle: bleeding with a negative attack sum bleeds nothing (the original's bug killed the
+  unit), the player's twelfth unit's death no longer stops the enemy's first unit bleeding,
+  a Poison mage no longer poisons through a protection above 99, an Evasion above 100 leaves
+  1 damage, a Splash or Flock unit cursed below 0 attack no longer strikes for a huge amount,
+  and Bastion, Berserk and the damage stop at the largest value instead of wrapping negative
+  (all the original's unsigned or 32-bit slips).
 
 ## 0.2.2 — 2026-10-01
 

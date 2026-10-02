@@ -265,13 +265,14 @@ fn row2_modifiers_add_up() {
 }
 
 #[test]
-fn row3_eternal_gift_changes_battle_stats_stacks_and_its_life_blessing_lowers_defence() {
+fn row3_eternal_gift_changes_battle_stats_stacks_and_its_life_blessing_raises_defence() {
     let saint = bonus(45, Bonus::EternalGift, acts(45, 2, mage(45, 36, MagicSchool::Life, MagicDirection::ToAll)));
     let mut bt = with(vec![saint], &[(45, b(2)), (10, f(0))], &[(18, f(5))]);
     let hit = bt.act_with(1, ActionKind::Bless).unwrap();
     assert_eq!(hit.buff, Buff { attack: 4, defence: 10, ..Buff::default() });
     let s = &bt.fighters[1].base;
-    assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow], s[Stat::DefenceShot]), (34, -5, -5), "the bug");
+    // The original's bug lowered both defences (to −5); Razdor fixes it.
+    assert_eq!((s[Stat::AttackBlow], s[Stat::DefenceBlow], s[Stat::DefenceShot]), (34, 15, 15));
     assert!(bt.fighters[1].mods.is_empty());
     // Its curses stack: the target never looks weakened, so it is cursed again.
     let hit = bt.act(2).unwrap();
@@ -1061,6 +1062,10 @@ fn row41_bastion_doubles_its_attacks_and_defences_every_turn_anywhere() {
     assert_eq!(stats(&bt), [20, 6, 10, 10]);
     to_round(&mut bt, 3);
     assert_eq!(stats(&bt), [80, 24, 40, 40]);
+    // It stops at the largest value: the original's bug wrapped it negative by turn 25.
+    bt.fighters[1].base[Stat::AttackBlow] = i32::MAX / 2 + 1;
+    to_round(&mut bt, 4);
+    assert_eq!(stats(&bt)[0], i32::MAX);
 }
 
 #[test]
@@ -1750,13 +1755,14 @@ fn row11_edge_columns_never_have_a_clear_front() {
 }
 
 #[test]
-fn row13_a_ghost_casts_on_the_power_s_low_byte_whatever_its_direction() {
+fn row13_a_ghost_casts_with_any_power_whatever_its_direction() {
     let ghost = |id: u32, power: i32| bonus(id, Bonus::Ghost, mage(id, power, MagicSchool::Death, MagicDirection::ToAlly));
     let bt = with(vec![ghost(129, 30), ghost(130, 200), ghost(131, 300)], &[(129, r(2)), (130, f(3)), (131, b(3)), (10, f(0))], &[(18, f(2)), (18, b(2))]);
     assert_eq!(bt.options(0, 4), vec![ActionKind::Curse], "a ToAlly ghost casts from the reserve");
     assert!(bt.options(0, 5).is_empty(), "only the three front cells opposite");
-    assert!(bt.options(1, 4).is_empty(), "200 is −56 as a signed byte");
-    assert_eq!(bt.options(2, 4), vec![ActionKind::Curse], "300 is 44 in its low byte");
+    // The original's bug read the power's low byte as signed (200 failed); Razdor fixes it.
+    assert_eq!(bt.options(1, 4), vec![ActionKind::Curse], "200");
+    assert_eq!(bt.options(2, 4), vec![ActionKind::Curse], "300");
 }
 
 #[test]
@@ -1801,19 +1807,21 @@ fn row46_berserk_at_a_turn_start_reads_the_hp_before_the_poison() {
 }
 
 #[test]
-fn row41_the_normal_ai_reads_the_kill_hp_on_its_own_side() {
-    // The enemy (side 2) at the normal level tests HP ≤ dmg on *its own* unit with the
-    // target's list index (486d03): its own unit 1 is itself (50 HP), unit 2 its bag, and
-    // past its list the record is empty, so the 3rd bag looks killable whatever its HP.
+fn row41_the_normal_ai_tests_the_kill_on_the_target_s_own_hp() {
+    // The enemy (side 2) at the normal level tests HP ≤ dmg on the target itself. The
+    // original's bug read its *own* unit with the target's list index (an empty record past
+    // its list, so the 3rd bag looked killable whatever its HP); Razdor fixes it.
     let mut bt = battle(&[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2)), (18, b(2))]);
     turn_of(&mut bt, 3);
-    assert_eq!(bt.ai_choice(), Some((2, ActionKind::Melee)), "the 3rd bag: own index 3 is empty");
-    // The 2nd bag is index 2, its own back-row bag (200 HP): no longer killable once it is
-    // there; the first one: killable when the attacker's own HP is down to its damage.
-    bt.fighters[2].hp = 0;
-    assert_eq!(bt.ai_choice(), Some((1, ActionKind::Melee)), "tie: the 2nd bag in column 3");
+    let none = bt.ai_choice();
+    assert_eq!(none, Some((2, ActionKind::Melee)), "no bag killable: the picker's column order");
+    // A bag down to the blow's damage is killable, whatever the attacker's own HP.
+    let dmg = bt.physical_damage(3, 0, ActionKind::Melee);
+    bt.fighters[0].hp = dmg;
+    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Melee)), "the 1st bag is killable");
+    bt.fighters[0].hp = dmg + 1;
     bt.fighters[3].hp = 30;
-    assert_eq!(bt.ai_choice(), Some((0, ActionKind::Melee)), "its own 30 HP make the 1st bag killable");
+    assert_eq!(bt.ai_choice(), none, "its own HP no longer matter");
 }
 
 #[test]
@@ -1843,14 +1851,14 @@ fn row40_a_warrior_by_role_never_retreats() {
 }
 
 #[test]
-fn row42_life_scores_the_curse_with_the_original_slip() {
+fn row42_life_scores_the_curse_on_both_defences() {
     let target = UnitDef { defence_blow: 10, defence_shot: 0, ..warrior(138, 30, 0) };
     let mut bt = with(vec![target], &[(15, b(1)), (10, f(0))], &[(138, f(2))]);
     bt.fighters[0].actions = 1;
     bt.fighters[2].actions = 1;
-    // q = 30 / 3 = 10: min(DB 10, 10) and, for DS 0 < 10, DB again: 3 × 20 + 1 = 61 (not 31);
-    // (DB + DS + power × actions) × 61 / 3 for an ordinary unit.
-    assert_eq!(bt.life_strike_score(0, 2), 40 * 61 / 3);
+    // q = 30 / 3 = 10: min(DB 10, 10) + min(DS 0, 10): 3 × 10 + 1 = 31 (the original's bug
+    // added DB again for the second term: 61); (DB + DS + power × actions) × 31 / 3.
+    assert_eq!(bt.life_strike_score(0, 2), 40 * 31 / 3);
     // A cursed target V can kill: V = actions × P = 30, ×3.
     bt.fighters[2].cursed = true;
     bt.fighters[2].hp = 20;
@@ -2156,14 +2164,15 @@ fn row26_the_turn_one_artillery_bonus_is_not_an_initiative_modifier() {
 }
 
 #[test]
-fn row36_winning_with_only_surrendering_units_left_is_a_defeat() {
-    // 48b6ba tests every side that has units, whether the other is gone or not: a priest
-    // that kills the last enemy surrenders all the same (the original's, kept).
+fn row36_winning_with_only_surrendering_units_left_is_a_victory() {
+    // The original's bug (48b6ba) tested every side that had units, whether the other was
+    // gone or not, so a priest that killed the last enemy surrendered all the same: a
+    // defeat. Razdor fixes it: with the other side gone nobody gives up.
     let priest = UnitDef { surrender: 20, ..warrior(154, 30, 0) };
     let mut bt = with(vec![priest], &[(154, f(2))], &[(18, f(2))]);
     bt.fighters[1].hp = 1;
     assert!(bt.act(1).unwrap().killed);
-    assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Defeat, Some(EndReason::Surrender(Team::Player))));
+    assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Victory, Some(EndReason::Wiped)));
     assert_eq!(bt.surrender_mana(Team::Player), 0);
     // With the hero (Surrender 0) still standing it is a victory.
     let mut bt = with(vec![UnitDef { surrender: 20, ..warrior(154, 30, 0) }], &[(154, f(2)), (10, f(3))], &[(18, f(2))]);
@@ -2183,8 +2192,9 @@ fn fresh_globals() {
 fn community_row1_2_the_splash_constants_and_the_malus_everywhere() {
     assert_eq!([5, 10, 25, 100, 7, 50].map(|x| splash_scale(x, SPLASH_SIDE)), [1, 3, 9, 39, 2, 19]);
     assert_eq!([5, 10, 7, 100].map(|x| splash_scale(x, SPLASH_MAIN)), [4, 8, 5, 80]);
-    assert!(splash_scale(-1, SPLASH_SIDE) > 1_700_000_000, "a negative attack wraps to a huge one at 40%");
-    assert!(splash_scale(-5, SPLASH_MAIN) < -800_000_000, "and to a huge negative one at 80%");
+    // The original's bug wrapped a negative attack (−1 × 40% ≈ +1.7e9); Razdor fixes it.
+    assert_eq!([-1, -10, -100].map(|x| splash_scale(x, SPLASH_SIDE)), [0, -3, -39]);
+    assert_eq!([-5, -100].map(|x| splash_scale(x, SPLASH_MAIN)), [-4, -80]);
     // Off screen, the malus counts in the AI's estimates as in the hits, but only heals and
     // blessings get follow-ups (their recording has no gate).
     let sweep = bonus(67, Bonus::Splash, warrior(67, 50, 0));
@@ -2198,13 +2208,13 @@ fn community_row1_2_the_splash_constants_and_the_malus_everywhere() {
         bt.fighters[i].hp = 10;
     }
     assert_eq!(bt.act(2).unwrap().splash, vec![(1, 7), (3, 7)]);
-    // A Splash unit cursed below 0 attack: its first blow wraps to 1, its follow-ups to a
-    // killing blow.
+    // A Splash unit cursed below 0 attack strikes for 1, its follow-ups too (the original's
+    // bug wrapped them to a killing blow).
     let mut bt = with(vec![sweep], &[(67, f(2))], &[(18, f(1)), (18, f(2)), (18, f(3))]);
     bt.fighters[0].mods.attack = -60;
     bt.refresh(0);
     let hit = bt.act(2).unwrap();
-    assert_eq!((hit.amount, hit.splash), (1, vec![(1, 200), (3, 200)]));
+    assert_eq!((hit.amount, hit.splash), (1, vec![(1, 1), (3, 1)]));
 }
 
 #[test]
@@ -2287,8 +2297,10 @@ fn community_row10_the_mage_poison_tests_its_own_power_after_protection() {
         (poison(101, 17, MagicSchool::Life), warded(111, 0, 0), true),
         (poison(102, 18, MagicSchool::Elemental), warded(112, 0, 0), false), // 18 × 99 / 114 = 15
         (poison(103, 19, MagicSchool::Elemental), warded(113, 0, 0), true),
-        (poison(104, 30, MagicSchool::Life), warded(114, 100, 0), true), // −30 unsigned: huge
-        (poison(105, 30, MagicSchool::Death), warded(115, 0, 100), false), // signed: 0
+        // Signed for every school: the original's bug divided Life and Elemental unsigned
+        // (−30 came out huge and poisoned).
+        (poison(104, 30, MagicSchool::Life), warded(114, 100, 0), false),
+        (poison(105, 30, MagicSchool::Death), warded(115, 0, 100), false),
     ];
     for (caster, target, poisoned) in cases {
         let (c, t) = (caster.id, target.id);
@@ -2425,12 +2437,13 @@ fn community_row22_flock_sees_deaths_only_after_an_action_of_the_battle_on_scree
     bt.set_simulation();
     bt.begin();
     assert_eq!(bt.fighters[0].mods.attack, 10, "5 against 1 there, though it is 1 against 2 here");
-    // A negative attack divides unsigned.
+    // A negative attack gives a negative quarter (the original's bug divided unsigned:
+    // 42 949 671).
     let mut bt = prepared(&c, &[(80, f(0))], &[(18, f(0))], Team::Player);
     bt.set_simulation();
     bt.fighters[0].base[Stat::AttackBlow] = -4;
     bt.begin();
-    assert_eq!(bt.fighters[0].mods.attack, 42_949_671);
+    assert_eq!(bt.fighters[0].mods.attack, -1);
 }
 
 #[test]
@@ -2465,14 +2478,17 @@ fn community_row23_hungers_counter_is_global_and_turn_1_only_looks() {
 }
 
 #[test]
-fn community_bleeding_with_a_negative_sum_kills_and_the_last_player_record_unbleeds_the_enemy() {
+fn community_bleeding_with_a_negative_sum_bleeds_nothing_and_stays_with_its_unit() {
+    // The original's bugs, fixed: a negative sum divided unsigned (42 949 672: a kill), and
+    // the 12th player record's removal cleared the enemy's first bleeding.
     let knife = bonus(81, Bonus::Bleed, warrior(81, 30, 0));
     let mut bt = with(vec![knife.clone()], &[(81, f(2))], &[(18, f(2))]);
     bt.act(1).unwrap();
     bt.fighters[1].base[Stat::AttackBlow] = -1;
+    let hp = bt.fighters[1].hp;
     bt.pass();
-    assert!(!bt.fighters[1].alive(), "(−1) × 75 / 100 unsigned is 42949672");
-    // Twelve player records; the 12th one's removal clears the enemy's first bleeding.
+    assert_eq!(bt.fighters[1].hp, hp, "(−1) × 75 / 100 bleeds nothing");
+    // Twelve player records; the 12th one's removal leaves the enemy's bleeding alone.
     let mut player = vec![(81, f(2))];
     player.extend((0..11).map(|k| (10, if k < 5 { b(k) } else { r(k - 5) })));
     let c = content_with(vec![knife], Formation::WIDE);
@@ -2481,15 +2497,16 @@ fn community_bleeding_with_a_negative_sum_kills_and_the_last_player_record_unble
     assert_eq!(bt.fighters[12].bleed, 75);
     bt.fighters[11].hp = 0;
     bt.died(11);
-    assert_eq!(bt.fighters[12].bleed, 0);
+    assert_eq!(bt.fighters[12].bleed, 75);
 }
 
 #[test]
-fn community_evasion_is_a_byte_and_divides_unsigned() {
+fn community_evasion_is_a_byte_and_floors_at_1() {
     let slippery = |id: u32, e: i32| UnitDef { evasion: Some(e), hits: 300, ..warrior(id, 1, 0) };
     let bt = with(vec![slippery(96, 266), slippery(97, 150)], &[(10, f(2))], &[(96, f(2)), (97, f(3))]);
     assert_eq!(bt.physical_damage(0, 1, ActionKind::Melee), 27, "266 is 10: 30 × 90%");
-    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), ((30i32 * -50) as u32 / 100) as i32);
+    // Above 100 the original's bug divided unsigned (garbage); Razdor floors it at 1.
+    assert_eq!(bt.physical_damage(0, 2, ActionKind::Melee), 1);
 }
 
 #[test]

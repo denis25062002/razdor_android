@@ -857,7 +857,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 1 | Buff/curse duration | Modifiers reset every turn | Until the start of the next turn | 1 | Matches |
 | 2 | Stacking | Additive; blessed allies untargetable unless wounded; curse then strike | Same | 1, 3 | Matches |
 | 3 | Bless and curse sizes | `bless_effect` / `curse_effect` with the ini divisors, Life curse ⌊2·CM/3⌋ and 10; the attack modifier given to units without an attack too (only the hover hides it); a caster with no school sets only the flag | Same | 1 | Matches |
-| 4 | EternalGift | Base stats, stacks, Life blessing lowers defences | Same | 1 | Matches |
+| 4 | EternalGift | Base stats, stacks; the Life blessing raises the defences | Base stats, stacks, Life blessing lowers defences (bug) | 1 | Razdor fixes the original's bug |
 | 5 | Magic drain | `max(MP − drain, floor)` if MP > 0, drain and floor per type (none for a type without MagicPower), Undead Death floor +25 on the default floor only, Concentration adds | Same (community-patches.md §10) | 1 | Matches |
 | 6 | Hostile power rounding | `P·(100 − prot) / 100` rounded half to even (the product taken as exact; the FPU precision is unknown, engine.md) | Floating-point product, Delphi round half to even | 0 | Matches |
 | 7 | Strike with power 0 | GodAnger/GodStrike added whenever the caster has MP | GodAnger/GodStrike still added when the caster has MP | 0 | Matches |
@@ -866,7 +866,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 10 | Own-cell self-cast and the space key | Own card and space: one action, a self-cast if offered (a reserve caster's own cell only while wounded or unblessed), else a pass | Own cell and space are the same thing: **one** action, pass or self-cast | 2, 3 | Matches |
 | 11 | Edge columns | Columns 1 and last are never "clear" (`front_clear`) | Columns 1 and last are never "clear": front-row shooters there hit only c±1, front-row mages there cannot cast | 3 | Matches |
 | 12 | Map priority | Melee, then shot, then magic, later wins | Same | 3 | Matches |
-| 13 | Ghost casters | Reach the opposite front cells from any row, with no direction test, on the power's low signed byte; written after Flying's melee | Same, and with no direction test | 3 | Matches |
+| 13 | Ghost casters | Reach the opposite front cells from any row, with no direction test, with any magic power above 0; written after Flying's melee | Same, but the power test reads the power's low byte as signed (128..255 fails: bug) | 3 | Razdor fixes the original's bug |
 | 14 | Undead caster drain | Caster gains the full drain; only the target's loss is capped | Caster gains the full drain; only the target's loss is capped | 3 | Matches |
 | 15 | Vampirism | Melee and long strike only; Death strikes | **Melee and long strike only**; Death strikes | 8 | Matches |
 | 16 | Into the reserve | Front or back row, one reserve transition per turn | Same | 2 | Matches |
@@ -889,13 +889,13 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 33 | Regen and poison | `round(maxHP × regen/100)`, half to even, no minimum | Same | 8 | Matches |
 | 34 | Damage-taken counters | Only the damage routine's wounds and a cursed killer's HP count in `lost`; counter blows, preventive strikes, poison, bleeding and the Community side effects do not | Not counted in the side's damage taken | 8 | Matches |
 | 35 | Turn limit | Ends after the first action of turn 25; a win if the player has units | Same; the beaten army is destroyed | 5 | Matches |
-| 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte; tested for each side with units even when the other side is gone (a win with only surrender-capable units left is a defeat) | Same; only the player can receive the mana | 5 | Matches |
+| 36 | Surrender | Whole side gives up; Surrender sum as mana; the value read as a byte; tested only while both sides stand (a win with only surrender-capable units left is a win) | Same, but tested for each side with units even when the other side is gone, so such a win is a defeat (bug); only the player can receive the mana | 5 | Razdor fixes the original's bug |
 | 37 | Bonus count | One bonus byte, the last item wins | Same | 7 | Matches |
 | 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors; a front-row caster's fallback may pick an ally's front cell it can tend, in any column); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
 | 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role; the edge rule (score 1 on the first or last front cell) when no back cell is free | Also needs a non-warrior role; the 4ed390 edge rule | 4 | Matches |
-| 41 | AI "killable" (normal level, off-screen) | Reads the own unit with the target's list index (an empty record past the list: HP 0) | Reads the own unit with the target's index (bug) | 4 | Matches |
-| 42 | AI Life scoring | As the code read (486bb9): heal, bless by rows with or without enemy shooters, the curse value with the DS/DB slip on the strike power, the cursed flag | Medium confidence | 4 | Matches the reading |
+| 41 | AI "killable" (normal level, off-screen) | The target's own HP ≤ dmg | Reads the own unit with the target's index (bug; an empty record past the list: HP 0) | 4 | Razdor fixes the original's bug |
+| 42 | AI Life scoring | As the code read (486bb9): heal, bless by rows with or without enemy shooters, the curse value on both defences (DB and DS) on the strike power, the cursed flag | Medium confidence; the curse value's second term compares DS but adds DB (slip) | 4 | Matches the reading; Razdor fixes the original's bug (DS/DB) |
 | 42a | AI Elemental scoring | Main and alternative per side, cells scanned row by row; front-row haste scaled by hits-to-kill; the ÷10 rule with its exceptions; strike whenever a slow is impossible, slow + strike with a spare action; ×10 with an all-Ghost side; the turn's mean initiative | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | Matches |
 | 42b | AI Death scoring | As section 4 on the strike power; the self-target passes when no self-cast is offered; a threat of no damage is the role's minimum; blessings weigh the target's actions | Same, except the self-target: the original picks its own cell even with no self-cast on offer (a pass) | 4 | Matches |
 | 43 | Pre-simulation | Played at `begin()` on a copy (AI on both sides, no Splash follow-ups but for heals and blessings); each side's loss is the pool's predicted loss; skipped only for the AI's target scoring, which pays no XP | A full AI-vs-AI copy before every battle; keeps only each side's simulated damage taken for the XP | 4, 9 | Matches |
@@ -911,7 +911,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 - **Deployment.** Whether the original battle screen lets the player rearrange units before the
   first action (nothing seen in the window's open handler).
 - **AI kill-test bug in play.** The wrong-side "killable" reading (486d03, 486feb) is read in the
-  code; it has not been confirmed by watching the AI.
+  code; it has not been confirmed by watching the AI. Razdor fixes it (row 41).
 - **AI magic scoring.** Life magic scoring is medium confidence; Elemental and Death were read
   in full (section 4). Why the Elemental ÷10 rule reads the caster's direction is unknown.
 - **Low-confidence hooks.** Flock's army-size source and Assault's damage test are medium

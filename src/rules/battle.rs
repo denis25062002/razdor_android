@@ -519,10 +519,12 @@ fn patch_update(f: impl FnOnce(&mut PatchGlobals)) {
 
 /// `x` × 80% or × 40% as the patch computes it (c270ae, c27337, c27374): a 32-bit unsigned
 /// multiply-high. 80% is exactly ⌊0.8x⌋; the 40% constant is a hair low, so a multiple of 5
-/// gives one less (10 → 3, 100 → 39). A negative `x` wraps around: ×80% gives a huge negative
-/// value, ×40% about +1.7 billion (the original's).
+/// gives one less (10 → 3, 100 → 39). Razdor fixes the original's bug: the multiply is
+/// unsigned there, so a negative `x` wrapped (×80% gave a huge negative value, ×40% about
+/// +1.7 billion); here a negative `x` scales as its absolute value does, sign kept.
 fn splash_scale(x: i32, factor: u64) -> i32 {
-    ((x as u32 as u64 * factor) >> 32) as u32 as i32
+    let scaled = ((x.unsigned_abs() as u64 * factor) >> 32) as i32;
+    if x < 0 { -scaled } else { scaled }
 }
 
 /// What one run of an action's case did to its target.
@@ -1264,11 +1266,12 @@ impl Battle {
         if f.has(Bonus::Garrison) && own_building == 10 {
             f.mods.attack += f.base[Stat::AttackShot];
         }
-        // Bastion doubles its attacks and defences every turn, with no building check; the
-        // 32-bit values wrap after enough turns.
+        // Bastion doubles its attacks and defences every turn, with no building check.
+        // Razdor fixes the original's bug: its 32-bit values wrapped (negative) after enough
+        // turns; here they stop at the largest value.
         if f.has(Bonus::Bastion) {
             for st in [Stat::AttackBlow, Stat::AttackShot, Stat::DefenceBlow, Stat::DefenceShot] {
-                f.base[st] = f.base[st].wrapping_mul(2);
+                f.base[st] = f.base[st].saturating_mul(2);
             }
         }
         if round <= 2 && f.has(Bonus::FasterAttack) {
@@ -1281,14 +1284,15 @@ impl Battle {
         }
         // Flock compares the living counts of the side blocks of the battle on screen, as of
         // its last action (c29d08): deaths since, a turn start's included, are not seen yet.
-        // The step divides unsigned, so a negative attack gives a huge step (the original's).
+        // Razdor fixes the original's bug: the step divided unsigned, so a negative attack
+        // gave a huge step; here it is a quarter of the attack, sign kept.
         if f.has(Bonus::Flock) {
             let (own, other) = (g.side_blocks[team.index()], g.side_blocks[team.other().index()]);
             let of = if f.base[Stat::AttackBlow] != 0 { f.base[Stat::AttackBlow] } else { f.base[Stat::AttackShot] };
-            let step = (of.wrapping_mul(FLOCK_PERCENT) as u32 / 100) as i32;
+            let step = (of as i64 * FLOCK_PERCENT as i64 / 100) as i32;
             match own.cmp(&other) {
-                std::cmp::Ordering::Greater => f.mods.attack = f.mods.attack.wrapping_add(step),
-                std::cmp::Ordering::Less => f.mods.attack = f.mods.attack.wrapping_sub(step),
+                std::cmp::Ordering::Greater => f.mods.attack = f.mods.attack.saturating_add(step),
+                std::cmp::Ordering::Less => f.mods.attack = f.mods.attack.saturating_sub(step),
                 std::cmp::Ordering::Equal => {}
             }
         }
@@ -1351,14 +1355,14 @@ impl Battle {
         s[Stat::Regen] = f.regen;
         for st in [Stat::AttackBlow, Stat::AttackShot] {
             if s[st] > 0 {
-                s[st] = s[st].wrapping_add(f.mods.attack);
+                s[st] = s[st].saturating_add(f.mods.attack);
             }
         }
-        s[Stat::DefenceBlow] = s[Stat::DefenceBlow].wrapping_add(f.mods.defence);
-        s[Stat::DefenceShot] = s[Stat::DefenceShot].wrapping_add(f.mods.defence);
+        s[Stat::DefenceBlow] = s[Stat::DefenceBlow].saturating_add(f.mods.defence);
+        s[Stat::DefenceShot] = s[Stat::DefenceShot].saturating_add(f.mods.defence);
         // Before the first turn start the current initiative is not set yet: the base shows.
         let current = if started { f.cur_initiative } else { s[Stat::Initiative] };
-        s[Stat::Initiative] = current.wrapping_add(f.mods.initiative);
+        s[Stat::Initiative] = current.saturating_add(f.mods.initiative);
         s.clamp();
         s[Stat::Regen] = f.regen;
         f.stats = s;
@@ -1407,17 +1411,12 @@ impl Battle {
 
     /// Unit `i` is removed (489f50): it leaves its side's list, Hunger's counter takes the
     /// living count of the battle on screen, and its side's rows may collapse. The bleed
-    /// values move with the records (c2a95a), but the shift always copies one value: when
-    /// the player's 12th record goes, the enemy's first unit stops bleeding (the original's).
+    /// values move with the records (c2a95a). Razdor fixes the original's bug: its shift
+    /// copied one value too many, so when the player's 12th record went, the enemy's first
+    /// unit stopped bleeding.
     fn died(&mut self, i: usize) {
         let team = self.fighters[i].team;
-        let index = self.record_index(i);
         self.fighters[i].suicided = false;
-        if team == Team::Player && index == RECORDS - 1 {
-            if let Some(&e) = self.living_ids(Team::Enemy).first() {
-                self.fighters[e].bleed = 0;
-            }
-        }
         let living = self.fighters.iter().filter(|f| f.listed()).count();
         let own = self.screen_object;
         patch_update(|g| {
@@ -1434,12 +1433,14 @@ impl Battle {
     fn end_check(&mut self) {
         let standing = Team::BOTH.map(|t| self.living(t).next().is_some());
         let limit = self.round >= self.turn_limit();
-        // Each side that still has units is tested on its own, whether the other side is
-        // gone or not (48b6ba): a player who wins with only surrender-capable units left
-        // surrenders all the same, and that is a defeat. The original's, kept.
+        // Razdor fixes the original's bug: 48b6ba tested each side that still had units even
+        // when the other side was gone, so a player who won with only surrender-capable units
+        // left surrendered all the same, and that was a defeat. Here a side gives up only
+        // while both sides stand.
+        let both = standing.iter().all(|&s| s);
         let giving_up: Vec<Team> = Team::BOTH
             .into_iter()
-            .filter(|&t| standing[t.index()] && self.living(t).all(|f| f.surrender > 0))
+            .filter(|&t| both && self.living(t).all(|f| f.surrender > 0))
             .collect();
         for &team in &giving_up {
             let mut mana = 0;
@@ -1551,9 +1552,10 @@ impl Battle {
                 kind = Some(Melee);
             }
             // A Ghost casts at the three front cells opposite from any row, whatever its
-            // direction. Its power test reads only the low byte of the magic power, as a
-            // signed byte, as the original does (48555b): 128..255 fails it.
-            if f.has(Bonus::Ghost) && (f.power as u8 as i8) > 0 && adjacent {
+            // direction, when it has magic power. Razdor fixes the original's bug: its power
+            // test read only the low byte of the power, as a signed byte (48555b), so a power
+            // of 128..255 (or 256) failed it.
+            if f.has(Bonus::Ghost) && f.power > 0 && adjacent {
                 kind = Some(magic);
             }
             kind
@@ -1661,7 +1663,7 @@ impl Battle {
         let building = self.building_defence[tf.team.index()];
         // The attack modifier is added even to an attack of 0 (a counter blow of a unit
         // without one, a flying shooter's blow).
-        let mut atk = (if shot { af.base[Stat::AttackShot] } else { af.base[Stat::AttackBlow] }).wrapping_add(af.mods.attack);
+        let mut atk = (if shot { af.base[Stat::AttackShot] } else { af.base[Stat::AttackBlow] }).saturating_add(af.mods.attack);
         if let Some(factor) = self.attack_factor(a, kind) {
             atk = splash_scale(atk, factor);
         }
@@ -1683,12 +1685,12 @@ impl Battle {
             if kind == ActionKind::LongStrike {
                 def /= 2;
                 if s.has(&Bonus::FlankStrike) {
-                    atk = atk.wrapping_mul(2);
+                    atk = atk.saturating_mul(2);
                 }
             }
         }
         def += building;
-        let mut dmg = if atk > def { atk.wrapping_sub(def) } else { 1 };
+        let mut dmg = if atk > def { atk.saturating_sub(def) } else { 1 };
         // Assault's ×2/3 tests a misaligned dword of the attacker's record (c2a403): its top
         // byte is the attacker's building defence, the three below are the top three bytes of
         // its initiative modifier, and the test is "≥ 16". So it applies from a building of
@@ -1696,31 +1698,32 @@ impl Battle {
         let probe = (((self.building_defence[af.team.index()] as u8 as u32) << 24) | (af.mods.initiative as u32 >> 8)) as i32;
         let assaulted = ts.has(&Bonus::Assault) && probe >= 16;
         if ts.has_any(&[Bonus::Evasive, Bonus::VampirsGist, Bonus::OldVampirsGist]) || assaulted {
-            dmg = dmg.wrapping_mul(2) / 3;
+            dmg = dmg.saturating_mul(2) / 3;
         }
         if ts.has(&Bonus::Garrison) && building >= 10 {
-            dmg = dmg.wrapping_mul(2) / 3;
+            dmg = dmg.saturating_mul(2) / 3;
         }
         if shot && ts.has_any(&[Bonus::Dead, Bonus::FastDead]) {
-            dmg = dmg.wrapping_mul(3) / 10;
+            dmg = dmg.saturating_mul(3) / 10;
         }
         if self.has_knight(tf.team) {
-            dmg = dmg.wrapping_mul(KNIGHT_PERCENT) / 100;
+            dmg = dmg.saturating_mul(KNIGHT_PERCENT) / 100;
         }
         // The invulnerable (and ghosts, immune to weapons) are hit for 1, whatever the blow
         // pierces; GodAnger and GodStrike still add their 10 or 20 on top (485a8e).
         if ts.has_any(&[Bonus::Unvulnerabe, Bonus::Ghost]) {
             dmg = 1;
         }
-        dmg = dmg.wrapping_add(god_bonus(s));
+        dmg = dmg.saturating_add(god_bonus(s));
         if dmg == 0 {
             dmg = 1;
         }
-        // Evasion, last (c2a802): the type's value is a byte, so the ini's modulo 256, and it
-        // divides unsigned, so a value above 100 gives garbage (the original's).
+        // Evasion, last (c2a802): the type's value is a byte, so the ini's modulo 256.
+        // Razdor fixes the original's bug: it divided unsigned, so a value above 100 gave
+        // garbage; here the damage of an evasion of 100 or more is the floor of 1.
         let evasion = ts.evasion as u8 as i32;
         if evasion != 0 {
-            dmg = (dmg.wrapping_mul(100 - evasion) as u32 / 100) as i32;
+            dmg = (dmg as i64 * (100 - evasion).max(0) as i64 / 100) as i32;
             if dmg == 0 {
                 dmg = 1;
             }
@@ -1763,17 +1766,18 @@ impl Battle {
 
     /// The "power after protection" both mage poisons test against 15 (c26c9f): the caster's
     /// magic power, without Splash or Potent, × (99 − the target's protection) / 100, or / 114
-    /// against Elemental protection. Life (and a caster without a school) and Elemental
-    /// divide unsigned, so a protection above 99 makes it huge and the poison works; Death
-    /// divides signed (the original's).
+    /// against Elemental protection, divided signed. Razdor fixes the original's bug: Life
+    /// (and a caster without a school) and Elemental divided unsigned there, so a protection
+    /// above 99 made the power huge and the poison worked.
     fn poison_power(&self, a: usize, t: usize) -> i32 {
-        let mp = self.fighters[a].power;
+        let mp = self.fighters[a].power as i64;
         let ts = &self.fighters[t].stats;
-        match self.school(a) {
-            Some(MagicSchool::Death) => mp.wrapping_mul(99 - ts[Stat::ProtectDeath]) / 100,
-            Some(MagicSchool::Elemental) => (mp.wrapping_mul(99 - ts[Stat::ProtectElemental]) as u32 / 114) as i32,
-            _ => (mp.wrapping_mul(99 - ts[Stat::ProtectLife]) as u32 / 100) as i32,
-        }
+        let (prot, div) = match self.school(a) {
+            Some(MagicSchool::Death) => (ts[Stat::ProtectDeath], 100),
+            Some(MagicSchool::Elemental) => (ts[Stat::ProtectElemental], 114),
+            _ => (ts[Stat::ProtectLife], 100),
+        };
+        (mp * (99 - prot as i64) / div).clamp(i32::MIN as i64, i32::MAX as i64) as i32
     }
 
     /// Magic strike damage of hostile power `p`, before capping at HP: Life ×2 on undead,
@@ -1885,11 +1889,11 @@ impl Battle {
         f.actions -= 1;
         f.taken += 1;
         if f.bleed > 0 {
-            // `(AB + AS + MP) × bleed / 100`, divided unsigned: a negative sum (EternalGift
-            // curses) bleeds about 43 million, so the unit dies (c2a53c, the original's).
-            let sum = f.base[Stat::AttackBlow].wrapping_add(f.base[Stat::AttackShot]).wrapping_add(f.power);
-            let loss = (sum.wrapping_mul(f.bleed) as u32 / 100) as i32;
-            let loss = loss.min(f.hp);
+            // `(AB + AS + MP) × bleed / 100` (c2a53c). Razdor fixes the original's bug: it
+            // divided unsigned, so a negative sum (EternalGift curses) bled about 43 million
+            // and the unit died; here a negative sum bleeds nothing.
+            let sum = f.base[Stat::AttackBlow] as i64 + f.base[Stat::AttackShot] as i64 + f.power as i64;
+            let loss = (sum * f.bleed as i64 / 100).clamp(0, f.hp.max(0) as i64) as i32;
             if loss > 0 {
                 f.hp -= loss;
                 let msg = crate::trf!("{name} bleeds for {loss}", name = f.name, loss);
@@ -2142,7 +2146,7 @@ impl Battle {
         let vamp = self.fighters[id].stats[Stat::Vampirizm];
         if vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
             let f = &mut self.fighters[id];
-            f.hp = f.hp.wrapping_add(raw.wrapping_mul(vamp) / 100).min(f.max_hp());
+            f.hp = f.hp.saturating_add(raw.saturating_mul(vamp) / 100).min(f.max_hp());
         }
         // Hunger: a melee kill heals the striker to full (c252e9). The original's test reads
         // the HP at a wrong address (unknown outcome); this is the intended reading.
@@ -2232,12 +2236,12 @@ impl Battle {
             let vamp = self.fighters[id].stats[Stat::Vampirizm];
             if school == Some(MagicSchool::Death) && vamp > 0 && !matches!(self.fighters[target].stats.nature, Nature::Undead | Nature::Elemental) {
                 let f = &mut self.fighters[id];
-                f.hp = f.hp.wrapping_add(raw.wrapping_mul(vamp) / 100).min(f.max_hp());
+                f.hp = f.hp.saturating_add(raw.saturating_mul(vamp) / 100).min(f.max_hp());
             }
         } else {
             d = p;
             out.buff = self.curse_of(id, p);
-            self.apply_buff(id, target, out.buff, false);
+            self.apply_buff(id, target, out.buff);
             self.fighters[target].cursed = true;
             self.log.push(crate::trf!("{name} curses {tname}: {what}", name, tname, what = out.buff.describe()));
             // An undead caster's Elemental or Death curse drains life to it.
@@ -2300,7 +2304,7 @@ impl Battle {
         } else {
             out.kind = ActionKind::Bless;
             out.buff = self.bless_of(id, target, p);
-            self.apply_buff(id, target, out.buff, true);
+            self.apply_buff(id, target, out.buff);
             self.fighters[target].blessed = true;
             self.log.push(crate::trf!("{name} blesses {tname}: {what}", name, tname, what = out.buff.describe()));
         }
@@ -2309,20 +2313,18 @@ impl Battle {
     }
 
     /// A blessing or curse: added to this turn's modifiers, or with `EternalGift` to the
-    /// battle stats (which lasts and stacks; its Life blessing lowers the defences, a bug of
-    /// the original). The change of actions left counts for this turn only; a curse cannot
-    /// take them below 0.
-    fn apply_buff(&mut self, caster: usize, target: usize, b: Buff, bless: bool) {
+    /// battle stats (which lasts and stacks). Razdor fixes the original's bug: its EternalGift
+    /// Life blessing lowered both defences; here it raises them, as every blessing does. The
+    /// change of actions left counts for this turn only; a curse cannot take them below 0.
+    fn apply_buff(&mut self, caster: usize, target: usize, b: Buff) {
         let eternal = self.fighters[caster].has(Bonus::EternalGift);
-        let life = self.school(caster) == Some(MagicSchool::Life);
         let t = &mut self.fighters[target];
         if eternal {
             // AB, or AS when AB is 0: an AB cursed below 0 still takes it (c29ea3 …).
             let attack = if t.base[Stat::AttackBlow] != 0 { Stat::AttackBlow } else { Stat::AttackShot };
             t.base[attack] += b.attack;
-            let defence = if bless && life { -b.defence } else { b.defence };
-            t.base[Stat::DefenceBlow] += defence;
-            t.base[Stat::DefenceShot] += defence;
+            t.base[Stat::DefenceBlow] += b.defence;
+            t.base[Stat::DefenceShot] += b.defence;
             t.base[Stat::Initiative] += b.initiative;
         } else {
             t.mods.attack += b.attack;
@@ -2480,17 +2482,15 @@ impl Battle {
 
     /// "Killable" in the AI's melee and shot scores (486d03, 486feb). With the improved AI,
     /// or for the player's side at the normal level, the actions left can do it:
-    /// `HP ≤ actions × dmg`. Otherwise the test is meant to be `HP ≤ dmg`, but the original
-    /// reads the HP of the unit with the target's list index on the actor's *own* side: an
-    /// original bug, kept. Past the end of that list the record is empty (HP 0, killable).
+    /// `HP ≤ actions × dmg`. Otherwise one blow does it: `HP ≤ dmg`. Razdor fixes the
+    /// original's bug: there the second test read the HP of the unit with the target's list
+    /// index on the actor's *own* side (an empty record, HP 0, past the end of that list).
     fn killable(&self, id: usize, t: usize, dmg: i32) -> bool {
         let f = &self.fighters[id];
         if self.ai_level == 2 || (self.ai_level == 1 && f.team == Team::Player) {
             return self.fighters[t].hp <= f.actions * dmg;
         }
-        let index = self.living_ids(self.fighters[t].team).iter().position(|&i| i == t).unwrap_or(0);
-        let hp = self.living_ids(f.team).get(index).map_or(0, |&i| self.fighters[i].hp);
-        hp <= dmg
+        self.fighters[t].hp <= dmg
     }
 
     /// The best cell by the original's picker (4860cc): rows front to back, columns in the
@@ -2805,10 +2805,10 @@ impl Battle {
         let v = if p < 1 {
             0
         } else if !tf.cursed {
-            // The second term compares DefenceShot but adds DefenceBlow (4879c0), an original
-            // slip, kept.
+            // Razdor fixes the original's bug: its second term compared DefenceShot but added
+            // DefenceBlow (4879c0).
             let q = p / life;
-            3 * ((if db < q { db } else { q }) + (if ds < q { db } else { q })) + 1
+            3 * (db.min(q) + ds.min(q)) + 1
         } else {
             self.fighters[id].actions as i64 * p
         };
@@ -3151,10 +3151,12 @@ fn ai_power_role(s: &Stats) -> (i32, AiRole) {
 }
 
 /// Community `Berserk` (c256c8): the attack modifier is `((maxHP − HP) × 75 × AB / maxHP) / 100`,
-/// two truncating divisions, the product in 32 bits (it wraps for a Bastion's huge AB).
+/// two truncating divisions. Razdor fixes the original's bug: the product was 32-bit and
+/// wrapped for a Bastion's huge AB; here it is exact.
 fn berserk(f: &Fighter) -> i32 {
-    let max = f.base.max_hp().max(1);
-    (max - f.hp.clamp(0, max)).wrapping_mul(BERSERK_PERCENT).wrapping_mul(f.base[Stat::AttackBlow]) / max / 100
+    let max = f.base.max_hp().max(1) as i64;
+    let lost = max - (f.hp as i64).clamp(0, max);
+    (lost * BERSERK_PERCENT as i64 * f.base[Stat::AttackBlow] as i64 / max / 100).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 #[cfg(test)]
