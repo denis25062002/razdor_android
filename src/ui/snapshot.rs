@@ -14,6 +14,11 @@
 //! (army screen, market); `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
 //! puts the pointer there.
+//!
+//! Every map scene starts its map as a new game (`Game::from_scenario`): nothing is carried
+//! over from a campaign's map before, so a later map whose opening events check for what it
+//! should have brought ends at once by its own defeat event (РК2 does without the herald,
+//! so `battle:РК2-…:0` shows the defeat screen). The game is not at fault there.
 
 use razdor::rules::content::HeroClass;
 use razdor::rules::game::{Foe, Game};
