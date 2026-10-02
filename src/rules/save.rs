@@ -11,7 +11,8 @@
 //! …; [`default_dir`]), or where `RAZDOR_SAVE_DIR` points; never in the repo or the game's
 //! folder. Manual saves go to `manual/`, autosaves to `auto/`: one before every battle and
 //! one at every 12:00 report, named by the in-game date as in the original ("1204.06.03,
-//! 12 h"). Only the newest [`AUTOSAVES_KEPT`] autosaves are kept.
+//! 12 h"). There are at most [`AUTOSAVES_KEPT`] autosaves, reused as the original reuses
+//! them ([`write_autosave`]).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -54,8 +55,8 @@ pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";
 /// Overrides the save folder (tests, portable installs).
 pub const DIR_ENV: &str = "RAZDOR_SAVE_DIR";
-/// Autosaves kept; older ones are deleted when a new one is written.
-pub const AUTOSAVES_KEPT: usize = 10;
+/// Autosaves kept, as the original's 12 slots.
+pub const AUTOSAVES_KEPT: usize = 12;
 const MANUAL_DIR: &str = "manual";
 const AUTO_DIR: &str = "auto";
 
@@ -145,9 +146,12 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// The original's autosave name for a moment: "1204.06.03, 12 h" ("…, 12 час" in Russian).
+/// The original's autosave name for a moment: "1204.06.03, 12 h" ("…, 12 час" in Russian),
+/// the month 1-based, the day 0-based. The original pads the day only when its index is
+/// below 9 (0x49ce20 tests the index, not the printed value), so day 9 prints as `9`.
 pub fn date_name(clock: &Clock) -> String {
-    let date = format!("{}.{:02}.{:02}", clock.year(), clock.month(), clock.day());
+    let day = if clock.day() < 9 { format!("{:02}", clock.day()) } else { clock.day().to_string() };
+    let date = format!("{}.{:02}.{day}", clock.year(), clock.month());
     crate::trf!("{date}, {hour} h", date, hour = clock.hour())
 }
 
@@ -255,32 +259,50 @@ fn slug(name: &str) -> String {
 }
 
 /// Writes `game` into save folder `dir` as `name`. A manual save of the same name is
-/// replaced; autosaves get a file of their own each, and only the newest
-/// [`AUTOSAVES_KEPT`] stay. Returns the file written.
+/// replaced; an autosave goes where [`write_autosave`] puts one outside a battle. Returns the
+/// file written.
 pub fn write(dir: &Path, kind: SaveKind, name: &str, game: &Game) -> Result<PathBuf, SaveError> {
-    let meta = meta_of(game, kind, name)?;
-    let bytes = encode(&meta, game)?;
-    let folder = kind_dir(dir, kind);
+    match kind {
+        SaveKind::Manual => {
+            let folder = kind_dir(dir, kind);
+            std::fs::create_dir_all(&folder)?;
+            put(&folder.join(format!("{}.{EXTENSION}", slug(name))), kind, name, game)
+        }
+        SaveKind::Auto => write_autosave(dir, name, game, false),
+    }
+}
+
+/// Writes an autosave as the original picks its slot (0x4b7410): in a battle the autosave
+/// of the same name is reused, otherwise the one of the same name **and** the same map title
+/// (when several match, the last in the list, newest first, so the oldest of them); with no
+/// match a new one is made while there are fewer than [`AUTOSAVES_KEPT`], else the last of
+/// the list, the oldest, is overwritten.
+pub fn write_autosave(dir: &Path, name: &str, game: &Game, in_battle: bool) -> Result<PathBuf, SaveError> {
+    let folder = kind_dir(dir, SaveKind::Auto);
     std::fs::create_dir_all(&folder)?;
-    let path = match kind {
-        SaveKind::Manual => folder.join(format!("{}.{EXTENSION}", slug(name))),
-        SaveKind::Auto => {
-            // Millisecond stamps sort by age; a counter keeps two in the same millisecond apart.
+    let saves = list(dir, SaveKind::Auto);
+    let same = |e: &&SaveEntry| e.meta.name == name && (in_battle || e.meta.title == game.world.title);
+    let reused = saves.iter().filter(same).last().or_else(|| saves.get(AUTOSAVES_KEPT - 1));
+    let path = match reused {
+        Some(e) => e.path.clone(),
+        None => {
+            // Millisecond stamps keep the names apart; a counter, two in the same millisecond.
             let stamp = now_millis();
-            (0..)
-                .map(|k| folder.join(format!("{stamp:015}-{k:02}.{EXTENSION}")))
-                .find(|p| !p.exists())
-                .expect("a free name")
+            (0..).map(|k| folder.join(format!("{stamp:015}-{k:02}.{EXTENSION}"))).find(|p| !p.exists()).expect("a free name")
         }
     };
-    // Write aside, then move into place, so a crash never leaves half a save.
+    put(&path, SaveKind::Auto, name, game)
+}
+
+/// Writes the save file `path`: aside first, then moved into place, so a crash never leaves
+/// half a save.
+fn put(path: &Path, kind: SaveKind, name: &str, game: &Game) -> Result<PathBuf, SaveError> {
+    let meta = meta_of(game, kind, name)?;
+    let bytes = encode(&meta, game)?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, &path)?;
-    if kind == SaveKind::Auto {
-        rotate(&folder, AUTOSAVES_KEPT)?;
-    }
-    Ok(path)
+    std::fs::rename(&tmp, path)?;
+    Ok(path.to_path_buf())
 }
 
 /// The name of the quick save (F5): a manual save that each quick save replaces.
@@ -313,24 +335,10 @@ pub fn list(dir: &Path, kind: SaveKind) -> Vec<SaveEntry> {
         .filter(|p| p.extension().is_some_and(|x| x == EXTENSION))
         .filter_map(|path| Some(SaveEntry { meta: read_meta(&path).ok()?, path }))
         .collect();
-    v.sort_by(|a, b| b.meta.saved_at.cmp(&a.meta.saved_at).then_with(|| b.path.cmp(&a.path)));
+    // Within a second, the file written last first (a reused autosave keeps an old name).
+    let written = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    v.sort_by(|a, b| b.meta.saved_at.cmp(&a.meta.saved_at).then_with(|| written(&b.path).cmp(&written(&a.path))).then_with(|| b.path.cmp(&a.path)));
     v
-}
-
-/// Deletes all but the newest `keep` save files of folder `folder` (by file name, which for
-/// autosaves is their time stamp).
-fn rotate(folder: &Path, keep: usize) -> Result<(), SaveError> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(folder)?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == EXTENSION))
-        .collect();
-    files.sort();
-    let excess = files.len().saturating_sub(keep);
-    for old in &files[..excess] {
-        std::fs::remove_file(old)?;
-    }
-    Ok(())
 }
 
 /// Where a map save finds its scenario: the install folder and its content.
@@ -544,6 +552,10 @@ pub(crate) mod tests {
         assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(date_name(&Clock::at(1204, 6, 3, 12)), "1204.06.03, 12 h");
+        // 0x49ce20 pads the day when its 0-based index is below 9: day 9 prints unpadded.
+        assert_eq!(date_name(&Clock::at(1204, 6, 8, 7)), "1204.06.08, 7 h");
+        assert_eq!(date_name(&Clock::at(1204, 10, 9, 12)), "1204.10.9, 12 h");
+        assert_eq!(date_name(&Clock::at(1204, 9, 29, 0)), "1204.09.29, 0 h");
         assert_eq!(slug("My game: day 3!"), "My_game__day_3_");
         assert_eq!(slug("Битва - Замок"), "Битва_-_Замок");
         assert_eq!(slug("///"), "save");
@@ -641,18 +653,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn autosaves_rotate() {
+    fn autosaves_take_the_originals_twelve_slots() {
+        // 0x4b7410: the same name (and map) is reused; with no match a new one while there
+        // are fewer than 12, else the oldest is overwritten.
         let dir = temp_dir("auto");
         let g = Game::new(demo(), HeroClass::Ranger);
-        for k in 0..AUTOSAVES_KEPT + 4 {
+        let names = |dir: &Path| list(dir, SaveKind::Auto).iter().map(|s| s.meta.name.clone()).collect::<Vec<_>>();
+        for k in 0..AUTOSAVES_KEPT {
             write(&dir, SaveKind::Auto, &format!("auto {k}"), &g).unwrap();
         }
-        let saves = list(&dir, SaveKind::Auto);
-        assert_eq!(saves.len(), AUTOSAVES_KEPT);
-        let mut names: Vec<String> = saves.iter().map(|s| s.meta.name.clone()).collect();
-        names.sort_by_key(|n| n[5..].parse::<usize>().unwrap());
-        assert_eq!(names.first().map(String::as_str), Some("auto 4"), "the oldest went first");
-        assert_eq!(saves[0].meta.name, format!("auto {}", AUTOSAVES_KEPT + 3), "newest first");
+        assert_eq!(names(&dir).len(), 12);
+        write(&dir, SaveKind::Auto, "auto 3", &g).unwrap();
+        let now = names(&dir);
+        assert_eq!((now.len(), now[0].as_str(), now.iter().filter(|n| *n == "auto 3").count()), (12, "auto 3", 1), "reused");
+        write(&dir, SaveKind::Auto, "new", &g).unwrap();
+        let now = names(&dir);
+        assert_eq!((now.len(), now[0].as_str()), (12, "new"));
+        assert!(!now.contains(&"auto 0".to_string()), "the oldest was overwritten");
+        // Outside a battle the map title must match too; before a battle the name alone.
+        let mut other = Game::new(demo(), HeroClass::Ranger);
+        other.world.title = "Another map".into();
+        write_autosave(&dir, "auto 5", &other, false).unwrap();
+        let now = names(&dir);
+        assert_eq!(now.iter().filter(|n| *n == "auto 5").count(), 2, "a new slot, over the oldest (auto 1)");
+        assert!(!now.contains(&"auto 1".to_string()));
+        write_autosave(&dir, "auto 6", &other, true).unwrap();
+        let now = names(&dir);
+        assert_eq!((now.len(), now.iter().filter(|n| *n == "auto 6").count(), now.contains(&"auto 2".to_string())), (12, 1, true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

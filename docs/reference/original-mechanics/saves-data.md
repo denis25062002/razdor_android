@@ -589,10 +589,10 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Load window click | a click selects; a click on the selected row loads; Enter loads; the Load sign is drawn but not clickable; the list scrolls | a click only selects; loading only by the Load button or the Load sign; at most 12 rows per tab, no scrolling | `ui/saves.rs` `load_screen`, `Book::rows` |
 | Deleting a save | Delete sign on the selected row, Yes/No question, file removed, list refreshed | the same flow: the file is deleted, the selection cleared, the other saves keep their order | `ui/saves.rs` `load_screen` |
 | Save window | a typed name (pre-filled with map title + game date) matched by name; a click on a save takes its name | 12 fixed slots; a click selects a slot, an empty slot starts blank, a used one keeps its name; the preview shows the real (computer) date; no overwrite question in either | `ui/saves.rs` `save_screen` |
-| Autosaves | a new file each time, 10 newest kept | at most 12, reuse by name (+ map), else the oldest overwritten | `save::write`, `rotate` |
+| Autosaves | Matches: at most 12; reused by name before a battle, by name and map title otherwise (the oldest match); else a new one while fewer than 12, else the oldest overwritten | at most 12, reuse by name (+ map), else the oldest overwritten | `save::write_autosave` |
 | Autosave moments | before every battle, every noon | as each battle window and each noon report opens; a silent noon only writes a pending one | `ui/saves.rs`, `Game::pass_slice` |
-| Autosave date name | day padded to two digits | day index 9 printed without the leading zero | `save::date_name` |
-| Carry-over gold | (see economy.md) | set to the old amount, not added | `Game::apply_carry_over` |
+| Autosave date name | Matches: day index 9 printed without the leading zero | day index 9 printed without the leading zero | `save::date_name` |
+| Carry-over gold | Matches: set to the old amount | set to the old amount, not added | `Game::apply_carry_over` |
 | Play options | Matches: `OptValue9`/`10`/`11` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row | flags read at start, 1 = on; the wide row 6 or 4 per row | `dt/install.rs` `PlayOptions`, `Content::from_dt` |
 
 ## Unknowns

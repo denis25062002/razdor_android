@@ -99,10 +99,11 @@ fn battle_name(game: &Game) -> String {
     }
 }
 
-/// Writes an autosave named `name`; a failure is reported on stderr (the game goes on).
-pub fn autosave(game: &Game, name: &str) {
+/// Writes an autosave named `name` (`in_battle`: the one before a battle, see
+/// [`save::write_autosave`]); a failure is reported on stderr (the game goes on).
+pub fn autosave(game: &Game, name: &str, in_battle: bool) {
     let Some(dir) = save::default_dir() else { return };
-    if let Err(e) = save::write(&dir, SaveKind::Auto, name, game) {
+    if let Err(e) = save::write_autosave(&dir, name, game, in_battle) {
         razdor::diag!("autosave: {e}");
     }
 }
@@ -114,7 +115,7 @@ pub fn autosave(game: &Game, name: &str) {
 pub fn battle(game: &mut Game) -> Screen {
     let name = battle_name(game);
     let foe = game.foe.take();
-    autosave(game, &name);
+    autosave(game, &name, true);
     game.foe = foe;
     Screen::Battle(Box::new(BattleView::new(game.start_battle())))
 }

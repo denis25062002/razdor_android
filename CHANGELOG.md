@@ -404,6 +404,10 @@ old id, and their versions give both.
   the end of the data, trailing bytes and odd section sizes are ignored, an event picture's
   size is a full 32-bit value, the container's magic is `A?pf` with its other layout and
   its first scramble mode read too.
+- Autosaves take the original's 12 slots: the autosave before a battle reuses the one of
+  the same name, a noon autosave the one of the same name on the same map; otherwise a new
+  one is made, or the oldest is overwritten once there are 12. A noon autosave on day 9
+  of a month is named without the leading zero, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

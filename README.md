@@ -374,8 +374,9 @@ villages pay mana. Scenario events that cast spells on your army use the same ru
 title screen. **F5** writes the quick save (a manual save named "Quick save", replacing the
 previous one) and **F9** loads it. The load window has two tabs, your saves and the autosaves, newest first,
 with the scenario, the hero and the in-game date. The game autosaves before every battle
-and at every 12:00 report (named by the date, "1204.06.03, 12 h"); the newest 10 autosaves
-are kept.
+and at every 12:00 report (named by the date, "1204.06.03, 12 h"), in the original's 12
+slots: an autosave of the same name (on the same map) is overwritten, and once there are 12
+the oldest is.
 
 Saves are your data and live in your data folder, never in the repo or the game folder:
 `$XDG_DATA_HOME/razdor/saves` (usually `~/.local/share/razdor/saves`) on Linux,
