@@ -970,6 +970,7 @@ fn where_a_beaten_army_comes_back() {
         let mut s = map();
         let mut home = building(kind, 40, 10, (1, 1));
         home.faction = 1;
+        home.owner_army = 0; // the owner byte makes it the player's
         s.buildings = vec![home];
         let mut a = army(1, (30, 10), 4, ENEMY, 1, &[troop(4, 0, 1)]);
         a.home_building = 1;

@@ -393,6 +393,17 @@ old id, and their versions give both.
   (`People` is the ordinary nature, so the AI hires such units alongside ordinary ones).
 - The front row is 6 wide only when the install's wide-row option (`OptValue11`) is on,
   else 4 wide, and the options count as on when they read 1, as in the original.
+- Maps load as the original loads them: an army stands exactly on its file's cell (two
+  shipped armies stand where they cannot walk), and only its "inactive" byte keeps it off
+  the map. Unit ids 1–3 listed among the troops of a hero preset, an army or a garrison
+  are skipped. A building whose owner byte is 0 is the player's, and one of the player's
+  faction is no longer his for that; a bridge flagged for the hero's class is given to him
+  too. Named characters keep their double spaces.
+- A map file is read leniently, as the original reads it: only the version byte of the
+  header is checked, the strings start at the header's text offset, a string may end at
+  the end of the data, trailing bytes and odd section sizes are ignored, an event picture's
+  size is a full 32-bit value, the container's magic is `A?pf` with its other layout and
+  its first scramble mode read too.
 
 ## 0.2.2 — 2026-10-01
 

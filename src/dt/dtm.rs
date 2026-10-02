@@ -360,23 +360,28 @@ impl Surface {
     }
 }
 
-/// Expand the terrain stream of `(value, run − 1)` byte pairs into `width*height` cells.
+/// Largest map Razdor allocates (the original allocates whatever the header says).
+const MAX_CELLS: u64 = 1 << 26;
+
+/// Expand the terrain stream of `(value, run − 1)` byte pairs into `width*height` cells as
+/// the loader does (0x4b2504, saves-data.md §10.2): `size div 2` pairs (an odd last byte is
+/// ignored), written cell after cell with no bounds check, so cells past the map's last row
+/// land in its border (overwritten by the border copy) or beyond, and are lost; cells the
+/// stream does not reach stay 0 *(guess: the buffer's first contents are not traced)*.
 pub fn expand_terrain(rle: &[u8], width: u32, height: u32) -> Result<Vec<u8>, DtError> {
-    if !rle.len().is_multiple_of(2) {
-        return Err(DtError::Terrain(format!("odd RLE size {}", rle.len())));
-    }
     let cells = width as u64 * height as u64;
-    // Each pair expands to at most 256 cells; this also bounds the allocation.
-    if cells > rle.len() as u64 / 2 * 256 {
-        return Err(DtError::Terrain(format!("{} RLE bytes cannot fill {width}x{height}", rle.len())));
+    if cells > MAX_CELLS {
+        return Err(DtError::Terrain(format!("{width}x{height} is too big a map")));
     }
-    let mut out = Vec::with_capacity(cells as usize);
+    let cells = cells as usize;
+    let mut out = Vec::with_capacity(cells);
     for pair in rle.chunks_exact(2) {
+        if out.len() >= cells {
+            break;
+        }
         out.extend(std::iter::repeat_n(pair[0], pair[1] as usize + 1));
     }
-    if out.len() as u64 != cells {
-        return Err(DtError::Terrain(format!("RLE expands to {} cells, expected {cells}", out.len())));
-    }
+    out.resize(cells, 0);
     Ok(out)
 }
 
@@ -890,9 +895,10 @@ impl Army {
         ArmyModel::from_code(self.model)
     }
 
-    /// On the map at start: not the "inactive" model and not flagged inactive.
+    /// On the map at start: byte 63 is clear. The loader reads only that byte (0x4b2504),
+    /// not the "inactive" model 7 (which goes with it in every shipped map).
     pub fn is_active(&self) -> bool {
-        self.inactive == 0 && self.model() != Some(ArmyModel::Inactive)
+        self.inactive == 0
     }
 
     /// Occupied troop slots.
@@ -1216,13 +1222,15 @@ pub struct Event {
     pub message: String,
     /// Parsed from `title`.
     pub flags: Option<FlagScript>,
-    /// Custom picture (size at byte 163): u16 width, u16 height, 16-bit pixels (L: RGB565).
+    /// Custom picture (size: the i32 at byte 163): u16 width, u16 height, 16-bit pixels
+    /// (L: RGB565).
     pub custom_picture: Option<Vec<u8>>,
 }
 
 impl Event {
-    /// Returns the event and its custom picture size (byte 163).
-    fn read(r: &Rec) -> (Event, u16) {
+    /// Returns the event and its custom picture size: a full 32-bit value at byte 163, read
+    /// when positive (0x4b2bbd).
+    fn read(r: &Rec) -> (Event, i32) {
         let conditions = EventConditions {
             squad_count: r.i16(11),
             army_strength: r.i16(13),
@@ -1309,7 +1317,7 @@ impl Event {
             unknown_165: r.arr(165),
             ..Event::default()
         };
-        (e, r.u16(163))
+        (e, r.u32(163) as i32)
     }
 
     fn write(&self, p: &mut Put) {
@@ -1491,19 +1499,19 @@ impl<'a> Cursor<'a> {
         Ok(s)
     }
 
+    /// A section of `size` bytes holding `size div record` records (0x4b2504); the bytes
+    /// left over are skipped.
     fn records(&mut self, size: u32, record: usize, section: &'static str) -> Result<Vec<Rec<'a>>, DtError> {
-        if !(size as usize).is_multiple_of(record) {
-            return Err(DtError::SectionSize { section, size, record });
-        }
         Ok(self.take(size as usize, section)?.chunks_exact(record).map(Rec).collect())
     }
 
-    fn cstr(&mut self) -> Result<String, DtError> {
-        let rest = &self.data[self.pos..];
-        let n = rest.iter().position(|b| *b == 0).ok_or(DtError::UnterminatedString { offset: self.pos })?;
+    /// A string up to a NUL or the end of the data (0x473b04).
+    fn cstr(&mut self) -> String {
+        let rest = self.data.get(self.pos..).unwrap_or_default();
+        let n = rest.iter().position(|b| *b == 0).unwrap_or(rest.len());
         let s = text::decode(&rest[..n]);
-        self.pos += n + 1;
-        Ok(s)
+        self.pos += (n + 1).min(rest.len());
+        s
     }
 }
 
@@ -1514,21 +1522,30 @@ impl Scenario {
         Scenario::from_file_bytes(&bytes)
     }
 
-    /// Parse file contents: an `AIpf` container, or an already decompressed payload.
+    /// Parse file contents: a container ([`container::has_magic`]), else the bytes as they
+    /// are, as the original's stream reads a file without the magic.
     pub fn from_file_bytes(bytes: &[u8]) -> Result<Scenario, DtError> {
-        if bytes.starts_with(PAYLOAD_MAGIC) {
-            return Scenario::parse_payload(bytes);
+        if container::has_magic(bytes) {
+            return Scenario::parse_payload(&container::decode(bytes)?.payload);
         }
-        Scenario::parse_payload(&container::decode(bytes)?.payload)
+        Scenario::parse_payload(bytes)
     }
 
-    /// Parse an uncompressed payload. Every byte must be accounted for.
+    /// Parse an uncompressed payload as the map loader reads it (0x4b2504, saves-data.md
+    /// §10.1): only header byte 9 is checked (below `'4'` nothing is loaded); the sections
+    /// are read in order by the header's sizes, each holding `size div record` records; then
+    /// the reader **seeks to the header's text offset** (the text marker is never read) and
+    /// takes the strings, each up to a NUL or the end; the scenario picture and the event
+    /// pictures with a positive 32-bit size follow. Nothing after them is looked at.
     pub fn parse_payload(data: &[u8]) -> Result<Scenario, DtError> {
-        if !data.starts_with(PAYLOAD_MAGIC) {
-            return Err(DtError::BadMagic { what: "DTm payload" });
-        }
         if data.len() < HEADER_SIZE {
+            if data.get(9).is_some_and(|&v| v < b'4') {
+                return Err(DtError::BadMagic { what: "DTm payload" });
+            }
             return Err(DtError::Truncated { what: "header", offset: data.len() });
+        }
+        if data[9] < b'4' {
+            return Err(DtError::BadMagic { what: "DTm payload" });
         }
         let h = Rec(&data[..HEADER_SIZE]);
         let (width, height, text_offset) = (h.u32(0x0C), h.u32(0x10), h.u32(0x18));
@@ -1566,20 +1583,6 @@ impl Scenario {
             });
         }
 
-        // Guard the text marker before touching the sections.
-        let marker_at = sizes.iter().try_fold(HEADER_SIZE, |acc, s| acc.checked_add(*s as usize));
-        let marker_at = marker_at.ok_or(DtError::Truncated { what: "sections", offset: HEADER_SIZE })?;
-        if marker_at.checked_add(TEXT_MARKER.len()).is_none_or(|e| e > data.len()) {
-            return Err(DtError::Truncated { what: "sections", offset: data.len() });
-        }
-        if &data[marker_at..marker_at + TEXT_MARKER.len()] != TEXT_MARKER {
-            return Err(DtError::TextMarker { offset: marker_at });
-        }
-        let text_at = marker_at + TEXT_MARKER.len();
-        if text_offset as usize != text_at {
-            return Err(DtError::TextOffset { header: text_offset, computed: text_at });
-        }
-
         let mut c = Cursor { data, pos: HEADER_SIZE };
         let terrain = expand_terrain(c.take(terrain_size as usize, "terrain")?, width, height)?;
         let objects = c
@@ -1591,27 +1594,28 @@ impl Scenario {
             c.records(buildings_size, BUILDING_SIZE, "buildings")?.iter().map(Building::read).collect();
         let mut armies: Vec<Army> = c.records(armies_size, ARMY_SIZE, "armies")?.iter().map(Army::read).collect();
         let points = c.records(points_size, POINT_SIZE, "points")?.iter().map(Point::read).collect();
-        let (mut events, picture_sizes): (Vec<Event>, Vec<u16>) =
+        let (mut events, picture_sizes): (Vec<Event>, Vec<i32>) =
             c.records(events_size, EVENT_SIZE, "events")?.iter().map(Event::read).unzip();
-        c.take(TEXT_MARKER.len(), "text marker")?;
+        // Seek to the header's text offset (0x4b27a8).
+        c.pos = text_offset as usize;
 
-        let title = c.cstr()?;
-        let description = c.cstr()?;
-        let campaign_name = c.cstr()?;
-        let next_map = c.cstr()?;
+        let title = c.cstr();
+        let description = c.cstr();
+        let campaign_name = c.cstr();
+        let next_map = c.cstr();
         for b in &mut buildings {
-            (b.name, b.owner_name, b.description) = (c.cstr()?, c.cstr()?, c.cstr()?);
+            (b.name, b.owner_name, b.description) = (c.cstr(), c.cstr(), c.cstr());
         }
         for a in &mut armies {
-            (a.name, a.leader_name, a.description) = (c.cstr()?, c.cstr()?, c.cstr()?);
+            (a.name, a.leader_name, a.description) = (c.cstr(), c.cstr(), c.cstr());
         }
         for e in &mut events {
-            (e.title, e.question, e.message) = (c.cstr()?, c.cstr()?, c.cstr()?);
+            (e.title, e.question, e.message) = (c.cstr(), c.cstr(), c.cstr());
             e.flags = FlagScript::from_title(&e.title);
         }
         let mut named_characters = Vec::with_capacity(named_count as usize);
         for &unit in &header.named_character_slots[..named_count as usize] {
-            named_characters.push(NamedCharacter { unit, name: c.cstr()? });
+            named_characters.push(NamedCharacter { unit, name: c.cstr() });
         }
 
         let scenario_picture = match picture_size {
@@ -1619,12 +1623,9 @@ impl Scenario {
             n => Some(c.take(n as usize, "scenario picture")?.to_vec()),
         };
         for (e, n) in events.iter_mut().zip(picture_sizes) {
-            if n != 0 {
+            if n > 0 {
                 e.custom_picture = Some(c.take(n as usize, "event picture")?.to_vec());
             }
-        }
-        if c.pos != data.len() {
-            return Err(DtError::TrailingBytes { offset: c.pos, count: data.len() - c.pos });
         }
 
         Ok(Scenario {
@@ -1948,10 +1949,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_trailing_bytes() {
+    fn trailing_bytes_are_not_looked_at() {
         let mut bytes = sample_payload();
         bytes.push(0);
-        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TrailingBytes { count: 1, .. })));
+        assert_eq!(Scenario::parse_payload(&bytes).unwrap(), Scenario::parse_payload(&sample_payload()).unwrap());
     }
 
     #[test]
@@ -1962,49 +1963,63 @@ mod tests {
     }
 
     #[test]
-    fn rejects_misplaced_text_marker() {
-        let mut bytes = sample_payload();
-        let objects_size = 0x20;
-        w32(&mut bytes, objects_size, 12); // claims two objects: marker is now misplaced
-        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TextMarker { .. })));
-    }
-
-    #[test]
-    fn rejects_bad_text_offset() {
+    fn the_strings_start_at_the_header_text_offset() {
+        // 0x4b27a8 seeks to the header's offset; the text marker is never read.
         let mut bytes = sample_payload();
         let off = u32::from_le_bytes(bytes[0x18..0x1C].try_into().unwrap());
         w32(&mut bytes, 0x18, off + 1);
-        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::TextOffset { .. })));
+        let s = Scenario::parse_payload(&bytes).unwrap();
+        assert_eq!((s.title.as_str(), s.description.as_str()), ("itle", "Desc"));
+        let mut bytes = sample_payload();
+        bytes[off as usize - 8..off as usize].copy_from_slice(b"no-mark!");
+        assert_eq!(Scenario::parse_payload(&bytes).unwrap().title, "Title");
     }
 
     #[test]
-    fn rejects_bad_record_size() {
-        // Move 1 byte from the object section to the terrain section: the marker stays put
-        // but the object section is no longer a multiple of 6.
+    fn sections_hold_size_div_record_records() {
+        // Move 1 byte from the object section to the terrain section: 5 bytes hold no
+        // object, and the odd terrain byte is ignored.
         let mut bytes = sample_payload();
         w32(&mut bytes, 0x1C, 7);
         w32(&mut bytes, 0x20, 5);
-        let err = Scenario::parse_payload(&bytes).unwrap_err();
-        assert!(matches!(err, DtError::Terrain(_)), "{err}");
-        w32(&mut bytes, 0x1C, 6);
-        w32(&mut bytes, 0x20, 5);
-        w32(&mut bytes, 0x24, BUILDING_SIZE as u32 + 1);
-        assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::SectionSize { section: "objects", .. })));
+        let s = Scenario::parse_payload(&bytes).unwrap();
+        assert_eq!((s.objects.len(), s.terrain.len()), (0, 8));
+        assert_eq!((s.buildings.len(), s.title.as_str()), (1, "Title"));
     }
 
     #[test]
-    fn rejects_unterminated_strings() {
+    fn strings_end_at_a_nul_or_the_end_of_the_data() {
         let bytes = sample_payload();
         let text_at = u32::from_le_bytes(bytes[0x18..0x1C].try_into().unwrap()) as usize;
         let mut cut = bytes[..text_at + 3].to_vec();
         w32(&mut cut, 0x11C, 0);
-        assert!(matches!(Scenario::parse_payload(&cut), Err(DtError::UnterminatedString { .. })));
+        let event_at = HEADER_SIZE + 6 + 6 + BUILDING_SIZE + ARMY_SIZE + POINT_SIZE;
+        w32(&mut cut, event_at + 163, 0);
+        let s = Scenario::parse_payload(&cut).unwrap();
+        assert_eq!((s.title.as_str(), s.description.as_str(), s.named_characters[0].name.as_str()), ("Tit", "", ""));
     }
 
     #[test]
-    fn rejects_bad_magic() {
+    fn event_picture_size_is_32_bits() {
+        // Byte 163 is a full i32 (0x4b2bbd): a size with high bytes set is that big, and a
+        // negative one means no picture.
+        let bytes = sample_payload();
+        let event_at = HEADER_SIZE + 6 + 6 + BUILDING_SIZE + ARMY_SIZE + POINT_SIZE;
+        let mut big = bytes.clone();
+        w32(&mut big, event_at + 163, 0x0001_0006);
+        assert!(matches!(Scenario::parse_payload(&big), Err(DtError::Truncated { .. })));
+        let mut negative = bytes.clone();
+        w32(&mut negative, event_at + 163, (-6i32) as u32);
+        assert_eq!(Scenario::parse_payload(&negative).unwrap().events[0].custom_picture, None);
+    }
+
+    #[test]
+    fn only_header_byte_9_is_checked() {
+        // 0x4b2504 loads nothing when byte 9 is below '4'; the other magic bytes are not read.
         let mut bytes = sample_payload();
         bytes[0] = b'X';
+        assert!(Scenario::parse_payload(&bytes).is_ok());
+        bytes[9] = b'3';
         assert!(matches!(Scenario::parse_payload(&bytes), Err(DtError::BadMagic { .. })));
         assert!(matches!(Scenario::parse_payload(&bytes[..20]), Err(DtError::BadMagic { .. })));
         assert!(matches!(Scenario::parse_payload(PAYLOAD_MAGIC), Err(DtError::Truncated { .. })));
@@ -2013,9 +2028,11 @@ mod tests {
     #[test]
     fn terrain_rle() {
         assert_eq!(expand_terrain(&[5, 2, 7, 0], 2, 2).unwrap(), [5, 5, 5, 7]);
-        assert!(expand_terrain(&[5, 2, 7], 2, 2).is_err());
-        assert!(expand_terrain(&[5, 3, 7, 0], 2, 2).is_err());
-        assert!(expand_terrain(&[5, 1], 2, 2).is_err());
+        // As the loader: an odd last byte is ignored, cells past the end are lost, cells not
+        // reached stay 0.
+        assert_eq!(expand_terrain(&[5, 2, 7], 2, 2).unwrap(), [5, 5, 5, 0]);
+        assert_eq!(expand_terrain(&[5, 3, 7, 0], 2, 2).unwrap(), [5, 5, 5, 5]);
+        assert_eq!(expand_terrain(&[5, 1], 2, 2).unwrap(), [5, 5, 0, 0]);
         assert!(expand_terrain(&[5, 255], u32::MAX, u32::MAX).is_err());
         let cells: Vec<u8> = std::iter::repeat_n(3, 300).chain([1, 1]).collect();
         let rle = compress_terrain(&cells);

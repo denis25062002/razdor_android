@@ -573,17 +573,17 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Bonus / enum names | Matches: exact; unknown → none | exact; unknown → 0 (no bonus) | `Bonus::known_token`, `Nature::parse` |
 | MagicDirection `ToAll` | Matches (same outcome): parsed as its own value, meaning all | not matched; reads as 0, which the code treats as "all" (same outcome) | `MagicDirection::parse` |
 | Artefact `Type` | Matches: unknown type = Potion; entry needs Icon, Name, Type, Cost | unknown type = Potion; entry needs Icon, Name, Type, Cost | `dt/data.rs` |
-| DTm container | exact `AIpf\r\n` magic, the u16 as version | magic `A?pf`; bytes 6/7 are compression code and scramble mode | `dt/container.rs` |
-| DTm strings | text marker and trailing bytes checked, load refused | seeks to the header's text offset; nothing checked; header byte 9 < `'4'` → nothing loaded | `dt/dtm.rs` `parse_payload` |
-| Event picture size | u16 | 32-bit | `dt/dtm.rs` |
-| Space runs in texts | kept | collapsed to one space at load (not in titles of the map) | `dt/dtm.rs` / `rules/world.rs` |
-| Troops of unit ids 1–3 | placed | skipped in presets, armies and garrisons (leaders excepted) | `world.rs` `dt_entries` |
-| Start time | header minute | header minute + 1 | `World::from_scenario` |
-| Village start stock | one day's tribute *(guess)* | confirmed: one day's gold and mana | `World::from_scenario` |
-| Army placement | nearest passable cell (or sea for ships) | exactly the file cell; at sea when that cell is water | `World::from_scenario` |
-| Building owner byte 0 | army 0 | the player | `World::from_scenario` |
-| Faction-1 buildings | given to the player | only the preset's start building and the class-flagged buildings; their attitudes are the hero's | `World::from_scenario`, `give_to_player` |
-| Start buildings | bridges excluded | not excluded | `World::start_buildings` |
+| DTm container | Matches: magic `A?pf`; legacy layout (byte 1 `I`) one bzip2 stream, scramble mode 1 undone; new layout in chunks; a size mismatch not checked. Scramble mode 2 (the game's random numbers) is refused | magic `A?pf`; bytes 6/7 are compression code and scramble mode | `dt/container.rs` |
+| DTm strings | Matches: header byte 9 < `'4'` → not loaded; sections by the header sizes (`size div record` records); seeks to the header's text offset; strings end at a NUL or the end; nothing else checked | seeks to the header's text offset; nothing checked; header byte 9 < `'4'` → nothing loaded | `dt/dtm.rs` `parse_payload` |
+| Event picture size | Matches: 32-bit, read when positive | 32-bit | `dt/dtm.rs` |
+| Space runs in texts | Matches: collapsed in building, army and event strings; titles and named characters kept | collapsed to one space at load (not in titles of the map) | `dt/dtm.rs` / `rules/world.rs` |
+| Troops of unit ids 1–3 | Matches: skipped in presets, armies and garrisons (leaders excepted) | skipped in presets, armies and garrisons (leaders excepted) | `world.rs` `dt_entries` |
+| Start time | Matches: header minute + 1 | header minute + 1 | `World::from_scenario` |
+| Village start stock | Matches: one day's gold and mana | confirmed: one day's gold and mana | `World::from_scenario` |
+| Army placement | Matches: exactly the file cell; at sea when that cell is water and not a bridge; off the map only by byte 63 | exactly the file cell; at sea when that cell is water | `World::from_scenario` |
+| Building owner byte 0 | Matches: the player | the player | `World::from_scenario` |
+| Faction-1 buildings | Matches: only the preset's start building and the class-flagged buildings are given | only the preset's start building and the class-flagged buildings; their attitudes are the hero's | `World::from_scenario`, `give_to_player` |
+| Start buildings | Matches: bridges not excluded | not excluded | `World::start_buildings` |
 | Save format | bzip2 JSON `.rzsave`, map re-read on load | binary dump of the whole state (§12) | `rules/save.rs` (by design; reading original saves is not supported) |
 | Manual save names | slug of letters/digits/`-`, same name replaces | cp1251 sanitising, `[n]` suffix on a clash, 12 slots | `save::slug`, `save::write` |
 | Load window click | a click selects; a click on the selected row loads; Enter loads; the Load sign is drawn but not clickable; the list scrolls | a click only selects; loading only by the Load button or the Load sign; at most 12 rows per tab, no scrolling | `ui/saves.rs` `load_screen`, `Book::rows` |

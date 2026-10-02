@@ -490,6 +490,7 @@ mod tests {
         t.spells_for_sale[0] = 1;
         let mut castle = town(BuildingType::Castle, 8, 5, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         let mut fort = town(BuildingType::Fort, 11, 5, -2);
         fort.barracks[2] = RecruitSlot { unit: 5, start_count: 1, max_count: 1 };
         fort.random_artifacts_for_sale = 4; // wiped at load: only towns, markets, churches sell
@@ -720,6 +721,7 @@ mod tests {
         s.header.heroes[0] = hero(2, 2, 100, &[troop(4, 0, 1), troop(9, 0, 1)]);
         let mut fort = town(BuildingType::Fort, 8, 2, 3);
         fort.faction = 1;
+        fort.owner_army = 0; // the owner byte makes it the player's
         fort.gold_per_day = 40;
         fort.mana_per_day = 7;
         let mut village = town(BuildingType::Village, 12, 2, 1);
@@ -750,6 +752,7 @@ mod tests {
         (fort.faction, fort.gold_per_day, fort.gold_max, fort.mana_per_day, fort.mana_max) = (1, 30, 90, 5, 20);
         let mut t = town(BuildingType::Town, 12, 2, 3);
         (t.faction, t.gold_per_day, t.gold_max) = (1, 50, 100);
+        (fort.owner_army, t.owner_army) = (0, 0); // the owner byte makes them the player's
         s.buildings = vec![fort, t];
         let mut g = start(&s);
         // Both start at 0 and grow from the first midnight, every building with a maximum.
@@ -877,6 +880,7 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 2, 2, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         s.buildings = vec![castle];
         let mut g = inside(&s);
         g.squad[2].wage_kind = crate::rules::content::WageKind::Event;
@@ -892,6 +896,7 @@ mod tests {
         s.header.heroes[0] = hero(2, 2, 1000, &[troop(10, 0, 1), troop(5, 0, 1), troop(4, 0, 2)]);
         let mut fort = town(BuildingType::Fort, 8, 2, 3);
         fort.faction = 1;
+        fort.owner_army = 0; // the owner byte makes it the player's
         fort.gold_per_day = 10;
         s.buildings = vec![fort];
         let mut g = start(&s);
@@ -931,6 +936,7 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 8, 2, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         let mut v = town(BuildingType::Village, 14, 2, 1);
         v.gold_per_day = 30;
         v.gold_max = 90;
@@ -1239,6 +1245,7 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 2, 2, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         s.buildings = vec![castle, town(BuildingType::Castle, 8, 2, 1)];
         let mut g = inside(&s);
         g.first_noon_today();
@@ -1265,6 +1272,7 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 2, 2, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         s.buildings = vec![castle];
         inside(&s)
     }
@@ -1340,6 +1348,7 @@ mod tests {
         let mut s = map();
         let mut castle = town(BuildingType::Castle, 2, 2, 3);
         castle.faction = 1;
+        castle.owner_army = 0; // the owner byte makes it the player's
         castle.garrison[0] = troop(4, 0, 3);
         s.buildings = vec![castle];
         let g = inside(&s);

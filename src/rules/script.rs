@@ -2009,7 +2009,8 @@ mod tests {
         ];
         let mut s = world(events);
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 3, name: "Aide".into() }];
-        s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1), troop(1, 0, 1)])];
+        // Two troops (unit ids 1–3 in a triple are skipped at load).
+        s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 2)])];
         let mut fort = building(BuildingType::Fort, 9, 2, (1, 1));
         fort.garrison[0] = troop(4, 0, 1);
         s.buildings = vec![fort];

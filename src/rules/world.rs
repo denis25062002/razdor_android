@@ -134,8 +134,11 @@ pub fn place_troops(content: &Content, occupied: &[Slot], entries: &[(u32, i32, 
     (out, dropped)
 }
 
+/// The troop triples of a preset, an army or a garrison. Unit ids 1–3 (the hero types) are
+/// skipped, as the map loader adds only a unit above 3 (0x4b2504); an army's leader is not
+/// a triple and may be one.
 fn dt_entries(troops: &[dtm::Troop]) -> Vec<(u32, i32, i32)> {
-    troops.iter().filter(|t| t.unit != 0 && t.count > 0).map(|t| (t.unit as u32, t.level as i32 + 1, t.count as i32)).collect()
+    troops.iter().filter(|t| t.unit > 3 && t.count > 0).map(|t| (t.unit as u32, t.level as i32 + 1, t.count as i32)).collect()
 }
 
 /// The 16 building types of the original plus the demo's bandit camp.
@@ -925,9 +928,10 @@ impl World {
             .iter()
             .map(|p| MapPoint { id: p.id, tile: (p.x as i32, p.y as i32), radius: p.radius as i32, lit: p.model == 8 && p.active != 0 })
             .collect();
-        // Every string of the map has its double spaces collapsed at load (0x4b2aa1).
+        // The building and army strings have their double spaces collapsed at load
+        // (0x4b2aa1); the named characters' names are kept as they are.
         let text = crate::dt::dtm::collapse_spaces;
-        world.named_characters = s.named_characters.iter().map(|n| text(&n.name)).collect();
+        world.named_characters = s.named_characters.iter().map(|n| n.name.clone()).collect();
 
         for (i, b) in s.buildings.iter().enumerate() {
             let kind = b.building_type().map_or(LocationKind::Smithy, LocationKind::from_building);
@@ -940,14 +944,18 @@ impl World {
             l.owner_name = text(&b.owner_name);
             l.description = text(&b.description);
             l.picture = (b.picture_type, b.picture_variant);
-            l.owner = b.owner().map_or(Owner::Neutral, Owner::Army);
+            // The owner byte as it is (0x4b2504): 0 is the player, 0xFF nobody, k army k. A
+            // building of the player's faction is not his for that; his start buildings are
+            // given by the hero's preset ([`World::start_buildings`]).
+            l.owner = match b.owner() {
+                None => Owner::Neutral,
+                Some(0) => Owner::Player,
+                Some(k) => Owner::Army(k),
+            };
             l.faction = b.faction;
             l.attitude = b.relations[0];
             l.relations = b.relations;
             l.services = b.has_barracks != 0;
-            if b.faction == 1 {
-                l.owner = Owner::Player;
-            }
             l.gold_income = b.gold_per_day as i32;
             l.gold_max = b.gold_max as i32;
             l.mana_income = b.mana_per_day as i32;
@@ -1014,14 +1022,8 @@ impl World {
             let on_bridge = world.location_covering(at).is_some_and(|l| world.locations[l].kind.is_bridge());
             let afloat = world.map.in_bounds(at) && is_water(world.map.surface(at)) && !on_bridge;
             let ship = if afloat { a.ship.max(super::ships::kind::HERO) } else { 0 };
-            let placed = if ship != 0 {
-                world.nearest_sea(at, PLACE_RADIUS)
-            } else if world.map.passable(at) {
-                Some(at)
-            } else {
-                world.map.nearest_passable(at, PLACE_RADIUS)
-            };
-            let tile = placed.unwrap_or(at);
+            // Exactly the file's cell (0x4b2504): no search for a free or passable one.
+            let tile = at;
             // Merchant ships trade and never attack (guess; one shipped merchant is marked
             // ill-disposed in its file).
             // The original's relation (0x4a0868): the player's attitude to the army's faction
@@ -1070,9 +1072,7 @@ impl World {
             for item in artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)) {
                 super::ai::give_item(content, &mut army, item);
             }
-            // An army with no cell of its kind nearby (a land army far out on the water)
-            // waits with the inactive.
-            if a.is_active() && placed.is_some() {
+            if a.is_active() {
                 world.armies.push(army);
             } else {
                 world.inactive.push(army);
@@ -1084,7 +1084,7 @@ impl World {
 
     /// The buildings given to the hero of `class` at the start (world.md §7): the preset's
     /// start building (byte 16, 1-based) and every building flagged for the class (building
-    /// byte 353 + class). Bridges are never given.
+    /// byte 353 + class), bridges too (0x4b2504 does not exclude them).
     pub fn start_buildings(&self, s: &Scenario, class: HeroClass) -> Vec<usize> {
         let k = match class {
             HeroClass::Knight => 0,
@@ -1093,7 +1093,7 @@ impl World {
         };
         let archetype = [Archetype::Knight, Archetype::Archmage, Archetype::Ranger][k];
         let p = s.header.hero(archetype);
-        let ok = |i: usize| self.locations.get(i).is_some_and(|l| !l.kind.is_bridge());
+        let ok = |i: usize| i < self.locations.len();
         let preset = (p.start_building as usize).checked_sub(1);
         let flagged = s.buildings.iter().enumerate().filter(|(_, b)| b.start_for[k] != 0).map(|(i, _)| i);
         let mut out: Vec<usize> = preset.into_iter().chain(flagged).filter(|&i| ok(i)).collect();
@@ -1758,6 +1758,54 @@ mod tests {
         let f = &g.world.locations[0];
         assert_eq!((g.tile(), g.location, f.owner, f.faction, f.attitude), ((6, 5), Some(0), Owner::Player, 1, 3));
     }
+
+    #[test]
+    fn the_map_loads_as_the_original_loader() {
+        // saves-data.md §10 (0x4b2504).
+        let mut s = scenario(20, 10);
+        set(&mut s, 5, 5, Surface::ImpassableSwamp);
+        // Unit ids 1–3 in a triple are skipped (not a leader); the army stands exactly on its
+        // file cell, impassable or not.
+        let mut a = army(1, 5, 5, -2, &[troop(4, 0, 1), troop(2, 0, 3), troop(5, 0, 1)]);
+        a.leader_unit = 3;
+        // Model 7 ("inactive") is not read: only byte 63 keeps an army off the map.
+        let mut b = army(2, 9, 2, 1, &[troop(4, 0, 1)]);
+        b.model = 7;
+        let mut c = army(3, 12, 2, 1, &[troop(4, 0, 1)]);
+        c.inactive = 1;
+        s.armies = vec![a, b, c];
+        // Owner byte 0 is the player; a building of his faction owned by nobody is not his.
+        let mut mine = building(BuildingType::Village, 2, 8, (1, 1));
+        mine.owner_army = 0;
+        let mut theirs = building(BuildingType::Village, 4, 8, (1, 1));
+        theirs.faction = 1;
+        let mut fort = building(BuildingType::Fort, 8, 8, (1, 1));
+        fort.garrison[0] = troop(1, 0, 2);
+        fort.garrison[1] = troop(4, 0, 2);
+        fort.name = "Old  fort".into();
+        // A bridge flagged for the knight is his too.
+        let mut bridge = building(BuildingType::StoneBridge, 15, 8, (1, 1));
+        bridge.start_for = [1, 0, 0];
+        s.buildings = vec![mine, theirs, fort, bridge];
+        s.header.heroes[0] = hero(1, 1, 100, &[troop(1, 0, 1), troop(4, 0, 1)]);
+        s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Ivo  the  Bold".into() }];
+        let c = content();
+        let w = World::from_scenario(&s, &c);
+        let a = &w.armies[0];
+        assert_eq!(a.tile(&w.map), (5, 5));
+        assert!(!w.map.passable((5, 5)));
+        assert_eq!(a.troops.iter().map(|t| t.unit.0).collect::<Vec<_>>(), [3, 4, 5], "the leader, then 4 and 5; no unit 2");
+        assert_eq!(w.armies.iter().map(|a| a.id).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(w.inactive.iter().map(|a| a.id).collect::<Vec<_>>(), [3]);
+        let l = &w.locations;
+        assert_eq!((l[0].owner, l[1].owner), (Owner::Player, Owner::Neutral));
+        assert_eq!(l[2].garrison.iter().map(|t| t.unit.0).collect::<Vec<_>>(), [4, 4]);
+        assert_eq!(l[2].name, "Old fort", "building strings are collapsed");
+        assert_eq!(w.named_characters, ["Ivo  the  Bold"], "named characters are not");
+        let k = w.hero_start(&s, &c, HeroClass::Knight);
+        assert_eq!(k.troops.iter().map(|t| t.unit.0).collect::<Vec<_>>(), [4]);
+        assert_eq!(k.owned, [3]);
+    }
 }
 
 #[cfg(test)]
@@ -1788,6 +1836,7 @@ mod real_maps {
     fn every_shipped_map_loads_into_a_world() {
         let Some((dt, c)) = install() else { return };
         let mut totals = (0, 0);
+        let mut stuck = 0;
         for m in &dt.maps {
             let s = m.load().unwrap();
             let w = World::from_scenario(&s, &c);
@@ -1797,7 +1846,12 @@ mod real_maps {
             assert_eq!(w.armies.len() + w.inactive.len(), manned, "{}: every army with troops", m.name);
             // Every unit type is known; one РК6 garrison lists 13 units, one more than a formation holds.
             assert!(w.dropped_units <= 1, "{}: {} units dropped", m.name, w.dropped_units);
-            assert!(w.armies.iter().all(|a| if a.sails() { w.is_sea(a.tile(&w.map)) } else { w.map.passable(a.tile(&w.map)) }), "{}", m.name);
+            // Exactly on the file's cell (0x4b2504), even where it cannot walk.
+            for a in w.armies.iter().chain(&w.inactive) {
+                let d = s.armies.iter().find(|d| d.id == a.id).expect("its record");
+                assert_eq!(a.tile(&w.map), (d.x as i32, d.y as i32), "{}", m.name);
+            }
+            stuck += w.armies.iter().filter(|a| if a.sails() { !w.is_sea(a.tile(&w.map)) } else { !w.map.passable(a.tile(&w.map)) }).count();
             assert!(w.locations.iter().all(|l| w.map.passable(l.tile)), "{}", m.name);
             for class in HeroClass::ALL {
                 let h = w.hero_start(&s, &c, class);
@@ -1816,6 +1870,9 @@ mod real_maps {
         }
         // On foot alone; with ships every building is reachable (see below).
         assert!(totals.0 * 100 / totals.1 >= 80, "{totals:?}");
+        // ДС1 and ДС2 each put one land army on a cell it cannot walk; the original leaves
+        // them there too.
+        assert_eq!(stuck, 2);
     }
 
     /// Buildings (not bridges) whose entry the hero can reach by land and sea from `start`

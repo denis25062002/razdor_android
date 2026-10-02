@@ -208,11 +208,11 @@ impl EditorDoc {
     /// marked as a game map so saving goes to the user's folder.
     pub fn open(path: &Path, game_dir: Option<&Path>) -> Result<EditorDoc, DtError> {
         let bytes = std::fs::read(path).map_err(|source| DtError::Io { path: path.to_path_buf(), source })?;
-        let (payload, version) = if bytes.starts_with(crate::dt::dtm::PAYLOAD_MAGIC) {
-            (bytes, CONTAINER_VERSION)
-        } else {
+        let (payload, version) = if container::has_magic(&bytes) {
             let c = container::decode(&bytes)?;
             (c.payload, c.version)
+        } else {
+            (bytes, CONTAINER_VERSION)
         };
         let scenario = Scenario::parse_payload(&payload)?;
         let from_game = game_dir.is_some_and(|g| super::files::is_inside(path, g));

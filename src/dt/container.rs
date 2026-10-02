@@ -1,50 +1,95 @@
-//! The `AIpf` container around `.DTm` maps: a 12-byte header and a bzip2 stream.
+//! The original's stream container (saves-data.md §9, read 0x473188): a 12-byte header and
+//! bzip2 data. The `.DTm` maps use its legacy layout:
 //!
 //! | off | type | value |
 //! |---|---|---|
-//! | 0 | char[6] | `AIpf\r\n` |
-//! | 6 | u16 | container version (19 in all shipped maps) |
+//! | 0 | char[4] | magic: accepted when bytes 0, 2, 3 are `A`, `p`, `f` |
+//! | 4 | u16 | legacy (byte 1 = `I`): ignored (`\r\n` in the maps); new layout: block size, KiB |
+//! | 6 | u8 | legacy: compression code (above 10: bzip2, level code − 10; 19 in all shipped maps) |
+//! | 7 | u8 | legacy: scramble mode (0 in everything shipped) |
 //! | 8 | u32 | size of the uncompressed payload |
-//! | 12 | … | bzip2 stream to EOF |
+//! | 12 | … | legacy: one bzip2 stream to EOF; new: chunks of (u32 length, bzip2 stream) |
 
 use super::DtError;
 use std::io::{Read, Write};
 
-/// Magic bytes at the start of a container.
+/// Magic bytes this module writes, as the shipped maps have them.
 pub const MAGIC: &[u8; 6] = b"AIpf\r\n";
-/// Header length before the bzip2 stream.
+/// Header length before the compressed data.
 pub const HEADER_LEN: usize = 12;
 
 /// A decoded container.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Container {
+    /// Bytes 6–7 (compression code and scramble mode), kept to write the file back alike.
     pub version: u16,
     pub payload: Vec<u8>,
 }
 
-/// Parse a container and decompress its payload.
+/// The magic the reader accepts: `A`, any byte, `p`, `f`.
+pub fn has_magic(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && bytes[0] == b'A' && bytes[2] == b'p' && bytes[3] == b'f'
+}
+
+fn bunzip(data: &[u8]) -> Result<Vec<u8>, DtError> {
+    let mut out = Vec::new();
+    bzip2::read::BzDecoder::new(data).read_to_end(&mut out).map_err(|e| DtError::Bzip2(e.to_string()))?;
+    Ok(out)
+}
+
+/// Undo the scramble of mode 1: byte i was XORed with (i + 1) mod 256 (0x471be0). Mode 2
+/// XORs with `Random(256)` from wherever the game's generator stood, which cannot be undone;
+/// nothing the game ships or writes is scrambled.
+fn unscramble(data: &mut [u8], mode: u8) -> Result<(), DtError> {
+    match mode {
+        0 => Ok(()),
+        1 => {
+            data.iter_mut().enumerate().for_each(|(i, b)| *b ^= (i as u8).wrapping_add(1));
+            Ok(())
+        }
+        _ => Err(DtError::Bzip2(format!("scramble mode {mode} cannot be read"))),
+    }
+}
+
+/// Parse a container and decompress its payload as the original's reader does. A payload
+/// whose size differs from the header's is kept: the reader only raises a flag that no
+/// loader checks.
 pub fn decode(bytes: &[u8]) -> Result<Container, DtError> {
     if bytes.len() < HEADER_LEN {
-        if !MAGIC.starts_with(&bytes[..bytes.len().min(MAGIC.len())]) {
-            return Err(DtError::BadMagic { what: "AIpf container" });
+        if bytes.len() < 4 || has_magic(bytes) {
+            return Err(DtError::Truncated { what: "container header", offset: bytes.len() });
         }
-        return Err(DtError::Truncated { what: "container header", offset: bytes.len() });
+        return Err(DtError::BadMagic { what: "AIpf container" });
     }
-    if &bytes[..6] != MAGIC {
+    if !has_magic(bytes) {
         return Err(DtError::BadMagic { what: "AIpf container" });
     }
     let version = u16::from_le_bytes([bytes[6], bytes[7]]);
-    let size = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-    // Read at most one byte more than announced, so a lying header cannot make us inflate
-    // an arbitrarily large stream, yet an oversized payload is still detected.
-    let mut payload = Vec::with_capacity(size as usize);
-    bzip2::read::BzDecoder::new(&bytes[HEADER_LEN..])
-        .take(size as u64 + 1)
-        .read_to_end(&mut payload)
-        .map_err(|e| DtError::Bzip2(e.to_string()))?;
-    if payload.len() != size as usize {
-        return Err(DtError::PayloadSize { expected: size, actual: payload.len() });
-    }
+    let size = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    let payload = if bytes[1] == b'I' {
+        // Legacy layout: the rest of the file is one stream, unscrambled first.
+        let mut data = bytes[HEADER_LEN..].to_vec();
+        unscramble(&mut data, bytes[7])?;
+        bunzip(&data)?
+    } else {
+        // New layout (the game writes `AEpf`): with no block size one chunk follows, else
+        // `size div block + 1` chunks.
+        let block = u16::from_le_bytes([bytes[4], bytes[5]]) as usize * 1024;
+        if bytes[6] >> 6 != 0 {
+            return Err(DtError::Bzip2("scrambled chunks cannot be read".into()));
+        }
+        let chunks = if block == 0 { 1 } else { size / block + 1 };
+        let mut at = HEADER_LEN;
+        let mut out = Vec::with_capacity(size);
+        for _ in 0..chunks {
+            let len = bytes.get(at..at + 4).ok_or(DtError::Truncated { what: "container chunk", offset: at })?;
+            let len = u32::from_le_bytes([len[0], len[1], len[2], len[3]]) as usize;
+            let data = bytes.get(at + 4..at + 4 + len).ok_or(DtError::Truncated { what: "container chunk", offset: at + 4 })?;
+            out.extend(bunzip(data)?);
+            at += 4 + len;
+        }
+        out
+    };
     Ok(Container { version, payload })
 }
 
@@ -84,6 +129,13 @@ mod tests {
         let mut bytes = encode(19, b"x");
         bytes[0] = b'B';
         assert!(matches!(decode(&bytes), Err(DtError::BadMagic { .. })));
+        // Only bytes 0, 2 and 3 are checked; the rest of the legacy header is not.
+        let mut bytes = encode(19, b"x");
+        bytes[3] = b'F';
+        assert!(matches!(decode(&bytes), Err(DtError::BadMagic { .. })));
+        let mut bytes = encode(19, b"xyz");
+        bytes[4..6].copy_from_slice(b"??");
+        assert_eq!(decode(&bytes).unwrap().payload, b"xyz");
     }
 
     #[test]
@@ -92,12 +144,62 @@ mod tests {
     }
 
     #[test]
-    fn rejects_size_mismatch() {
+    fn a_size_mismatch_is_not_checked() {
+        // 0x473188 only sets a flag no loader reads.
         let mut bytes = encode(19, b"abcdef");
         bytes[8] = 5;
-        assert!(matches!(decode(&bytes), Err(DtError::PayloadSize { expected: 5, actual: 6 })));
-        bytes[8] = 9;
-        assert!(matches!(decode(&bytes), Err(DtError::PayloadSize { expected: 9, actual: 6 })));
+        assert_eq!(decode(&bytes).unwrap().payload, b"abcdef");
+    }
+
+    fn bz(data: &[u8]) -> Vec<u8> {
+        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::fast());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn the_legacy_layout_may_be_scrambled_by_mode_1() {
+        // Byte i of the stream XORed with (i + 1) mod 256 (0x471be0).
+        let mut bytes = encode(19, b"scrambled payload");
+        bytes[7] = 1;
+        for (i, b) in bytes[HEADER_LEN..].iter_mut().enumerate() {
+            *b ^= (i as u8).wrapping_add(1);
+        }
+        assert_eq!(decode(&bytes).unwrap().payload, b"scrambled payload");
+        bytes[7] = 2;
+        assert!(decode(&bytes).is_err(), "mode 2 used the game's random numbers");
+    }
+
+    #[test]
+    fn the_new_layout_reads_chunks() {
+        // `AEpf`: block size in KiB at 4, then `size div block + 1` chunks of (u32 length,
+        // bzip2); with no block size, a single chunk.
+        let payload: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        let head = |kib: u16| {
+            let mut h = b"AEpf".to_vec();
+            h.extend_from_slice(&kib.to_le_bytes());
+            h.extend_from_slice(&[0x11, 0]);
+            h.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            h
+        };
+        let chunk = |out: &mut Vec<u8>, data: &[u8]| {
+            let z = bz(data);
+            out.extend_from_slice(&(z.len() as u32).to_le_bytes());
+            out.extend_from_slice(&z);
+        };
+        let mut one = head(0);
+        chunk(&mut one, &payload);
+        assert_eq!(decode(&one).unwrap().payload, payload);
+        let mut blocks = head(1);
+        for part in payload.chunks(1024) {
+            chunk(&mut blocks, part);
+        }
+        assert_eq!(decode(&blocks).unwrap().payload, payload, "3000 div 1024 + 1 = 3 chunks");
+        // A size of exactly one block: the writer writes one chunk, the reader wants two.
+        let mut exact = head(1);
+        exact[8..12].copy_from_slice(&1024u32.to_le_bytes());
+        chunk(&mut exact, &payload[..1024]);
+        assert!(matches!(decode(&exact), Err(DtError::Truncated { .. })));
     }
 
     #[test]

@@ -29,18 +29,8 @@ pub enum DtError {
     Truncated { what: &'static str, offset: usize },
     /// The bzip2 stream is corrupt.
     Bzip2(String),
-    /// The decompressed payload does not have the size the container header announces.
-    PayloadSize { expected: u32, actual: usize },
-    /// A section's byte size is not a multiple of its record size.
-    SectionSize { section: &'static str, size: u32, record: usize },
-    /// The terrain RLE stream is malformed or does not expand to `W*H` cells.
+    /// The map is too big to expand its terrain.
     Terrain(String),
-    /// The `\x08>-Text-` marker is not where the section sizes put it.
-    TextMarker { offset: usize },
-    /// The header's text offset disagrees with the section sizes.
-    TextOffset { header: u32, computed: usize },
-    /// A NUL-terminated string runs to the end of the data.
-    UnterminatedString { offset: usize },
     /// Bytes remain after the last known part of the payload.
     TrailingBytes { offset: usize, count: usize },
     /// An ini value could not be interpreted.
@@ -61,18 +51,7 @@ impl fmt::Display for DtError {
             DtError::BadMagic { what } => write!(f, "not a {what} (bad magic bytes)"),
             DtError::Truncated { what, offset } => write!(f, "{what} truncated at offset {offset:#x}"),
             DtError::Bzip2(e) => write!(f, "bzip2: {e}"),
-            DtError::PayloadSize { expected, actual } => {
-                write!(f, "payload is {actual} bytes, header says {expected}")
-            }
-            DtError::SectionSize { section, size, record } => {
-                write!(f, "{section} section size {size} is not a multiple of {record}")
-            }
             DtError::Terrain(e) => write!(f, "terrain: {e}"),
-            DtError::TextMarker { offset } => write!(f, "text marker not found at {offset:#x}"),
-            DtError::TextOffset { header, computed } => {
-                write!(f, "text offset {header:#x} in header, {computed:#x} computed")
-            }
-            DtError::UnterminatedString { offset } => write!(f, "unterminated string at {offset:#x}"),
             DtError::TrailingBytes { offset, count } => write!(f, "{count} trailing bytes at {offset:#x}"),
             DtError::BadValue { section, key, value } => write!(f, "[{section}] {key}={value}: bad value"),
             DtError::Missing { section, key } => write!(f, "[{section}] {key} is missing"),
