@@ -993,10 +993,10 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 18 | Esc in the main menu | Matches: quits at once | Quits the game at once, without a question | 4 |
 | 19 | Hero choice Back / Esc | Matches: back to the main menu | Back to the main menu | 5 |
 | 20 | Yes/No boxes | Matches: Esc = No, any other key except Tab, Alt, Up, Down = Yes (on the key's press, not its release) | Esc = No, any other key except Tab, Alt, Up, Down = Yes | 11 |
-| 21 | Battle deployment | A deployment step with Fight! and quick battle (extra) | None: the battle starts when the window opens | 12 |
-| 22 | Space in battle | Ends the unit's turn (skip) | Same as clicking the actor's own card: one pass (100 ms) or a self heal/bless | 12 |
-| 23 | Quick battle (Q) | Plays the battle out at once (extra) | None | 12 |
-| 24 | Battle input timing | Acts on click | Acts on the press of a card; hover hint predicts the effect | 12 |
+| 21 | Battle deployment | Matches: none, the battle starts when the window opens (`BattleView::new`) | None: the battle starts when the window opens | 12 |
+| 22 | Space in battle | Matches: as a click on the actor's own card (a pass, or a spell on itself) | Same as clicking the actor's own card: one pass (100 ms) or a self heal/bless | 12 |
+| 23 | Quick battle (Q) | Plays the battle under way out at once (extra the user asked for; kept) | None | 12 |
+| 24 | Battle input timing | Matches: acts on the press of a card (the hover hint is presentation) | Acts on the press of a card; hover hint predicts the effect | 12 |
 | 25 | AI pacing | 0.45 s delay before each AI action | No delay: the AI acts as soon as the previous animation ends | 12 |
 | 26 | Strike animation | 0.7 s; moves 0.25 s | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
 | 27 | Battle end | Result box at once | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |

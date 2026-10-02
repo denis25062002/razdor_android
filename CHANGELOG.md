@@ -423,6 +423,9 @@ old id, and their versions give both.
 - Esc in the main menu quits the game at once, and Back or Esc on the hero choice returns
   to the main menu, as in the original. A Yes / No question takes Esc as No and any other
   key as Yes (N included), except Tab, Alt and the Up and Down arrows.
+- A battle starts as soon as its window opens, as in the original: there is no deployment
+  step (the formation is the one set in the army window). Finish automatically (Q) still
+  plays a battle under way out at once.
 
 ## 0.2.2 — 2026-10-01
 

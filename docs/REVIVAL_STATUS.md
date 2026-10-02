@@ -27,9 +27,9 @@ garrison's battle); M minimap; Tab centres the camera on the hero; J journal; B 
 (a click on a spell casts it); A hero and army; F5 quick save, F9 quick load; N music off/on;
 the bar's X (or Esc) opens "Выход из игры" (quit, main menu, restart), its gears the sound
 settings; F1 lists every screen's keys. In battle: click a framed card to attack or cast, a
-lit cell to step there, Space to end the unit's turn, Esc for the ways out of the battle; on
-the deploy screen Q / Enter is a quick battle, during the battle Q finishes it
-automatically. No key acts while typing or while a dialog is open. The keys table is in the
+lit cell to step there, Space as a click on the unit's own card, Esc for the ways out of the
+battle; the battle starts when its window opens (no deploy screen, as in the original), and Q
+finishes it automatically. No key acts while typing or while a dialog is open. The keys table is in the
 README.
 
 ## What is in

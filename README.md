@@ -76,14 +76,14 @@ above).
   Surviving camps send out new gangs every few days.
 - Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
   2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row is
-  supported too). Before the fight, click a card and then a cell to move or swap it, then
-  press **Fight!**, or **Quick battle** (Q / Enter) to have it played out at once (see
-  below). The deployed formation is kept.
+  supported too). As in the original the battle starts when its window opens: the formation
+  is the one set in the army window beforehand. **Finish automatically** (Q) plays the rest
+  of it out at once (see below).
 - Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
   actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
   card to preview the action ("strike: -12 hits", a curse's effect), left click to do it,
   right click for the alternative (a mage's strike instead of its curse). Click a lit cell
-  to step there (columns c−1..c+1), Space ends the turn.
+  to step there (columns c−1..c+1); Space does what a click on the unit's own card does.
 - Warriors fight only from the front row and hit the three enemy front cells opposite; with
   those three empty, a long strike reaches the nearest enemy front card, halving its
   defence. Shooters and mages in the back row reach anyone outside the reserve. Damage is
@@ -228,8 +228,8 @@ names are transliterated).
 
 ## Keys
 Press **F1** on any screen for the list of its keys. No key acts while you type (the hero's
-name, a save name, an editor field) or while a dialog or question is open (there **Y** /
-Enter is "Yes" and **N** / Esc "No").
+name, a save name, an editor field) or while a dialog or question is open (there Esc is
+"No" and any other key but Tab, Alt and the Up and Down arrows "Yes", as in the original).
 
 | Where | Key | Does |
 |---|---|---|
@@ -237,23 +237,24 @@ Enter is "Yes" and **N** / Esc "No").
 | Everywhere (and in the map editor) | F2 | interface language: English / Russian |
 | Everywhere | F9 | quick load: loads the quick save |
 | Everywhere | N | music off / on |
-| World map | click, then click the same spot again (or double click) | show the route and its time, then walk it |
-| World map | right click, Space | stop (and drop a shown route) |
+| Main menu | Esc | quits the game at once, as in the original |
+| Hero choice | Esc | back to the main menu |
+| World map | click, then click the same spot again | show the route and its time, then walk it |
+| World map, while walking | click or any key | stop at the end of the step under way (no other key or click acts while he walks or waits) |
+| World map | right button held | the tooltip of the army or building under the mouse |
 | World map | wheel, + / − | zoom |
-| World map | the mouse at a window edge or corner | pan the map (a click on the map or Tab brings the view back) |
-| World map | right button held and moved | drag the map with the hand |
+| World map | arrow keys, the mouse at a window edge or corner | scroll the map by the original's scroll speed (a click on the map or Tab brings the view back) |
 | World map | 1 / 4, or left / right click on the time panel | wait 1 or 4 hours |
 | World map | M | minimap |
 | World map | Tab | centre the camera on the hero |
 | World map | J / B / A | journal / spell book / hero and army |
 | World map and its windows | F5 | quick save: a manual save named "Quick save" that replaces the last one |
-| World map | Esc | closes the minimap, else opens "Выход из игры" (quit, main menu, restart) |
+| World map | Esc | opens "Выход из игры" (quit, main menu, restart) |
 | Any window (building, army, journal, spell book, menu, save, load) | Esc | back to the map (the army screen opened from a building: back to the building) |
 | Journal | Left / Right, Up / Down, wheel, PgUp / PgDn, J | tabs, entries, scrolling, close |
 | Spell book | click / B | cast the spell (an enemy spell: pick the army) / close |
 | Army | A | close |
-| Battle, deployment | Q / Enter | quick battle |
-| Battle | Space / Q / Enter | end the unit's turn / finish automatically / OK on the result |
+| Battle | Space / Q / Enter | as a click on the unit's own card / finish automatically / OK on the result |
 | Battle | Esc | ways out of the battle (quit, main menu, restart) |
 
 ## Fonts
@@ -280,9 +281,8 @@ the code translates is in the catalog, every catalog line is used and the placeh
 and another that no English literal is handed straight to a drawing helper in `src/ui`.
 
 ## Quick battle
-A Razdor extra, like the auto-combat of other strategy games: on the battle's deploy screen,
-**Quick battle** (Q / Enter) plays the whole battle at once with the battle AI on both
-sides, and during a battle **Finish automatically** (Q) does the same for the rest of it.
+A Razdor extra, like the auto-combat of other strategy games: during a battle **Finish
+automatically** (Q) plays the rest of it at once with the battle AI on both sides.
 Your units follow exactly the rules of any AI side (one reserve move a turn, never into the
 reserve, no shortcuts of the AI's off-screen battles); only the watching is skipped. The
 result box comes at once and the battle resolves as a played one: losses, experience and

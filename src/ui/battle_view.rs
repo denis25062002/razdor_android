@@ -118,8 +118,6 @@ pub struct BattleView {
     battle: Battle,
     fx: Option<Fx>,
     ai_timer: f32,
-    /// Deploy phase: card picked up to move.
-    selected: Option<Slot>,
     /// XP shares, computed once the battle is over.
     xp: Option<Vec<XpAward>>,
     /// The result box has shown and its music started (once).
@@ -222,13 +220,11 @@ fn battle_title(game: &Game) -> String {
 
 impl BattleView {
 
-    pub fn new(battle: Battle) -> Self {
-        BattleView { battle, fx: None, ai_timer: 0.0, selected: None, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
-    }
-
-    /// Still on the deploy screen.
-    pub fn deploying(&self) -> bool {
-        self.battle.is_deploying()
+    /// The battle starts as the window opens: there is no deployment step, the formation is
+    /// the one set in the army window beforehand (interface.md §12, 0x4daa80).
+    pub fn new(mut battle: Battle) -> Self {
+        battle.begin();
+        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
     }
 
     fn cell_under_mouse(&self, l: &Layout) -> Option<(Team, Slot)> {
@@ -246,7 +242,6 @@ impl BattleView {
     /// Quick battle (Razdor extra): the rest of the battle is played at once by the battle AI
     /// on both sides (`Battle::auto_play_to_end`); the result box follows.
     fn quick_battle(&mut self) {
-        self.selected = None;
         self.fx = None;
         self.news = None;
         self.battle.auto_play_to_end();
@@ -290,8 +285,6 @@ impl BattleView {
         if exiting {
             // The battle stands still under the window.
             set_input_blocked(true);
-        } else if self.battle.is_deploying() {
-            self.deploy_input(&l);
         } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Q) {
             self.quick_battle();
         } else if self.fx.is_none() {
@@ -322,7 +315,7 @@ impl BattleView {
         }
 
         let outcome = self.battle.outcome();
-        let over = !self.battle.is_deploying() && outcome != Outcome::Ongoing && self.fx.is_none();
+        let over = outcome != Outcome::Ongoing && self.fx.is_none();
         if over && self.xp.is_none() {
             // What the player's units gain: only a victory pays (experience.md §3).
             self.xp = Some(self.battle.player_xp());
@@ -331,16 +324,10 @@ impl BattleView {
         world_view::backdrop(game, assets);
         self.draw(&l, game, assets);
 
-        if self.battle.is_deploying() {
-            let r = Rect::new(l.strip.x + l.strip.w - 118.0 * l.k, l.strip.y - 3.0 * l.k, 112.0 * l.k, l.strip.h + 6.0 * l.k);
-            if button(r.x, r.y, r.w, r.h, tr("Fight!"), true) {
-                self.selected = None;
-                self.battle.begin();
-            }
-        }
-        // Quick battle: on the deploy screen, or to finish a battle under way.
+        // Quick battle (a Razdor extra the players asked for): the battle under way finished
+        // at once.
         if !over && self.battle.outcome() == Outcome::Ongoing {
-            let label = if self.battle.is_deploying() { tr("Quick battle (Q)") } else { tr("Finish automatically (Q)") };
+            let label = tr("Finish automatically (Q)");
             let q = l.quick;
             if button(q.x, q.y, q.w, q.h, label, self.fx.is_none()) {
                 self.quick_battle();
@@ -370,31 +357,6 @@ impl BattleView {
             }
         }
         None
-    }
-
-    fn deploy_input(&mut self, l: &Layout) {
-        // Q or Enter: quick battle; the Fight! button fights it.
-        if key(KeyCode::Q) || key(KeyCode::Enter) || key(KeyCode::KpEnter) {
-            self.quick_battle();
-            return;
-        }
-        if !clicked() {
-            return;
-        }
-        let Some((Team::Player, slot)) = self.cell_under_mouse(l) else {
-            self.selected = None;
-            return;
-        };
-        match self.selected.take() {
-            Some(from) if from != slot => {
-                if self.battle.move_card(from, slot).is_ok() {
-                    cue(Cue::CardMove);
-                }
-            }
-            Some(_) => {}
-            None if self.battle.at(Team::Player, slot).is_some() => self.selected = Some(slot),
-            None => {}
-        }
     }
 
     fn player_input(&mut self, l: &Layout, active: usize) {
@@ -457,7 +419,7 @@ impl BattleView {
             if is_move {
                 chrome::glow_frame(sq, FRIENDLY, false);
             }
-            let lit = (b.is_deploying() || is_move) && team == Team::Player && hovered_cell == Some((team, slot));
+            let lit = is_move && team == Team::Player && hovered_cell == Some((team, slot));
             if lit {
                 draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.4, 0.6, 1.0, 0.18));
             }
@@ -466,17 +428,14 @@ impl BattleView {
         // The strip between the formations: what to do, or what just happened.
         let (hint, color) = self.strip_text(player_turn, &targets, &moves);
         chrome::divider(l.strip);
-        // While deploying the Fight! button takes the strip's right end.
-        let text_r = if b.is_deploying() { Rect { w: l.strip.w - 124.0 * k, ..l.strip } } else { Rect { w: l.strip.w - 60.0 * k, x: l.strip.x + 30.0 * k, ..l.strip } };
+        let text_r = Rect { w: l.strip.w - 60.0 * k, x: l.strip.x + 30.0 * k, ..l.strip };
         chrome::hint_text(text_r, &hint, color);
-        if !b.is_deploying() {
-            let limit = b.content().options.battle_end_turn;
-            let size = (11.0 * k).round();
-            shadow_right(&razdor::trf!("Turn {round}/{limit}", round = b.round, limit), l.strip.x + l.strip.w - 6.0 * k, l.strip.y + l.strip.h * 0.5 + size * 0.36, size, GOLD);
-        }
+        let limit = b.content().options.battle_end_turn;
+        let size = (11.0 * k).round();
+        shadow_right(&razdor::trf!("Turn {round}/{limit}", round = b.round, limit), l.strip.x + l.strip.w - 6.0 * k, l.strip.y + l.strip.h * 0.5 + size * 0.36, size, GOLD);
 
         // Cards: the order of the next units after the active one, as small numbers.
-        let queue: Vec<usize> = if b.outcome() == Outcome::Ongoing && !b.is_deploying() { b.queue().skip(1).take(3).collect() } else { Vec::new() };
+        let queue: Vec<usize> = if b.outcome() == Outcome::Ongoing { b.queue().skip(1).take(3).collect() } else { Vec::new() };
         for (i, f) in b.fighters.iter().enumerate() {
             let in_fx = self.fx.as_ref().is_some_and(|fx| matches!(&fx.kind, FxKind::Act { hit } if hit.target == i) || fx.actor == i);
             if !f.alive() && !in_fx {
@@ -494,7 +453,7 @@ impl BattleView {
                 }
             }
             let hovered = hovered_cell == Some((f.team, f.slot));
-            let frame = if Some(i) == active && self.fx.is_none() && !b.is_deploying() {
+            let frame = if Some(i) == active && self.fx.is_none() {
                 Some((ACTIVE, true))
             } else if targets.contains(&i) {
                 // The enemy under the mouse is framed green, as in the original; the other
@@ -505,8 +464,6 @@ impl BattleView {
                     (_, false) => HOSTILE,
                 };
                 Some((if hovered { c } else { Color { a: 0.6, ..c } }, hovered))
-            } else if self.selected == Some(f.slot) && f.team == Team::Player {
-                Some((WHITE, true))
             } else {
                 None
             };
@@ -542,12 +499,9 @@ impl BattleView {
         }
     }
 
-    /// The strip's text: the deploy help, the last action, or what the player can do.
+    /// The strip's text: the last action, or what the player can do.
     fn strip_text(&self, player_turn: bool, targets: &[usize], moves: &[Slot]) -> (String, Color) {
         let b = &self.battle;
-        if b.is_deploying() {
-            return (tr("Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle").into(), GOLD);
-        }
         if b.outcome() != Outcome::Ongoing {
             return (tr("The battle is over").into(), GOLD);
         }
@@ -631,7 +585,7 @@ impl BattleView {
             draw_rectangle(ox, oy, 13.0 * k, 13.0 * k, Color::new(0.0, 0.0, 0.0, 0.55));
             shadow_centered(&(n + 1).to_string(), ox + 6.5 * k, oy + 11.0 * k, (11.0 * k).round(), CREAM);
         }
-        let fighting = !self.battle.is_deploying() && self.battle.outcome() == Outcome::Ongoing;
+        let fighting = self.battle.outcome() == Outcome::Ongoing;
         if fighting && f.alive() && f.slot.row != Row::Reserve && self.battle.helpless(id) {
             draw_rectangle(sq.x, sq.y + sq.h - 16.0 * k, sq.w, 15.0 * k, Color::new(0.0, 0.0, 0.0, 0.5));
             shadow_centered(tr("can't reach"), sq.x + sq.w / 2.0, sq.y + sq.h - 4.0 * k, (11.0 * k).round(), Color::new(0.8, 0.8, 0.75, 1.0));
@@ -716,7 +670,7 @@ impl BattleView {
         // What it wears, an enemy's too (an army wears its items, `ai::army_units`).
         let items: [Option<ItemId>; 4] = f.items;
         let mut status = Vec::new();
-        if b.active() == Some(id) && !b.is_deploying() {
+        if b.active() == Some(id) {
             status.push((razdor::trf!("Acting: {left} of {total} actions left", left = b.actions_left(), total = f.stats[Stat::Manevres].max(b.actions_left())), Color::new(0.5, 1.0, 0.5, 1.0)));
         }
         if !f.mods.is_empty() {

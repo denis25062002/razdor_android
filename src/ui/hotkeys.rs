@@ -21,7 +21,7 @@ pub enum Place {
     WorldMap,
     Building,
     Army,
-    Battle { deploying: bool },
+    Battle,
     Journal,
     Spellbook,
     Menu,
@@ -125,16 +125,11 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
         ],
         Place::Building => vec![(n_("Click"), n_("tabs and buttons")), ("F5", n_("quick save")), ("Esc", n_("back to the map"))],
         Place::Army => vec![(n_("Click"), n_("a unit, an item")), ("F5", n_("quick save")), ("A / Esc", n_("close"))],
-        Place::Battle { deploying: true } => vec![
-            (n_("Click a card, then a cell"), n_("move it")),
-            (n_("Fight!"), n_("start the battle")),
-            ("Q / Enter", n_("quick battle: played out at once")),
-        ],
-        Place::Battle { deploying: false } => vec![
+        Place::Battle => vec![
             (n_("Click a framed card"), n_("attack or cast")),
             (n_("Click a lit cell"), n_("step there")),
             (n_("Click your own card"), n_("pass one action")),
-            (n_("Space"), n_("end the unit's turn")),
+            (n_("Space"), n_("as a click on the unit's own card")),
             ("Q", n_("finish the battle automatically")),
             ("Esc", n_("ways out of the battle")),
             ("Enter", n_("OK on the result")),
@@ -173,8 +168,7 @@ fn place_name(place: Place) -> &'static str {
         Place::WorldMap => tr("World map"),
         Place::Building => tr("Building"),
         Place::Army => tr("Hero and army"),
-        Place::Battle { deploying: true } => tr("Battle: deployment"),
-        Place::Battle { deploying: false } => tr("Battle"),
+        Place::Battle => tr("Battle"),
         Place::Journal => tr("Journal"),
         Place::Spellbook => tr("Spell book"),
         Place::Menu => tr("Game menu"),
@@ -222,14 +216,13 @@ pub fn help_overlay(place: Place) -> bool {
 mod tests {
     use super::*;
 
-    const ALL_PLACES: [Place; 14] = [
+    const ALL_PLACES: [Place; 13] = [
         Place::Title,
         Place::ClassSelect,
         Place::WorldMap,
         Place::Building,
         Place::Army,
-        Place::Battle { deploying: true },
-        Place::Battle { deploying: false },
+        Place::Battle,
         Place::Journal,
         Place::Spellbook,
         Place::Menu,
@@ -261,7 +254,7 @@ mod tests {
         assert!(allowed(Place::WorldMap, Global::QuickSave, in_game()));
         assert!(allowed(Place::Building, Global::QuickSave, in_game()));
         assert!(!allowed(Place::WorldMap, Global::QuickSave, Guard { foe: true, ..in_game() }), "a battle is pending");
-        assert!(!allowed(Place::Battle { deploying: true }, Global::QuickSave, in_game()));
+        assert!(!allowed(Place::Battle, Global::QuickSave, in_game()));
         assert!(!allowed(Place::Title, Global::QuickSave, Guard::default()));
         assert!(!allowed(Place::End, Global::QuickSave, in_game()));
     }
@@ -286,6 +279,6 @@ mod tests {
         for k in ["M", "Tab", "J", "B", "A", "1 / 4", "F5 / F9", "Esc"] {
             assert!(map.contains(&k), "the map lists {k}");
         }
-        assert!(screen_keys(Place::Battle { deploying: true }).iter().any(|(k, _)| *k == "Q / Enter"));
+        assert!(screen_keys(Place::Battle).iter().any(|(k, _)| *k == "Q"));
     }
 }

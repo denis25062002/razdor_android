@@ -360,7 +360,7 @@ impl App {
             Screen::WorldMap => Place::WorldMap,
             Screen::Building(_) => Place::Building,
             Screen::Squad { .. } => Place::Army,
-            Screen::Battle(v) => Place::Battle { deploying: v.deploying() },
+            Screen::Battle(_) => Place::Battle,
             Screen::Journal(_) => Place::Journal,
             Screen::Spellbook { .. } => Place::Spellbook,
             Screen::Menu(_) | Screen::Settings => Place::Menu,

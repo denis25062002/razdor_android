@@ -21,13 +21,10 @@ Click to move "{name}" here = Щёлкните, чтобы переставит�
 # Battle screen: title, buttons, strip
 the enemy = врага
 Battle: the army of hero {hero} against {enemy}! = Битва: армия героя {hero} против: {enemy}!
-Fight! = В бой!
-Quick battle (Q) = Быстрый бой (Q)
 Finish automatically (Q) = Доиграть самим (Q)
 Turn {round}/{limit} = Ход {round}/{limit}
 XP +{xp} = Опыт +{xp}
 Level up! = Новый уровень!
-Arrange your army: click a card, then a cell; Fight! to fight, Q / Enter for a quick battle = Расставьте армию: щёлкните воина, затем клетку; «В бой!» начинает битву, Q / Enter — быстрый бой
 The battle is over = Битва окончена
 Nothing in reach: step to a lit cell, or press SPACE = Никого не достать: шагните на светлую клетку или нажмите Пробел
 Nothing to do: press SPACE to pass an action = Делать нечего: нажмите Пробел, чтобы пропустить действие
