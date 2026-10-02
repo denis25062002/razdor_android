@@ -323,6 +323,10 @@ pub struct Game {
     /// The spell being read while the wait ticks play ([`Game::begin_cast`]).
     #[serde(skip)]
     pub(crate) reading: Option<magic::Reading>,
+    /// Spells events cast while a spell was being read, landing after it
+    /// ([`Game::end_reading`]).
+    #[serde(skip)]
+    pub(crate) queued_casts: Vec<u32>,
     /// Real seconds since the world last moved, for drawing armies between cells.
     #[serde(skip)]
     pub(crate) since_step: f32,
@@ -445,6 +449,7 @@ impl Game {
             step_elapsed: 0.0,
             wait_ticks: 0,
             reading: None,
+            queued_casts: Vec::new(),
             since_step: 0.0,
             improved_ai: false,
             ai_events: Vec::new(),
@@ -1472,6 +1477,10 @@ impl Game {
             let before = u.max_hp(&c);
             u.potions.clear();
             u.follow_max(&c, before);
+        }
+        // Then every unit the battle left dead loses its spell slots (0x4c50ec).
+        for u in self.squad.iter_mut().filter(|u| !u.alive()) {
+            u.spells = Default::default();
         }
         let now = self.clock.total_minutes() as u64;
         let mut dropped = Vec::new();
@@ -2548,6 +2557,8 @@ mod tests {
         g.hire(unit(&g, "spearman")).unwrap();
         let mail = item(&g, "chainmail");
         g.squad[1].items[0] = Some(mail);
+        let held = Some(crate::rules::units::SpellSlot { spell: 1, until: u64::MAX });
+        (g.squad[0].spells[0], g.squad[1].spells[0]) = (held, held);
         g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
         let mut b = g.start_battle();
         b.begin();
@@ -2556,6 +2567,8 @@ mod tests {
         assert_eq!(g.squad.len(), 2);
         assert!(!g.squad[1].alive() && g.squad[1].items[0].is_none());
         assert!(g.pack.contains(&mail), "the dead hold no items");
+        // 0x4c50ec: the dead lose their spell slots, the living keep theirs.
+        assert_eq!((g.squad[0].spells[0], g.squad[1].spells[0]), (held, None));
     }
 
     #[test]

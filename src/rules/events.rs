@@ -1063,14 +1063,12 @@ impl EventEngine {
                 w.change_patrol(r.patrol_army, r.patrol_delta);
             }
         }
-        if r.cast_spell != 0 {
-            if ext == Some(Extension::RemoveSpell) {
-                w.remove_army_spell(r.cast_spell);
-            } else {
-                w.apply_spell(r.cast_spell);
-            }
+        if r.cast_spell != 0 && ext == Some(Extension::RemoveSpell) {
+            w.remove_army_spell(r.cast_spell);
         }
-        if !matches!(op, 11 | 14 | 16) {
+        // The Community hook (0xc28604) skips the learning whenever the event's "no meeting"
+        // byte is 1, opcode or not.
+        if r.no_meeting != 1 {
             for s in nonzero(&r.spells_learned) {
                 w.learn_spell(s);
             }
@@ -1119,14 +1117,20 @@ impl EventEngine {
         if r.new_hero_class != 0 {
             w.set_hero_class(r.new_hero_class);
         }
-        if r.delay_hours != 0 {
-            w.delay_player(r.delay_hours as u64 * 60);
-        }
         if r.hero_one_hp != 0 {
             w.hero_to_one_hp();
         }
         if op != 0 {
             self.run_opcode(id, op, e, w);
+        }
+        // The spell and the delay are queued by the results and run in the event's finish
+        // (0x4ab1ec), the spell first: it lands after every other result (on the units the
+        // event added too), before the delay's time passes.
+        if r.cast_spell != 0 && ext != Some(Extension::RemoveSpell) {
+            w.apply_spell(r.cast_spell);
+        }
+        if r.delay_hours != 0 {
+            w.delay_player(r.delay_hours as u64 * 60);
         }
         if r.start_battle_with != 0 {
             w.start_battle(r.start_battle_with);
@@ -2279,7 +2283,6 @@ mod tests {
                 Fx::Gold(-20),
                 Fx::Mana(7),
                 Fx::Patrol(3, -2),
-                Fx::Spell(13),
                 Fx::Learn(4),
                 Fx::AddUnit(74, 1, Some(7)),
                 Fx::RemoveUnit(UnitPick::AddedByEvent, 0, to),
@@ -2295,8 +2298,9 @@ mod tests {
                 Fx::Lantern(2),
                 Fx::Lantern(13),
                 Fx::Class(11),
-                Fx::Delay(120),
                 Fx::OneHp,
+                Fx::Spell(13),
+                Fx::Delay(120),
                 Fx::Battle(8),
             ]
         );
@@ -2329,6 +2333,20 @@ mod tests {
         let mut w = MockWorld::new();
         assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2, 3]);
         assert_eq!(w.log, vec![Fx::Unspell(13)], "the spell is lifted, not cast; no gold");
+    }
+
+    #[test]
+    fn an_event_with_no_meeting_1_teaches_no_spell() {
+        // The Community hook 0xc28604 skips the learning whenever the "no meeting" byte is 1,
+        // whether the event is an opcode or not; another value teaches.
+        for (no_meeting, log) in [(1, vec![]), (2, vec![Fx::Learn(4)]), (0, vec![Fx::Learn(4)])] {
+            let mut e = global();
+            (e.results.no_meeting, e.results.spells_learned) = (no_meeting, [4, 0, 0, 0]);
+            let mut g = engine(vec![e]);
+            let mut w = MockWorld::new();
+            tick_at(&mut g, &mut w, 0);
+            assert_eq!(w.log, log, "no meeting {no_meeting}");
+        }
     }
 
     /// A Community opcode event: "no meeting", patrol value `code`, resources (XP, gold, mana).

@@ -557,10 +557,13 @@ impl EventWorld for Game {
 
     /// The spell takes effect on the player's army at once and for free, whatever its
     /// target ([`Game::apply_spell_to_army_ext`]); its number is held to the number of
-    /// spells (0x4ab1ec).
+    /// spells (0x4ab1ec). While the hero reads a spell it waits in the queue behind his
+    /// (and turns his onto his own army: [`Game::end_reading`]).
     fn apply_spell(&mut self, spell: u8) {
         let id = (spell as u32).min(self.content.spells.len() as u32);
-        if let Some(def) = self.spell(id).cloned() {
+        if self.reading.is_some() {
+            self.queued_casts.push(id);
+        } else if let Some(def) = self.spell(id).cloned() {
             self.apply_spell_to_army_ext(&def, true);
         }
     }
@@ -1291,6 +1294,24 @@ mod tests {
         EventWorld::deactivate_army(&mut g, 3);
         assert!(g.world.respawns.is_empty() && g.world.inactive.iter().any(|a| a.id == 3));
         assert!(EventWorld::player_defeated(&g, 3), "the mark stays");
+    }
+
+    #[test]
+    fn an_events_spell_lands_after_its_other_results() {
+        // 0x4ab1ec queues the spell with the results and casts it in the event's finish: the
+        // unit the event adds holds it too.
+        use crate::rules::content::{testkit as ck, Content};
+        let mut e = ev(EventKind::Global);
+        e.results.cast_spell = 1;
+        e.results.units_add[0] = 4;
+        let s = world(vec![e]);
+        let base = content();
+        let spell = crate::rules::content::SpellDef { time_work: Some(5), ..ck::spell(1, 0) };
+        let c = Content::new(base.units.clone(), base.items.clone(), vec![spell], base.options.clone(), base.formation);
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
+        assert_eq!(fired(&g.drain_events()), vec![1]);
+        let added = g.squad.last().unwrap();
+        assert!(added.from_event && added.spells[0].is_some_and(|x| x.spell == 1), "{:?}", added.spells);
     }
 
     #[test]

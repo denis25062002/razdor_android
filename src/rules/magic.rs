@@ -200,9 +200,9 @@ fn instant_part(spell: &SpellDef, u: &mut Unit, max: i32, now: u64) {
 
 /// A spell on a whole army's units (0x4900fc): the first unit only for `OneEnemy` and for a
 /// `p-LifeLose` spell, else every unit, the dead included in the loop. Then every dead
-/// unit loses its 4 slots, and if someone lives the army is rebuilt (the new modifiers and
-/// drain; each unit's HP follows its maximum). Returns whether someone lives.
-fn spell_on_units(content: &Content, spell: &SpellDef, units: &mut [Unit], now: u64, event_reset: bool) -> bool {
+/// unit loses its 4 slots. Returns whether someone lives, and each unit's maximum HP before
+/// the cast for [`rebuild_after_spell`].
+fn spell_on_units(content: &Content, spell: &SpellDef, units: &mut [Unit], now: u64, event_reset: bool) -> (bool, Vec<i32>) {
     let before: Vec<i32> = units.iter().map(|u| u.max_hp(content)).collect();
     let only_first = spell.target == Some(SpellTarget::OneEnemy);
     let n = if only_first { units.len().min(1) } else { units.len() };
@@ -215,14 +215,16 @@ fn spell_on_units(content: &Content, spell: &SpellDef, units: &mut [Unit], now: 
     for u in units.iter_mut().filter(|u| !u.alive()) {
         u.spells = [None; SPELL_SLOTS];
     }
-    let alive = units.iter().any(Unit::alive);
-    if alive {
-        for (u, &max) in units.iter_mut().zip(&before) {
-            u.expire_spells(now);
-            u.follow_max(content, max);
-        }
+    (units.iter().any(Unit::alive), before)
+}
+
+/// The army's rebuild after a spell when someone lives (0x497240): the new modifiers and
+/// drain count, each unit's HP follows its maximum.
+fn rebuild_after_spell(content: &Content, units: &mut [Unit], before: &[i32], now: u64) {
+    for (u, &max) in units.iter_mut().zip(before) {
+        u.expire_spells(now);
+        u.follow_max(content, max);
     }
-    alive
 }
 
 /// Whom to cast on.
@@ -442,16 +444,31 @@ impl Game {
     }
 
     /// The reading ended (its ticks all played, an event fired, or an enemy fell on the
-    /// hero): the spell lands, or is lost.
+    /// hero): the spell lands, or is lost; then the spells events cast meanwhile land.
+    ///
+    /// An event that casts a spell leaves the original's target code at 1, "an event's
+    /// cast" (0x68eca4, 0x4ab1ec tail), and the reading's spell reads that code when it lands
+    /// (0x4af2f8): it hits the player's own army whatever its target, as an event's cast —
+    /// for free, an own-army spell with the event's 10× (5×) time. The original's.
     pub(crate) fn end_reading(&mut self, events: &mut Vec<Event>) {
-        let Some(r) = self.reading.take() else { return };
-        self.wait_ticks = 0;
-        let outcome = match self.spell(r.spell).cloned() {
-            _ if self.foe.is_some() => CastOutcome::Interrupted,
-            Some(def) => self.land_spell(&def, r.target),
-            None => CastOutcome::TargetLost,
-        };
-        events.push(Event::SpellCast { spell: r.spell, target: r.target, outcome });
+        let queued = std::mem::take(&mut self.queued_casts);
+        if let Some(r) = self.reading.take() {
+            self.wait_ticks = 0;
+            let redirected = !queued.is_empty();
+            let target = if redirected { CastTarget::Own } else { r.target };
+            let outcome = match self.spell(r.spell).cloned() {
+                _ if self.foe.is_some() => CastOutcome::Interrupted,
+                Some(def) if redirected => self.spell_on_player(&def, true),
+                Some(def) => self.land_spell(&def, r.target),
+                None => CastOutcome::TargetLost,
+            };
+            events.push(Event::SpellCast { spell: r.spell, target, outcome });
+        }
+        for id in queued {
+            if let Some(def) = self.spell(id).cloned() {
+                self.apply_spell_to_army_ext(&def, true);
+            }
+        }
     }
 
     /// A cast may start (0x4c2e34): the spell is among the first 15 of the book, the target
@@ -512,20 +529,31 @@ impl Game {
     }
 
     /// [`spell_on_units`] on the hero's army. If someone lives and the hero has 0 HP he is
-    /// set to 1; if nobody lives the game is lost ([`Game::army_fallen`]).
+    /// set to 1, before the rebuild (so his 1 HP follows his maximum too); if nobody lives
+    /// the game is lost ([`Game::army_fallen`]).
     fn spell_on_player(&mut self, spell: &SpellDef, by_event: bool) -> CastOutcome {
         let c = self.content.clone();
         let now = self.clock.total_minutes() as u64;
         let before: Vec<(i32, bool)> = self.squad.iter().map(|u| (u.hp, u.alive())).collect();
         let reset = by_event && !targets_enemy(spell);
-        let alive = spell_on_units(&c, spell, &mut self.squad, now, reset);
-        if alive && self.squad[0].hp == 0 {
-            self.squad[0].hp = 1;
-            self.squad[0].died_at = None;
+        let (alive, max) = spell_on_units(&c, spell, &mut self.squad, now, reset);
+        if alive {
+            self.raise_hero();
+            rebuild_after_spell(&c, &mut self.squad, &max, now);
         }
         let hits = self.squad.iter().zip(&before).map(|(u, b)| u.hp - b.0).sum();
         let killed = self.squad.iter().zip(&before).filter(|(u, b)| b.1 && !u.alive()).count();
         CastOutcome::Done { hits, killed, destroyed: !alive }
+    }
+
+    /// Someone of the army a spell hit lives: the player's hero at 0 HP gets 1 (0x4900fc
+    /// tests the player's hero whatever army was hit, so a curse on an enemy that leaves a
+    /// survivor raises a fallen hero too, the original's).
+    fn raise_hero(&mut self) {
+        if let Some(h) = self.squad.first_mut().filter(|h| h.hp == 0) {
+            h.hp = 1;
+            h.died_at = None;
+        }
     }
 
     /// The spell takes effect on army `i` of the map ([`spell_on_units`]); an army with
@@ -533,11 +561,14 @@ impl Game {
     fn apply_spell_to_enemy(&mut self, spell: &SpellDef, i: usize) -> CastOutcome {
         let c = self.content.clone();
         let now = self.clock.total_minutes() as u64;
-        let a = &mut self.world.armies[i];
-        let mut units: Vec<Unit> = a.troops.iter().map(|t| troop_unit(&c, t)).collect();
+        let mut units: Vec<Unit> = self.world.armies[i].troops.iter().map(|t| troop_unit(&c, t)).collect();
         let before: Vec<(i32, bool)> = units.iter().map(|u| (u.hp, u.alive())).collect();
-        let alive = spell_on_units(&c, spell, &mut units, now, false);
-        for (t, u) in a.troops.iter_mut().zip(&units) {
+        let (alive, max) = spell_on_units(&c, spell, &mut units, now, false);
+        if alive {
+            self.raise_hero();
+            rebuild_after_spell(&c, &mut units, &max, now);
+        }
+        for (t, u) in self.world.armies[i].troops.iter_mut().zip(&units) {
             unit_into_troop(&c, t, u, now);
         }
         let hits = units.iter().zip(&before).map(|(u, b)| u.hp - b.0).sum();
@@ -730,6 +761,56 @@ mod tests {
         assert!(!g.squad[1].alive() && g.squad[1].died_at.is_some(), "a world spell can kill");
         assert_eq!(g.squad[0].hp, 0);
         assert!(g.army_fallen());
+    }
+
+    #[test]
+    fn the_fallen_hero_gets_1_hp_before_the_rebuild_whatever_army_was_hit() {
+        // 0x4900fc: someone of the army hit lives and the player's hero is at 0 HP: he gets 1,
+        // then the army is rebuilt and his 1 HP follows his new maximum. Here a dead hero
+        // still holding the lifting has his drain lowered by its recast, 90 → 70: his maximum
+        // goes from 10 to 30, so 1 HP becomes 3.
+        let mut g = game(HeroClass::Knight);
+        g.squad[0].def = UnitId(14);
+        (g.squad[0].drain, g.squad[0].hp) = (90, 0);
+        g.squad[0].spells[0] = Some(slot(6, now(&g) + 600));
+        let lift = g.spell(6).unwrap().clone();
+        g.apply_spell_to_army(&lift);
+        assert_eq!((g.squad[0].drain, g.squad[0].max_hp(&g.content), g.squad[0].hp), (70, 30, 3));
+        assert!(g.squad[0].spells.iter().all(Option::is_none), "dead when the slots were stripped");
+        // A curse on an enemy that leaves a survivor raises the player's fallen hero too.
+        g.squad[0].hp = 0;
+        let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 1)]);
+        g.world.armies[0].ignore_until = f64::MAX;
+        let cast = g.cast(3, CastTarget::Army(uid)).unwrap();
+        assert!(matches!(cast.outcome, CastOutcome::Done { destroyed: false, .. }), "{cast:?}");
+        assert_eq!(g.squad[0].hp, 1);
+    }
+
+    #[test]
+    fn an_event_casting_while_the_hero_reads_turns_his_spell_onto_his_own_army() {
+        // An event's cast sets the original's target code to 1 (0x4ab1ec), and the hero's
+        // spell lands on whatever that code is (0x4af2f8): his lightning strikes his own
+        // army, for free, before the event's heal lands.
+        use crate::rules::events::EventWorld;
+        let mut g = game(HeroClass::Knight);
+        let uid = with_enemy(&mut g, (5, 2), &[troop(4, 0, 1)]);
+        g.world.armies[0].ignore_until = f64::MAX;
+        let max = g.squad[1].max_hp(&g.content);
+        g.squad[1].hp = max - 10;
+        assert_eq!(g.begin_cast(3, CastTarget::Army(uid)), Ok(None));
+        g.apply_spell(1);
+        assert_eq!(g.squad[1].hp, max - 10, "the event's heal waits behind the reading");
+        let mut events = Vec::new();
+        g.end_reading(&mut events);
+        assert!(matches!(events[..], [Event::SpellCast { spell: 3, target: CastTarget::Own, outcome: CastOutcome::Done { killed: 0, .. } }]), "{events:?}");
+        assert_eq!(g.squad[1].hp, max, "−15, then +30 (the heal first would leave max − 15)");
+        assert_eq!((g.mana, g.world.armies[0].troops[0].hurt), (1000, 0), "free; the enemy is untouched");
+        // An own-army spell read meanwhile lands as an event's cast: 5 × its 10 h.
+        let t = now(&g);
+        g.begin_cast(2, CastTarget::Own).unwrap();
+        g.apply_spell(1);
+        g.end_reading(&mut events);
+        assert_eq!((g.active_spells(), g.mana), (vec![slot(2, t + 50 * 60)], 1000));
     }
 
     #[test]

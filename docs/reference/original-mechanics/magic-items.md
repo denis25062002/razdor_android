@@ -120,6 +120,10 @@ spells.
   flag 0x66c0b9).
 - **An event that fires during the wait ends the wait early**, and the spell then lands at once
   (the wait is simply popped from the queue, 0x4ae4f2–0x4ae50f).
+- If that event casts a spell (§3.6), its cast sets the target code (0x68eca4) to 1, "an event's
+  cast", and the hero's spell reads that code when it lands (§3.4): it hits **the player's own
+  army** whatever its `Target`, no mana is paid, and an own-army spell gets the event's
+  10× / 5× duration. The event's spell, queued behind it, lands next.
 - **An enemy that reaches the hero** starts a battle; that path (in World_AdvanceAI 0x4ade3c)
   clears the cast flag and every queue, so the spell is lost and no mana is paid.
 - **The enemy target leaving the map or being destroyed** during the wait cancels the cast, again
@@ -426,18 +430,23 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Target moves during the cast | Lost only if it leaves the map (removed from it, destroyed or deactivated) | Lost only if it leaves the map or is destroyed | §3.2 | Matches |
 | Mana short at the end | The cost, worked out again when the spell lands, is subtracted with no check; mana may go negative | Mana is subtracted anyway and can go negative | §3.4 | Matches |
 | Event during the cast | An event that fires in a casting step ends the wait; the spell lands at once | The wait ends early and the spell lands at once | §3.2 | Matches |
+| Event spell during the cast | The hero's spell lands on his own army as an event's cast (free; an own-army spell gets the 10× / 5× time), then the event's spell (`Game::end_reading`) | The event's cast leaves the target code at 1, and the hero's spell lands on that code: his own army, unpaid, with the event's duration; the event's spell lands after it | §3.2, §3.4 | Matches |
 | Noon during the cast | Held back while a spell is read (`Game::cast` reads too) | Held back until the cast ends | §3.2 | Matches |
 | Caster discount | Any unit of the hero's army, dead or alive, with Caster as its type's or its current (item) bonus; `floor(4x/5)` as the unsigned multiply | A global flag from the last army recomputed (often an AI army); dead units count | §3.3 | Differs: the global flag's call points are not mirrored |
 | Displayed cast time | The card shows the cost function of `TimeCast` in hours (`card_cast_hours`) | The card shows the function of `TimeCast`, which can be 30 min short with Caster, or for the Archmage with an odd `TimeCast` | §3.3 | Matches |
 | Event `Enemy` spell | Hits the hero's army with its normal duration | Same | §3.6 | Matches |
 | Event spell number | Held to the number of spells | Clamped to the spell count | §3.6 | Matches |
 | Event recast duration | Resets to now + 10× (5×) | Resets to now + 10× (5×) | §4.1 | Matches |
+| When an event's spell lands | After every other result of the event (units it added included), before its delay passes | Queued by the results, cast in the event's finish before the delay's wait | §3.6 | Matches |
 | Spell killing the whole player army | The hero gets 1 HP only if someone else survives; otherwise the game is lost (`Game::army_fallen`) | The hero gets 1 HP only if someone else survives; otherwise game over | §4.3 | Matches |
+| Hero at 0 HP after a spell | Set to 1 before the rebuild (so it follows his maximum), whichever army was hit, an enemy's included | The same test on the player's hero for any army hit, before the recompute | §4.3 | Matches |
 | Spell destroying an enemy army | Beaten by the player, no loot, no XP; its dead stay in the record until then | Destroyed as beaten by the player, no loot, no XP (code) | §4.3 | Matches |
 | Spell kills | The dead keep their items; recast on a dead holder raises it | The effect routine moves no items; the recast branch has no HP test | §4.1 | Matches |
 | `p-LifeLose` | A permanent unit percentage D (`Unit::drain`) that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly; carried to the next campaign map | A permanent unit percentage D that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly | §4.1, §4.3 | Matches |
 | Spell school (`Type`) | Shown in the book; no rule reads it | Ignored by every rule | §1.1 | Matches |
 | Event learning past 15 | No cap; only the first 15 can be cast; the shop refuses only at exactly 15 | No cap; spells past 15 are known but not castable | §2 | Matches |
+| Event learning, "no meeting" 1 | Skipped for any event whose "no meeting" byte is 1 | The Community hook skips it whenever that byte is 1, opcode or not | §2 | Matches |
+| Spell shop price | Exactly `CostGold`, a negative one paying the hero | Exactly `CostGold`, no clamp | §2 | Matches |
 | Percent stats (protections, regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism, regen may be negative) | §6 | Matches |
 | Order of spells' `d-` | Before all `p-` (`items::rebuild_stats`) | Before all `p-` (potion, items, spells) | §6 | Matches |
 | Initiative and Manevres | Kept in hundredths, divided at the end; Manevres rounded half up when not above the level value | Kept in hundredths, divided at the end; Manevres rounded half up when not above the level value | §6 | Matches |
@@ -448,7 +457,8 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Bonus byte | The type's, overwritten by each worn item's (the last slot wins) | Same | §6 | Matches |
 | Worn numbers above item count + 1 | Kept (Razdor's content is keyed by `GlobalIndex`, not a record array) | Removed at every rebuild | §6 | Differs (data robustness) |
 | Item `Magic` school | No effect on the school; worn only by a unit of that school | No effect on the school; the item may be worn only by a unit of that school | §1.2, §5.3 | Matches |
-| Item `Type` | An unknown string reads as a potion; an empty one skips the item | An unknown or empty string means Potion; a section without Type is skipped | §1.2 | Matches |
+| Item `Type` | An unknown string reads as a potion (compared case-sensitively); an empty one skips the item | An unknown or empty string means Potion; a section without Type is skipped | §1.2 | Matches |
+| Spell `Target` | Compared case-sensitively; anything but `Enemy` and `OneEnemy` is the hero's army | The same exact string compare | §1.1 | Matches |
 | Holy items | Refused for every unit of Nature Undead | Refused for every unit of Nature Undead (23 types) | §5.3 | Matches |
 | Crown wearers | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | §5.3 | Matches |
 | Wear test order | Crown, dead, potion/goods, shield, holy, class, school, weapon, type, slot | Same order | §5.3 | Matches |
@@ -460,6 +470,7 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Pack full on gain | Events drop the item silently; battle loot still counts what did not fit (battle.md) | Item silently lost | §5.1 | Matches for events |
 | Equip slot choice (hero window) | `Game::equip_at` puts the item in the given empty slot; the army-card drop takes the first free one. The items screen has no drop on a worn slot yet | The clicked empty slot; the army-card drop uses the first free one | §5.2 | Rule matches; the screen is left for later |
 | Spells after a campaign change | All slots wiped; D kept (the hero's too) | All slots wiped; D kept | §9 | Matches |
+| Spells after a battle | The player's units the battle left dead lose their slots | The player's dead units lose their slots | §9 | Matches |
 | Community opcode 11 "permanent" spells | End at the map start + 156,588 minutes (0xEEEEEE hundredths, rounded up); slot k takes entry k, a 0 empties it; garrisons too | End at an absolute time ≈ 108.7 game days after the map start | §4.2 | Matches |
 | AI item handling | Value = tactical cost gain over the bare unit, threshold 5 (`ai::give_item`, `ai::redistribute`, shopping) | Value = tactical cost gain over the bare unit, threshold 5, as in §8 | §8 | Matches |
 

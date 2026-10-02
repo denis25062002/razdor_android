@@ -438,8 +438,9 @@ impl ArtefactType {
         ArtefactType::Item,
     ];
 
+    /// The loader's exact, case-sensitive compare (0x4990cc).
     pub fn parse(s: &str) -> Option<ArtefactType> {
-        ArtefactType::ALL.into_iter().find(|t| format!("{t:?}").eq_ignore_ascii_case(s))
+        ArtefactType::ALL.into_iter().find(|t| format!("{t:?}") == s)
     }
 
     /// Weapons and staffs: a unit holds only one of these.
@@ -460,10 +461,10 @@ pub enum SpellTarget {
 }
 
 impl SpellTarget {
+    /// The loader's exact, case-sensitive compare (0x49ac64): anything but `Enemy` and
+    /// `OneEnemy` is the hero's own army.
     pub fn parse(s: &str) -> Option<SpellTarget> {
-        [SpellTarget::Hero, SpellTarget::Enemy, SpellTarget::OneEnemy]
-            .into_iter()
-            .find(|t| format!("{t:?}").eq_ignore_ascii_case(s))
+        [SpellTarget::Hero, SpellTarget::Enemy, SpellTarget::OneEnemy].into_iter().find(|t| format!("{t:?}") == s)
     }
 }
 
@@ -1394,9 +1395,10 @@ Evasion=15\r\n";
         assert_eq!(a.percent, StatMods::from([(Stat::Hits, 10)]));
         assert_eq!(a.magic, Some(MagicSchool::Life));
         assert_eq!(a.bonus, Some(Bonus::ArmorIgnore));
-        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n[6 Axe]\nGlobalIndex=6\nType=Spoon\n[7 Mace]\nGlobalIndex=7\nType=BlowWeapon\n");
+        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n[6 Axe]\nGlobalIndex=6\nType=Spoon\n[7 Mace]\nGlobalIndex=7\nType=BlowWeapon\n[8 Bow]\nGlobalIndex=8\nType=shotweapon\n");
         let loaded = parse_artefacts(&ini);
-        assert_eq!(loaded.value.iter().map(|a| (a.id, a.kind)).collect::<Vec<_>>(), [(6, ArtefactType::Potion), (7, ArtefactType::BlowWeapon)], "an unknown Type is a potion");
+        let kinds = [(6, ArtefactType::Potion), (7, ArtefactType::BlowWeapon), (8, ArtefactType::Potion)];
+        assert_eq!(loaded.value.iter().map(|a| (a.id, a.kind)).collect::<Vec<_>>(), kinds, "an unknown Type is a potion, the compare is case-sensitive");
         assert_eq!(loaded.warnings, ["[5 Sword] Type=: not an item type, entry skipped"]);
     }
 
@@ -1454,6 +1456,7 @@ Generated=1\r\n";
         assert!(a.extra.is_empty(), "{:?}", a.extra);
         let b = &spells[1];
         assert_eq!((b.id, b.time_work, b.target), (2, Some(10), Some(SpellTarget::Enemy)));
+        assert_eq!(SpellTarget::parse("enemy"), None, "case-sensitive: the hero's army");
         assert_eq!(b.percent, StatMods::from([(Stat::AttackBlow, -20)]));
         assert_eq!(b.add, StatMods::from([(Stat::Manevres, -1)]));
         assert_eq!(b.life_lose_percent, Some(5));

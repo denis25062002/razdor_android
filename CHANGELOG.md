@@ -312,6 +312,15 @@ old id, and their versions give both.
   potion of 1000 healing or more raises the dead. An unknown item type reads as a potion.
 - Save format 7: spells, drains and hit point fractions are kept per unit; older saves load
   with their army's spells moved onto its units.
+- An event that casts a spell while the hero reads one turns his spell onto his own army, for
+  free, as the original does; the event's spell lands after it. An event's spell now lands
+  after its other results (a unit it adds is hit too) and before its delay passes.
+- A spell that leaves someone of the army it hit alive gives a fallen hero 1 HP before the
+  army is rebuilt, a curse on an enemy army included. After a battle, the player's dead
+  units lose their spells.
+- An event whose "no meeting" byte is 1 teaches no spell, opcode or not. A spell's price in a
+  sanctuary is exactly its cost, a negative one included. Item types and spell targets are
+  read case-sensitively, as the original does.
 
 ## 0.2.2 — 2026-10-01
 

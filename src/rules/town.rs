@@ -358,7 +358,8 @@ impl Game {
     /// book (which holds [`SPELL_BOOK_SIZE`] spells), to be cast on the map (`rules::magic`).
     pub fn learn_spell(&mut self, id: u32) -> Result<(), ServiceError> {
         let spell = self.spells_here().into_iter().find(|s| s.id == id).ok_or(ServiceError::NotHere)?;
-        let price = Price::gold(spell.cost_gold.max(0));
+        // Exactly `CostGold`, a negative one too (it then pays the hero).
+        let price = Price::gold(spell.cost_gold);
         // The shop's tests in its order (0x4ba078): known, then gold, then a book of exactly
         // 15. A book an event pushed past 15 passes the last test (the original's).
         if self.knows_spell(id) {
@@ -1630,6 +1631,12 @@ mod tests {
         assert_eq!(g.learn_spell(2), Ok(()));
         assert_eq!((g.spells.len(), g.gold), (17, 0));
         assert_eq!(g.learn_spell(7), Err(ServiceError::NotHere));
+        // Exactly CostGold is taken (0x4ba3b0): a negative one pays the hero.
+        let mut c = (*g.content).clone();
+        c.spells.iter_mut().find(|sp| sp.id == 1).unwrap().cost_gold = -50;
+        g.content = std::sync::Arc::new(c);
+        g.spells.clear();
+        assert_eq!((g.learn_spell(1), g.gold), (Ok(()), 50));
     }
 
     #[test]
