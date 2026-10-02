@@ -840,7 +840,12 @@ fn army_tooltip(game: &Game, a: &Army) -> Tooltip {
         footer.push((line, INK));
     }
     let now = game.clock.total_minutes() as u64;
-    let spells: Vec<&str> = a.effects.iter().filter(|e| e.lasts_at(now)).filter_map(|e| game.spell(e.spell)).map(|s| s.name.as_str()).collect();
+    let mut spells: Vec<&str> = Vec::new();
+    for s in a.troops.iter().flat_map(|t| t.spells.iter().flatten()).filter(|s| s.until > now).filter_map(|s| game.spell(s.spell)) {
+        if !spells.contains(&s.name.as_str()) {
+            spells.push(s.name.as_str());
+        }
+    }
     if !spells.is_empty() {
         footer.push((trf!("Under spells: {spells}", spells = spells.join(", ")), MANA));
     }
@@ -1287,10 +1292,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         .iter()
         .filter_map(|e| {
             let name = &game.spell(e.spell)?.name;
-            Some(match e.until {
-                Some(t) => format!("{name} ({})", duration_label(t.saturating_sub(now) as f64)),
-                None => name.clone(),
-            })
+            Some(format!("{name} ({})", duration_label(e.until.saturating_sub(now) as f64)))
         })
         .map(|l| (l, MANA))
         .collect();

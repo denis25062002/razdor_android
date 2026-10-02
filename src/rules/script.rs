@@ -11,8 +11,8 @@
 
 use super::content::{HeroClass, ItemId, UnitId, WageKind};
 use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitPick, SIDE_PLAYER};
-use super::magic::ActiveSpell;
-use super::game::{troop_unit, Event, Foe, Game, PACK_SIZE, SPELL_BOOK_SIZE};
+use super::units::{SpellSlot, SPELL_SLOTS};
+use super::game::{troop_unit, unit_into_troop, Event, Foe, Game, PACK_SIZE};
 use super::town::ServiceError;
 use super::units::Unit;
 use super::world::{Army, EventInfo, Troop};
@@ -540,24 +540,27 @@ impl EventWorld for Game {
         }
         let c = self.content.clone();
         for u in &mut self.squad {
-            if let Some(slot) = u.items.iter_mut().find(|s| **s == Some(item)) {
-                *slot = None;
-                u.hp = u.hp.min(u.max_hp(&c));
+            if let Some(slot) = u.items.iter().position(|s| *s == Some(item)) {
+                crate::rules::items::take_off(&c, u, slot);
                 return;
             }
         }
     }
 
+    /// Appends the spell to the book unless it is there (0x49c144). There is no limit: the
+    /// spells past the 15th are known but the magic window never shows them.
     fn learn_spell(&mut self, spell: u8) {
-        if spell != 0 && !self.spells.contains(&spell) && self.spells.len() < SPELL_BOOK_SIZE {
+        if spell != 0 && !self.spells.contains(&spell) {
             self.spells.push(spell);
         }
     }
 
-    /// The spell takes effect on the army at once and for free, lasting 10 (or 5) times as
-    /// long as a cast ([`Game::apply_spell_to_army_ext`]); an unknown spell does nothing.
+    /// The spell takes effect on the player's army at once and for free, whatever its
+    /// target ([`Game::apply_spell_to_army_ext`]); its number is held to the number of
+    /// spells (0x4ab1ec).
     fn apply_spell(&mut self, spell: u8) {
-        if let Some(def) = self.spell(spell as u32).cloned() {
+        let id = (spell as u32).min(self.content.spells.len() as u32);
+        if let Some(def) = self.spell(id).cloned() {
             self.apply_spell_to_army_ext(&def, true);
         }
     }
@@ -676,7 +679,16 @@ impl EventWorld for Game {
     // --- Community Update extensions (mechanics.md §8.1) --------------------------------------
 
     fn remove_army_spell(&mut self, spell: u8) {
-        self.effects.retain(|e| e.spell != spell as u32);
+        let c = self.content.clone();
+        for u in &mut self.squad {
+            let before = u.max_hp(&c);
+            for slot in &mut u.spells {
+                if slot.is_some_and(|s| s.spell == spell as u32) {
+                    *slot = None;
+                }
+            }
+            u.follow_max(&c, before);
+        }
     }
 
     /// The player's unit wears exactly these items; what it wore goes to the pack. AI units
@@ -693,9 +705,8 @@ impl EventWorld for Game {
                 for (k, slot) in u.items.iter_mut().enumerate() {
                     *slot = items.get(k).copied().and_then(valid);
                 }
-                // A higher maximum comes with its hit points (`items::put_on`).
-                let max = u.max_hp(&c);
-                u.hp = (u.hp + (max - before).max(0)).min(max);
+                // Rebuilt: its HP follows its maximum.
+                u.follow_max(&c, before);
                 for item in old {
                     if self.pack.len() < PACK_SIZE {
                         self.pack.push(item);
@@ -794,18 +805,33 @@ impl EventWorld for Game {
         }
     }
 
-    /// World spells are kept per army, so a spell for one unit goes on its whole army
-    /// *(guess)*; garrisons hold none.
-    fn set_spells(&mut self, holder: Holder, _unit: Option<u8>, spells: &[u8]) {
-        let list: Vec<ActiveSpell> = spells.iter().map(|&s| ActiveSpell::new(s as u32, None)).collect();
-        match holder {
-            Holder::Player => self.effects = list,
-            Holder::Army(a) => {
-                if let Some(a) = self.army_mut(a) {
-                    a.effects = list;
-                }
+    /// Opcode 11: slot k of the unit (or of every unit) holds spell k "for good" — until
+    /// [`Game::opcode_spell_end`], an absolute time (0xEEEEEE) — or is emptied for a 0.
+    /// Garrisons take them too.
+    fn set_spells(&mut self, holder: Holder, unit: Option<u8>, spells: &[u8]) {
+        let c = self.content.clone();
+        let now = self.clock.total_minutes() as u64;
+        let end = self.opcode_spell_end();
+        let slots: [Option<SpellSlot>; SPELL_SLOTS] = std::array::from_fn(|k| match spells.get(k) {
+            Some(&s) if s != 0 => Some(SpellSlot { spell: s as u32, until: end }),
+            _ => None,
+        });
+        let pick = |k: usize| unit.is_none_or(|n| n as usize == k);
+        if holder == Holder::Player {
+            for (_, u) in self.squad.iter_mut().enumerate().filter(|(k, _)| pick(*k)) {
+                let before = u.max_hp(&c);
+                u.spells = slots;
+                u.follow_max(&c, before);
             }
-            Holder::Building(_) => {}
+            return;
+        }
+        let Some(troops) = self.troops_of(holder) else { return };
+        for (_, t) in troops.iter_mut().enumerate().filter(|(k, _)| pick(*k)) {
+            let mut u = troop_unit(&c, t);
+            let before = u.max_hp(&c);
+            u.spells = slots;
+            u.follow_max(&c, before);
+            unit_into_troop(&c, t, &u, now);
         }
     }
 
@@ -858,18 +884,17 @@ impl EventWorld for Game {
         }
     }
 
-    /// Spells are kept per army (see `set_spells`); a garrison has none.
-    fn has_spells(&self, holder: Holder, _unit: Option<u8>, spells: &[u8]) -> bool {
-        let now = self.clock.total_minutes() as u64;
-        let on = |effects: &[ActiveSpell]| spells.iter().all(|&s| effects.iter().any(|e| e.spell == s as u32 && e.lasts_at(now)));
-        match holder {
-            Holder::Player => on(&self.effects),
-            Holder::Army(a) => {
-                let w = &self.world;
-                w.armies.iter().chain(w.inactive.iter()).find(|x| x.id == a).is_some_and(|x| on(&x.effects))
-            }
-            Holder::Building(_) => spells.is_empty(),
-        }
+    /// Opcode 14: the unit (or every unit) holds each of the spells in one of its slots.
+    fn has_spells(&self, holder: Holder, unit: Option<u8>, spells: &[u8]) -> bool {
+        let holds = |slots: &[Option<SpellSlot>; SPELL_SLOTS]| spells.iter().all(|&s| slots.iter().flatten().any(|x| x.spell == s as u32));
+        let pick = |k: usize| unit.is_none_or(|n| n as usize == k);
+        let w = &self.world;
+        let troops = match holder {
+            Holder::Player => return self.squad.iter().enumerate().filter(|(k, _)| pick(*k)).all(|(_, u)| holds(&u.spells)),
+            Holder::Army(a) => w.armies.iter().chain(w.inactive.iter()).find(|x| x.id == a).map(|x| &x.troops),
+            Holder::Building(b) => w.locations.iter().find(|l| l.id == b).map(|l| &l.garrison),
+        };
+        troops.is_some_and(|t| t.iter().enumerate().filter(|(k, _)| pick(*k)).all(|(_, t)| holds(&t.spells)))
     }
 
     fn forget_spell(&mut self, spell: u8) {
@@ -959,6 +984,8 @@ pub struct NextMap {
     pub class: HeroClass,
     pub hero_name: Option<String>,
     pub hero_unit: UnitId,
+    /// The hero's drain (`p-LifeLose`): part of his unit record, always carried.
+    pub hero_drain: i32,
     /// The journal's history (`rules::journal`), always carried: the next map is its next
     /// chapter.
     pub journal: crate::rules::journal::History,
@@ -1006,7 +1033,12 @@ impl Game {
             spells: carry[3].then(|| self.spells.clone()),
             hero_items: carry[4].then_some(hero.items),
             inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
-            army: if carry[6] { self.squad.iter().skip(1).filter(|u| u.alive()).cloned().collect() } else { Vec::new() },
+            // Every unit loses its spell slots at the hand-over (0x4b5b64); its drain stays.
+            army: if carry[6] {
+                self.squad.iter().skip(1).filter(|u| u.alive()).map(|u| Unit { spells: [None; SPELL_SLOTS], ..u.clone() }).collect()
+            } else {
+                Vec::new()
+            },
             flags: engine.flags().map(str::to_string).collect(),
             class: match self.archetype {
                 2 => HeroClass::Archmage,
@@ -1015,6 +1047,7 @@ impl Game {
             },
             hero_name: self.hero_name.clone(),
             hero_unit: hero.def,
+            hero_drain: hero.drain,
             journal: self.journal.clone(),
         })
     }
@@ -1060,6 +1093,7 @@ impl Game {
             hero.def = prev.hero_unit;
         }
         (hero.level, hero.xp) = prev.hero.unwrap_or((1, 0));
+        hero.drain = prev.hero_drain;
         if let Some(items) = prev.hero_items {
             hero.items = items;
         }
@@ -1174,9 +1208,9 @@ mod tests {
         let now = g.clock.total_minutes() as u64;
         assert_eq!(fired(&g.drain_events()), vec![1]);
         // An event's spell lasts TimeWork × 10 (5 h → 50 h).
-        assert_eq!(g.active_spells(), &[crate::rules::magic::ActiveSpell::new(1, Some(now + 50 * 60))]);
-        let plain = g.squad[1].stats(&g.content)[Stat::Initiative];
-        assert_eq!(g.stats_with_spells(1)[Stat::Initiative], plain + 2);
+        assert_eq!(g.active_spells(), vec![SpellSlot { spell: 1, until: now + 50 * 60 }]);
+        let plain = crate::rules::units::Stats::of_level(&g.content, g.squad[1].def, g.squad[1].level)[Stat::Initiative];
+        assert_eq!(g.squad[1].stats(&g.content)[Stat::Initiative], plain + 2);
         g.wait(5);
         assert_eq!(g.active_spells().len(), 1, "longer than a cast of it");
         g.wait(45);
@@ -1257,6 +1291,41 @@ mod tests {
         EventWorld::deactivate_army(&mut g, 3);
         assert!(g.world.respawns.is_empty() && g.world.inactive.iter().any(|a| a.id == 3));
         assert!(EventWorld::player_defeated(&g, 3), "the mark stays");
+    }
+
+    #[test]
+    fn an_event_that_fires_during_a_cast_lands_the_spell_at_once() {
+        // 0x4ae4f2: an event fired by the scan of a casting step pops the wait off the
+        // queue, and the spell lands at once: after 1 h here, not after the 4 h of its cast.
+        use crate::rules::content::{testkit as ck, Content, SpellDef};
+        use crate::rules::magic::{CastOutcome, CastTarget};
+        let mut e = ev(EventKind::Global);
+        e.start_time = 624_354_300 + 60;
+        let s = world(vec![e]);
+        let base = content();
+        let heal = SpellDef { time_cast: Some(4), cost_mana: 10, delta_fixed_hits: Some(10), ..ck::spell(1, 0) };
+        let c = Content::new(base.units.clone(), base.items.clone(), vec![heal], base.options.clone(), base.formation);
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
+        g.drain_events();
+        (g.mana, g.spells) = (100, vec![1]);
+        g.squad[1].hp = 5;
+        let t0 = g.clock.total_minutes();
+        let cast = g.cast(1, CastTarget::Own).unwrap();
+        assert_eq!(fired(&cast.events), vec![1]);
+        assert_eq!(cast.outcome, CastOutcome::Done { hits: 10, killed: 0, destroyed: false });
+        assert_eq!((g.clock.total_minutes() - t0, g.mana, g.squad[1].hp), (60.0, 90, 15));
+    }
+
+    #[test]
+    fn an_event_teaches_spells_past_the_15th() {
+        // 0x49c144 has no limit; the 16th is known but not castable (`rules::magic`).
+        use crate::rules::events::EventWorld;
+        let mut g = start(&world(vec![]));
+        g.spells = (20..35).collect();
+        EventWorld::learn_spell(&mut g, 3);
+        assert_eq!(g.spells.len(), 16);
+        EventWorld::learn_spell(&mut g, 3);
+        assert_eq!(g.spells.len(), 16, "known: not added twice");
     }
 
     #[test]
@@ -1486,6 +1555,7 @@ mod tests {
             class: HeroClass::Knight,
             hero_name: None,
             hero_unit: g.squad[0].def,
+            hero_drain: 0,
             journal: g.journal.clone(),
         };
         let mut fresh = start(&world(vec![]));
@@ -1726,7 +1796,10 @@ mod tests {
         assert_eq!((g.squad[1].def, g.squad[1].named), (UnitId(5), 1), "replaced by type 3, then named character 1 of type 5");
         assert_eq!((g.squad[0].xp, g.squad[1].xp), (10, 10));
         assert_eq!(g.spells, vec![6]);
-        assert_eq!(g.active_spells(), &[ActiveSpell::new(1, None)]);
+        // Opcode 11's "permanent" spells end 0xEEEEEE hundredths of a minute after the start.
+        let end = g.map_start() + crate::rules::magic::OPCODE_SPELL_END;
+        assert_eq!(g.active_spells(), vec![SpellSlot { spell: 1, until: end }]);
+        assert!(g.squad.iter().all(|u| u.spells == [Some(SpellSlot { spell: 1, until: end }), None, None, None]), "every unit");
         assert!(g.has_spells(Holder::Player, None, &[1]) && !g.has_spells(Holder::Player, None, &[1, 2]));
         assert_eq!(g.tile(), (10, 5));
         assert_eq!(g.gold, 100, "the resources are arguments");
@@ -1765,7 +1838,8 @@ mod tests {
         // Its own attitude becomes 2, but the relation (world::relation) is the player's −2
         // towards the enemy group, as in the original.
         assert_eq!((a.faction, a.attitude), (4, -2), "enemy group: hostile whatever its own attitude");
-        assert_eq!(a.effects, vec![ActiveSpell::new(3, None)]);
+        let end = g.map_start() + crate::rules::magic::OPCODE_SPELL_END;
+        assert!(a.troops.iter().all(|t| t.spells[0] == Some(SpellSlot { spell: 3, until: end })), "every unit of it");
         assert_eq!((a.named, a.model), (1, 12));
         assert_eq!(a.post, (14, 10));
         assert!(!a.path.is_empty(), "it sets off");
@@ -1833,6 +1907,7 @@ mod tests {
             class: HeroClass::Knight,
             hero_name: None,
             hero_unit: g.squad[0].def,
+            hero_drain: 0,
             journal: crate::rules::journal::History::default(),
         };
         let mut fresh = start(&world(vec![]));
@@ -1940,9 +2015,13 @@ mod tests {
         s.header.victory_event = 2;
         s.next_map = "0-0 Road".into();
         s.header.carry_over = [1, 0, 0, 1, 0, 1, 1];
-        let g = start(&s);
+        let mut g = start(&s);
         assert_eq!(g.script_end(), Some(ScriptEnd::Victory(2)));
+        // Every unit's spell slots are wiped at the hand-over; the drain is the unit's.
+        g.squad[1].spells[0] = Some(SpellSlot { spell: 1, until: u64::MAX });
+        (g.squad[1].drain, g.squad[0].drain) = (20, 36);
         let next = g.next_map().unwrap();
+        assert_eq!((next.army[0].spells, next.army[0].drain, next.hero_drain), ([None; SPELL_SLOTS], 20, 36));
         assert_eq!(next.name, "3-2 Road");
         assert_eq!(next.branch, Some((3, 2)));
         assert_eq!((next.gold, next.mana, next.fame), (Some(100), None, false));

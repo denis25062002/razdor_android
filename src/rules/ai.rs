@@ -33,7 +33,7 @@ use crate::dt::dtm::Army as DtArmy;
 
 use super::battle::{Battle, Outcome, Team};
 use super::clock::MINUTES_PER_DAY;
-use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, SpellDef, UnitId, WageKind};
+use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, UnitId, WageKind};
 use super::economy::{delphi_round, rear_service, relation_price};
 use super::events::ArmyId;
 use super::fog;
@@ -529,11 +529,17 @@ pub fn army_units(c: &Content, a: &Army) -> Vec<Unit> {
     a.troops.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect()
 }
 
-/// Puts `item` on troop `t` if it can wear it (`items::slot_for`'s rules). A higher maximum
-/// brings as many hit points (`items::put_on`): the HP it lacks stay. Returns the slot.
+/// Puts `item` on troop `t` if it can wear it (`items::slot_for`'s rules), and rebuilds it:
+/// its HP follows its maximum (`items::put_on`). Returns the slot.
 fn wear(c: &Content, t: &mut Troop, item: ItemId) -> Option<usize> {
-    let slot = items::slot_for(c, &troop_unit(c, t), item).ok()?;
+    let mut u = troop_unit(c, t);
+    let slot = items::slot_for(c, &u, item).ok()?;
+    items::put_on(c, &mut u, slot, item);
     t.worn[slot] = Some(item);
+    if u.alive() {
+        t.hurt = (u.max_hp(c) - u.hp).max(0);
+        t.carry = u.carry;
+    }
     Some(slot)
 }
 
@@ -617,11 +623,11 @@ pub struct SimResult {
     pub turn: u32,
 }
 
-/// One side of a battle between AI sides: its units, its building defence, its spells.
-pub struct Side<'a> {
+/// One side of a battle between AI sides: its units (their spells in their slots) and its
+/// building defence.
+pub struct Side {
     pub units: Vec<Unit>,
     pub defence: i32,
-    pub spells: Vec<&'a SpellDef>,
 }
 
 /// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
@@ -634,8 +640,6 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     if !predict {
         bt.skip_prediction();
     }
-    bt.apply_spells(Team::Player, &a.spells);
-    bt.apply_spells(Team::Enemy, &b.spells);
     if a.defence > 0 {
         bt.set_building_defence(Team::Player, a.defence);
     }
@@ -677,13 +681,14 @@ pub struct SimKey {
     sides: [SideKey; 2],
 }
 
-/// A side of a [`SimKey`]: (type, level, HP, worn items) of each unit, the defence, the
-/// spells.
-type SideKey = (Vec<(u32, i32, i32, [Option<ItemId>; items::SLOTS])>, i32, Vec<u32>);
+/// A side of a [`SimKey`]: (type, level, HP, worn items, spells, drain) of each unit, the
+/// defence.
+type UnitKey = (u32, i32, i32, [Option<ItemId>; items::SLOTS], [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS], i32);
+type SideKey = (Vec<UnitKey>, i32);
 
 impl SimKey {
     fn of(a: &Side, b: &Side) -> SimKey {
-        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items)).collect(), s.defence, s.spells.iter().map(|d| d.id).collect());
+        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence);
         SimKey { sides: [side(a), side(b)] }
     }
 }
@@ -948,18 +953,18 @@ impl Game {
 
     /// Army `i`'s side in its battles: its living units (only the paid ones when it
     /// attacks, 0x49855c), its building defence and its spells.
-    fn army_side(&self, i: usize, attacking: bool) -> (Side<'_>, Vec<usize>) {
+    fn army_side(&self, i: usize, attacking: bool) -> (Side, Vec<usize>) {
         let c = &self.content;
         let a = &self.world.armies[i];
         let fought: Vec<usize> = (0..a.troops.len()).filter(|&k| a.troops[k].alive() && (!attacking || !a.troops[k].unpaid)).collect();
         let units = fought.iter().map(|&k| troop_unit(c, &a.troops[k])).collect();
-        (Side { units, defence: a.mind.defence, spells: self.spells_on_army(i) }, fought)
+        (Side { units, defence: a.mind.defence }, fought)
     }
 
     /// The hero's side as a target: all his living units.
-    fn hero_side(&self) -> Side<'_> {
+    fn hero_side(&self) -> Side {
         let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
-        Side { units, defence: self.hero_defence(), spells: self.army_spells() }
+        Side { units, defence: self.hero_defence() }
     }
 
     // ------------------------------------------------------------------------------------
@@ -1174,12 +1179,12 @@ impl Game {
 
     /// The garrison of building `l` as a battle side: its troops and the player's units left
     /// there, living, with the building's defence.
-    fn garrison_side(&self, l: usize) -> Side<'_> {
+    fn garrison_side(&self, l: usize) -> Side {
         let c = &self.content;
         let loc = &self.world.locations[l];
         let mut units: Vec<Unit> = loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect();
         units.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
-        Side { units, defence: loc.garrison_defence, spells: Vec::new() }
+        Side { units, defence: loc.garrison_defence }
     }
 
     /// Army `i` scores every building afresh.
@@ -2811,7 +2816,9 @@ impl Game {
         }
         a.path.clear();
         a.chasing = false;
-        a.effects.clear();
+        for t in &mut a.troops {
+            t.spells = Default::default();
+        }
         a.mind.standing = None;
         a.mind.contact = None;
         if by == Beaten::ByPlayer && !a.ai.respawn_all {

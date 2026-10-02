@@ -7,7 +7,7 @@
 use std::ops::{Index, IndexMut};
 
 use crate::i18n::tr;
-use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, Stat, StatMods, UnitId, WageKind};
+use super::content::{Bonus, Content, ItemId, MagicDirection, MagicSchool, Nature, SpellDef, Stat, StatMods, UnitId, WageKind};
 use super::experience;
 use super::formation::{Row, Slot};
 use super::items::{self, SLOTS};
@@ -163,6 +163,55 @@ impl Stats {
     }
 }
 
+/// Lasting world spells a unit holds at once (unit +0x24, magic-items.md §4.1).
+pub const SPELL_SLOTS: usize = 4;
+
+/// One of a unit's spell slots: the spell (1-based id) and the game minute it ends. A slot
+/// whose end is not after now is empty at the next rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct SpellSlot {
+    pub spell: u32,
+    pub until: u64,
+}
+
+/// The fraction of a hit point a wounded unit carries from one rebuild to the next (unit
+/// +0x1b3): its HP follows its maximum in single-precision floating point.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct HpCarry(pub f32);
+
+impl PartialEq for HpCarry {
+    fn eq(&self, other: &HpCarry) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for HpCarry {}
+
+/// HP after the maximum went from `old_max` to `new_max` (the rebuild's step 14, 0x4908a8):
+/// dead stays dead, unhurt (at or above the old maximum) stays unhurt; a wounded unit gets
+/// `new_max × (hp + carry) / old_max` as a single float, its whole part as HP (at least 1)
+/// and the fraction carried; above the new maximum it is unhurt.
+pub fn follow_max(hp: i32, carry: &mut HpCarry, old_max: i32, new_max: i32) -> i32 {
+    if hp <= 0 || hp >= old_max || old_max <= 0 {
+        carry.0 = 0.0;
+        return if hp <= 0 { hp } else { new_max };
+    }
+    let v = ((hp as f64 + carry.0 as f64) * new_max as f64 / old_max as f64) as f32;
+    let whole = v.trunc();
+    carry.0 = v - whole;
+    let mut hp = whole as i32;
+    if hp == 0 {
+        hp = 1;
+        carry.0 = 0.0;
+    }
+    if hp > new_max {
+        carry.0 = 0.0;
+        hp = new_max;
+    }
+    hp
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PromoteError {
     /// Not in this unit's upgrade tree, or its level is too low.
@@ -203,6 +252,16 @@ pub struct Unit {
     /// a garrison unit counts as paid a day after it (economy.md §2). 0: never, as a hire.
     #[serde(default)]
     pub seen: u64,
+    /// Lasting world spells on it (`rules::magic`).
+    #[serde(default)]
+    pub spells: [Option<SpellSlot>; SPELL_SLOTS],
+    /// Percent of its maximum HP lost to `p-LifeLose` curses (unit +0x1bf): permanent until
+    /// a positive `p-LifeLose` lowers it.
+    #[serde(default)]
+    pub drain: i32,
+    /// See [`HpCarry`].
+    #[serde(default)]
+    pub carry: HpCarry,
 }
 
 impl Unit {
@@ -224,6 +283,9 @@ impl Unit {
             named: 0,
             from_event: false,
             seen: 0,
+            spells: [None; SPELL_SLOTS],
+            drain: 0,
+            carry: HpCarry::default(),
         }
     }
 
@@ -236,12 +298,34 @@ impl Unit {
         Stats::of_level(content, self.def, self.level)
     }
 
-    /// Level stats with worn items and active potions applied (see [`items::apply`]).
+    /// Its current stats: the original's rebuild of level stats, worn items, potions, the
+    /// spells in its slots and its drain ([`items::rebuild_stats`]).
     pub fn stats(&self, content: &Content) -> Stats {
-        let mut s = self.base_stats(content);
-        let worn: Vec<ItemId> = self.items.iter().flatten().copied().collect();
-        items::apply(content, &mut s, &worn, &self.potions);
-        s
+        items::rebuild_stats(content, self, &self.spell_defs(content))
+    }
+
+    /// The spells in its slots, in slot order.
+    pub fn spell_defs<'a>(&self, content: &'a Content) -> Vec<&'a SpellDef> {
+        self.spells.iter().flatten().filter_map(|s| content.spell(s.spell)).collect()
+    }
+
+    /// Empties the spell slots whose end is not after `now`; true if one was.
+    pub fn expire_spells(&mut self, now: u64) -> bool {
+        let mut any = false;
+        for slot in &mut self.spells {
+            if slot.is_some_and(|s| s.until <= now) {
+                *slot = None;
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// The rebuild after a change of its maximum from `old_max`: its HP follows
+    /// ([`follow_max`]).
+    pub fn follow_max(&mut self, content: &Content, old_max: i32) {
+        let new_max = self.max_hp(content);
+        self.hp = follow_max(self.hp, &mut self.carry, old_max, new_max);
     }
 
     pub fn max_hp(&self, content: &Content) -> i32 {

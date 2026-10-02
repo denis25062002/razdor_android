@@ -6,7 +6,7 @@ use crate::dt::dtm::Scenario;
 use super::ai::{self, AiNews, AiStats, Beaten};
 use super::battle::{Battle, Outcome, Team};
 use super::clock::{Clock, Tick};
-use super::content::{Bonus, Content, HeroClass, ItemId, Source, Stat, UnitId, WageKind};
+use super::content::{Content, HeroClass, ItemId, Source, Stat, UnitId, WageKind};
 use super::economy::VillageOffer;
 use super::events::{ArmyId, EventEngine, EventOutcome};
 use super::fog::{self, Fog};
@@ -246,8 +246,14 @@ pub struct Game {
     pub ai_log: Vec<AiNews>,
     /// 1 knight, 2 archmage, 3 ranger: the class the game started with (events check it).
     pub(crate) archetype: u8,
-    /// Lasting world spells on the hero's army (`rules::magic`).
-    pub(crate) effects: Vec<ActiveSpell>,
+    /// Army-wide world spells of saves before format 7; a load moves them into the units'
+    /// slots (`rules::save`).
+    #[serde(default, rename = "effects", skip_serializing)]
+    pub(crate) old_effects: Vec<ActiveSpell>,
+    /// The game minute the map started (the original's clock 0): `None` in saves before
+    /// format 7, which take the start day's midnight.
+    #[serde(default)]
+    pub(crate) map_start: Option<u64>,
     /// The scenario the game plays (`rules::save`): the demo, or a map file of the install
     /// with a hash of its bytes. The UI sets it for maps ([`Game::set_origin`]).
     pub origin: Option<ScenarioRef>,
@@ -417,7 +423,8 @@ impl Game {
             ai_stats: AiStats::default(),
             ai_log: Vec::new(),
             archetype: 1,
-            effects: Vec::new(),
+            old_effects: Vec::new(),
+            map_start: Some(clock.total_minutes() as u64),
             origin: None,
             autosave_due: None,
             ship: None,
@@ -557,10 +564,6 @@ impl Game {
         self.content.formation.capacity()
     }
 
-    pub(crate) fn squad_has(&self, b: &Bonus) -> bool {
-        self.squad.iter().any(|u| u.alive() && u.stats(&self.content).has(b))
-    }
-
     pub fn can_afford(&self, p: Price) -> bool {
         match p.currency {
             Currency::Gold => self.gold >= p.amount,
@@ -586,6 +589,11 @@ impl Game {
 
     pub fn moving(&self) -> bool {
         !self.path.is_empty()
+    }
+
+    /// The game minute the map started: the original's clock counts from it.
+    pub(crate) fn map_start(&self) -> u64 {
+        self.map_start.unwrap_or(self.start_day * super::clock::MINUTES_PER_DAY)
     }
 
     /// The class the game started with: the hero's sight, speed and cast divisor stay those
@@ -871,9 +879,12 @@ impl Game {
                 self.hero_step(&mut events)
             } else {
                 self.wait_ticks -= 1;
+                let from = events.len();
                 let go = self.wait_tick(&mut events);
-                if self.wait_ticks == 0 || self.foe.is_some() {
-                    // The reading is done, or an event set a battle over his book.
+                // The reading is done, an event fired (the original pops the wait off its
+                // queue, 0x4ae4f2, and the spell lands at once), or an event set a battle
+                // over his book.
+                if self.wait_ticks == 0 || self.foe.is_some() || events[from..].iter().any(fires) {
                     self.end_reading(&mut events);
                 }
                 go
@@ -1148,7 +1159,7 @@ impl Game {
         }
         // Time passed: the scenario's events run.
         let script = self.run_script();
-        let fired = script.iter().any(|e| matches!(e, Event::Script(super::events::EventOutcome::Fired { .. } | super::events::EventOutcome::Question(_))));
+        let fired = script.iter().any(fires);
         events.extend(script);
         if let Some(day) = self.noon_due.filter(|_| !fired && self.reading.is_none()) {
             self.noon_due = None;
@@ -1328,18 +1339,7 @@ impl Game {
         b.set_bench((0..self.squad.len()).filter(|i| !fighting.contains(i)).map(|i| self.squad[i].slot).collect());
         b.set_xp_correction(correction);
         b.set_improved_ai(self.improved_ai);
-        // Lasting world spells change the stats of both sides.
-        // Spells on a leader alone (`OneEnemy`, `p-LifeLose`) hold its first unit.
-        b.apply_spells(Team::Player, &self.army_spells());
-        if let Some(f) = b.fighters.iter_mut().find(|f| f.squad_index == Some(0)) {
-            magic::apply_to_fighter(f, &self.leader_spells());
-        }
-        if let Some(Foe::Army(i)) = self.foe {
-            b.apply_spells(Team::Enemy, &self.spells_on_army(i));
-            if let Some(f) = b.fighters.iter_mut().find(|f| f.team == Team::Enemy) {
-                magic::apply_to_fighter(f, &self.spells_on_leader(i));
-            }
-        }
+        // Lasting world spells are in the units' stats already (their slots).
         // An enemy army attacked in a building of its own side (one hostile to the hero)
         // defends with that building's defence, as a garrison does.
         let army_home = match self.foe {
@@ -1466,9 +1466,12 @@ impl Game {
                 level_ups.push((i, self.squad[i].level));
             }
         }
+        // The potions end with every battle of the player (0x4c50ec → 0x490720), then each
+        // unit is rebuilt: its HP follows its maximum.
         for u in &mut self.squad {
+            let before = u.max_hp(&c);
             u.potions.clear();
-            u.hp = u.hp.min(u.max_hp(&c));
+            u.follow_max(&c, before);
         }
         let now = self.clock.total_minutes() as u64;
         let mut dropped = Vec::new();
@@ -1625,34 +1628,51 @@ impl Game {
         Ok(price)
     }
 
-    /// Moves a pack item onto squad member `unit` (slot and class rules in [`items::slot_for`]).
+    /// Moves a pack item onto squad member `unit` into its lowest free slot, as a drop on its
+    /// card in the army window does (wear rules in [`items::slot_for`]).
     pub fn equip(&mut self, unit: usize, pack_index: usize) -> Result<(), EquipError> {
+        self.equip_at(unit, pack_index, None)
+    }
+
+    /// Moves a pack item onto squad member `unit`: into item slot `slot` when given, as a
+    /// click on an empty worn slot of the hero window puts it in that very slot (0x4c24f4;
+    /// an occupied slot takes nothing), else into the lowest free one. The wear test runs
+    /// either way.
+    pub fn equip_at(&mut self, unit: usize, pack_index: usize, slot: Option<usize>) -> Result<(), EquipError> {
         let item = *self.pack.get(pack_index).ok_or(EquipError::NoSuchItem)?;
         let u = self.squad.get(unit).ok_or(EquipError::NoSuchItem)?;
-        let slot = items::slot_for(&self.content, u, item)?;
+        let free = items::slot_for(&self.content, u, item)?;
+        let slot = match slot {
+            Some(k) if u.items.get(k) == Some(&None) => k,
+            Some(_) => return Err(EquipError::NoFreeSlot),
+            None => free,
+        };
         items::put_on(&self.content, &mut self.squad[unit], slot, item);
         self.pack.remove(pack_index);
         Ok(())
     }
 
-    /// Squad member `unit` drinks the potion at `pack_index`. Returns HP restored.
+    /// Squad member `unit` drinks the potion at `pack_index` ([`items::drink`]). Returns the
+    /// HP gained.
     pub fn drink(&mut self, unit: usize, pack_index: usize) -> Result<i32, EquipError> {
         let item = *self.pack.get(pack_index).ok_or(EquipError::NoSuchItem)?;
         let c = self.content.clone();
+        let now = self.clock.total_minutes() as u64;
         let u = self.squad.get_mut(unit).ok_or(EquipError::NoSuchItem)?;
-        let healed = items::drink(&c, u, item)?;
+        let healed = items::drink(&c, u, item, now)?;
         self.pack.remove(pack_index);
         Ok(healed)
     }
 
-    /// Moves item slot `slot` of squad member `unit` back into the pack.
+    /// Moves item slot `slot` of squad member `unit` back into the pack (a dead unit's too);
+    /// the unit is rebuilt.
     pub fn unequip(&mut self, unit: usize, slot: usize) -> Result<(), EquipError> {
         if self.pack.len() >= PACK_SIZE {
             return Err(EquipError::PackFull);
         }
+        let c = self.content.clone();
         let u = self.squad.get_mut(unit).ok_or(EquipError::NoSuchItem)?;
-        let item = u.items.get_mut(slot).and_then(Option::take).ok_or(EquipError::NoSuchItem)?;
-        u.hp = u.hp.min(u.max_hp(&self.content));
+        let item = items::take_off(&c, u, slot).ok_or(EquipError::NoSuchItem)?;
         self.pack.push(item);
         Ok(())
     }
@@ -1663,10 +1683,9 @@ impl Game {
         let item = self.squad.get(from).and_then(|u| u.items.get(slot).copied().flatten()).ok_or(EquipError::NoSuchItem)?;
         let target = self.squad.get(to).ok_or(EquipError::NoSuchItem)?;
         let free = items::slot_for(&self.content, target, item)?;
-        let u = &mut self.squad[from];
-        u.items[slot] = None;
-        u.hp = u.hp.min(u.max_hp(&self.content));
-        items::put_on(&self.content, &mut self.squad[to], free, item);
+        let c = self.content.clone();
+        items::take_off(&c, &mut self.squad[from], slot);
+        items::put_on(&c, &mut self.squad[to], free, item);
         Ok(())
     }
 }
@@ -1734,6 +1753,9 @@ pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     u.wage_kind = t.kind;
     u.unpaid = t.unpaid;
     u.last_paid = t.last_paid;
+    u.spells = t.spells;
+    u.drain = t.drain;
+    u.carry = t.carry;
     u.heal_full(content);
     if t.alive() {
         u.hp = (u.hp - t.hurt).max(1);
@@ -1742,6 +1764,29 @@ pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
         u.died_at = t.died_at;
     }
     u
+}
+
+/// Writes what a world spell or a rebuild did to the unit of troop `t` back into it: its
+/// slots, drain and HP carry, and its HP as what it lacks, or its death (the time of death
+/// now, unless it keeps one from an earlier death, as `ai::write_hp`); a unit raised again
+/// keeps its time of death.
+pub(crate) fn unit_into_troop(content: &Content, t: &mut Troop, u: &Unit, now: u64) {
+    t.spells = u.spells;
+    t.drain = u.drain;
+    t.carry = u.carry;
+    if u.alive() {
+        if t.died_at.is_some() {
+            t.kept_death = t.died_at.take();
+        }
+        t.hurt = (u.max_hp(content) - u.hp).max(0);
+    } else if t.died_at.is_none() {
+        t.died_at = Some(t.kept_death.take().unwrap_or(now));
+    }
+}
+
+/// An event of the scenario fired (or asks its question) in this event.
+pub(crate) fn fires(e: &Event) -> bool {
+    matches!(e, Event::Script(super::events::EventOutcome::Fired { .. } | super::events::EventOutcome::Question(_)))
 }
 
 #[cfg(test)]
@@ -2425,12 +2470,33 @@ mod tests {
         g.pack = vec![shield];
         g.equip(0, 0).unwrap();
         assert_eq!((g.hero().hp, g.hero().max_hp(&c)), (75, 75), "healed with the new maximum, not 70/75");
-        // Wounded, the lost hit points stay lost.
+        // Wounded, the HP follows the maximum (0x4908a8): 75 × 60 / 70 = 64.29.
         let slot = g.hero().items.iter().position(|i| *i == Some(shield)).unwrap();
         g.unequip(0, slot).unwrap();
         g.squad[0].hp = 60;
         g.equip(0, 0).unwrap();
-        assert_eq!(g.hero().hp, 65);
+        assert_eq!(g.hero().hp, 64);
+    }
+
+    #[test]
+    fn the_hero_window_puts_an_item_in_the_clicked_slot() {
+        // 0x4c24f4: a click on an empty worn slot puts the item in that very slot (its f-
+        // values and bonus then win over the slots before it); an occupied one takes nothing.
+        let mut g = quiet_game(HeroClass::Knight);
+        let shield = item(&g, "oak_shield");
+        g.squad[0].items = [None; crate::rules::items::SLOTS];
+        g.pack = vec![shield, shield];
+        assert_eq!(g.equip_at(0, 0, Some(2)), Ok(()));
+        assert_eq!(g.hero().items[2], Some(shield));
+        g.squad[0].items[2] = None;
+        g.squad[0].items[1] = Some(shield);
+        g.pack = vec![shield];
+        assert_eq!(g.equip_at(0, 0, Some(1)), Err(EquipError::SameType), "the wear test still runs");
+        g.squad[0].items[1] = None;
+        g.squad[0].items[3] = Some(item(&g, "short_sword"));
+        assert_eq!(g.equip_at(0, 0, Some(3)), Err(EquipError::NoFreeSlot), "an occupied slot does not swap");
+        assert_eq!(g.equip(0, 0), Ok(()));
+        assert_eq!(g.hero().items[0], Some(shield), "the army card's drop: the lowest free slot");
     }
 
     #[test]

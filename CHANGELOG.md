@@ -284,6 +284,34 @@ old id, and their versions give both.
   bargains.
 - A market whose list of candidates runs out while drawing a good reads on as the original
   does (the first item, or an empty place) instead of taking the last refused good.
+- **World spells per unit, as in the original.** Every unit holds up to four lasting
+  spells of its own; a unit with no free slot is left alone by a spell, its instant heal or
+  wound included. A life-draining curse is now a lasting drain of the unit that compounds and
+  cuts its hit points twice (at once and through the new maximum); a lifting lowers it.
+- Enemy spells reach any army on explored ground, at any distance, friends included (but not
+  a friend with a meeting waiting, nor an army in a building); the spell is lost only if its
+  target leaves the map. The mana is paid when the spell lands, even below zero. An event
+  that fires while the hero casts ends the casting and the spell lands at once. The spell
+  card shows the original's casting time (half an hour short with a Caster or, for the
+  Archmage, an odd casting time). Only the first 15 spells of the book can be cast; events
+  may teach more, and the sanctuary refuses only a book of exactly 15.
+- An event's spell on the army resets its time instead of adding to it, a spell number past
+  the last spell casts the last one, and a spell that kills the whole army loses the game.
+  The dead keep their items, and a dead unit still holding a spell is raised by a new cast
+  of it.
+- **Stats rebuilt as the original:** the spells' flat changes come before every percent, the
+  initiative and actions are worked in hundredths (actions rounded half up), a percent on a
+  protection, regeneration or vampirism adds points both ways (protections 0–99), a unit with
+  no melee, ranged or magic attack at its level gains none from items, stats can go below 0,
+  and a hero at 1 HP has initiative 1. A unit carries one bonus: an item's replaces its own.
+  When the maximum HP changes, a wounded unit's hit points follow it proportionally.
+- Item wear rules as the original: an item of a magic school only for a unit of that school
+  (it no longer gives its school), holy items barred for Undead by Nature, the crown for the
+  unit types the original's code lets wear it. Potions add up in one block; a potion's
+  magic power never takes effect, its protections replace what an earlier potion gave, and a
+  potion of 1000 healing or more raises the dead. An unknown item type reads as a potion.
+- Save format 7: spells, drains and hit point fractions are kept per unit; older saves load
+  with their army's spells moved onto its units.
 
 ## 0.2.2 — 2026-10-01
 

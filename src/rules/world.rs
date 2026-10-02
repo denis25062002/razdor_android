@@ -65,6 +65,13 @@ pub struct Troop {
     /// Hiring kind for the wage formula: AI leaders are [`WageKind::Leader`].
     #[serde(default = "recruit")]
     pub kind: WageKind,
+    /// Lasting world spells on it, its drain and HP carry, as a unit's ([`Unit::spells`]).
+    #[serde(default)]
+    pub spells: [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS],
+    #[serde(default)]
+    pub drain: i32,
+    #[serde(default)]
+    pub carry: crate::rules::units::HpCarry,
 }
 
 fn recruit() -> WageKind {
@@ -74,7 +81,22 @@ fn recruit() -> WageKind {
 impl Troop {
     /// A troop at full health, a recruit.
     pub fn new(unit: UnitId, level: i32, slot: Slot) -> Troop {
-        Troop { unit, level, slot, hurt: 0, xp: 0, worn: [None; crate::rules::items::SLOTS], died_at: None, kept_death: None, unpaid: false, last_paid: 0, kind: WageKind::Recruit }
+        Troop {
+            unit,
+            level,
+            slot,
+            hurt: 0,
+            xp: 0,
+            worn: [None; crate::rules::items::SLOTS],
+            died_at: None,
+            kept_death: None,
+            unpaid: false,
+            last_paid: 0,
+            kind: WageKind::Recruit,
+            spells: [None; crate::rules::units::SPELL_SLOTS],
+            drain: 0,
+            carry: crate::rules::units::HpCarry(0.0),
+        }
     }
 
     pub fn alive(&self) -> bool {
@@ -654,9 +676,10 @@ pub struct Army {
     pub rest_until: f64,
     /// Named character (1-based, the scenario's list) leading it; 0 none.
     pub named: u8,
-    /// World spells cast on it that still last (curses of the player's hero).
-    #[serde(default)]
-    pub effects: Vec<ActiveSpell>,
+    /// Army-wide world spells of saves before format 7; a load moves them into the units'
+    /// slots (`rules::save`).
+    #[serde(default, rename = "effects", skip_serializing)]
+    pub old_effects: Vec<ActiveSpell>,
     /// Ship type (`.DTm` army byte 72): 0 a land army, else it sails (`rules::ships::kind`).
     #[serde(default)]
     pub ship: u8,
@@ -1035,7 +1058,7 @@ impl World {
                 arrived: false,
                 rest_until: 0.0,
                 named: a.named_character,
-                effects: Vec::new(),
+                old_effects: Vec::new(),
                 ship,
                 ai: AiProfile::from_dt(a),
                 mind: AiMind::default(),
@@ -1330,7 +1353,7 @@ impl World {
             arrived: false,
             rest_until: 0.0,
             named: 0,
-            effects: Vec::new(),
+            old_effects: Vec::new(),
             ship: 0,
             ai: AiProfile::default(),
             mind: AiMind::default(),

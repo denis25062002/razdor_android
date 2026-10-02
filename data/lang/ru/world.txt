@@ -76,10 +76,10 @@ Death magic. = Магия Смерти.
 That spell is not in your book. = Этого заклинания нет в вашей книге.
 Not enough mana. = Недостаточно маны.
 That spell does not work on that target. = Это заклинание не действует на эту цель.
-The enemy is out of reach. = Враг слишком далеко.
+That army cannot be targeted. = На эту армию нельзя направить заклинание.
 Not now: a battle is coming. = Не сейчас: близится бой.
 The hero's spell book = Книга заклинаний героя
-No enemy army in sight within {range} cells. = В пределах {range} клеток не видно вражеских армий.
+No army on explored ground to cast on. = На разведанной земле нет армий для заклинания.
 an army = армия
 Cast on {name} ({d} cells) = Применить: {name} (клеток: {d})
 : {hits} hits = : жизнь {hits}
@@ -87,8 +87,7 @@ Cast on {name} ({d} cells) = Применить: {name} (клеток: {d})
 . The army is no more. = . Армия уничтожена.
 An enemy fell on you while you were casting: the spell is lost. = Враг напал, пока вы творили заклинание: оно потеряно.
 Reading «{name}»… = Чтение «{name}»…
-The target got away before the spell was ready. = Цель ушла прежде, чем заклинание было готово.
-Not enough mana left when the spell was ready. = К концу сотворения не хватило маны.
+The target left the map before the spell was ready. = Цель покинула карту прежде, чем заклинание было готово.
 Close = Закрыть
 
 # Building window: tabs and messages

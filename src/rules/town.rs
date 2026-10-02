@@ -359,15 +359,18 @@ impl Game {
     pub fn learn_spell(&mut self, id: u32) -> Result<(), ServiceError> {
         let spell = self.spells_here().into_iter().find(|s| s.id == id).ok_or(ServiceError::NotHere)?;
         let price = Price::gold(spell.cost_gold.max(0));
+        // The shop's tests in its order (0x4ba078): known, then gold, then a book of exactly
+        // 15. A book an event pushed past 15 passes the last test (the original's).
         if self.knows_spell(id) {
             return Err(ServiceError::AlreadyKnown);
         }
-        if self.spells.len() >= SPELL_BOOK_SIZE {
-            return Err(ServiceError::BookFull);
-        }
-        if !self.spend(price) {
+        if !self.can_afford(price) {
             return Err(ServiceError::CannotAfford);
         }
+        if self.spells.len() == SPELL_BOOK_SIZE {
+            return Err(ServiceError::BookFull);
+        }
+        self.spend(price);
         self.spells.push(id as u8);
         Ok(())
     }
@@ -1097,7 +1100,7 @@ mod tests {
         let now = g.clock.total_minutes() as u64;
         assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "the only one of 3/5/7/9/11 the content has");
         // TimeWork 4 h × 10.
-        assert_eq!(g.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, Some(now + 40 * 60))]);
+        assert_eq!(g.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, now + 40 * 60)]);
     }
 
     #[test]
@@ -1619,6 +1622,13 @@ mod tests {
         g.gold = 500;
         g.spells = (3..18).collect();
         assert_eq!(g.learn_spell(2), Err(ServiceError::BookFull), "15 cells in the book");
+        g.gold = 499;
+        assert_eq!(g.learn_spell(2), Err(ServiceError::CannotAfford), "the gold is tested before the room");
+        // A book an event filled past 15 is not "exactly 15": the shop sells into it.
+        g.gold = 500;
+        g.spells = (3..19).collect();
+        assert_eq!(g.learn_spell(2), Ok(()));
+        assert_eq!((g.spells.len(), g.gold), (17, 0));
         assert_eq!(g.learn_spell(7), Err(ServiceError::NotHere));
     }
 
@@ -1772,7 +1782,7 @@ mod real_maps {
             let loc = &g.world.locations[l];
             for &item in &stock {
                 let want = crate::rules::economy::relation_price(c.item(item).cost, loc.attitude, loc.owned());
-                let want = if g.squad_has(&crate::rules::content::Bonus::Merchant) { crate::rules::economy::merchant_price(want) } else { want };
+                let want = if g.squad.iter().any(|u| u.alive() && u.stats(&c).has(&crate::rules::content::Bonus::Merchant)) { crate::rules::economy::merchant_price(want) } else { want };
                 assert_eq!(g.buy_price(item), want);
             }
         }

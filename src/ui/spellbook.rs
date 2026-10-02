@@ -12,8 +12,8 @@ use razdor::trf;
 
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::SpellDef;
-use razdor::rules::game::{Game, SPELL_BOOK_SIZE};
-use razdor::rules::magic::{self, CastError, CastOutcome, CastTarget, Duration, CAST_RANGE};
+use razdor::rules::game::Game;
+use razdor::rules::magic::{self, CastError, CastOutcome, CastTarget, Duration, CASTABLE};
 
 use super::audio::{cue, Cue};
 use super::widgets::*;
@@ -101,8 +101,7 @@ pub fn landed(s: &SpellDef, t: CastTarget, outcome: CastOutcome) -> String {
             m
         }
         CastOutcome::Interrupted => tr("An enemy fell on you while you were casting: the spell is lost.").into(),
-        CastOutcome::TargetLost => tr("The target got away before the spell was ready.").into(),
-        CastOutcome::OutOfMana => tr("Not enough mana left when the spell was ready.").into(),
+        CastOutcome::TargetLost => tr("The target left the map before the spell was ready.").into(),
     }
 }
 
@@ -111,7 +110,7 @@ fn cast_error(e: CastError) -> &'static str {
         CastError::NotInBook | CastError::NoSuchSpell => tr("That spell is not in your book."),
         CastError::NotEnoughMana => tr("Not enough mana."),
         CastError::WrongTarget => tr("That spell does not work on that target."),
-        CastError::OutOfRange => tr("The enemy is out of reach."),
+        CastError::NotATarget => tr("That army cannot be targeted."),
         CastError::Busy => tr("Not now: a battle is coming."),
     }
 }
@@ -152,7 +151,7 @@ pub fn frame(
     let gap = 8.0 * k;
     let (cw, ch) = ((inner.w - 4.0 * gap) / 3.0, (inner.h - 6.0 * gap) / 5.0 + gap);
     let mut cast = None;
-    for cell in 0..SPELL_BOOK_SIZE {
+    for cell in 0..CASTABLE {
         let (c, row) = (cell % COLS, cell / COLS);
         let cr = Rect::new(inner.x + gap + c as f32 * (cw + gap), inner.y + gap + row as f32 * ch, cw, ch - gap);
         let spell = book.get(cell);
@@ -197,7 +196,9 @@ pub fn frame(
             chrome::shadow_centered(&s.name, tx, cr.y + 26.0 * k, ns, CREAM);
         });
         let effect = effect_summary(s);
-        let mana_line = format!("{} {}, {} {}", own("Mana", n_("Mana:")), cost.mana, own("Reading", n_("Reading:")), hours(cost.minutes, false));
+        // The card shows the cost function of `TimeCast` in hours, not the real wait (0x49bbe0).
+        let card_hours = game.card_cast_hours(s).max(0) as u64;
+        let mana_line = format!("{} {}, {} {}", own("Mana", n_("Mana:")), cost.mana, own("Reading", n_("Reading:")), hours(card_hours * 60, false));
         let last = match Duration::of(s) {
             Duration::Instant => own("MomentaryEffect", n_("Instant effect")),
             Duration::Minutes(m) => format!("{} {}", own("TimeOfEffect", n_("Lasts:")), hours(m, true)),
@@ -233,7 +234,7 @@ pub fn frame(
         let lr = Rect::new(r.center().x - 180.0 * k, r.y + r.h - lh - 10.0 * k, 360.0 * k, lh);
         chrome::window(lr, &s.name, chrome::Skin::Marble, false);
         if armies.is_empty() {
-            let line = trf!("No enemy army in sight within {range} cells.", range = CAST_RANGE);
+            let line = tr("No army on explored ground to cast on.").to_string();
             chrome::shadow_centered(&line, lr.center().x, lr.y + 44.0 * k, 13.0 * k, CREAM);
         }
         let here = game.tile();

@@ -818,8 +818,9 @@ impl ArtefactDef {
     fn from_section(sec: &Section, warnings: &mut Vec<String>) -> Option<ArtefactDef> {
         let f = Fields::new(sec);
         let id = f.global_index().map_err(|w| warnings.push(w)).ok()?;
-        let Some(kind) = f.str("Type").and_then(ArtefactType::parse) else {
-            warnings.push(format!("[{}] Type={}: not an item type, entry skipped", sec.name, sec.get("Type").unwrap_or("")));
+        // A section needs a Type; one the loader does not know reads as a potion (0x4990cc).
+        let Some(kind) = f.str("Type").map(|t| ArtefactType::parse(t).unwrap_or(ArtefactType::Potion)) else {
+            warnings.push(format!("[{}] Type=: not an item type, entry skipped", sec.name));
             return None;
         };
         let def = ArtefactDef {
@@ -1395,14 +1396,8 @@ Evasion=15\r\n";
         assert_eq!(a.bonus, Some(Bonus::ArmorIgnore));
         let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n[6 Axe]\nGlobalIndex=6\nType=Spoon\n[7 Mace]\nGlobalIndex=7\nType=BlowWeapon\n");
         let loaded = parse_artefacts(&ini);
-        assert_eq!(loaded.value.iter().map(|a| a.id).collect::<Vec<_>>(), [7]);
-        assert_eq!(
-            loaded.warnings,
-            [
-                "[5 Sword] Type=: not an item type, entry skipped",
-                "[6 Axe] Type=Spoon: not an item type, entry skipped",
-            ]
-        );
+        assert_eq!(loaded.value.iter().map(|a| (a.id, a.kind)).collect::<Vec<_>>(), [(6, ArtefactType::Potion), (7, ArtefactType::BlowWeapon)], "an unknown Type is a potion");
+        assert_eq!(loaded.warnings, ["[5 Sword] Type=: not an item type, entry skipped"]);
     }
 
     const SPELLS: &str = "\

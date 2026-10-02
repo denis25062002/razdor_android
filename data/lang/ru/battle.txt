@@ -185,6 +185,7 @@ Already wears an item of that type. = Предмет такого рода уж�
 Only one weapon or staff at a time. = Можно держать лишь одно оружие или посох.
 This unit cannot use that (warrior, shooter or mage only). = Этому воину это не подходит (только для воина, стрелка или мага).
 The undead cannot hold holy things. = Нежить не может носить святые вещи.
+Only a unit of that school of magic can use it. = Это может носить только воин той же школы магии.
 Only the hero and a few noble units may wear it. = Это может носить только герой и немногие знатные воины.
 That cannot be worn. = Это нельзя надеть.
 The dead hold nothing. = Мёртвым ничего не нужно.

@@ -6,8 +6,9 @@
 //! instant and their other modifiers last until the end of the next battle.
 
 use crate::i18n::tr;
-use super::content::{ArtefactDef, ArtefactType, Bonus, Content, Stat};
+use super::content::{ArtefactDef, ArtefactType, Bonus, Content, Nature, SpellDef, Stat, StatMods, WageKind};
 pub use super::content::{ItemId, Source};
+use super::experience::is_percent_stat;
 use super::units::{Stats, Unit};
 
 /// Item slots every unit has.
@@ -25,6 +26,8 @@ pub enum EquipError {
     WrongClass,
     /// A holy item on an undead unit.
     Unholy,
+    /// An item of a magic school on a unit of another school (or of none).
+    WrongSchool,
     /// The crown on a unit that may not wear it.
     NotAllowed,
     /// Potions and trade goods cannot be worn.
@@ -36,101 +39,202 @@ pub enum EquipError {
     NoSuchItem,
 }
 
-/// One `p-` modifier of an item, potion or spell on stat value `x`: `x + x·p/100`, truncated
-/// (economy.md §5). On a percent stat (the three protections, regeneration, vampirism) a
-/// positive `p` adds its points instead, up to 100: the player observes «Святое писание»
-/// (`p-ProtectDeath=30`) giving a unit without Death protection 30%, and 44% with +20%
-/// giving 64%.
-pub fn percent_mod(st: Stat, x: i32, p: i32) -> i32 {
-    if p > 0 && crate::rules::experience::is_percent_stat(st) {
-        (x + p).min(100.max(x))
-    } else {
-        x + x * p / 100
+/// The potions a unit drank since its army's last battle, as the one block the original
+/// keeps (unit +0x44, 0x48fdd0): the `d-` and `p-` of Hits, attacks, defences, Initiative and
+/// Manevres add up; for the protections, regeneration and vampirism an `f-` value replaces
+/// what is stored, then the `p-` value adds. Magic power never: the drink stores it only
+/// when a school byte of the block is set, and nothing sets it (the original's slip).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PotionBlock {
+    pub add: StatMods,
+    pub percent: StatMods,
+}
+
+impl PotionBlock {
+    pub fn of(content: &Content, potions: &[ItemId]) -> PotionBlock {
+        let mut b = PotionBlock::default();
+        for d in potions.iter().filter_map(|&p| content.try_item(p)) {
+            for (&st, &v) in &d.add {
+                if st != Stat::MagicPower && !is_percent_stat(st) && v != 0 {
+                    *b.add.entry(st).or_default() += v;
+                }
+            }
+            for st in Stat::ALL {
+                let p = d.percent.get(&st).copied().unwrap_or(0);
+                if st == Stat::MagicPower {
+                    continue;
+                }
+                if is_percent_stat(st) {
+                    if let Some(&f) = d.fixed.get(&st).filter(|&&f| f != 0) {
+                        b.percent.insert(st, f);
+                    }
+                }
+                if p != 0 {
+                    *b.percent.entry(st).or_default() += p;
+                }
+            }
+        }
+        b
     }
 }
 
-/// Applies worn items and active potions to `stats` in the original's order
-/// (original-mechanics/economy.md §5): each worn item's `f-` in slot order replaces its stat
-/// when above 0 (a later slot wins); the potions' `d-`, then the items' `d-`; the potions'
-/// `p-`, then each item's `p-` in turn, compounding ([`percent_mod`], truncated each time).
-/// A potion's `f-Hits` is its healing and does not count here. Item bonuses are added to the
-/// unit's, and an item's magic school replaces the unit's. Spells come after
-/// (`magic::apply`).
-pub fn apply(content: &Content, stats: &mut Stats, worn: &[ItemId], potions: &[ItemId]) {
-    let worn: Vec<&ArtefactDef> = worn.iter().map(|&i| content.item(i)).collect();
-    let potions: Vec<&ArtefactDef> = potions.iter().map(|&i| content.item(i)).collect();
+/// The original's stat rebuild of a unit (0x4908a8, magic-items.md §6), from its level
+/// stats: each worn item's positive `f-` replaces its stat (a later slot wins); then the
+/// `d-` of the potions, of the items, of the spells; Initiative and Manevres go to
+/// hundredths; then the `p-` of the potions, of each item, of each spell, compounding one
+/// at a time (`x + x·p/100`, truncated) — on the protections, regeneration and vampirism
+/// a `p-` adds points either way; then the drain cuts the maximum HP. Initiative comes back
+/// truncated, Manevres rounded half up unless above its level value. Magic power is touched
+/// only with a school. A unit with no melee attack, ranged attack or magic power at its
+/// level keeps none; protections are held to 0..99, regeneration and vampirism to at most
+/// 99, nothing else has a floor. A hero type at 1 HP has Initiative 1. The bonus is the
+/// type's, overwritten by each worn item that has one (the last wins); an item's `Magic`
+/// does not change the school.
+pub fn rebuild_stats(content: &Content, unit: &Unit, spells: &[&SpellDef]) -> Stats {
+    let lvl = unit.base_stats(content);
+    let mut s = lvl.clone();
+    let school = lvl.magic.is_some();
+    let touches = |st: Stat| st != Stat::MagicPower || school;
+    let worn: Vec<&ArtefactDef> = unit.items.iter().flatten().filter_map(|&i| content.try_item(i)).collect();
+    let potions = PotionBlock::of(content, &unit.potions);
     for d in &worn {
         for (&st, &v) in &d.fixed {
-            if v > 0 {
-                stats[st] = v;
+            if v > 0 && touches(st) {
+                s[st] = v;
             }
         }
     }
-    for d in potions.iter().chain(&worn) {
-        stats.add(&d.add, 1);
-    }
-    for d in potions.iter().chain(&worn) {
-        for (&st, &v) in &d.percent {
-            stats[st] = percent_mod(st, stats[st], v);
+    // The `d-` blocks hold no protections, regeneration or vampirism.
+    let flat = |s: &mut Stats, mods: &StatMods| {
+        for (&st, &v) in mods {
+            if !is_percent_stat(st) && touches(st) {
+                s[st] = s[st].wrapping_add(v);
+            }
         }
-    }
+    };
+    flat(&mut s, &potions.add);
     for d in &worn {
-        if let Some(b) = &d.bonus {
-            stats.bonuses.push(b.clone());
+        flat(&mut s, &d.add);
+    }
+    for sp in spells {
+        flat(&mut s, &sp.add);
+    }
+    s[Stat::Initiative] = s[Stat::Initiative].wrapping_mul(100);
+    s[Stat::Manevres] = s[Stat::Manevres].wrapping_mul(100);
+    let percent = |s: &mut Stats, mods: &StatMods| {
+        for (&st, &p) in mods {
+            if is_percent_stat(st) {
+                s[st] = s[st].wrapping_add(p);
+            } else if touches(st) {
+                s[st] = s[st].wrapping_add(s[st].wrapping_mul(p) / 100);
+            }
         }
-        if d.magic.is_some() {
-            stats.magic = d.magic;
+    };
+    percent(&mut s, &potions.percent);
+    for d in &worn {
+        percent(&mut s, &d.percent);
+    }
+    for sp in spells {
+        percent(&mut s, &sp.percent);
+    }
+    if unit.drain > 0 {
+        s[Stat::Hits] -= s[Stat::Hits].wrapping_mul(unit.drain) / 100;
+    }
+    s[Stat::Initiative] = (s[Stat::Initiative] / 100).max(0);
+    let m = s[Stat::Manevres];
+    s[Stat::Manevres] = if m > lvl[Stat::Manevres].wrapping_mul(100) { m / 100 } else { (m + 50) / 100 }.max(0);
+    for st in [Stat::AttackBlow, Stat::AttackShot, Stat::MagicPower] {
+        if lvl[st] == 0 {
+            s[st] = 0;
         }
     }
-    stats.clamp();
+    for st in [Stat::ProtectLife, Stat::ProtectDeath, Stat::ProtectElemental] {
+        s[st] = s[st].clamp(0, 99);
+    }
+    for st in [Stat::Regen, Stat::Vampirizm] {
+        s[st] = s[st].min(99);
+    }
+    // The hero types are GlobalIndex 1–3 (unit type < 3).
+    if (1..=3).contains(&unit.def.0) && unit.hp == 1 {
+        s[Stat::Initiative] = 1;
+    }
+    let bonus = worn.iter().filter_map(|d| d.bonus.clone()).next_back().or_else(|| lvl.bonuses.first().cloned());
+    s.bonuses = bonus.into_iter().collect();
+    s
 }
 
-/// Items the undead cannot wear (0x49765c, economy.md §5): the church's holy things.
+/// Items the undead cannot wear (0x49765c bit set 0x4979b4, by item number).
 const HOLY: [u32; 13] = [12, 46, 59, 72, 73, 74, 75, 76, 77, 85, 94, 120, 131];
-/// «Королевская корона», worn only by the hero (or an army's leader) and these unit types.
+/// «Королевская корона»: on a unit other than the hero or an army leader, only for these
+/// unit type indexes (bit set 0x4979a4, indexes 0–103).
 const CROWN: u32 = 154;
-const CROWN_WEARERS: [u32; 23] = [1, 2, 3, 11, 13, 15, 36, 42, 45, 46, 48, 49, 53, 56, 58, 69, 70, 72, 73, 77, 89, 97, 99];
+const CROWN_TYPES: [u32; 23] = [1, 2, 3, 11, 13, 15, 36, 42, 45, 46, 48, 49, 53, 56, 58, 69, 70, 72, 73, 77, 89, 97, 99];
 
-/// Puts `item` into item slot `slot` of `unit`: a higher maximum HP comes with as many hit
-/// points more (70/70 wearing +10 is 80/80, not 70/80); lost hit points stay lost.
+/// A potion that raises the dead: `f-Hits` of at least 1000.
+fn revives(def: &ArtefactDef) -> bool {
+    def.kind == ArtefactType::Potion && heal_amount(def) >= 1000
+}
+
+/// Puts `item` into item slot `slot` of `unit` and rebuilds it: its HP follows the new
+/// maximum ([`Unit::follow_max`]).
 pub fn put_on(content: &Content, unit: &mut Unit, slot: usize, item: ItemId) {
     let before = unit.max_hp(content);
     unit.items[slot] = Some(item);
-    if unit.alive() {
-        unit.hp += (unit.max_hp(content) - before).max(0);
-    }
+    unit.follow_max(content, before);
 }
 
-/// Slot `item` would go into on `unit`, or why it can't be worn. The original's wear rules
-/// (0x49765c, economy.md §5): a melee weapon or a shield needs melee attack, a ranged
-/// weapon ranged attack and no artillery (a type whose ranged attack is above
-/// `ShotWeaponRange`), a staff magic; one weapon, no two items of a type; no holy items on
-/// the undead; the crown only on the hero and some unit types.
+/// Takes off the item in slot `slot` of `unit` and rebuilds it.
+pub fn take_off(content: &Content, unit: &mut Unit, slot: usize) -> Option<ItemId> {
+    let before = unit.max_hp(content);
+    let item = unit.items.get_mut(slot)?.take();
+    unit.follow_max(content, before);
+    item
+}
+
+/// The original's wear test (0x49765c, magic-items.md §5.3): the slot `item` would go into
+/// on `unit` (the lowest empty one), or the first rule it breaks, in the original's order:
+/// the crown on a unit other than the hero or a leader needs one of its unit types — the
+/// code compares the type's index, GlobalIndex − 1, with the list, so the types that may
+/// wear it are the listed numbers + 1 (the original's off-by-one); the dead take nothing
+/// but a reviving potion; potions and trade goods are not worn; a shield needs melee
+/// attack at the unit's level; no holy item on a unit of Nature Undead; a melee weapon needs
+/// melee attack, a ranged weapon ranged attack and a type `AttackShot` not above
+/// `ShotWeaponRange`, a staff magic power; an item with a school only on a unit of that
+/// school; one weapon (staffs included); one item of each type.
 pub fn slot_for(content: &Content, unit: &Unit, item: ItemId) -> Result<usize, EquipError> {
     let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
-    if !unit.alive() {
+    if item.0 == CROWN && unit.wage_kind != WageKind::Leader {
+        let index = unit.def.0.wrapping_sub(1);
+        if index >= 104 || !CROWN_TYPES.contains(&index) {
+            return Err(EquipError::NotAllowed);
+        }
+    }
+    if !unit.alive() && !revives(def) {
         return Err(EquipError::Dead);
     }
     if matches!(def.kind, ArtefactType::Potion | ArtefactType::Item) {
         return Err(EquipError::NotWearable);
     }
-    let base = unit.base_stats(content);
-    let class_ok = match def.kind {
-        ArtefactType::BlowWeapon | ArtefactType::Shield => base.is_warrior(),
-        ArtefactType::ShotWeapon => base.is_shooter() && content.unit(unit.def).attack_shot <= content.options.shot_weapon_range,
-        ArtefactType::Staff => base.is_mage(),
-        _ => true,
-    };
-    if !class_ok {
+    let lvl = unit.base_stats(content);
+    if def.kind == ArtefactType::Shield && lvl[Stat::AttackBlow] == 0 {
         return Err(EquipError::WrongClass);
     }
-    if HOLY.contains(&item.0) && base.has_any(&[Bonus::Dead, Bonus::FastDead]) {
+    if lvl.nature == Nature::Undead && HOLY.contains(&item.0) {
         return Err(EquipError::Unholy);
     }
-    if item.0 == CROWN && unit.wage_kind != crate::rules::content::WageKind::Leader && !CROWN_WEARERS.contains(&unit.def.0) {
-        return Err(EquipError::NotAllowed);
+    let blocked = match def.kind {
+        ArtefactType::BlowWeapon => lvl[Stat::AttackBlow] == 0,
+        ArtefactType::ShotWeapon => lvl[Stat::AttackShot] == 0 || content.unit(unit.def).attack_shot > content.options.shot_weapon_range,
+        ArtefactType::Staff => lvl[Stat::MagicPower] == 0,
+        _ => false,
+    };
+    if blocked {
+        return Err(EquipError::WrongClass);
     }
-    let worn: Vec<&ArtefactDef> = unit.items.iter().flatten().map(|&i| content.item(i)).collect();
+    if def.magic.is_some_and(|m| lvl.magic != Some(m)) {
+        return Err(EquipError::WrongSchool);
+    }
+    let worn: Vec<&ArtefactDef> = unit.items.iter().flatten().filter_map(|&i| content.try_item(i)).collect();
     if def.kind.is_weapon() && worn.iter().any(|w| w.kind.is_weapon()) {
         return Err(EquipError::SecondWeapon);
     }
@@ -145,26 +249,52 @@ pub fn heal_amount(def: &ArtefactDef) -> i32 {
     def.fixed.get(&Stat::Hits).copied().unwrap_or(0)
 }
 
-/// A potion changes stats besides healing.
+/// A potion leaves something in the unit's potion block (0x48fdd0 sets its flag only for a
+/// non-zero lasting value; magic power is never stored).
 fn has_lasting_effect(def: &ArtefactDef) -> bool {
-    !def.add.is_empty() || !def.percent.is_empty() || def.fixed.keys().any(|s| *s != Stat::Hits)
+    let lasting = |st: &Stat| *st != Stat::MagicPower;
+    def.add.iter().any(|(st, &v)| lasting(st) && !is_percent_stat(*st) && v != 0)
+        || def.percent.iter().any(|(st, &v)| lasting(st) && v != 0)
+        || def.fixed.iter().any(|(st, &v)| is_percent_stat(*st) && v != 0)
 }
 
-/// Drinks potion `item` on `unit`: heals at once (capped at max HP), and its other modifiers
-/// last until the end of the next battle. Returns HP restored.
-pub fn drink(content: &Content, unit: &mut Unit, item: ItemId) -> Result<i32, EquipError> {
+/// Drinks potion `item` on `unit` (0x48fdd0, magic-items.md §7.1): a living unit (unhurt
+/// counts as full) gains `f-Hits`, dies below 1 and is unhurt at its maximum; a dead unit
+/// drinking a potion of `f-Hits` ≥ 1000 comes back with `max × f-Hits / 10000` HP
+/// (truncated: it stays dead below 1), any other potion is refused it. The lasting part goes
+/// into its potion block ([`PotionBlock`]) until the end of its army's next battle; then it
+/// is rebuilt, its HP following its maximum. Returns the HP gained.
+pub fn drink(content: &Content, unit: &mut Unit, item: ItemId, now: u64) -> Result<i32, EquipError> {
     let def = content.try_item(item).ok_or(EquipError::NoSuchItem)?;
     if def.kind != ArtefactType::Potion {
         return Err(EquipError::NotAPotion);
     }
-    if !unit.alive() {
+    if !unit.alive() && !revives(def) {
         return Err(EquipError::Dead);
+    }
+    let max = unit.max_hp(content);
+    let before = unit.hp;
+    let f = heal_amount(def);
+    if unit.hp != 0 {
+        unit.hp = unit.hp.wrapping_add(f);
+        if unit.hp < 1 {
+            unit.hp = 0;
+            unit.died_at = Some(now);
+        } else if unit.hp >= max {
+            unit.hp = max;
+        }
+    }
+    if unit.hp == 0 && f > 999 {
+        unit.hp = max.wrapping_mul(f) / 10000;
+        if unit.hp > 0 {
+            unit.died_at = None;
+        }
     }
     if has_lasting_effect(def) {
         unit.potions.push(item);
     }
-    let before = unit.hp;
-    unit.hp = (unit.hp + heal_amount(def)).min(unit.max_hp(content));
+    // The rebuild: a wounded unit's HP follows the maximum; one revived above it is unhurt.
+    unit.follow_max(content, max);
     Ok(unit.hp - before)
 }
 
@@ -297,18 +427,96 @@ mod tests {
     use super::*;
     use crate::rules::content::testkit::*;
     use crate::rules::content::{Bonus, MagicDirection, MagicSchool, StatMods, UnitDef, UnitId};
+    use crate::rules::content::testkit::spell;
     use crate::rules::formation::{Row, Slot};
 
+    /// A warrior (type 1 unless given) with the given protections, wearing `items`.
+    fn wearing(c: &Content, def: u32, items: &[u32]) -> Unit {
+        let mut u = Unit::new(c, UnitId(def), Slot::new(Row::Front, 0));
+        for (k, &i) in items.iter().enumerate() {
+            u.items[k] = Some(ItemId(i));
+        }
+        u
+    }
+
     #[test]
-    fn a_percent_bonus_on_a_protection_closes_the_gap_to_100() {
-        // «Святое писание»: p-ProtectDeath=30 on a unit with none.
-        assert_eq!(percent_mod(Stat::ProtectDeath, 0, 30), 30);
-        assert_eq!(percent_mod(Stat::ProtectDeath, 44, 20), 64, "points added, not 44 + 56 × 20%");
-        assert_eq!(percent_mod(Stat::ProtectDeath, 90, 30), 100, "up to 100");
-        assert_eq!(percent_mod(Stat::Vampirizm, 0, 25), 25, "«Кровопийца» works from nothing");
-        assert_eq!(percent_mod(Stat::ProtectLife, 60, -50), 30, "a curse scales it down");
-        assert_eq!(percent_mod(Stat::AttackBlow, 40, 25), 50, "other stats as before");
-        assert_eq!(percent_mod(Stat::ProtectElemental, 100, 30), 100);
+    fn a_p_value_on_a_protection_adds_points_either_way_held_to_99() {
+        // «Святое писание» (p-ProtectDeath=30) and the like: points, not percent, both ways
+        // (0x490864); protections 0..99, regeneration and vampirism at most 99.
+        let mut amulet = item(1, ArtefactType::Amulet);
+        amulet.percent = StatMods::from([(Stat::ProtectDeath, 30), (Stat::ProtectLife, -50), (Stat::Vampirizm, 25), (Stat::Regen, -30), (Stat::AttackBlow, 25)]);
+        let mut ring = item(2, ArtefactType::Ring);
+        ring.percent = StatMods::from([(Stat::ProtectDeath, 20)]);
+        let base = UnitDef { protect_life: 60, ..warrior(5, 40, 0) };
+        let c = content(vec![base, UnitDef { protect_death: 44, ..warrior(6, 40, 0) }, UnitDef { protect_death: 90, ..warrior(7, 40, 0) }], vec![amulet, ring]);
+        let s = wearing(&c, 5, &[1]).stats(&c);
+        assert_eq!(s[Stat::ProtectDeath], 30);
+        assert_eq!(s[Stat::ProtectLife], 10, "60 − 50 points, not halved");
+        assert_eq!((s[Stat::Vampirizm], s[Stat::Regen]), (25, -30), "regeneration may stay below 0");
+        assert_eq!(s[Stat::AttackBlow], 50, "other stats by percent");
+        assert_eq!(wearing(&c, 6, &[2]).stats(&c)[Stat::ProtectDeath], 64, "44 + 20 points");
+        assert_eq!(wearing(&c, 7, &[1]).stats(&c)[Stat::ProtectDeath], 99, "held to 99");
+    }
+
+    #[test]
+    fn spells_d_values_come_before_every_p_value() {
+        // 0x4908a8: the potions', items' and spells' d- first, then all the p-.
+        let mut ring = item(1, ArtefactType::Ring);
+        ring.percent = StatMods::from([(Stat::AttackBlow, 50)]);
+        let fury = SpellDef { add: StatMods::from([(Stat::AttackBlow, 10)]), ..spell(1, 0) };
+        let c = Content::new(vec![warrior(5, 20, 0)], vec![ring], vec![fury], Default::default(), crate::rules::formation::Formation::WIDE);
+        let mut u = wearing(&c, 5, &[1]);
+        u.spells[0] = Some(crate::rules::units::SpellSlot { spell: 1, until: 600 });
+        assert_eq!(u.stats(&c)[Stat::AttackBlow], 45, "(20 + 10) × 1.5, not 20 × 1.5 + 10");
+    }
+
+    #[test]
+    fn initiative_and_manevres_are_kept_in_hundredths() {
+        // Initiative 5 with two +30% items: 500 → 650 → 845 → 8 (whole numbers would give 7).
+        // Manevres 2 with a −30% potion: 140 is not above 200, so (140 + 50) / 100 = 1; with
+        // +75%, 350 is above it and truncated to 3.
+        let mut a = item(1, ArtefactType::Amulet);
+        a.percent = StatMods::from([(Stat::Initiative, 30)]);
+        let mut r = item(2, ArtefactType::Ring);
+        r.percent = StatMods::from([(Stat::Initiative, 30)]);
+        let mut slow = item(3, ArtefactType::Potion);
+        slow.percent = StatMods::from([(Stat::Manevres, -30)]);
+        let mut fast = item(4, ArtefactType::Potion);
+        fast.percent = StatMods::from([(Stat::Manevres, 75)]);
+        let c = content(vec![UnitDef { initiative: 5, manevres: 2, ..warrior(5, 20, 0) }], vec![a, r, slow, fast]);
+        let mut u = wearing(&c, 5, &[1, 2]);
+        assert_eq!(u.stats(&c)[Stat::Initiative], 8);
+        u.potions = vec![ItemId(3)];
+        assert_eq!(u.stats(&c)[Stat::Manevres], 1, "rounded half up");
+        u.potions = vec![ItemId(4)];
+        assert_eq!(u.stats(&c)[Stat::Manevres], 3);
+    }
+
+    #[test]
+    fn no_floors_but_level_zero_attacks_stay_zero_and_a_hero_at_1_hp_has_initiative_1() {
+        let mut cursed = item(1, ArtefactType::Ring);
+        cursed.add = StatMods::from([(Stat::DefenceBlow, -50), (Stat::AttackBlow, 5), (Stat::Hits, -60)]);
+        let c = content(vec![warrior(1, 30, 5), shooter(8, 10)], vec![cursed]);
+        let s = wearing(&c, 8, &[1]).stats(&c);
+        assert_eq!(s[Stat::DefenceBlow], -50, "not held at 0");
+        assert_eq!(s[Stat::AttackBlow], 0, "no melee at its level: an item gives none");
+        assert_eq!(s.max_hp(), -10, "no floor on Hits either");
+        let mut hero = wearing(&c, 1, &[]);
+        assert_eq!(hero.stats(&c)[Stat::Initiative], 10);
+        hero.hp = 1;
+        assert_eq!(hero.stats(&c)[Stat::Initiative], 1, "a hero type (GlobalIndex 1–3) at 1 HP");
+    }
+
+    #[test]
+    fn an_items_bonus_overwrites_the_units_and_its_school_changes_nothing() {
+        let mut ring = item(1, ArtefactType::Ring);
+        ring.bonus = Some(Bonus::ArmorIgnore);
+        ring.magic = Some(MagicSchool::Life);
+        let merchant = UnitDef { bonus: Some(Bonus::Merchant), ..warrior(5, 20, 0) };
+        let c = content(vec![merchant], vec![ring]);
+        let s = wearing(&c, 5, &[1]).stats(&c);
+        assert_eq!(s.bonuses, vec![Bonus::ArmorIgnore], "one bonus byte: the last item's");
+        assert_eq!(s.magic, None, "Magic restricts the wearer, it grants no school");
     }
 
     fn gear() -> Vec<ArtefactDef> {
@@ -385,24 +593,124 @@ mod tests {
 
     #[test]
     fn the_originals_wear_rules_for_shields_artillery_holy_things_and_the_crown() {
-        let undead = UnitDef { bonus: Some(Bonus::Dead), ..warrior(7, 20, 5) };
+        let undead = UnitDef { nature: Nature::Undead, ..warrior(7, 20, 5) };
+        let dead_bonus = UnitDef { bonus: Some(Bonus::Dead), ..warrior(9, 20, 5) };
         let cannon = shooter(6, 70);
         let (shield, bow, holy, crown) = (item(30, ArtefactType::Shield), item(31, ArtefactType::ShotWeapon), item(73, ArtefactType::Amulet), item(154, ArtefactType::Helm));
-        let c = content(vec![warrior(5, 20, 5), shooter(8, 10), cannon, undead, warrior(1, 30, 5)], vec![shield, bow, holy, crown]);
+        let units = vec![warrior(5, 20, 5), shooter(8, 10), cannon, undead, dead_bonus, warrior(1, 30, 5), warrior(2, 30, 5), warrior(11, 30, 5), warrior(12, 30, 5)];
+        let c = content(units, vec![shield, bow, holy, crown]);
         let at = Slot::new(Row::Front, 0);
-        let (knight, archer, gun, ghoul, hero) =
-            (Unit::new(&c, UnitId(5), at), Unit::new(&c, UnitId(8), at), Unit::new(&c, UnitId(6), at), Unit::new(&c, UnitId(7), at), Unit::new(&c, UnitId(1), at));
-        assert_eq!(slot_for(&c, &knight, ItemId(30)), Ok(0), "a shield for a warrior");
-        assert_eq!(slot_for(&c, &archer, ItemId(30)), Err(EquipError::WrongClass), "not for a shooter");
-        assert_eq!(slot_for(&c, &archer, ItemId(31)), Ok(0));
-        assert_eq!(slot_for(&c, &gun, ItemId(31)), Err(EquipError::WrongClass), "artillery: ranged 70 > ShotWeaponRange 60");
-        assert_eq!(slot_for(&c, &knight, ItemId(73)), Ok(0));
-        assert_eq!(slot_for(&c, &ghoul, ItemId(73)), Err(EquipError::Unholy), "«Святое писание» is holy");
-        assert_eq!(slot_for(&c, &knight, ItemId(154)), Err(EquipError::NotAllowed), "type 5 may not wear the crown");
-        assert_eq!(slot_for(&c, &hero, ItemId(154)), Ok(0), "type 1 may");
-        let mut leader = knight.clone();
+        let u = |id| Unit::new(&c, UnitId(id), at);
+        assert_eq!(slot_for(&c, &u(5), ItemId(30)), Ok(0), "a shield for a warrior");
+        assert_eq!(slot_for(&c, &u(8), ItemId(30)), Err(EquipError::WrongClass), "not for a shooter");
+        assert_eq!(slot_for(&c, &u(8), ItemId(31)), Ok(0));
+        assert_eq!(slot_for(&c, &u(6), ItemId(31)), Err(EquipError::WrongClass), "artillery: ranged 70 > ShotWeaponRange 60");
+        assert_eq!(slot_for(&c, &u(5), ItemId(73)), Ok(0));
+        assert_eq!(slot_for(&c, &u(7), ItemId(73)), Err(EquipError::Unholy), "Nature Undead: «Святое писание» is holy");
+        assert_eq!(slot_for(&c, &u(9), ItemId(73)), Ok(0), "the Dead bonus alone is no bar");
+        // The crown's list is compared with the type index, GlobalIndex − 1: listed 1 and 11
+        // let GlobalIndex 2 and 12 wear it, not 1 and 11 (the original's off-by-one).
+        assert_eq!(slot_for(&c, &u(5), ItemId(154)), Err(EquipError::NotAllowed), "type 5 may not wear the crown");
+        assert_eq!(slot_for(&c, &u(1), ItemId(154)), Err(EquipError::NotAllowed), "nor GlobalIndex 1 as an ordinary unit");
+        assert_eq!(slot_for(&c, &u(2), ItemId(154)), Ok(0));
+        assert_eq!(slot_for(&c, &u(11), ItemId(154)), Err(EquipError::NotAllowed));
+        assert_eq!(slot_for(&c, &u(12), ItemId(154)), Ok(0));
+        let mut leader = u(5);
         leader.wage_kind = crate::rules::content::WageKind::Leader;
         assert_eq!(slot_for(&c, &leader, ItemId(154)), Ok(0), "the hero or a leader may");
+    }
+
+    #[test]
+    fn an_item_of_a_school_is_worn_only_by_a_unit_of_that_school() {
+        let mut life = item(1, ArtefactType::Staff);
+        life.magic = Some(MagicSchool::Life);
+        let mut death = item(2, ArtefactType::Staff);
+        death.magic = Some(MagicSchool::Death);
+        let mut amulet = item(3, ArtefactType::Amulet);
+        amulet.magic = Some(MagicSchool::Death);
+        let c = content(vec![mage(3, 10, MagicSchool::Death, MagicDirection::ToEnemy), warrior(5, 20, 0)], vec![life, death, amulet]);
+        let at = Slot::new(Row::Back, 0);
+        let (m, w) = (Unit::new(&c, UnitId(3), at), Unit::new(&c, UnitId(5), at));
+        assert_eq!(slot_for(&c, &m, ItemId(1)), Err(EquipError::WrongSchool));
+        assert_eq!(slot_for(&c, &m, ItemId(2)), Ok(0));
+        assert_eq!(slot_for(&c, &w, ItemId(3)), Err(EquipError::WrongSchool), "a warrior has no school");
+        assert_eq!(slot_for(&c, &m, ItemId(3)), Ok(0));
+    }
+
+    #[test]
+    fn hp_follows_the_maximum_with_a_carried_fraction() {
+        // 0x4908a8 step 14: an unhurt unit stays unhurt; a wounded one is scaled in single
+        // floats, the fraction carried to the next rebuild.
+        let mut belt = item(1, ArtefactType::Amulet);
+        belt.add = StatMods::from([(Stat::Hits, 10)]);
+        let c = content(vec![UnitDef { hits: 70, ..warrior(5, 20, 0) }], vec![belt]);
+        let mut u = wearing(&c, 5, &[]);
+        put_on(&c, &mut u, 0, ItemId(1));
+        assert_eq!(u.hp, 80, "70/70 wearing +10 is 80/80");
+        take_off(&c, &mut u, 0);
+        u.hp = 60;
+        put_on(&c, &mut u, 0, ItemId(1));
+        assert_eq!(u.hp, 68, "80 × 60 / 70 = 68.57");
+        assert!((u.carry.0 - 0.571_426).abs() < 1e-5, "{}", u.carry.0);
+        take_off(&c, &mut u, 0);
+        // 70 × 68.5714264 / 80 = 59.99999809, exactly halfway between two singles: to even.
+        assert_eq!(u.hp, 60);
+        u.hp = 0;
+        put_on(&c, &mut u, 1, ItemId(1));
+        assert_eq!(u.hp, 0, "the dead stay dead");
+    }
+
+    #[test]
+    fn a_strong_potion_raises_the_dead_and_a_bad_one_kills() {
+        let mut elixir = item(1, ArtefactType::Potion);
+        elixir.fixed = StatMods::from([(Stat::Hits, 1000)]);
+        let mut poison = item(2, ArtefactType::Potion);
+        poison.fixed = StatMods::from([(Stat::Hits, -100)]);
+        let mut heal = item(3, ArtefactType::Potion);
+        heal.fixed = StatMods::from([(Stat::Hits, 30)]);
+        let c = content(vec![warrior(5, 20, 0), UnitDef { hits: 9, ..warrior(6, 20, 0) }], vec![elixir, poison, heal]);
+        let mut u = wearing(&c, 5, &[]);
+        u.hp = 0;
+        u.died_at = Some(5);
+        assert_eq!(slot_for(&c, &u, ItemId(1)), Err(EquipError::NotWearable), "past the dead test, not worn");
+        assert_eq!(drink(&c, &mut u, ItemId(3), 9), Err(EquipError::Dead), "no other potion for the dead");
+        assert_eq!(drink(&c, &mut u, ItemId(1), 9), Ok(5), "50 × 1000 / 10000");
+        assert!(u.alive() && u.died_at.is_none());
+        let mut small = wearing(&c, 6, &[]);
+        small.hp = 0;
+        assert_eq!(drink(&c, &mut small, ItemId(1), 9), Ok(0), "9 × 1000 < 10000: it stays dead");
+        assert_eq!(drink(&c, &mut u, ItemId(1), 9), Ok(45), "a living unit is healed by f-Hits");
+        assert_eq!(drink(&c, &mut u, ItemId(2), 9), Ok(-50));
+        assert_eq!((u.hp, u.died_at), (0, Some(9)), "below 1 it dies");
+    }
+
+    #[test]
+    fn potions_add_up_in_one_block_and_never_touch_magic_power() {
+        // Two p-Hits +20 potions make one +40% (50 → 70), not 50 → 60 → 72. f-ProtectLife
+        // replaces what is stored, then p- adds: 30 + 5, then 10 replaces it.
+        let mut vigour = item(1, ArtefactType::Potion);
+        vigour.percent = StatMods::from([(Stat::Hits, 20)]);
+        let mut ward = item(2, ArtefactType::Potion);
+        ward.fixed = StatMods::from([(Stat::ProtectLife, 30)]);
+        ward.percent = StatMods::from([(Stat::ProtectLife, 5)]);
+        let mut ward2 = item(3, ArtefactType::Potion);
+        ward2.fixed = StatMods::from([(Stat::ProtectLife, 10)]);
+        let mut mind = item(4, ArtefactType::Potion);
+        mind.add = StatMods::from([(Stat::MagicPower, 5)]);
+        mind.percent = StatMods::from([(Stat::MagicPower, 50)]);
+        let c = content(vec![warrior(5, 20, 0), mage(3, 10, MagicSchool::Life, MagicDirection::ToAlly)], vec![vigour, ward, ward2, mind]);
+        let mut u = wearing(&c, 5, &[]);
+        drink(&c, &mut u, ItemId(1), 0).unwrap();
+        drink(&c, &mut u, ItemId(1), 0).unwrap();
+        assert_eq!((u.stats(&c).max_hp(), u.hp), (70, 70));
+        drink(&c, &mut u, ItemId(2), 0).unwrap();
+        assert_eq!(u.stats(&c)[Stat::ProtectLife], 35);
+        drink(&c, &mut u, ItemId(3), 0).unwrap();
+        assert_eq!(u.stats(&c)[Stat::ProtectLife], 10);
+        let mut m = Unit::new(&c, UnitId(3), Slot::new(Row::Back, 0));
+        drink(&c, &mut m, ItemId(4), 0).unwrap();
+        assert!(m.potions.is_empty(), "nothing lasting is stored");
+        assert_eq!(m.stats(&c)[Stat::MagicPower], 10);
     }
 
     #[test]
@@ -417,12 +725,12 @@ mod tests {
     fn potions_heal_now_and_buff_until_the_next_battle_ends() {
         let (c, mut w, _) = setup();
         w.hp = 10;
-        assert_eq!(drink(&c, &mut w, ItemId(6)), Ok(30));
+        assert_eq!(drink(&c, &mut w, ItemId(6), 0), Ok(30));
         assert!(w.potions.is_empty(), "healing only: nothing lasts");
-        assert_eq!(drink(&c, &mut w, ItemId(6)), Ok(10), "capped at max HP");
-        assert_eq!(drink(&c, &mut w, ItemId(7)), Ok(0));
+        assert_eq!(drink(&c, &mut w, ItemId(6), 0), Ok(10), "capped at max HP");
+        assert_eq!(drink(&c, &mut w, ItemId(7), 0), Ok(0));
         assert_eq!(w.stats(&c)[Stat::AttackBlow], 30);
-        assert_eq!(drink(&c, &mut w, ItemId(1)), Err(EquipError::NotAPotion));
+        assert_eq!(drink(&c, &mut w, ItemId(1), 0), Err(EquipError::NotAPotion));
     }
 
     #[test]

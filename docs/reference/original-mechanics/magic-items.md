@@ -416,45 +416,52 @@ formula clamps defence at use, battle.md §0).
 
 Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units.rs`,
 `src/rules/town.rs` (`learn_spell`), `src/rules/script.rs` (event spells and items),
-`src/rules/game.rs` (equip, drink, after battle), `src/rules/battle.rs` (`apply_spells`),
+`src/rules/game.rs` (equip, drink, after battle), `src/rules/battle.rs`,
 `src/ui/items_view.rs`, `src/ui/spellbook.rs`.
 
-| Topic | Razdor now | Original | Section |
-|---|---|---|---|
-| Spell slots | Kept per army (`effects`), with a leader-only flag; 4 counted per army | 4 slots on every unit; full slots skip that unit entirely, instant part included | §4.1 |
-| Enemy target range | Hostile armies within 3 cells on explored ground (guess) | Any army on an explored, passable cell, no distance, visible or not; friendly armies may be cursed unless they are "talking" friends | §3.5 |
-| Target moves during the cast | Lost if it leaves the 3-cell range | Lost only if it leaves the map or is destroyed | §3.2 |
-| Mana short at the end | `OutOfMana`: no spell (guess) | Mana is subtracted anyway and can go negative | §3.4 |
-| Event during the cast | Not modelled | The wait ends early and the spell lands at once | §3.2 |
-| Noon during the cast | Runs as usual | Held back until the cast ends | §3.2 |
-| Caster discount | Any living unit of the hero's army with Caster | A global flag from the last army recomputed (often an AI army); dead units count | §3.3 |
-| Displayed cast time | Matches the real wait | The card shows the function of `TimeCast`, which can be 30 min short with Caster, or for the Archmage with an odd `TimeCast` | §3.3 |
-| Event `Enemy` spell | Hits the hero's army with its normal duration | Same | §3.6 |
-| Event recast duration | Adds 10× (5×) to what is left | Resets to now + 10× (5×) | §4.1 |
-| Spell killing the whole player army | The hero always keeps 1 HP | The hero gets 1 HP only if someone else survives; otherwise game over | §4.3 |
-| Spell destroying an enemy army | Beaten by the player, no loot (guess) | Destroyed as beaten by the player, no loot, no XP (code) | §4.3 |
-| `p-LifeLose` | A leader-only lasting spell cutting max HP by its %; a positive one removes the drain spells | A permanent unit percentage D that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly | §4.1, §4.3 |
-| Spell school (`Type`) | Shown in the book | Ignored by every rule | §1.1 |
-| Event learning past 15 | Capped at 15 | No cap; spells past 15 are known but not castable | §2 |
-| Percent stats (protections, regen, vampirism) | Positive `p-` adds points up to 100; negative `p-` scales | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism, regen may be negative) | §6 |
-| Order of spells' `d-` | After the items' `p-` | Before all `p-` (potion, items, spells) | §6 |
-| Initiative and Manevres | Plain integers, truncated at each percent | Kept in hundredths, divided at the end; Manevres rounded half up when not above the level value | §6 |
-| Max HP change (items, spells, potions) | HP rises by the gain (`put_on`, `apply_to_fighter`), is capped on a loss | HP scales proportionally with a carried fraction; unhurt stays unhurt | §6 |
-| Level AB/AS/MP 0 | Items can raise them | Forced back to 0 | §6 |
-| Stat floors | All stats ≥ 0, Hits ≥ 1 | Only Initiative and Manevres ≥ 0 and protections ≥ 0 | §6 |
-| Hero at 1 HP | No rule here | Initiative 1 | §6 |
-| Item `Magic` school | Replaces the wearer's school; no wear check | No effect on the school; the item may be worn only by a unit of that school | §1.2, §5.3 |
-| Holy items | Refused for units with the Dead/FastDead bonus | Refused for every unit of Nature Undead (23 types) | §5.3 |
-| Crown wearers | GlobalIndex 1, 2, 3, 11, … (the listed numbers) | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | §5.3 |
-| Dead units and potions | A dead unit cannot drink | A potion with `f-Hits` ≥ 1000 revives to max·f/10000 HP | §7.1 |
-| Potion `f-` protections/regen/vampirism | Ignored | Replace the stored value, then `p-` adds | §7.1 |
-| Potion magic power | Applied | Never takes effect | §7.1 |
-| Potion clearing | After every battle | After every battle of the player, for the player's army (Razdor matches) | §7.2 |
-| Pack full on gain | Item left behind and counted | Item silently lost | §5.1 |
-| Equip slot choice (hero window) | First free slot | The clicked empty slot; the army-card drop uses the first free one | §5.2 |
-| Spells after a campaign change | Not checked | All slots wiped; D kept | §9 |
-| Community opcode 11 "permanent" spells | Never end (`until: None`) | End at an absolute time ≈ 108.7 game days after the map start | §4.2 |
-| AI item handling | Not checked here (ai.rs) | Value = tactical cost gain over the bare unit, threshold 5, as in §8 | §8 |
+| Topic | Razdor now | Original | Section | Status |
+|---|---|---|---|---|
+| Spell slots | 4 slots on every unit and troop (`Unit::spells`); a unit with no slot for the spell is skipped, instant part included (`magic::spell_on_unit`) | 4 slots on every unit; full slots skip that unit entirely, instant part included | §4.1 | Matches |
+| Enemy target range | Any army on an explored cell a click can target, outside buildings, at any distance; friends too unless they have a meeting event waiting and attitude ≥ 1 (`Game::can_curse`, `EventEngine::meeting_waiting`) | Any army on an explored, passable cell, no distance, visible or not; friendly armies may be cursed unless they are "talking" friends | §3.5 | Matches |
+| Target moves during the cast | Lost only if it leaves the map (removed from it, destroyed or deactivated) | Lost only if it leaves the map or is destroyed | §3.2 | Matches |
+| Mana short at the end | The cost, worked out again when the spell lands, is subtracted with no check; mana may go negative | Mana is subtracted anyway and can go negative | §3.4 | Matches |
+| Event during the cast | An event that fires in a casting step ends the wait; the spell lands at once | The wait ends early and the spell lands at once | §3.2 | Matches |
+| Noon during the cast | Held back while a spell is read (`Game::cast` reads too) | Held back until the cast ends | §3.2 | Matches |
+| Caster discount | Any unit of the hero's army, dead or alive, with Caster as its type's or its current (item) bonus; `floor(4x/5)` as the unsigned multiply | A global flag from the last army recomputed (often an AI army); dead units count | §3.3 | Differs: the global flag's call points are not mirrored |
+| Displayed cast time | The card shows the cost function of `TimeCast` in hours (`card_cast_hours`) | The card shows the function of `TimeCast`, which can be 30 min short with Caster, or for the Archmage with an odd `TimeCast` | §3.3 | Matches |
+| Event `Enemy` spell | Hits the hero's army with its normal duration | Same | §3.6 | Matches |
+| Event spell number | Held to the number of spells | Clamped to the spell count | §3.6 | Matches |
+| Event recast duration | Resets to now + 10× (5×) | Resets to now + 10× (5×) | §4.1 | Matches |
+| Spell killing the whole player army | The hero gets 1 HP only if someone else survives; otherwise the game is lost (`Game::army_fallen`) | The hero gets 1 HP only if someone else survives; otherwise game over | §4.3 | Matches |
+| Spell destroying an enemy army | Beaten by the player, no loot, no XP; its dead stay in the record until then | Destroyed as beaten by the player, no loot, no XP (code) | §4.3 | Matches |
+| Spell kills | The dead keep their items; recast on a dead holder raises it | The effect routine moves no items; the recast branch has no HP test | §4.1 | Matches |
+| `p-LifeLose` | A permanent unit percentage D (`Unit::drain`) that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly; carried to the next campaign map | A permanent unit percentage D that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly | §4.1, §4.3 | Matches |
+| Spell school (`Type`) | Shown in the book; no rule reads it | Ignored by every rule | §1.1 | Matches |
+| Event learning past 15 | No cap; only the first 15 can be cast; the shop refuses only at exactly 15 | No cap; spells past 15 are known but not castable | §2 | Matches |
+| Percent stats (protections, regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism, regen may be negative) | §6 | Matches |
+| Order of spells' `d-` | Before all `p-` (`items::rebuild_stats`) | Before all `p-` (potion, items, spells) | §6 | Matches |
+| Initiative and Manevres | Kept in hundredths, divided at the end; Manevres rounded half up when not above the level value | Kept in hundredths, divided at the end; Manevres rounded half up when not above the level value | §6 | Matches |
+| Max HP change (items, spells, potions) | HP follows the maximum in single floats with a carried fraction (`units::follow_max`), at each change and when a spell runs out | HP scales proportionally with a carried fraction; unhurt stays unhurt | §6 | Matches |
+| Level AB/AS/MP 0 | Forced back to 0 | Forced back to 0 | §6 | Matches |
+| Stat floors | Only Initiative and Manevres ≥ 0 and protections ≥ 0 | Only Initiative and Manevres ≥ 0 and protections ≥ 0 | §6 | Matches |
+| Hero at 1 HP | Initiative 1 (GlobalIndex 1–3) | Initiative 1 | §6 | Matches |
+| Bonus byte | The type's, overwritten by each worn item's (the last slot wins) | Same | §6 | Matches |
+| Worn numbers above item count + 1 | Kept (Razdor's content is keyed by `GlobalIndex`, not a record array) | Removed at every rebuild | §6 | Differs (data robustness) |
+| Item `Magic` school | No effect on the school; worn only by a unit of that school | No effect on the school; the item may be worn only by a unit of that school | §1.2, §5.3 | Matches |
+| Item `Type` | An unknown string reads as a potion; an empty one skips the item | An unknown or empty string means Potion; a section without Type is skipped | §1.2 | Matches |
+| Holy items | Refused for every unit of Nature Undead | Refused for every unit of Nature Undead (23 types) | §5.3 | Matches |
+| Crown wearers | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | GlobalIndex = listed + 1 (2, 3, 4, 12, …), the code's off-by-one | §5.3 | Matches |
+| Wear test order | Crown, dead, potion/goods, shield, holy, class, school, weapon, type, slot | Same order | §5.3 | Matches |
+| Dead units and potions | A potion with `f-Hits` ≥ 1000 revives to max·f/10000 HP; any other is refused | A potion with `f-Hits` ≥ 1000 revives to max·f/10000 HP | §7.1 | Matches |
+| Potion `f-` protections/regen/vampirism | Replace the stored value, then `p-` adds (`PotionBlock`) | Replace the stored value, then `p-` adds | §7.1 | Matches |
+| Potion percents | Summed into one block, applied once | Summed into one block, applied once | §7.1 | Matches |
+| Potion magic power | Never takes effect | Never takes effect | §7.1 | Matches |
+| Potion clearing | After every battle of the player, then a rebuild (HP follows the maximum) | After every battle of the player, for the player's army | §7.2 | Matches |
+| Pack full on gain | Events drop the item silently; battle loot still counts what did not fit (battle.md) | Item silently lost | §5.1 | Matches for events |
+| Equip slot choice (hero window) | `Game::equip_at` puts the item in the given empty slot; the army-card drop takes the first free one. The items screen has no drop on a worn slot yet | The clicked empty slot; the army-card drop uses the first free one | §5.2 | Rule matches; the screen is left for later |
+| Spells after a campaign change | All slots wiped; D kept (the hero's too) | All slots wiped; D kept | §9 | Matches |
+| Community opcode 11 "permanent" spells | End at the map start + 156,588 minutes (0xEEEEEE hundredths, rounded up); slot k takes entry k, a 0 empties it; garrisons too | End at an absolute time ≈ 108.7 game days after the map start | §4.2 | Matches |
+| AI item handling | Value = tactical cost gain over the bare unit, threshold 5 (`ai::give_item`, `ai::redistribute`, shopping) | Value = tactical cost gain over the bare unit, threshold 5, as in §8 | §8 | Matches |
 
 ## Unknowns
 

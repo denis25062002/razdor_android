@@ -40,8 +40,11 @@ use super::world::World;
 /// time of death a unit raised again keeps; older saves load at the path's start, with
 /// none kept. 6: the player's stored income, the mana-short flag, a unit's garrison stamp,
 /// and the markets' 12 places and restock timer; older saves load with none stored, the
-/// flag down, no stamps, and their goods in order with the timer due.
-pub const FORMAT_VERSION: u32 = 6;
+/// flag down, no stamps, and their goods in order with the timer due. 7: world spells in
+/// each unit's 4 slots, a unit's drain and HP carry, the map's start minute; older saves
+/// load with their army-wide spells moved into the units' slots, no drain (a draining curse
+/// becomes a slot like any other) and the start day's midnight as the map start.
+pub const FORMAT_VERSION: u32 = 7;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";
@@ -383,6 +386,10 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
     game.origin = Some(meta.scenario.clone());
     // The AI is set up again on every load (0x4a1ff0 from the save loader).
     game.ai_init(meta.version >= 4);
+    // Saves from before the units' spell slots: the army-wide spells go into the slots.
+    if meta.version < 7 {
+        migrate_spells(&mut game);
+    }
     // Saves from before the last-pay minute count everyone as paid now.
     let now = game.clock.total_minutes() as u64;
     for u in game.squad.iter_mut().filter(|u| u.last_paid == 0) {
@@ -390,6 +397,24 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
     }
     check_content(&game).map_err(SaveError::Mismatch)?;
     Ok(game)
+}
+
+/// Moves the army-wide spells of a save before format 7 into the units' slots (a spell that
+/// never ended runs to the Community opcode's end).
+fn migrate_spells(game: &mut Game) {
+    let end = game.opcode_spell_end();
+    let old = std::mem::take(&mut game.old_effects);
+    super::magic::migrate_old_spells(&old, &mut game.squad, end);
+    let c = game.content.clone();
+    let w = &mut game.world;
+    for a in w.armies.iter_mut().chain(w.inactive.iter_mut()) {
+        let old = std::mem::take(&mut a.old_effects);
+        let mut units: Vec<_> = a.troops.iter().map(|t| super::game::troop_unit(&c, t)).collect();
+        super::magic::migrate_old_spells(&old, &mut units, end);
+        for (t, u) in a.troops.iter_mut().zip(&units) {
+            t.spells = u.spells;
+        }
+    }
 }
 
 /// Every unit, item and spell the game refers to exists in its content.
@@ -666,6 +691,28 @@ pub(crate) mod tests {
         let fresh = World::standard(&loaded.content);
         let plants = rng::plant_layer(fresh.map.w, fresh.map.h, fresh.map.objects.iter().map(|o| (o.tile.0, o.tile.1, o.class, o.sprite)));
         assert_eq!(loaded.rng.state(), Rng::save_load(fresh.map.w, &plants, fresh.armies.len() + fresh.inactive.len()).state(), "the old saved generator is ignored");
+    }
+
+    #[test]
+    fn a_version_6_save_moves_its_army_wide_spells_into_the_units_slots() {
+        let c = demo();
+        let g = Game::new(c.clone(), HeroClass::Knight);
+        let mut meta = meta_of(&g, SaveKind::Manual, "old").unwrap();
+        meta.version = 6;
+        let mut game = serde_json::to_value(&g).unwrap();
+        let obj = game.as_object_mut().unwrap();
+        obj.remove("map_start");
+        obj.insert("effects".into(), serde_json::json!([{ "spell": 2, "until": 900_000_000u64 }, { "spell": 3, "until": null, "leader": true }]));
+        let bytes = serde_json::to_vec(&serde_json::json!({ "meta": meta, "game": game })).unwrap();
+        let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+        enc.write_all(&bytes).unwrap();
+        let (m, loaded) = decode(&enc.finish().unwrap()).unwrap();
+        let loaded = restore(&m, loaded, c, None).unwrap();
+        use crate::rules::units::SpellSlot;
+        let end = loaded.start_day * crate::rules::clock::MINUTES_PER_DAY + crate::rules::magic::OPCODE_SPELL_END;
+        assert_eq!(loaded.squad[0].spells[..2], [Some(SpellSlot { spell: 2, until: 900_000_000 }), Some(SpellSlot { spell: 3, until: end })]);
+        assert!(loaded.squad[1..].iter().all(|u| u.spells[0] == Some(SpellSlot { spell: 2, until: 900_000_000 }) && u.spells[1].is_none()));
+        assert!(loaded.old_effects.is_empty());
     }
 
     #[test]

@@ -765,15 +765,11 @@ impl Game {
         self.offer.filter(|&(l, _)| Some(l) == self.location).map(|(_, o)| o)
     }
 
-    /// Good (own-army) spells in effect, counted per unit.
+    /// Good (own-army) spells in effect, counted per unit: the living units' slots.
     fn good_spells_on_units(&self) -> usize {
         let now = self.clock.total_minutes() as u64;
-        let units = self.squad.iter().filter(|u| u.alive()).count();
-        self.effects
-            .iter()
-            .filter(|e| e.lasts_at(now) && self.spell(e.spell).is_some_and(|s| !magic::targets_enemy(s)))
-            .map(|e| if e.leader { 1 } else { units })
-            .sum()
+        let good = |id: u32| self.spell(id).is_some_and(|s| !magic::targets_enemy(s));
+        self.squad.iter().filter(|u| u.alive()).flat_map(|u| u.spells.iter().flatten()).filter(|s| s.until > now && good(s.spell)).count()
     }
 
     /// Whether offer `o` could be made now (its conditions, not its roll).

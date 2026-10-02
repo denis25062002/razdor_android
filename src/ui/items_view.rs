@@ -87,6 +87,7 @@ fn equip_error(e: EquipError) -> String {
         EquipError::SecondWeapon => tr("Only one weapon or staff at a time.").into(),
         EquipError::WrongClass => tr("This unit cannot use that (warrior, shooter or mage only).").into(),
         EquipError::Unholy => tr("The undead cannot hold holy things.").into(),
+        EquipError::WrongSchool => tr("Only a unit of that school of magic can use it.").into(),
         EquipError::NotAllowed => tr("Only the hero and a few noble units may wear it.").into(),
         EquipError::NotWearable => tr("That cannot be worn.").into(),
         EquipError::Dead => tr("The dead hold nothing.").into(),

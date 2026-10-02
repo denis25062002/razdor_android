@@ -610,6 +610,10 @@ impl App {
                 Some(ScriptEnd::Defeat(_)) if !matches!(self.screen, Screen::GameOver) => next = Some(Screen::GameOver),
                 _ => {}
             }
+            // A world spell that killed the whole army loses the game (0x4900fc → 0x4af658).
+            if next.is_none() && !matches!(self.screen, Screen::GameOver | Screen::Battle(..)) && self.game.as_ref().is_some_and(Game::army_fallen) {
+                next = Some(Screen::GameOver);
+            }
         }
         // The noon report asks for an autosave, named by the date.
         if let Some(g) = self.game.as_mut() {

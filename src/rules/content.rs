@@ -216,6 +216,11 @@ impl Content {
         self.try_item(id).unwrap_or_else(|| panic!("no item {}", id.0))
     }
 
+    /// Spell definition by its 1-based id.
+    pub fn spell(&self, id: u32) -> Option<&SpellDef> {
+        self.spells.iter().find(|s| s.id == id)
+    }
+
     pub fn unit_ids(&self) -> impl Iterator<Item = UnitId> + '_ {
         self.units.iter().map(|u| UnitId(u.id))
     }

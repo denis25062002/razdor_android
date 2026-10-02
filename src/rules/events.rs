@@ -344,7 +344,8 @@ pub trait EventWorld {
     fn set_faction(&mut self, holder: Holder, group: u8);
     /// Opcode 10: its relation (−3..3) towards group 0 player, 1 ally, 2 neighbour, 3 enemy.
     fn set_relation(&mut self, holder: Holder, group: u8, value: i8);
-    /// Opcode 11: these spells last for good on the unit(s), replacing the lasting ones.
+    /// Opcode 11: slot k of the unit(s) holds spell k of `spells` for good, or nothing for
+    /// a 0.
     fn set_spells(&mut self, holder: Holder, unit: Option<u8>, spells: &[u8]);
     /// Opcode 12: the unit becomes the scenario's named character `named` (1-based) of unit
     /// type `class` (0: keep its type).
@@ -943,6 +944,21 @@ impl EventEngine {
         self.failing_condition(id, w).map(|c| format!("condition: {c}"))
     }
 
+    /// Army `army` is marked "meeting event waiting" (0x4a801a): some event that needs a
+    /// meeting with it is not done, its window is open, it is past its firing guard, and
+    /// every condition checked before the meet-army test holds.
+    pub fn meeting_waiting(&self, w: &dyn EventWorld, army: ArmyId) -> bool {
+        let now = w.now();
+        let waits = |id: EventId| {
+            self.events[id as usize - 1].conditions.meet_army == army
+                && !self.done(id)
+                && self.is_open(id, now)
+                && self.may_refire(id, now)
+                && matches!(self.failing_with(id, w, Some(army)), None | Some("army active" | "army inactive" | "army at home"))
+        };
+        army != 0 && (1..=self.events.len() as EventId).any(waits)
+    }
+
     /// The first event that may fire: in scope, not done, its window open, past its firing
     /// guard, its conditions holding. An event without "once" fires again on every later
     /// check while all that holds.
@@ -1165,8 +1181,9 @@ impl EventEngine {
                 }
             }
             11 => {
+                // Slot k takes entry k; a 0 empties its slot.
                 if let Some(h) = holder {
-                    w.set_spells(h, units(g), &spells);
+                    w.set_spells(h, units(g), &r.spells_learned);
                 }
             }
             12 => {
@@ -1262,6 +1279,11 @@ impl EventEngine {
     /// The first condition of event `id` that does not hold (the time window, the place and
     /// the question aside), named by its field; `None` when they all hold.
     pub fn failing_condition(&self, id: EventId, w: &dyn EventWorld) -> Option<&'static str> {
+        self.failing_with(id, w, self.meeting)
+    }
+
+    /// [`EventEngine::failing_condition`] with `meeting` as the army being met.
+    fn failing_with(&self, id: EventId, w: &dyn EventWorld, meeting: Option<ArmyId>) -> Option<&'static str> {
         let e = &self.events[id as usize - 1];
         if !self.opcode_conditions_hold(id, e, w) {
             return Some("opcode condition");
@@ -1329,7 +1351,7 @@ impl EventEngine {
         if c.not_happened_check != 0 && !nonzero(&c.not_happened).all(|id| self.happened(id).is_none()) {
             return Some("not happened");
         }
-        if c.meet_army != 0 && self.meeting != Some(c.meet_army) {
+        if c.meet_army != 0 && meeting != Some(c.meet_army) {
             return Some("meet army");
         }
         if c.army_active != 0 && !w.army_active(c.army_active) {
@@ -2410,7 +2432,7 @@ mod tests {
                 Fx::Speed(Army(5), -3),
                 Fx::Faction(Building(1), 4),
                 Fx::Relation(Army(2), 0, -3),
-                Fx::SetSpells(Army(2), None, vec![4, 5]),
+                Fx::SetSpells(Army(2), None, vec![4, 5, 0, 0]),
                 Fx::Named(Army(4), 7, 2, 42),
                 Fx::UnitXp(Army(2), None, 2000),
                 Fx::Forget(3),
