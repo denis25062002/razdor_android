@@ -1878,19 +1878,16 @@ pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
 
 /// Writes what a world spell or a rebuild did to the unit of troop `t` back into it: its
 /// slots, drain and HP carry, and its HP as what it lacks, or its death (the time of death
-/// now, unless it keeps one from an earlier death, as `ai::write_hp`); a unit raised again
-/// keeps its time of death.
+/// now, as `ai::write_hp`); a unit raised again forgets its time of death.
 pub(crate) fn unit_into_troop(content: &Content, t: &mut Troop, u: &Unit, now: u64) {
     t.spells = u.spells;
     t.drain = u.drain;
     t.carry = u.carry;
     if u.alive() {
-        if t.died_at.is_some() {
-            t.kept_death = t.died_at.take();
-        }
+        (t.died_at, t.kept_death) = (None, None);
         t.hurt = (u.max_hp(content) - u.hp).max(0);
     } else if t.died_at.is_none() {
-        t.died_at = Some(t.kept_death.take().unwrap_or(now));
+        (t.died_at, t.kept_death) = (Some(now), None);
     }
 }
 

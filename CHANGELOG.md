@@ -217,8 +217,6 @@ old id, and their versions give both.
 - AI hiring scans a building's six barracks slots with their empty ones, as the original:
   a unit hired from the sixth slot moves the scan on to the next role, which can lower the
   cap to 8 units early; a slot's stock is the one that goes down.
-- An AI unit raised again (a leader left at 1 hit point, a resurrection) keeps its first time
-  of death, as in the original: if it falls again, its corpse is dropped that much sooner.
 - An AI army beaten in a fight of its own step goes on with the rest of that step as the
   original's record does: it may attack the next enemy with nobody and lose again, take a
   village's gold, buy, heal or hire, and it comes back with all that when it respawns.
@@ -496,6 +494,11 @@ now fixed with the rule the original evidently meant:
 - XP: a gain levels up while the next level's need is covered (the original's bug compared
   the previous need, so a `LevelMultipler` below 100 stopped a level early), and a huge
   battle award no longer wraps around before the 5256 cap (the original's 32-bit slip).
+- AI armies: a unit raised again (a leader left at 1 hit point, a resurrection) counts from
+  its latest death if it falls again (the original's bug kept its first time of death, so
+  its corpse was dropped sooner), and an army shopping values its buyer again after each
+  purchase (the original's bug bought a second good of a kind the unit could no longer
+  wear, paid for and lost).
 - The noon autosave on day 9 of a month is named with its leading zero (the original's
   padding slip printed `9`).
 

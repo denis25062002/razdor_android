@@ -664,16 +664,17 @@ fn shopping_sells_the_pack_at_half_then_buys_by_tactical_gain() {
 }
 
 #[test]
-fn a_good_bought_for_a_unit_that_can_no_longer_wear_it_is_paid_and_lost() {
-    // The values are not recomputed between purchases (0x4a548c): the +10 and the +6 ring
-    // both go to the first unit; the second cannot be worn there, but is paid for.
+fn the_buyer_is_valued_again_after_each_purchase() {
+    // The +10 ring goes to the first unit; it can wear no second ring, so the +6 one goes to
+    // the other unit. The original's bug did not recompute the values (0x4a548c): both went
+    // to the first unit, and the second was paid for and lost.
     let mut g = at_market(&[11, 12]);
     g.world.armies[0].gold = 10_000;
     let gold = g.world.armies[0].gold;
     arrive(&mut g, 1);
     let a = &g.world.armies[0];
-    let worn: Vec<ItemId> = a.troops.iter().flat_map(|t| t.worn.iter().flatten().copied()).collect();
-    assert_eq!(worn, [ItemId(11)]);
+    let worn: Vec<Vec<ItemId>> = a.troops.iter().map(|t| t.worn.iter().flatten().copied().collect()).collect();
+    assert_eq!(worn, [vec![ItemId(11)], vec![ItemId(12)]]);
     assert_eq!(a.gold, gold - 200, "both paid");
     assert!(g.world.locations[0].shop.as_ref().unwrap().goods().is_empty(), "both gone");
 }
@@ -1223,10 +1224,13 @@ fn a_surviving_sides_dead_draw_no_promotion_roll() {
     }
     assert!(!g.ai_battle(0, Defender::Army(1)));
     let b = g.world.armies.iter().find(|a| a.id == 2).unwrap();
-    let fallen: Vec<&Troop> = b.troops.iter().filter(|t| t.died_at.is_some() || t.kept_death.is_some()).collect();
+    // The leader fell too and was set back to 1 HP after the rolls, unpromoted.
+    let leader = &b.troops[0];
+    assert_eq!((leader.hurt, leader.unit, leader.xp), (troop_max_hp(&g.content, leader) - 1, UnitId(4), 0));
+    let fallen: Vec<&Troop> = b.troops.iter().filter(|t| t.died_at.is_some()).collect();
     assert!(!fallen.is_empty(), "{:?}", b.troops);
     assert!(fallen.iter().all(|t| t.unit == UnitId(4) && t.xp == 0), "{:?}", b.troops);
-    assert!(b.troops.iter().filter(|t| t.died_at.is_none() && t.kept_death.is_none()).all(|t| t.unit == UnitId(6)), "{:?}", b.troops);
+    assert!(b.troops.iter().skip(1).filter(|t| t.died_at.is_none()).all(|t| t.unit == UnitId(6)), "{:?}", b.troops);
 }
 
 #[test]
@@ -1502,17 +1506,17 @@ fn a_load_puts_the_barracks_slots_back() {
 }
 
 #[test]
-fn a_unit_raised_again_keeps_its_first_time_of_death() {
-    // 0x4a4c68 writes the time of death only when it is 0, and neither the leader set to
-    // 1 HP nor a resurrection clears it: a unit that falls again counts from its first
-    // death. A respawn clears it.
+fn a_unit_raised_again_counts_from_its_latest_death() {
+    // The original's bug: 0x4a4c68 wrote the time of death only when it was 0, and neither
+    // the leader set to 1 HP nor a resurrection cleared it, so a unit that fell again counted
+    // from its first death. Razdor forgets it when the unit is raised.
     let c = content();
     let mut troops = vec![Troop::new(UnitId(6), 1, slot(0))];
     write_hp(&c, &mut troops[0], 0, 100);
     revive_leader(&c, &mut troops);
     assert!(troops[0].alive());
     write_hp(&c, &mut troops[0], 0, 900);
-    assert_eq!(troops[0].died_at, Some(100));
+    assert_eq!(troops[0].died_at, Some(900));
     let mut g = at_church(&[troop(4, 0, 1)]);
     let now = g.clock.total_minutes() as u64;
     let a = &mut g.world.armies[0];
@@ -1520,7 +1524,7 @@ fn a_unit_raised_again_keeps_its_first_time_of_death() {
     a.troops[1].died_at = Some(now - 5);
     arrive(&mut g, 1);
     let t = g.world.armies[0].troops[1];
-    assert!(t.alive() && t.kept_death == Some(now - 5), "raised, the time kept");
+    assert!(t.alive() && t.died_at.is_none() && t.kept_death.is_none(), "raised, the time forgotten");
 }
 
 #[test]

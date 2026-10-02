@@ -51,9 +51,9 @@ pub struct Troop {
     /// comes back with a respawn) until the AI drops it (ai.md §9).
     #[serde(default)]
     pub died_at: Option<u64>,
-    /// The time of death a unit raised again keeps (a surviving side's leader set to 1 HP, a
-    /// resurrection): the original clears it only at a respawn or an activation, so a unit
-    /// that falls again counts from its first death (ai.md §9, §10).
+    /// Unused: the time of death a unit raised again kept in saves from before Razdor fixed
+    /// the original's bug (it cleared it only at a respawn or an activation, so a unit that
+    /// fell again counted from its first death; ai.md §9, §10).
     #[serde(default)]
     pub kept_death: Option<u64>,
     /// Missed a payday: it stays out of the battles its army starts (economy.md §1).

@@ -1985,9 +1985,10 @@ impl Game {
     /// pack for half the price, then, if its spare gold covers the cheapest good, buys by
     /// tactical gain: every (unit, good) the unit can wear that raises its tactical cost is
     /// valued once at its gain; then the largest value above 5 whose price fits the spare
-    /// gold is bought, again and again. The values are not recomputed: a good bought for a
-    /// unit that can no longer wear it (it bought one of that type just before) is paid for
-    /// and lost (the original's).
+    /// gold is bought, again and again; after each buy the buyer's values are worked out
+    /// again. Razdor fixes the original's bug: it did not recompute them, so a good bought
+    /// for a unit that could no longer wear it (it bought one of that type just before) was
+    /// paid for and lost.
     fn ai_shop(&mut self, i: usize, l: usize) {
         let c = self.content.clone();
         let (faction, leader_undead, bd) = {
@@ -2022,16 +2023,17 @@ impl Game {
         let n = self.world.armies[i].troops.len();
         let mut value = vec![vec![0i32; n]; goods.len()];
         let mut price = vec![0i32; goods.len()];
+        // The gain of good `item` on troop `t`, if it can wear it.
+        let gain = |t: &Troop, item: ItemId| {
+            let before = tactical_modes(&c, t, bd).1;
+            let mut tried = *t;
+            wear(&c, &mut tried, item)?;
+            Some(if tactical_modes(&c, &tried, bd).1 > before { item_gain(&c, &tried, bd) } else { 0 })
+        };
         for u in 0..n {
             for (k, &(_, item)) in goods.iter().enumerate() {
-                let t = self.world.armies[i].troops[u];
-                let before = tactical_modes(&c, &t, bd).1;
-                let mut tried = t;
-                if wear(&c, &mut tried, item).is_some() {
-                    let after = tactical_modes(&c, &tried, bd).1;
-                    if after > before {
-                        value[k][u] = item_gain(&c, &tried, bd);
-                    }
+                if let Some(v) = gain(&self.world.armies[i].troops[u], item) {
+                    value[k][u] = v;
                     // `|RelationPrice(price)|` of the raw price: a good of negative price
                     // costs its absolute value (Round is symmetric).
                     price[k] = self.ai_price(i, l, c.item(item).cost.abs());
@@ -2057,6 +2059,10 @@ impl Game {
             value[k].iter_mut().for_each(|v| *v = 0);
             price[k] = 0;
             self.ai_stats.bought += 1;
+            let t = self.world.armies[i].troops[u];
+            for (k, &(_, item)) in goods.iter().enumerate().filter(|&(k, _)| price[k] != 0) {
+                value[k][u] = gain(&t, item).unwrap_or(0);
+            }
         }
         bought.sort_unstable();
         if let Some(shop) = self.world.locations[l].shop.as_mut() {
@@ -2118,8 +2124,8 @@ impl Game {
                 let a = &mut self.world.armies[i];
                 if p < a.gold {
                     a.gold -= p;
-                    // Raised, it keeps its time of death (the original's).
-                    a.troops[k].kept_death = a.troops[k].died_at.take();
+                    // Raised, it forgets its time of death (the original's bug kept it).
+                    (a.troops[k].died_at, a.troops[k].kept_death) = (None, None);
                     a.troops[k].hurt = 0;
                     a.mind.busy_until = now + o.healing_time as f64;
                     done = true;
@@ -3053,12 +3059,13 @@ impl Game {
 }
 
 /// Writes a fighter's end HP `hp` into troop `t`: dead (the time of death now, unless it was
-/// already dead or keeps one from an earlier death: 0x4a4c68 sets it only when it is 0), or
-/// the HP it lacks against its maximum.
+/// already dead), or the HP it lacks against its maximum. Razdor fixes the original's bug
+/// (0x4a4c68 sets the time only when it is 0, and a raised unit kept its first one): a unit
+/// raised again counts from its latest death.
 fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     if hp <= 0 {
         if t.died_at.is_none() {
-            t.died_at = Some(t.kept_death.take().unwrap_or(now));
+            (t.died_at, t.kept_death) = (Some(now), None);
         }
         return;
     }
@@ -3066,10 +3073,10 @@ fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     t.hurt = (max - hp).max(0);
 }
 
-/// A side that survived keeps its leader (unit 1) with 1 HP; its time of death stays.
+/// A side that survived keeps its leader (unit 1) with 1 HP; its time of death is forgotten.
 fn revive_leader(c: &Content, troops: &mut [Troop]) {
     if let Some(t) = troops.first_mut().filter(|t| !t.alive()) {
-        t.kept_death = t.died_at.take();
+        (t.died_at, t.kept_death) = (None, None);
         t.hurt = troop_max_hp(c, t) - 1;
     }
 }
