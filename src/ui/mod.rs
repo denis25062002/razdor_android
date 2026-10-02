@@ -863,6 +863,9 @@ impl App {
             if matches!(next, Screen::WorldMap) && !matches!(self.screen, Screen::WorldMap) {
                 self.map_view.reset();
             }
+            if matches!(self.screen, Screen::WorldMap) && !matches!(next, Screen::WorldMap) {
+                self.map_view.drop_grab();
+            }
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
             }

@@ -285,6 +285,15 @@ impl MapView {
         self.look = None;
     }
 
+    /// The map is left (a window, a battle): a right-button press under way ends with it, so
+    /// the hand cursor does not stay over the next screen and the press is no right click
+    /// (a stop) when the map comes back.
+    pub fn drop_grab(&mut self) {
+        if self.grab.take().is_some_and(|g| g.moved) {
+            macroquad::miniquad::window::set_mouse_cursor(macroquad::miniquad::CursorIcon::Default);
+        }
+    }
+
     /// A game was loaded: the places the old one was about to show are dropped.
     pub fn forget_shows(&mut self) {
         self.shows.clear();
@@ -1543,6 +1552,13 @@ mod tests {
         assert_eq!(g.step(vec2(164.0, 100.0), true, 32.0), GrabStep::Drag(vec2(8.0, 10.0)));
         assert_eq!(g.step(vec2(100.0, 100.0), true, 32.0), GrabStep::Drag(vec2(10.0, 10.0)));
         assert_eq!(g.step(vec2(100.0, 100.0), false, 32.0), GrabStep::Dropped, "a drag is no click");
+    }
+
+    #[test]
+    fn leaving_the_map_drops_a_right_press() {
+        let mut view = MapView { grab: Some(Grab { start: vec2(1.0, 1.0), from: vec2(0.0, 0.0), moved: false }), ..MapView::default() };
+        view.drop_grab();
+        assert_eq!(view.grab, None, "no right click (a stop) waits for the map's return");
     }
 
     #[test]
