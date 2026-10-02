@@ -250,6 +250,12 @@ On a per-plan multiplier map (all 1 to start):
 The effective cost of a cell is `cost × multiplier`; 0 is impassable. Seeds on a closed cell
 still count (an army can target a stationary guard).
 
+*Razdor:* it also closes the footprints of buildings the army may not walk through
+(`bars_army`: castles and forts not its own or a friend's, ruins not its own, buildings it
+would assault) with a score of 0, except the one it stands in, so AI armies keep to the
+hero's roads as they did before the parity pass. The original walks them through any
+building of score 0 or more.
+
 ### 7.4 Repulsion cone
 For strength S and slope f around cell (x, y): every scanned cell whose value
 `S − floor(f × (max(|dx|,|dy|) + min(|dx|,|dy|)/2))` exceeds 1 gets that value added to its

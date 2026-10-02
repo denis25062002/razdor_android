@@ -178,6 +178,9 @@ old id, and their versions give both.
   worth more, a lost one a danger they route around), and every building by its village
   gold, what they could buy, whether they can take it and its garrison; a stationary guard
   they cannot beat closes a building to them.
+- AI armies still keep to the hero's roads on the original's flood (Razdor's choice since
+  0.2.0): castles and forts not their own or a friend's, ruins not theirs and buildings
+  they would assault are closed to their way, unless they head for it or stand in it.
 - Stationary guards no longer move, plan or get paid; an army with nothing to do steps in
   place, and greets a friend or the hero standing next to it.
 - AI armies greet each other (and, after his step, the hero) by talk counters, and attack a

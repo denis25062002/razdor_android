@@ -413,9 +413,9 @@ pub fn army_path(world: &World, a: &Army, from: Tile, to: Tile, max_nodes: usize
     })
 }
 
-/// Army `a` may not walk through building `l` on an event's errand *(guess)*: castles and
-/// forts that are not its own or a friend's, ruins not its own and not cleared, and any other
-/// building it would assault.
+/// Army `a` may not walk through building `l`, on its own plans (Razdor keeps AI armies to
+/// the hero's roads) and on an event's errand: castles and forts that are not its own or a
+/// friend's, ruins not its own and not cleared, and any other building it would assault.
 pub fn bars_army(a: &Army, l: &Location) -> bool {
     let own = l.owner == Owner::Army(a.id);
     let friend = own || l.attitude_to(a.faction) > 0;
@@ -1630,8 +1630,14 @@ impl Game {
                 seeds.push((cell, v as u32));
             }
         }
+        // Razdor keeps AI armies to the hero's roads (its choice since 0.2.0, kept over the
+        // original's planner): the buildings an army may not walk through ([`bars_army`])
+        // are closed as the forbidden ones, except the one it stands in and the ones it
+        // seeks (a positive score: a seed).
+        let standing = self.world.location_covering(here);
         for (l, b) in self.world.locations.iter().enumerate() {
-            if self.stored_building(i, l) < 0 {
+            let score = self.stored_building(i, l);
+            if score < 0 || (score == 0 && Some(l) != standing && bars_army(a, b)) {
                 let (x0, y0) = (b.anchor.0 - b.size.0 + 1, b.anchor.1 - b.size.1 + 1);
                 fill_rect(&mut mult, w, (x0, y0), b.size);
             }

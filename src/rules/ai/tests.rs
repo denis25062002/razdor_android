@@ -1330,6 +1330,36 @@ fn the_plan_goes_for_the_best_target_through_the_flood() {
 }
 
 #[test]
+fn the_plan_keeps_to_the_heros_roads_around_a_hostile_fort() {
+    // Razdor's choice: a fort it may not walk through ([`bars_army`]), on the straight way to
+    // its village, is closed to its flood; its own fort is not.
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 35, 10, (1, 1));
+    fort.faction = 2;
+    s.buildings = vec![building(BuildingType::Village, 40, 10, (1, 1)), fort];
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    a.no_random_targets = 1;
+    s.armies = vec![a];
+    let walk = |own: bool| {
+        let mut g = start_with(&s, with_priorities());
+        if own {
+            g.world.locations[1].owner = Owner::Army(g.world.armies[0].id);
+        }
+        g.world.armies[0].gold = 0;
+        g.world.armies[0].mind.scores.insert(HERO, 0);
+        g.world.armies[0].mind.buildings = vec![100, 0];
+        plan(&mut g, 0);
+        let fort: Vec<Tile> = (0..60).flat_map(|x| (0..20).map(move |y| (x, y))).filter(|&t| g.world.location_covering(t) == Some(1)).collect();
+        assert!(bars_army(&g.world.armies[0], &g.world.locations[1]) != own);
+        let path = g.world.armies[0].path.clone();
+        assert_eq!(path.last(), Some(&(40, 10)), "{path:?}");
+        path.iter().any(|t| fort.contains(t))
+    };
+    assert!(walk(true), "its own fort is on its way");
+    assert!(!walk(false), "around the hostile one");
+}
+
+#[test]
 fn a_danger_pushes_a_repulsion_cone_onto_the_way() {
     // A hostile army it would lose to, on the straight way to its target: the way bends.
     let mut s = map();
