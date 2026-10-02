@@ -111,6 +111,7 @@ spell book = книга заклинаний
 hero and army = герой и армия
 quick save / quick load = быстрое сохранение / загрузка
 the game menu = меню игры
+in the main menu: quit the game = в главном меню — выйти из игры
 tabs and buttons = вкладки и кнопки
 quick save = быстрое сохранение
 back to the map = назад на карту

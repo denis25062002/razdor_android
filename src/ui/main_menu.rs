@@ -193,6 +193,10 @@ pub fn frame() -> Option<Pick> {
     if link(&lang, screen_width() - 16.0 * k, y, true) {
         super::language::toggle();
     }
+    // Esc quits the game at once, without a question, as in the original (0x4c8059).
+    if key(KeyCode::Escape) {
+        pick = Some(Pick::Exit);
+    }
     pick
 }
 

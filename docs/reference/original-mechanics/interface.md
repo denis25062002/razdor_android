@@ -990,9 +990,9 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 15 | Hotkeys | F1 key list, F2 language, F5 quick save, F9 quick load, N music, letters for windows (extras) | Community F1 newest autosave, F2 newest own save, F3 save, F4/F5 endless wait; no letters | 7.7 |
 | 16 | Panel icon order | Left Menu, Settings, Save, Load; right Journal, Squad, Spells, Map | Left from the centre: Save, Load, Options, Exit menu; right from the centre: Hero, Army, Spell book, Minimap | 6 |
 | 17 | Esc on the map | Matches: opens the game menu (Razdor has no spell targeting on the map) | Leaves spell targeting, else opens the exit menu | 7.7 |
-| 18 | Esc in the main menu | Does nothing | Quits the game at once, without a question | 4 |
-| 19 | Hero choice Back / Esc | Back to the scenario list | Back to the main menu | 5 |
-| 20 | Yes/No boxes | Enter or Y = Yes, Esc or N = No | Esc = No, any other key except Tab, Alt, Up, Down = Yes | 11 |
+| 18 | Esc in the main menu | Matches: quits at once | Quits the game at once, without a question | 4 |
+| 19 | Hero choice Back / Esc | Matches: back to the main menu | Back to the main menu | 5 |
+| 20 | Yes/No boxes | Matches: Esc = No, any other key except Tab, Alt, Up, Down = Yes (on the key's press, not its release) | Esc = No, any other key except Tab, Alt, Up, Down = Yes | 11 |
 | 21 | Battle deployment | A deployment step with Fight! and quick battle (extra) | None: the battle starts when the window opens | 12 |
 | 22 | Space in battle | Ends the unit's turn (skip) | Same as clicking the actor's own card: one pass (100 ms) or a self heal/bless | 12 |
 | 23 | Quick battle (Q) | Plays the battle out at once (extra) | None | 12 |

@@ -532,8 +532,9 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
         *game = Some(screens::start_game(demo, Some((e, &content)), hero, &name));
         return Some(Screen::WorldMap);
     }
+    // Back or Esc returns to the main menu, not to the scenario list (0x4c0fd4).
     if win.button(492.0, 95.0, &own("Buttons", "Prev", n_("Back")), true) || closed || key(KeyCode::Escape) {
-        return Some(Screen::ScenarioSelect);
+        return Some(Screen::MainMenu);
     }
     None
 }

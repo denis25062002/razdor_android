@@ -235,7 +235,7 @@ fn unit_row(assets: &Assets, label: &str, units: &[UnitId], x: f32, y: f32) -> f
 }
 
 /// Draws `d` centred on the screen; returns how it was closed: OK (or Enter, Escape), or for
-/// a question Yes (Enter) or No (Escape).
+/// a question Yes or No (Esc No, any other key Yes, as the original's box: `answer_key`).
 pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     let (sw, sh) = (screen_width(), screen_height());
     chrome::under_message();
@@ -304,8 +304,9 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     // The silver line over the buttons.
     draw_line(x + 2.0, by - 10.0, x + w - 2.0, by - 10.0, 1.5, chrome::SILVER);
     if d.question {
-        let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, tr("Yes"), true) || key(KeyCode::Enter) || key(KeyCode::Y);
-        let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, tr("No"), true) || key(KeyCode::Escape) || key(KeyCode::N);
+        let answer = answer_key();
+        let yes = button(x + w / 2.0 - 140.0, by, 120.0, 38.0, tr("Yes"), true) || answer == Some(true);
+        let no = button(x + w / 2.0 + 20.0, by, 120.0, 38.0, tr("No"), true) || answer == Some(false);
         return if yes {
             Some(Close::Yes)
         } else if no {

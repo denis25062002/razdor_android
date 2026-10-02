@@ -189,6 +189,28 @@ pub fn held_key() -> Option<KeyCode> {
     }
 }
 
+/// The keys of the original's Yes / No box (interface.md §11, 0x4c811c): Esc answers No and
+/// any other key Yes (Enter, Space, N or a letter alike), except Tab, Alt and the Up and
+/// Down arrows, which do nothing. `None` while no such key went down this frame.
+pub fn answer_key() -> Option<bool> {
+    if input_blocked() {
+        return None;
+    }
+    answer_of(get_keys_pressed().into_iter())
+}
+
+fn answer_of(keys: impl Iterator<Item = KeyCode>) -> Option<bool> {
+    let ignored = |k: &KeyCode| matches!(k, KeyCode::Tab | KeyCode::LeftAlt | KeyCode::RightAlt | KeyCode::F10 | KeyCode::Up | KeyCode::Down);
+    let keys: Vec<KeyCode> = keys.filter(|k| !ignored(k)).collect();
+    if keys.contains(&KeyCode::Escape) {
+        Some(false)
+    } else if keys.is_empty() {
+        None
+    } else {
+        Some(true)
+    }
+}
+
 /// Mouse wheel steps this frame (up is positive), 0 while input is blocked.
 pub fn wheel() -> f32 {
     if input_blocked() {
@@ -719,6 +741,19 @@ pub fn tabs(x: f32, y: f32, w: f32, labels: &[&str], selected: &mut usize) -> f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_question_box_takes_any_key_but_four_as_yes() {
+        use KeyCode::*;
+        assert_eq!(answer_of([Escape].into_iter()), Some(false));
+        for k in [Enter, Space, Y, N, A, F1, Left, LeftShift] {
+            assert_eq!(answer_of([k].into_iter()), Some(true), "{k:?}");
+        }
+        for k in [Tab, LeftAlt, RightAlt, Up, Down] {
+            assert_eq!(answer_of([k].into_iter()), None, "{k:?}");
+        }
+        assert_eq!(answer_of(std::iter::empty()), None);
+    }
 
     #[test]
     fn typing_edits_text() {

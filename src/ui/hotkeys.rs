@@ -3,7 +3,8 @@
 //! for). A screen's own keys live in its module; this one only lists them for the overlay.
 //!
 //! No key fires while the player types (the class screen's hero name, the save name, an
-//! editor field) or while a dialog or question is open (there N means "No", Y "Yes").
+//! editor field) or while a dialog or question is open (there Esc means "No" and any other
+//! key "Yes", as in the original).
 
 use macroquad::prelude::*;
 
@@ -103,7 +104,7 @@ pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
 /// The keys of `place` for the F1 overlay: (key, what it does).
 pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
     match place {
-        Place::Title => vec![(n_("Click"), n_("the menu's buttons; a scenario twice: go on")), ("F9", n_("load the quick save"))],
+        Place::Title => vec![(n_("Click"), n_("the menu's buttons; a scenario twice: go on")), ("F9", n_("load the quick save")), ("Esc", n_("in the main menu: quit the game"))],
         Place::ClassSelect => vec![(n_("Type"), n_("the hero's name")), ("Backspace", n_("delete a letter"))],
         Place::WorldMap => vec![
             (n_("Click"), n_("show the route; a second click on the spot: walk there")),

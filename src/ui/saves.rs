@@ -528,7 +528,8 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
     (choice, cancel || key(KeyCode::Escape))
 }
 
-/// A question with Yes / No, `None` until answered (Enter: yes, Esc: no).
+/// A question with Yes / No, `None` until answered (Esc: no, any other key: yes, as the
+/// original's box: `answer_key`).
 fn question(title: &str, text: &str) -> Option<bool> {
     let k = super::chrome::k();
     let (w, h) = (380.0 * k, 150.0 * k);
@@ -546,10 +547,11 @@ fn question(title: &str, text: &str) -> Option<bool> {
     let (yes_label, no_label) = (own("Buttons", "Yes", n_("Yes")), own("Buttons", "No", n_("No")));
     super::chrome::marble_button(yes, &yes_label, true, over(yes));
     super::chrome::marble_button(no, &no_label, true, over(no));
-    if (over(yes) && clicked()) || key(KeyCode::Enter) {
+    let answer = answer_key();
+    if (over(yes) && clicked()) || answer == Some(true) {
         return Some(true);
     }
-    if (over(no) && clicked()) || key(KeyCode::Escape) {
+    if (over(no) && clicked()) || answer == Some(false) {
         return Some(false);
     }
     None

@@ -420,6 +420,9 @@ old id, and their versions give both.
   key or click acts, and the view stays on him. The held arrow key and the mouse at a
   screen edge (5 px) scroll by the original's scroll speed. Esc opens the game menu even
   with the minimap open.
+- Esc in the main menu quits the game at once, and Back or Esc on the hero choice returns
+  to the main menu, as in the original. A Yes / No question takes Esc as No and any other
+  key as Yes (N included), except Tab, Alt and the Up and Down arrows.
 
 ## 0.2.2 — 2026-10-01
 
