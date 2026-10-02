@@ -259,17 +259,109 @@ pub struct MapPoint {
     pub lit: bool,
 }
 
-/// Items for sale.
+/// The places of a market (goods words 1..12 of a building).
+pub const MARKET_PLACES: usize = 12;
+
+/// A good in a market place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Good {
+    pub item: ItemId,
+    /// One of the map's goods (a negative id in the original): kept until bought, never
+    /// redrawn, and left alone by the AI.
+    pub fixed: bool,
+}
+
+/// Items for sale (economy.md §2): the 12 places in order, with the map's fixed goods where
+/// the map put them and random goods drawn into the empty places at each restock.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "ShopSave")]
 pub struct Shop {
-    /// Always stocked.
-    pub fixed: Vec<ItemId>,
-    /// Random items added at each restock.
+    /// [`MARKET_PLACES`] places; `None` is an empty one.
+    pub places: Vec<Option<Good>>,
+    /// Random goods drawn at each restock (byte 295).
     pub random: usize,
-    /// Price range of the random items (0, 0 = any).
+    /// The price window of the random goods (words 333 and 335, as the map load set them).
     pub price: (i32, i32),
-    /// On sale now.
-    pub stock: Vec<ItemId>,
+    /// The restock timer (minutes): due when it is above 0 and not after now; a restock
+    /// with random goods sets it 12 hours on (0x4be178).
+    #[serde(default)]
+    pub timer: u64,
+}
+
+/// A saved shop: older saves kept the goods as a list and the fixed ones apart.
+#[derive(serde::Deserialize)]
+struct ShopSave {
+    #[serde(default)]
+    places: Option<Vec<Option<Good>>>,
+    random: usize,
+    price: (i32, i32),
+    #[serde(default)]
+    timer: Option<u64>,
+    #[serde(default)]
+    fixed: Vec<ItemId>,
+    #[serde(default)]
+    stock: Vec<ItemId>,
+}
+
+impl From<ShopSave> for Shop {
+    fn from(s: ShopSave) -> Shop {
+        let places = s.places.unwrap_or_else(|| {
+            let mut fixed = s.fixed.clone();
+            let mut places: Vec<Option<Good>> = s
+                .stock
+                .iter()
+                .map(|&item| {
+                    let k = fixed.iter().position(|&x| x == item);
+                    Some(Good { item, fixed: k.map(|k| fixed.remove(k)).is_some() })
+                })
+                .collect();
+            places.resize(MARKET_PLACES.max(places.len()), None);
+            places
+        });
+        Shop { places, random: s.random, price: s.price, timer: s.timer.unwrap_or(1) }
+    }
+}
+
+impl Shop {
+    /// A market as the map load sets it up (0x4b5200 area): the map's goods fixed in their
+    /// places, the timer set; with random goods the top of the price window is capped at
+    /// the dearest item's Cost (0 means that cap) and the bottom set to 0 unless below it.
+    pub fn from_map(places: Vec<Option<ItemId>>, random: usize, (mut lo, mut hi): (i32, i32), dearest: i32) -> Shop {
+        let mut places: Vec<Option<Good>> = places.into_iter().map(|i| i.map(|item| Good { item, fixed: true })).collect();
+        places.resize(MARKET_PLACES, None);
+        if random > 0 {
+            hi = hi.min(dearest);
+            if hi <= lo {
+                lo = 0;
+            }
+            if hi == 0 {
+                hi = dearest;
+            }
+        }
+        Shop { places, random, price: (lo, hi), timer: 1 }
+    }
+
+    /// The goods on sale, in place order with the empty places left out (as the window
+    /// lists them).
+    pub fn goods(&self) -> Vec<ItemId> {
+        self.places.iter().flatten().map(|g| g.item).collect()
+    }
+
+    /// The place of the `k`-th good on sale.
+    fn place_of(&self, k: usize) -> Option<usize> {
+        self.places.iter().enumerate().filter(|(_, p)| p.is_some()).nth(k).map(|(i, _)| i)
+    }
+
+    /// Whether the `k`-th good on sale is one of the map's.
+    pub fn is_fixed(&self, k: usize) -> bool {
+        self.place_of(k).and_then(|i| self.places[i]).is_some_and(|g| g.fixed)
+    }
+
+    /// Takes the `k`-th good on sale: its place is emptied.
+    pub fn take(&mut self, k: usize) -> Option<ItemId> {
+        let i = self.place_of(k)?;
+        self.places[i].take().map(|g| g.item)
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -858,17 +950,12 @@ impl World {
             // wipes the goods of every other type, altars included (0x4b5600 area).
             let goods = |n: usize| artifact_ids(content, b.artifact_slots[..n].iter().filter(|&&x| x != 0).map(|&x| u32::from(x)));
             let market = matches!(kind, LocationKind::Town | LocationKind::Market | LocationKind::Church);
-            let items = goods(12);
             if kind == LocationKind::Ruins {
                 l.treasure = goods(5);
                 l.treasure_gold = b.price_max as i32;
-            } else if market && (!items.is_empty() || b.random_artifacts_for_sale > 0) {
-                l.shop = Some(Shop {
-                    fixed: items,
-                    random: b.random_artifacts_for_sale as usize,
-                    price: (b.price_min as i32, b.price_max as i32),
-                    stock: Vec::new(),
-                });
+            } else if market && (!goods(MARKET_PLACES).is_empty() || b.random_artifacts_for_sale > 0) {
+                let places = b.artifact_slots[..MARKET_PLACES].iter().map(|&x| Some(ItemId(u32::from(x))).filter(|&i| x != 0 && content.try_item(i).is_some())).collect();
+                l.shop = Some(Shop::from_map(places, b.random_artifacts_for_sale as usize, (b.price_min as i32, b.price_max as i32), content.dearest_item()));
             }
             l.spells = b.spells_for_sale.iter().copied().filter(|&x| x != 0).collect();
             l.events = b.events().collect();
@@ -1041,7 +1128,8 @@ impl World {
         let t = |unit, row, col| Troop::new(unit, 1, Slot::new(row, col));
         let (f, b) = (Row::Front, Row::Back);
         let recruits = |units: Vec<UnitId>| units.into_iter().enumerate().map(|(k, unit)| Recruit { unit, stock: None, max: 0, progress: 0, slot: k as u8 }).collect();
-        let shop = || Some(Shop { fixed: Vec::new(), random: 6, price: (0, 0), stock: Vec::new() });
+        let dearest = content.dearest_item();
+        let shop = || Some(Shop::from_map(Vec::new(), 6, (0, 0), dearest));
 
         let mut oakford = Location::new(LocationKind::Castle, tr("Oakford"), tile('C'));
         oakford.picture = (3, 0);
@@ -1353,6 +1441,17 @@ mod tests {
     use crate::rules::game::Game;
     use crate::rules::map::object_class;
 
+
+    #[test]
+    fn an_older_saves_market_loads_into_its_places() {
+        let old = r#"{"fixed":[24],"random":3,"price":[50,400],"stock":[20,24]}"#;
+        let shop: Shop = serde_json::from_str(old).unwrap();
+        assert_eq!(shop.places.len(), MARKET_PLACES);
+        assert_eq!(shop.places[..2], [Some(Good { item: ItemId(20), fixed: false }), Some(Good { item: ItemId(24), fixed: true })]);
+        assert_eq!((shop.goods(), shop.timer), (vec![ItemId(20), ItemId(24)], 1));
+        let again: Shop = serde_json::from_str(&serde_json::to_string(&shop).unwrap()).unwrap();
+        assert_eq!(again, shop);
+    }
 
     #[test]
     fn an_armys_hostility_follows_the_originals_relation() {

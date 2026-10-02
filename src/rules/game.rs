@@ -85,7 +85,6 @@ impl Price {
 pub enum TradeError {
     NoMarket,
     NotEnoughGold,
-    PackFull,
     NoSuchItem,
     /// Personal items cannot be sold.
     NotForSale,
@@ -1590,27 +1589,25 @@ impl Game {
     /// Items for sale where the party stands, if there is a market. Ill-disposed markets
     /// trade too, dearer ([`Game::buy_price`]; the footage shows a market of attitude −2
     /// trading).
-    pub fn market_here(&self) -> Option<&[ItemId]> {
+    /// The goods of the market here, as its window lists them.
+    pub fn market_here(&self) -> Option<Vec<ItemId>> {
         let loc = &self.world.locations[self.location?];
-        loc.shop.as_ref().map(|s| s.stock.as_slice())
+        loc.shop.as_ref().map(|s| s.goods())
     }
 
+    /// Buys the `stock_index`-th good here for [`Game::buy_price`], if that is at most the
+    /// gold (0x4b9e18). It goes to the pack with no test of its room, as in the original,
+    /// and its place in the market is emptied.
     pub fn buy(&mut self, stock_index: usize) -> Result<ItemId, TradeError> {
         let item = *self.market_here().ok_or(TradeError::NoMarket)?.get(stock_index).ok_or(TradeError::NoSuchItem)?;
         let price = self.buy_price(item);
         if self.gold < price {
             return Err(TradeError::NotEnoughGold);
         }
-        if self.pack.len() >= PACK_SIZE {
-            return Err(TradeError::PackFull);
-        }
         if let Some(shop) = self.location.and_then(|l| self.world.locations[l].shop.as_mut()) {
-            shop.stock.remove(stock_index);
-            if let Some(k) = shop.fixed.iter().position(|&i| i == item) {
-                shop.fixed.remove(k);
-            }
+            shop.take(stock_index);
         }
-        self.gold -= price;
+        self.gold = (self.gold - price).max(0);
         self.pack.push(item);
         Ok(item)
     }
@@ -2367,8 +2364,6 @@ mod tests {
         assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK - 1, "not midnight yet");
         g.pass_time(60.0, &mut events);
         assert_eq!(g.market_here().unwrap().len(), MARKET_STOCK, "drawn anew at midnight");
-        let stock = g.market_here().unwrap();
-        assert!(stock.windows(2).all(|w| g.content.item(w[0]).cost <= g.content.item(w[1]).cost), "sorted by price");
     }
 
     #[test]
@@ -2389,9 +2384,11 @@ mod tests {
         assert_eq!(g.sell(0), Ok(cost / 4), "ItemSaleCost 25% (the demo's F is 100)");
         assert!(g.pack.is_empty());
         assert_eq!(g.sell(0), Err(TradeError::NoSuchItem));
+        // No pack test at a purchase (0x4b9e18).
         g.pack = vec![item; PACK_SIZE];
         g.gold = 10_000;
-        assert_eq!(g.buy(0), Err(TradeError::PackFull));
+        assert!(g.buy(0).is_ok());
+        assert_eq!(g.pack.len(), PACK_SIZE + 1);
         g.location = Some(g.world.index_of("Millbrook"));
         assert_eq!(g.sell(0), Err(TradeError::NoMarket));
     }

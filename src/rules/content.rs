@@ -258,6 +258,11 @@ impl Content {
         }
     }
 
+    /// The highest item `Cost` (0x4ed474, the item loader's), at least 0.
+    pub fn dearest_item(&self) -> i32 {
+        self.items.iter().map(|a| a.cost).max().unwrap_or(0).max(0)
+    }
+
     pub fn items_from(&self, source: Source) -> Vec<ItemId> {
         self.item_ids().filter(|&i| self.sources(i).contains(&source)).collect()
     }

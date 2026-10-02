@@ -8,11 +8,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::ai;
-use super::content::{Bonus, HeroClass, ItemId, Nature, Source, WageKind};
+use super::content::{Bonus, Content, HeroClass, ItemId, Nature, Source, WageKind};
 use super::game::{Currency, Event, Game, Price, Tribute, PACK_SIZE};
 use super::magic;
 use super::units::{Stats, Unit};
-use super::world::{Army, Location, LocationKind, Recruit};
+use super::world::{Army, Good, Location, LocationKind, Recruit, Shop};
 
 /// Delphi's `Round`: halves go to the even neighbour (2.5 → 2, 3.5 → 4).
 pub fn delphi_round(x: f64) -> i64 {
@@ -67,12 +67,37 @@ pub const MEDIC_PERCENT: i32 = 10;
 pub const RANGER_PERCENT: i32 = 15;
 pub const RANGER_REPORT_PERCENT: i32 = 20;
 
-/// Towns stock healing potions (these item ids) first, then maybe one of the others.
-pub const TOWN_POTIONS: [u32; 3] = [98, 99, 100];
-pub const TOWN_EXTRAS: [u32; 4] = [96, 97, 114, 115];
-/// Market price window cap and the tries per random slot.
+/// Towns stock healing potions (98 + `Random(3)`) and, with more than 6 places to fill, one
+/// of these.
+pub const TOWN_EXTRAS: [u32; 5] = [95, 96, 97, 114, 115];
+/// Market price window cap, the tries per random good beyond the first, the share of the
+/// window below a band (the original's p = 0.5), and Razdor's stop where the original hangs.
 const PRICE_CAP: i32 = 5000;
 const STOCK_TRIES: usize = 25;
+const BAND_HALF: f64 = 0.5;
+const STOCK_HANG: usize = 10_000;
+
+/// The candidates for a random good of a `kind` market priced in `lo..=hi` (0x4bdf74), in
+/// item order: towns and markets sell no potions or goods, churches only amulets and
+/// potions, others no goods; never a negative Cost, never a Death item in a town or
+/// church, never in a market an amulet costing exactly 150.
+fn market_candidates(c: &Content, pool: &[ItemId], kind: LocationKind, lo: i32, hi: i32) -> Vec<ItemId> {
+    use super::content::{ArtefactType as T, MagicSchool};
+    pool.iter()
+        .copied()
+        .filter(|&i| {
+            let d = c.item(i);
+            let type_ok = match kind {
+                LocationKind::Town | LocationKind::Market => !matches!(d.kind, T::Potion | T::Item),
+                LocationKind::Church => matches!(d.kind, T::Amulet | T::Potion),
+                _ => d.kind != T::Item,
+            };
+            let death = d.magic == Some(MagicSchool::Death) && matches!(kind, LocationKind::Town | LocationKind::Church);
+            let amulet_150 = kind == LocationKind::Market && d.kind == T::Amulet && d.cost == 150;
+            type_ok && d.cost >= 0 && !death && !amulet_150 && lo <= d.cost && d.cost <= hi
+        })
+        .collect()
+}
 
 /// Village offers: the priest casts this spell, the blessing one of these, furs are this item.
 pub const PRIEST_SPELL: u32 = 1;
@@ -417,70 +442,169 @@ impl Game {
         self.content.try_item(item).is_some_and(|d| d.cost > 1)
     }
 
-    /// Every shop: the fixed goods not sold yet, plus random goods drawn anew (economy.md §2):
-    /// as many as the building's count minus the fixed goods; towns first get healing
-    /// potions; the rest are market items priced within the window, at most twice the same
-    /// (once when the window's top is above 500); then all sorted by price.
+    /// The map load's stocking: every market with random goods is restocked at once; one
+    /// with only the map's goods waits for the first midnight (economy.md §2).
     pub(crate) fn restock_markets(&mut self) {
         for l in 0..self.world.locations.len() {
-            self.restock_market(l);
+            if self.world.locations[l].shop.as_ref().is_some_and(|s| s.random > 0) {
+                self.restock_market(l);
+            }
         }
     }
 
-    /// The restock of building `l` (nothing when it has no shop).
+    /// The restock of building `l` (0x4be178, economy.md §2), when its timer is due: the
+    /// random goods are dropped and `R` = the random count less the fixed goods left are
+    /// drawn into the empty places. A town first gets `R div 5 + 1` potions out of them, one
+    /// of [`TOWN_EXTRAS`] when more than 6 remain, the rest healing ones, written even into a
+    /// full list. Each other good draws from a price band walking down the window (the
+    /// first from its top half, then lower and lower, bunched at the top when the window is
+    /// wide; square-rooted in a church), widened while the list of candidates is empty or
+    /// with chance 1/its length; a good stocked twice (once, with a window above 500) is
+    /// refused, a list run down to one widens again, and after 26 tries the last drawn is
+    /// stocked anyway. A full list skips the good after its draws. Nothing is sorted (the
+    /// Community exe jumps over the sort).
     pub(crate) fn restock_market(&mut self, l: usize) {
-        let market = self.content.items_from(Source::Market);
-        let demo = self.world.demo;
+        let now = self.clock.total_minutes() as u64;
         let kind = self.world.locations[l].kind;
-        let Some(shop) = &self.world.locations[l].shop else { return };
-        let (count, (lo, hi)) = (shop.random, shop.price);
-        let fixed = shop.fixed.clone();
-        let mut left = count.saturating_sub(if demo { 0 } else { fixed.len() });
-        let (lo, hi) = if hi <= 0 && lo <= 0 {
-            (i32::MIN, i32::MAX)
-        } else {
-            let mut hi = hi.min(PRICE_CAP);
-            if self.rng.random(5) == 0 {
-                hi += 1;
-            }
-            (lo.max(5).min(hi), hi)
-        };
-        let exists = |id: u32| self.content.try_item(ItemId(id)).is_some();
-        let mut random: Vec<ItemId> = Vec::new();
-        if kind == LocationKind::Town && !demo {
-            let potions: Vec<u32> = TOWN_POTIONS.into_iter().filter(|&i| exists(i)).collect();
-            if !potions.is_empty() {
-                for _ in 0..(count / 5 + 1).min(left) {
-                    random.push(ItemId(potions[self.rng.random(potions.len() as i32) as usize]));
-                    left -= 1;
-                }
-            }
-            let extras: Vec<u32> = TOWN_EXTRAS.into_iter().filter(|&i| exists(i)).collect();
-            if left > 6 && !extras.is_empty() && self.rng.random(5) != 0 {
-                random.push(ItemId(extras[self.rng.random(extras.len() as i32) as usize]));
-                left -= 1;
+        let c = self.content.clone();
+        let Some(mut shop) = self.world.locations[l].shop.take() else { return };
+        if shop.timer > 0 && shop.timer <= now {
+            self.draw_goods(&c, kind, &mut shop);
+            if shop.random != 0 {
+                shop.timer = now + 720;
             }
         }
-        let pool: Vec<ItemId> = market.iter().copied().filter(|&i| (lo..=hi).contains(&self.content.item(i).cost)).collect();
-        let most = if hi > 500 { 1 } else { 2 };
-        for _ in 0..left {
-            if pool.is_empty() {
-                break;
+        // Ids outside the item range are cleared.
+        for p in shop.places.iter_mut() {
+            if p.is_some_and(|g| c.try_item(g.item).is_none()) {
+                *p = None;
             }
-            for _ in 0..STOCK_TRIES {
-                let i = pool[self.rng.random(pool.len() as i32) as usize];
-                if random.iter().filter(|&&x| x == i).count() < most {
-                    random.push(i);
+        }
+        self.world.locations[l].shop = Some(shop);
+    }
+
+    fn draw_goods(&mut self, c: &Content, kind: LocationKind, shop: &mut Shop) {
+        let places = &mut shop.places;
+        let mut r = shop.random as i32;
+        for p in places.iter_mut() {
+            match p {
+                Some(g) if !g.fixed => *p = None,
+                Some(_) => r -= 1,
+                None => {}
+            }
+        }
+        let max_word = shop.price.1;
+        let (mut mx, mut mn) = (max_word.min(PRICE_CAP), shop.price.0.max(5));
+        if self.rng.random(5) == 0 {
+            mx += 1;
+        }
+        mn = mn.min(mx);
+        let last = places.len().saturating_sub(1);
+        // The original's place index runs on from where it stopped.
+        let mut slot = 0;
+        let find_empty = |places: &[Option<Good>], slot: &mut usize| {
+            while places[*slot].is_some() && *slot < last {
+                *slot += 1;
+            }
+        };
+        let random = |item: u32| Some(Good { item: ItemId(item), fixed: false });
+        if kind == LocationKind::Town && !self.world.demo {
+            // R from −4 to 0 still gives one potion (`div` truncates towards 0).
+            let mut n = r / 5 + 1;
+            r -= n;
+            if r > 6 {
+                find_empty(places, &mut slot);
+                places[slot] = random(TOWN_EXTRAS[self.rng.random(5) as usize]);
+                n -= 1;
+            }
+            for _ in 0..n.max(0) {
+                find_empty(places, &mut slot);
+                places[slot] = random(98 + self.rng.random(3) as u32);
+            }
+        }
+        let pool: Vec<ItemId> = if self.world.demo {
+            c.items_from(Source::Market)
+        } else {
+            let mut ids: Vec<ItemId> = c.item_ids().collect();
+            ids.sort();
+            ids
+        };
+        let span = (mx - mn) as f64;
+        let widen = |u: &mut i32, lo: &mut i32| {
+            *u = delphi_round(*u as f64 * 1.2) as i32;
+            *lo = delphi_round(*lo as f64 * 0.8) as i32;
+            if r > 1 {
+                *u = (*u).min(mx);
+                *lo = (*lo).max(mn);
+            }
+        };
+        let (mut lo, mut ran_down) = (mx, false);
+        for i in 1..=r {
+            let mut u;
+            if r > 1 {
+                let a = span / 180.0 + 1.0;
+                let t = (r - i) as f64 / (r - 1) as f64;
+                let mut q = t / (a - (a - 1.0) * t);
+                if kind == LocationKind::Church {
+                    q = q.sqrt();
+                }
+                u = if ran_down { delphi_round(span * (BAND_HALF + (1.0 - BAND_HALF) * q)) as i32 + mn } else { lo };
+                lo = (delphi_round(span * q * (1.0 - BAND_HALF)) as i32 + mn).max(mn);
+                if lo == u {
+                    lo = delphi_round(lo as f64 * 0.8) as i32;
+                }
+            } else {
+                (u, lo) = (mx, mn);
+            }
+            let mut cands = market_candidates(c, &pool, kind, lo, u);
+            let mut rounds = 0;
+            while cands.is_empty() || self.rng.random(cands.len() as i32) == 0 {
+                // Fewer than two items that can ever fit: the original never leaves this
+                // loop (it hangs); Razdor gives up on the good.
+                rounds += 1;
+                if rounds > STOCK_HANG {
+                    break;
+                }
+                widen(&mut u, &mut lo);
+                cands = market_candidates(c, &pool, kind, lo, u);
+            }
+            if rounds > STOCK_HANG {
+                continue;
+            }
+            ran_down = false;
+            find_empty(places, &mut slot);
+            if places[slot].is_some() {
+                continue;
+            }
+            let (mut tries, mut stale) = (0, cands[0]);
+            let mut item;
+            loop {
+                tries += 1;
+                let mut ok;
+                loop {
+                    let k = self.rng.random(cands.len() as i32) as usize;
+                    // An emptied list is read past its end in the original; Razdor takes the
+                    // last good refused.
+                    item = cands.get(k).copied().unwrap_or(stale);
+                    let n = places.iter().flatten().filter(|g| g.item == item).count();
+                    ok = !((max_word > 500 && n > 0) || n >= 2);
+                    if !ok && k < cands.len() {
+                        stale = cands.swap_remove(k);
+                    }
+                    if ok || cands.len() <= 1 {
+                        break;
+                    }
+                }
+                if cands.len() == 1 {
+                    widen(&mut u, &mut lo);
+                    cands = market_candidates(c, &pool, kind, lo, u);
+                    ran_down = true;
+                }
+                if ok || tries > STOCK_TRIES {
                     break;
                 }
             }
-        }
-        let mut stock = fixed;
-        stock.extend(random);
-        stock.retain(|&i| self.content.try_item(i).is_some());
-        stock.sort_by_key(|&i| self.content.item(i).cost);
-        if let Some(shop) = &mut self.world.locations[l].shop {
-            shop.stock = stock;
+            places[slot] = Some(Good { item, fixed: false });
         }
     }
 

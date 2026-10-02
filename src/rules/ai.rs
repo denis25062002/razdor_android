@@ -1314,16 +1314,7 @@ impl Game {
 /// ones only (the original keeps the map's fixed goods as negative ids and skips them).
 fn random_goods(l: &Location) -> Vec<(usize, ItemId)> {
     let Some(shop) = &l.shop else { return Vec::new() };
-    let mut fixed = shop.fixed.clone();
-    let mut out = Vec::new();
-    for (k, &item) in shop.stock.iter().enumerate() {
-        if let Some(f) = fixed.iter().position(|&x| x == item) {
-            fixed.remove(f);
-        } else {
-            out.push((k, item));
-        }
-    }
-    out
+    shop.goods().into_iter().enumerate().filter(|&(k, _)| !shop.is_fixed(k)).collect()
 }
 
 impl Game {
@@ -1999,7 +1990,8 @@ impl Game {
         };
         let b = &self.world.locations[l];
         let place = (matches!(b.kind, LocationKind::Market | LocationKind::Church) && !leader_undead) || (b.kind == LocationKind::Altar && leader_undead);
-        if !place || b.shop.as_ref().is_none_or(|s| s.stock.is_empty()) || b.attitude_to(faction) < 0 {
+        // A market is there while its timer is set, empty or not (0x4a548c).
+        if !place || b.shop.is_none() || b.attitude_to(faction) < 0 {
             return;
         }
         let pack = std::mem::take(&mut self.world.armies[i].items);
@@ -2063,7 +2055,7 @@ impl Game {
         bought.sort_unstable();
         if let Some(shop) = self.world.locations[l].shop.as_mut() {
             for k in bought.into_iter().rev() {
-                shop.stock.remove(k);
+                shop.take(k);
             }
         }
     }

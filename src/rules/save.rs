@@ -38,8 +38,9 @@ use super::world::World;
 /// buildings' attitudes to every faction); older saves load with the AI set up afresh. 5: an
 /// AI army's place on its path (the original's path index) and a free first step, and the
 /// time of death a unit raised again keeps; older saves load at the path's start, with
-/// none kept. 6: the player's stored income, the mana-short flag and a unit's garrison
-/// stamp; older saves load with none stored, the flag down and no stamps.
+/// none kept. 6: the player's stored income, the mana-short flag, a unit's garrison stamp,
+/// and the markets' 12 places and restock timer; older saves load with none stored, the
+/// flag down, no stamps, and their goods in order with the timer due.
 pub const FORMAT_VERSION: u32 = 6;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
@@ -412,7 +413,7 @@ fn check_content(g: &Game) -> Result<(), String> {
         l.recruits.iter().try_for_each(|r| unit(r.unit))?;
         l.treasure.iter().try_for_each(|&i| item(i))?;
         if let Some(s) = &l.shop {
-            s.fixed.iter().chain(&s.stock).try_for_each(|&i| item(i))?;
+            s.goods().iter().try_for_each(|&i| item(i))?;
         }
     }
     armies.flat_map(|a| a.items.iter()).try_for_each(|&i| item(i))?;

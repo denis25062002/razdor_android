@@ -1359,14 +1359,15 @@ mod tests {
     fn a_map_load_starts_the_generator_at_1_so_fresh_markets_are_always_the_same() {
         let s = shop_town(2);
         let (a, b) = (start(&s), start(&s));
-        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().stock, b.world.locations[0].shop.as_ref().unwrap().stock);
+        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().places, b.world.locations[0].shop.as_ref().unwrap().places);
         // State 1, the restock, then the world music's Random(90000).
         let mut want = start(&s);
         want.rng = crate::rules::rng::Rng::new(1);
+        want.world.locations[0].shop.as_mut().unwrap().timer = 1;
         want.restock_markets();
         want.rng.random(90_000);
         assert_eq!(a.rng.state(), want.rng.state());
-        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().stock, want.world.locations[0].shop.as_ref().unwrap().stock);
+        assert_eq!(a.world.locations[0].shop.as_ref().unwrap().places, want.world.locations[0].shop.as_ref().unwrap().places);
     }
 
     #[test]
@@ -1379,10 +1380,14 @@ mod tests {
         s.buildings.push(castle);
         let mut order_shows = false;
         for state in 1..100 {
+            // Both restocks due.
+            let due = |g: &mut Game| g.world.locations[0].shop.as_mut().unwrap().timer = 1;
             let mut g = start(&s);
+            due(&mut g);
             g.rng = crate::rules::rng::Rng::new(state);
             g.economy_midnight();
             let mut want = start(&s);
+            due(&mut want);
             want.rng = crate::rules::rng::Rng::new(state);
             want.restock_market(0);
             want.restock_market(1);
@@ -1397,13 +1402,13 @@ mod tests {
     #[test]
     fn markets_stock_fixed_goods_and_random_items_in_their_price_range() {
         let g = inside(&shop_town(2));
-        let stock = g.market_here().unwrap().to_vec();
+        let stock = g.market_here().unwrap();
         // The count (3) includes the fixed amulet: two random goods.
         assert_eq!(stock.len(), 3);
-        assert_eq!(stock[2], ItemId(24), "the fixed goods, whatever their price; sorted by price");
-        // Market items between 50 and 400 (or 401): the sword (100), the potion (60), the ring (300).
-        assert!(stock[..2].iter().all(|i| [20, 22, 23].contains(&i.0)), "{stock:?}");
-        assert!(stock.windows(2).all(|w| g.content.item(w[0]).cost <= g.content.item(w[1]).cost));
+        assert_eq!(stock[0], ItemId(24), "the fixed good in its place, whatever its price: nothing is sorted");
+        // A market sells no potions: of the items between 50 and 400 (or 401), the sword
+        // (100) and the ring (300).
+        assert!(stock[1..].iter().all(|i| [20, 23].contains(&i.0)), "{stock:?}");
     }
 
     #[test]
@@ -1418,16 +1423,92 @@ mod tests {
         g.pass_time(14.0 * 60.0, &mut Vec::new()); // 09:00 -> 23:00
         assert_eq!(g.market_here().unwrap().len(), 1, "not yet");
         g.pass_time(60.0, &mut Vec::new());
-        let stock = g.market_here().unwrap().to_vec();
+        let stock = g.market_here().unwrap();
         assert_eq!(stock.len(), 3, "no fixed goods left: three random ones");
         assert!(!stock.contains(&ItemId(24)), "the fixed amulet is sold for good");
     }
 
     #[test]
-    fn towns_stock_healing_potions_first() {
-        // Items 98–100 are the healing potions the exe gives towns.
+    fn a_restock_sets_its_timer_twelve_hours_on() {
+        // Loaded at 20:00: the load's restock is due again at 08:00, so the first midnight
+        // passes it by; the second redraws it.
+        let mut s = shop_town(2);
+        s.header.start_time = s.header.start_time / 1440 * 1440 + 20 * 60;
+        let mut g = inside(&s);
+        let now = g.clock.total_minutes() as u64;
+        assert_eq!(g.world.locations[0].shop.as_ref().unwrap().timer, now + 720);
+        let before = g.world.locations[0].shop.clone();
+        g.pass_time(4.0 * 60.0 + 1.0, &mut Vec::new()); // past midnight
+        assert_eq!(g.world.locations[0].shop, before, "not due");
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        // Redrawn in the slice that reached midnight: 12 hours from then.
+        let midnight = (g.clock.total_minutes() as u64) / 1440 * 1440;
+        let timer = g.world.locations[0].shop.as_ref().unwrap().timer;
+        assert!((midnight + 720..midnight + 760).contains(&timer), "{timer}");
+    }
+
+    #[test]
+    fn a_town_with_only_map_goods_gets_a_healing_potion_every_midnight() {
         let mut c = content();
         c.items.extend([98, 99, 100].map(|id| crate::rules::content::ArtefactDef { cost: 50, ..ck::item(id, ArtefactType::Potion) }));
+        let c = Content::new(c.units.clone(), c.items.clone(), c.spells.clone(), Default::default(), crate::rules::formation::Formation::WIDE);
+        let mut s = map();
+        let mut t = town(BuildingType::Town, 2, 2, 1);
+        (t.artifact_slots[0], t.artifact_slots[2]) = (20, 23);
+        s.buildings = vec![t];
+        let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
+        g.location = Some(0);
+        // No random goods: no restock at load, the map's goods in their places.
+        assert_eq!(g.market_here().unwrap(), [ItemId(20), ItemId(23)]);
+        // R = 0 − 2: 0 div 5 + 1 = 1 healing potion, into the first empty place, each midnight
+        // (the timer stays 1); the previous one is dropped as a random good.
+        g.pass_time(15.0 * 60.0 + 1.0, &mut Vec::new());
+        let goods = g.market_here().unwrap();
+        assert_eq!((goods.len(), goods[0], goods[2]), (3, ItemId(20), ItemId(23)));
+        assert!((98..=100).contains(&goods[1].0), "{goods:?}");
+        g.pass_time(24.0 * 60.0, &mut Vec::new());
+        assert_eq!(g.market_here().unwrap().len(), 3);
+        assert_eq!(g.world.locations[0].shop.as_ref().unwrap().timer, 1);
+    }
+
+    #[test]
+    fn the_map_load_sets_the_price_window() {
+        use crate::rules::world::Shop;
+        // The top capped at the dearest item, the bottom 0 unless below the top; 0 means
+        // the dearest.
+        assert_eq!(Shop::from_map(vec![], 3, (50, 400), 1000).price, (50, 400));
+        assert_eq!(Shop::from_map(vec![], 3, (1000, 2000), 1000).price, (0, 1000));
+        assert_eq!(Shop::from_map(vec![], 3, (200, 0), 1000).price, (0, 1000));
+        assert_eq!(Shop::from_map(vec![], 0, (200, 0), 1000).price, (200, 0), "only with random goods");
+    }
+
+    #[test]
+    fn churches_sell_amulets_and_potions_but_no_death_items() {
+        let mut c = content();
+        c.items.push(crate::rules::content::ArtefactDef { cost: 120, magic: Some(MagicSchool::Death), ..ck::item(30, ArtefactType::Amulet) });
+        c.items.push(crate::rules::content::ArtefactDef { cost: 150, ..ck::item(31, ArtefactType::Amulet) });
+        c.items.push(crate::rules::content::ArtefactDef { cost: 140, ..ck::item(32, ArtefactType::Potion) });
+        let c = Arc::new(Content::new(c.units.clone(), c.items.clone(), c.spells.clone(), Default::default(), crate::rules::formation::Formation::WIDE));
+        for (kind, want) in [(BuildingType::Church, vec![31, 32]), (BuildingType::Market, vec![20, 30]), (BuildingType::Town, vec![20, 31])] {
+            let mut s = map();
+            let mut t = town(kind, 2, 2, 1);
+            t.random_artifacts_for_sale = 12;
+            (t.price_min, t.price_max) = (100, 150);
+            s.buildings = vec![t];
+            let g = Game::from_scenario(c.clone(), &s, HeroClass::Knight);
+            let mut goods: Vec<u32> = g.world.locations[0].shop.as_ref().unwrap().goods().iter().map(|i| i.0).filter(|&i| i < 95).collect();
+            goods.sort();
+            goods.dedup();
+            assert_eq!(goods, want, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn towns_stock_healing_potions_first() {
+        // Items 98–100 are the healing potions the exe gives towns, 95–97, 114 and 115 the
+        // others.
+        let mut c = content();
+        c.items.extend([95, 96, 97, 98, 99, 100, 114, 115].map(|id| crate::rules::content::ArtefactDef { cost: 50, ..ck::item(id, ArtefactType::Potion) }));
         let c = Content::new(c.units.clone(), c.items.clone(), c.spells.clone(), Default::default(), crate::rules::formation::Formation::WIDE);
         let mut s = map();
         let mut t = town(BuildingType::Town, 2, 2, 1);
@@ -1435,10 +1516,16 @@ mod tests {
         (t.price_min, t.price_max) = (1000, 2000);
         s.buildings = vec![t];
         let g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
-        let stock = g.world.locations[0].shop.as_ref().unwrap().stock.clone();
-        // 10 div 5 + 1 = 3 potions; the rest from the price window (the amulet, once: > 500).
-        let potions = stock.iter().filter(|i| (98..=100).contains(&i.0)).count();
-        assert_eq!((potions, stock.len()), (3, 4), "{stock:?}");
+        let stock = g.world.locations[0].shop.as_ref().unwrap().goods();
+        // 10 div 5 + 1 = 3 potions, and 7 left (more than 6): one of them is one of the
+        // others. The 7 others from the window, which the load opened to 0..1000 (its top
+        // above the dearest item, 1000, and the bottom not below it): four items fit, each
+        // once (the top is above 500) until the 26th try stocks the last drawn anyway.
+        let healing = stock.iter().filter(|i| (98..=100).contains(&i.0)).count();
+        let others = stock.iter().filter(|i| crate::rules::economy::TOWN_EXTRAS.contains(&i.0)).count();
+        assert_eq!((healing, others, stock.len()), (2, 1, 10), "{stock:?}");
+        assert_eq!(&stock[..3].iter().filter(|i| i.0 >= 95).count(), &3, "the potions first: {stock:?}");
+        assert!(stock[3..].iter().all(|i| [20, 21, 23, 24].contains(&i.0)), "no potions from the window: {stock:?}");
     }
 
     #[test]
@@ -1464,7 +1551,7 @@ mod tests {
     fn ill_disposed_buildings_trade_hire_and_pay_tribute() {
         // No attitude test anywhere (economy.md §7, §3).
         let g = inside(&shop_town(-1));
-        assert_eq!(g.market_here().map(<[ItemId]>::len), Some(3));
+        assert_eq!(g.market_here().map(|g| g.len()), Some(3));
         let mut s = map();
         let mut t = town(BuildingType::Town, 2, 2, -1);
         t.barracks[0] = RecruitSlot { unit: 4, start_count: 3, max_count: 3 };
@@ -1646,15 +1733,20 @@ mod real_maps {
         assert_eq!(g.recruits_here(), offered);
         if b.random_artifacts_for_sale > 0 || b.artifacts().next().is_some() {
             assert!(tabs.contains(&Tab::Market));
-            let stock = g.market_here().unwrap().to_vec();
-            let fixed: Vec<ItemId> = b.artifacts().map(|i| ItemId(i as u32)).filter(|&i| c.try_item(i).is_some()).collect();
+            let stock = g.market_here().unwrap();
+            let fixed: Vec<ItemId> = b.artifact_slots[..12].iter().filter(|&&i| i != 0).map(|&i| ItemId(i as u32)).filter(|&i| c.try_item(i).is_some()).collect();
             // The building's count includes the fixed goods; towns add healing potions first.
-            let random = (b.random_artifacts_for_sale as usize).saturating_sub(fixed.len());
+            let mut r = b.random_artifacts_for_sale as i32 - fixed.len() as i32;
+            if g.world.locations[l].kind == LocationKind::Town {
+                r -= r / 5 + 1;
+            }
             assert!(fixed.iter().all(|i| stock.contains(i)));
-            assert!(stock.len() <= fixed.len() + random, "{stock:?}");
-            let potions = |i: &ItemId| crate::rules::economy::TOWN_POTIONS.contains(&i.0) || crate::rules::economy::TOWN_EXTRAS.contains(&i.0);
-            let (lo, hi) = ((b.price_min as i32).max(5), (b.price_max as i32).min(5000) + 1);
-            for item in stock.iter().filter(|i| !fixed.contains(i) && !potions(i)) {
+            assert!(stock.len() <= 12, "{stock:?}");
+            let potions = |i: &ItemId| (98..=100).contains(&i.0) || crate::rules::economy::TOWN_EXTRAS.contains(&i.0);
+            // With more than one good to draw the bands stay in the window the load set.
+            let shop = g.world.locations[l].shop.as_ref().unwrap();
+            let (lo, hi) = (shop.price.0.max(5), shop.price.1.min(5000) + 1);
+            for item in stock.iter().filter(|i| r > 1 && !fixed.contains(i) && !potions(i)) {
                 let cost = c.item(*item).cost;
                 assert!((lo.min(hi)..=hi).contains(&cost), "{cost} outside the range");
             }

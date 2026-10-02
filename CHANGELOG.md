@@ -268,6 +268,17 @@ old id, and their versions give both.
   left. Opening the tab sets the guards' paid marks.
 - Dismiss and Bury ask for a confirmation, and the unit leaves with its worn items; the
   pack is not touched.
+- **Market stock as in the original.** A market keeps 12 places, the map's goods in theirs;
+  its random goods are drawn into the empty places from price bands walking down its window
+  (the first from the top half), by the original's type and school rules (churches sell
+  amulets and potions, towns and markets no potions, no Death items in towns and churches),
+  and are no longer sorted by price. A town's potions are healing potions plus, with more
+  than six goods to draw, one of five others; a town with only the map's goods gets a
+  healing potion each midnight. A market redraws 12 hours after its last restock at the
+  earliest, at a midnight. The map load caps the price window at the dearest item.
+- The market lists only items that can be sold, shows unaffordable prices in red, opens on
+  the goods when there are some, and a purchase no longer checks the pack's room. An AI
+  army shops (sells its pack) in a market even when its goods are gone.
 
 ## 0.2.2 — 2026-10-01
 

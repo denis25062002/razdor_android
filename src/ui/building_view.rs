@@ -11,7 +11,7 @@ use razdor::rules::battle::Team;
 use razdor::trf;
 use razdor::rules::content::{ArtefactType, ItemId, SpellDef};
 use razdor::rules::formation::Slot;
-use razdor::rules::game::{Currency, Game, HireError, TradeError, PACK_SIZE, SPELL_BOOK_SIZE};
+use razdor::rules::game::{Currency, Game, HireError, TradeError, SPELL_BOOK_SIZE};
 use razdor::rules::items::describe;
 use razdor::rules::script::HallEntry;
 use razdor::rules::town::{ServiceError, Tab};
@@ -101,7 +101,6 @@ pub fn trade_error(e: TradeError) -> String {
     match e {
         TradeError::NoMarket => tr("There is no market here.").into(),
         TradeError::NotEnoughGold => tr("Not enough gold.").into(),
-        TradeError::PackFull => tr("The pack is full.").into(),
         TradeError::NoSuchItem => tr("Nothing there.").into(),
         TradeError::NotForSale => tr("A personal item: it cannot be sold.").into(),
     }
@@ -648,10 +647,10 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     tooltip(&hover);
 }
 
-/// A list with a selection and a scroll bar. Rows are (icon item, name, price). Returns the
-/// clicked row.
+/// A list with a selection and a scroll bar. Rows are (icon item, name, price, the price in
+/// red). Returns the clicked row.
 #[allow(clippy::too_many_arguments)]
-fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)], pick: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32, visible: usize) -> Option<usize> {
+fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String, bool)], pick: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32, visible: usize) -> Option<usize> {
     let k = chrome::k();
     let row_h = 30.0 * k;
     draw_rectangle(x, y, w, 26.0 * k + visible as f32 * row_h, Color::new(0.0, 0.04, 0.02, 0.45));
@@ -668,7 +667,7 @@ fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)]
     }
     *scroll = (*scroll).min(max_scroll);
     let mut hit = None;
-    for (n, (icon, name, price)) in rows.iter().enumerate().skip(*scroll).take(visible) {
+    for (n, (icon, name, price, red)) in rows.iter().enumerate().skip(*scroll).take(visible) {
         let ry = y + 26.0 * k + (n - *scroll) as f32 * row_h;
         let sel = pick == Some(n);
         if sel {
@@ -679,7 +678,7 @@ fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String)]
         }
         let shown: String = name.chars().take(26).collect();
         text(&shown, x + 50.0 * k, ry + 21.0 * k, 18.0 * k, if sel { WHITE } else { ACCENT });
-        text(price, x + w - 80.0 * k, ry + 21.0 * k, 18.0 * k, ACCENT);
+        text(price, x + w - 80.0 * k, ry + 21.0 * k, 18.0 * k, if *red { RED } else { ACCENT });
         if mouse_in(x, ry, w - 18.0 * k, row_h) && clicked() {
             hit = Some(n);
         }
@@ -738,11 +737,14 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     let c = game.content.clone();
     let dw = w * 0.42;
     let (lx, lw) = (x + dw + 10.0 * k, w - dw - 10.0 * k);
-    let rows: Vec<(Option<ItemId>, String, String)> = if view.selling {
-        // Personal and quest items (a price of 1 or less) are not bought (0x4abbfc).
-        game.pack.iter().map(|&i| (Some(i), c.item(i).name.clone(), if game.can_sell(i) { game.sell_price(i).to_string() } else { tr("not for sale").to_string() })).collect()
+    // The sell list holds only the pack items worth more than 1 (personal items and the
+    // cheapest are not bought); a buy price above the gold is red (0x4bca8c).
+    let sellable: Vec<usize> = (0..game.pack.len()).filter(|&k| game.can_sell(game.pack[k])).collect();
+    let goods = game.market_here().unwrap_or_default();
+    let rows: Vec<(Option<ItemId>, String, String, bool)> = if view.selling {
+        sellable.iter().map(|&k| game.pack[k]).map(|i| (Some(i), c.item(i).name.clone(), game.sell_price(i).to_string(), false)).collect()
     } else {
-        game.market_here().unwrap_or(&[]).iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string())).collect()
+        goods.iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string(), game.buy_price(i) > game.gold)).collect()
     };
     text_centered(if view.selling { tr("Your pack: what the market pays") } else { tr("Goods for sale") }, lx + lw / 2.0, y + 18.0 * k, 18.0 * k, ACCENT);
     if let Some(k) = price_list(Some(assets), &rows, view.pick, &mut view.scroll, lx, y + 26.0 * k, lw, 8) {
@@ -767,17 +769,19 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     resource_icon(Resource::Gold, x + 180.0 * k, by + 20.0 * k, 34.0 * k);
     text(&trf!("Gold {gold}", gold = game.gold), x + 202.0 * k, by + 27.0 * k, 20.0 * k, ACCENT);
     let label = if view.selling { tr("Sell") } else { tr("Buy") };
+    // Sell is always on; Buy only when the price is at most the gold, the purchase's test.
     let can = match (view.selling, view.pick) {
-        (true, Some(k)) => game.pack.get(k).is_some_and(|&i| game.can_sell(i)),
-        (false, Some(k)) => rows.get(k).and_then(|r| r.0).is_some_and(|i| game.gold >= game.buy_price(i) && game.pack.len() < PACK_SIZE),
+        (true, Some(k)) => k < sellable.len(),
+        (false, Some(k)) => rows.get(k).and_then(|r| r.0).is_some_and(|i| game.gold >= game.buy_price(i)),
         _ => false,
     };
     if button(lx, by, 130.0 * k, 40.0 * k, label, can) {
         let k = view.pick.unwrap_or(0);
         let mut done = false;
         *message = Some(if view.selling {
-            let name = c.item(game.pack[k]).name.clone();
-            match game.sell(k) {
+            let pack_index = sellable[k];
+            let name = c.item(game.pack[pack_index]).name.clone();
+            match game.sell(pack_index) {
                 Ok(g) => {
                     done = true;
                     trf!("Sold {name} for {g} gold.", name, g)
@@ -798,12 +802,13 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
         // into the bought one's row, or the one above when it was the last; none when the
         // list is empty. A refused trade keeps it where it was.
         if done {
-            let left = if view.selling { game.pack.len() } else { game.market_here().map_or(0, <[ItemId]>::len) };
+            let left = if view.selling { game.pack.iter().filter(|&&i| game.can_sell(i)).count() } else { game.market_here().map_or(0, |g| g.len()) };
             view.pick = next_pick(k, left);
         }
     }
+    // The way back to the goods is offered only while the shop has some.
     let toggle = if view.selling { tr("Back to the goods") } else { tr("Sell shop") };
-    if button(lx + lw - 190.0 * k, by, 190.0 * k, 40.0 * k, toggle, true) {
+    if button(lx + lw - 190.0 * k, by, 190.0 * k, 40.0 * k, toggle, !view.selling || !goods.is_empty()) {
         view.selling = !view.selling;
         view.pick = None;
         view.scroll = 0;
@@ -822,7 +827,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     let spells: Vec<SpellDef> = game.spells_here().into_iter().cloned().collect();
     let dw = w * 0.45;
     let (lx, lw) = (x + dw + 10.0 * k, w - dw - 10.0 * k);
-    let rows: Vec<_> = spells.iter().map(|s| (None, s.name.clone(), s.cost_gold.to_string())).collect();
+    let rows: Vec<_> = spells.iter().map(|s| (None, s.name.clone(), s.cost_gold.to_string(), false)).collect();
     text_centered(tr("Spells"), lx + lw / 2.0, y + 18.0 * k, 18.0 * k, ACCENT);
     if let Some(k) = price_list(None, &rows, view.pick, &mut view.scroll, lx, y + 26.0 * k, lw, 7) {
         view.pick = Some(k);
@@ -983,6 +988,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
             *message = None;
             if t == Tab::Garrison {
                 game.open_garrison();
+            }
+            // The market opens on the goods when the shop has some, else on the sell list.
+            if t == Tab::Market {
+                view.selling = game.market_here().is_none_or(|g| g.is_empty());
             }
         }
     }

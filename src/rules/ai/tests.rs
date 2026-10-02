@@ -636,7 +636,11 @@ fn at_market(goods: &[u32]) -> Game {
     s.buildings = vec![m];
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 2)])];
     let mut g = start(&s);
-    g.world.locations[0].shop = Some(crate::rules::world::Shop { fixed: Vec::new(), random: goods.len(), price: (0, 0), stock: goods.iter().map(|&i| ItemId(i)).collect() });
+    let mut shop = crate::rules::world::Shop::from_map(Vec::new(), goods.len(), (0, 0), 0);
+    for (k, &i) in goods.iter().enumerate() {
+        shop.places[k] = Some(crate::rules::world::Good { item: ItemId(i), fixed: false });
+    }
+    g.world.locations[0].shop = Some(shop);
     g
 }
 
@@ -655,7 +659,7 @@ fn shopping_sells_the_pack_at_half_then_buys_by_tactical_gain() {
     let worn: Vec<ItemId> = a.troops.iter().flat_map(|t| t.worn.iter().flatten().copied()).collect();
     assert_eq!(worn, [ItemId(11), ItemId(13)], "both on the first unit, the first of equals");
     assert_eq!(a.gold, gold + 50 - 200);
-    assert_eq!(g.world.locations[0].shop.as_ref().unwrap().stock, [ItemId(7)]);
+    assert_eq!(g.world.locations[0].shop.as_ref().unwrap().goods(), [ItemId(7)]);
 }
 
 #[test]
@@ -670,7 +674,7 @@ fn a_good_bought_for_a_unit_that_can_no_longer_wear_it_is_paid_and_lost() {
     let worn: Vec<ItemId> = a.troops.iter().flat_map(|t| t.worn.iter().flatten().copied()).collect();
     assert_eq!(worn, [ItemId(11)]);
     assert_eq!(a.gold, gold - 200, "both paid");
-    assert!(g.world.locations[0].shop.as_ref().unwrap().stock.is_empty(), "both gone");
+    assert!(g.world.locations[0].shop.as_ref().unwrap().goods().is_empty(), "both gone");
 }
 
 #[test]
@@ -678,7 +682,7 @@ fn no_shopping_when_the_cheapest_good_is_beyond_its_spare_gold() {
     let mut g = at_market(&[11]);
     g.world.armies[0].gold = 0;
     arrive(&mut g, 1);
-    assert_eq!(g.world.locations[0].shop.as_ref().unwrap().stock, [ItemId(11)]);
+    assert_eq!(g.world.locations[0].shop.as_ref().unwrap().goods(), [ItemId(11)]);
 }
 
 #[test]
