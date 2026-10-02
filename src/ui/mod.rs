@@ -470,6 +470,7 @@ impl App {
 
     pub fn frame(&mut self) {
         chrome::begin_frame();
+        widgets::track_held_key();
         self.follow_language();
         self.sounds();
         // The battle AI's level from the settings: the next battle uses it.

@@ -413,6 +413,13 @@ old id, and their versions give both.
 - Save format 9: a game keeps the front-row width it was started with, and a load plays on
   with it whatever the option says now, as the original takes it from the save's header.
   Older saves load with the wide row they were made with.
+- The map's mouse and keys as in the original: a left click or any key while the hero
+  walks stops him at the end of the step he is taking (no longer on the spot), the right
+  button stops nothing and no longer drags the map, and the tooltip of an army or a
+  building shows only while the right button is held. While he walks or waits no other
+  key or click acts, and the view stays on him. The held arrow key and the mouse at a
+  screen edge (5 px) scroll by the original's scroll speed. Esc opens the game menu even
+  with the minimap open.
 
 ## 0.2.2 — 2026-10-01
 

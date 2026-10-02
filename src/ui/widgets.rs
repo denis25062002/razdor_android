@@ -159,6 +159,36 @@ pub fn key(k: KeyCode) -> bool {
     !input_blocked() && is_key_pressed(k)
 }
 
+thread_local! {
+    /// The original's one held key (interface.md §2, 0x475748).
+    static HELD_KEY: std::cell::Cell<Option<KeyCode>> = const { std::cell::Cell::new(None) };
+}
+
+/// Once per frame, before the screens: the original keeps no key table, only the last key
+/// that went down, and any key going up clears it (so with two keys down, letting one go
+/// leaves none held). Alt and F10 are system keys and never become the held key.
+pub fn track_held_key() {
+    let up = !get_keys_released().is_empty();
+    let down = get_keys_pressed().into_iter().find(|k| !matches!(k, KeyCode::LeftAlt | KeyCode::RightAlt | KeyCode::F10));
+    HELD_KEY.with(|h| {
+        if up {
+            h.set(None);
+        }
+        if down.is_some() {
+            h.set(down);
+        }
+    });
+}
+
+/// The held key as the original sees it ([`track_held_key`]); none while input is blocked.
+pub fn held_key() -> Option<KeyCode> {
+    if input_blocked() {
+        None
+    } else {
+        HELD_KEY.with(|h| h.get())
+    }
+}
+
 /// Mouse wheel steps this frame (up is positive), 0 while input is blocked.
 pub fn wheel() -> f32 {
     if input_blocked() {

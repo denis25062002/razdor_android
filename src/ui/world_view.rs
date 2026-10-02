@@ -59,83 +59,69 @@ pub struct MapView {
     shows: VecDeque<Showing>,
     /// After the last shown place: when the camera set off back to the hero, and from where.
     returning: Option<(f64, (f32, f32))>,
-    /// A right-button drag of the map: where the mouse and the camera were when it was
-    /// pressed, and whether it has moved (a press that did not move is a click: stop).
-    grab: Option<(Vec2, (f32, f32), bool)>,
-    /// The route a first click on the map shows (a Razdor extra: the original walks at once):
-    /// the spot clicked, the route, and where the hero stood. A second click on the same
-    /// spot (or a double click) sets off; a move of the hero or a right click drops it.
+    /// The route a first click on the map shows, as in the original (interface.md §7.3): the
+    /// spot clicked, the route, and where the hero stood. A second click on the same spot
+    /// sets off; a move of the hero drops it.
     preview: Option<(Tile, Vec<Tile>, Tile)>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, grab: None, preview: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None }
     }
 }
 
-/// Pixels the mouse must move with the right button held before it drags the map.
-const GRAB_START: f32 = 4.0;
-
-/// The right button on the map: pressed, held and moved, it drags the map with the mouse
-/// under a hand cursor; the camera then stays there, as after the minimap, until a click on
-/// the map or Tab. Returns true for a right click that did not drag (it stops the walk).
-fn grab_map(game: &Game, view: &mut MapView, cam: &Camera, on_minimap: bool) -> bool {
-    use macroquad::miniquad::{window::set_mouse_cursor, CursorIcon};
-    let m = Vec2::from(crate::ui::widgets::pointer());
-    if view.grab.is_none() {
-        let on_map = cam.view.contains(m) && !on_minimap;
-        if right_clicked() && on_map && view.shows.is_empty() {
-            view.grab = Some((m, view.look.unwrap_or(game.display_pos()), false));
-        }
-        return false;
-    }
-    let Some((start, from, mut moved)) = view.grab else { return false };
-    if !is_mouse_button_down(MouseButton::Right) || input_blocked() {
-        view.grab = None;
-        set_mouse_cursor(CursorIcon::Default);
-        return !moved && !input_blocked();
-    }
-    let d = m - start;
-    if !moved && d.length() > GRAB_START {
-        moved = true;
-        set_mouse_cursor(CursorIcon::Pointer);
-    }
-    if moved {
-        // The ground follows the mouse: the camera moves against it, kept on the map.
-        let at = Vec2::from(from) - d / cam.scale;
-        view.look = Some(Camera::looking_at(game, view.zoom, at.into()).centre());
-    }
-    view.grab = Some((start, from, moved));
-    false
+/// The original's scroll speed setting (`[Options] ScrollSpeed` of the interface ini,
+/// 0–100); 100, the shipped value, when the install has none.
+fn scroll_speed() -> i32 {
+    super::chrome::ui_text("Options", "ScrollSpeed").map_or(100, |v| razdor::dt::ini::loose_int(&v))
 }
 
-/// Pixels from a window edge where the mouse pans the map, and the pan's speed in cells per
-/// second at zoom 1 *(the original's default scroll speed is not measured; its settings have
-/// a slider for it)*.
-const EDGE: f32 = 6.0;
-const EDGE_SPEED: f32 = 18.0;
+/// The original's scroll step of a frame (interface.md §7.6, 0x4cc18f): `round(dt / F)` px
+/// across and `round(dt × 0.6875 / F)` px down, with `F = (1 − ScrollSpeed/100) × 1.5 + 0.5`
+/// and dt the milliseconds since the last frame, rounded half to even as the FPU does. In
+/// the original's pixels (32 × 22 px cells).
+fn scroll_step(speed: i32, dt_ms: f64) -> (f64, f64) {
+    let f = (1.0 - speed as f64 / 100.0) * 1.5 + 0.5;
+    ((dt_ms / f).round_ties_even(), (dt_ms * 0.6875 / f).round_ties_even())
+}
 
-/// The original's edge scrolling: the mouse at an edge (or a corner) of the window pans the
-/// map that way. The camera then stays there, as after the minimap, until a click on the
-/// map or Tab brings it back to the hero. Not while a window or a shown place is open.
-fn edge_scroll(game: &Game, view: &mut MapView, free: bool) {
-    if !free || input_blocked() || !view.shows.is_empty() || view.minimap || view.grab.is_some() {
+/// Pixels (of the original's 1024 × 768 screen) from a screen edge where the mouse scrolls.
+const EDGE: f32 = 5.0;
+
+/// The original's scrolling of the idle map (interface.md §7.6): the held arrow key (only one
+/// at a time: the original keeps only the last key down) and the mouse within 5 px of an
+/// edge of the screen (the bar's lower edge included; a corner both ways) each move the
+/// view by the frame's step. The camera then stays there until something moves it.
+fn scroll(game: &Game, view: &mut MapView) {
+    if input_blocked() || !view.shows.is_empty() || view.minimap {
         return;
+    }
+    let mut dir = Vec2::ZERO;
+    match held_key() {
+        Some(KeyCode::Left) => dir.x -= 1.0,
+        Some(KeyCode::Right) => dir.x += 1.0,
+        Some(KeyCode::Up) => dir.y -= 1.0,
+        Some(KeyCode::Down) => dir.y += 1.0,
+        _ => {}
     }
     let (mx, my) = crate::ui::widgets::pointer();
     let (w, h) = (screen_width(), screen_height());
-    let dir = vec2(
-        if mx < EDGE { -1.0 } else if mx >= w - EDGE { 1.0 } else { 0.0 },
-        if my < EDGE { -1.0 } else if my >= h - EDGE { 1.0 } else { 0.0 },
-    );
-    if dir == Vec2::ZERO || mx < 0.0 || my < 0.0 || mx > w || my > h {
+    let edge = EDGE * map_scale();
+    if (0.0..=w).contains(&mx) && (0.0..=h).contains(&my) {
+        dir.x += if mx < edge { -1.0 } else if mx > w - edge { 1.0 } else { 0.0 };
+        dir.y += if my < edge { -1.0 } else if my > h - edge { 1.0 } else { 0.0 };
+    }
+    if dir == Vec2::ZERO {
         return;
     }
-    let step = dir * EDGE_SPEED * get_frame_time().min(0.1) / view.zoom;
+    let (sx, sy) = scroll_step(scroll_speed(), (get_frame_time().min(0.1) * 1000.0) as f64);
+    // Original pixels to world units: a cell is 32 px across, its row 22 px down.
+    let rh = game.world.map.grid.row_height();
+    let step = dir * vec2(sx as f32 / PX, sy as f32 / 22.0 * rh) / view.zoom;
     let at = Vec2::from(view.look.unwrap_or(game.display_pos())) + step;
-    // Where the camera can really look: at the map's border it stops, and so does the pan,
-    // so turning back moves the view at once.
+    // Where the camera can really look: at the map's border it stops, and so does the
+    // scroll, so turning back moves the view at once.
     view.look = Some(Camera::looking_at(game, view.zoom, at.into()).centre());
 }
 
@@ -1107,7 +1093,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
 
 /// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
 /// minimap was toggled.
-fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool, map_idle: bool) -> (Option<Screen>, bool) {
     let idle = game.foe.is_none();
     let modal = input_blocked();
     let look = |b: BarButton| match b {
@@ -1117,10 +1103,11 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
         _ => Look::Normal,
     };
     let mut pressed = game_bar::draw(game, look);
-    if pressed.is_none() {
-        // Esc closes the minimap first; the menu only when nothing else is open.
+    // Keys act only on the idle map: while the hero walks a key stops him (`frame`).
+    if pressed.is_none() && map_idle {
+        // Esc opens the exit menu, the minimap open or not (0x4cd021).
         pressed = if key(KeyCode::Escape) {
-            Some(if minimap_open { BarButton::Map } else { BarButton::Menu })
+            Some(BarButton::Menu)
         } else if idle && key(KeyCode::B) {
             Some(BarButton::Spells)
         } else if key(KeyCode::J) {
@@ -1156,21 +1143,24 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
 pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     clear_background(rgb(10, 12, 10));
 
+    // The original's world frame acts on the map only while it is idle (interface.md §7.3,
+    // 0x4cc1ff): while the hero walks or waits, it only watches for the stop.
+    let idle = !game.moving() && !game.waiting() && game.reading().is_none();
+
     // Zoom: mouse wheel or +/-.
-    let wheel = wheel();
+    let wheel = if idle { wheel() } else { 0.0 };
     if wheel != 0.0 {
         view.zoom = (view.zoom * if wheel > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.4, 2.0);
     }
-    if key(KeyCode::Equal) || key(KeyCode::KpAdd) {
+    if idle && (key(KeyCode::Equal) || key(KeyCode::KpAdd)) {
         view.zoom = (view.zoom * 1.2).min(2.0);
     }
-    if key(KeyCode::Minus) || key(KeyCode::KpSubtract) {
+    if idle && (key(KeyCode::Minus) || key(KeyCode::KpSubtract)) {
         view.zoom = (view.zoom / 1.2).max(0.4);
     }
 
-    // Input: click to walk, a click while walking, right click or Space to stop; M toggles
-    // the minimap.
-    if key(KeyCode::M) {
+    // M toggles the minimap.
+    if idle && key(KeyCode::M) {
         view.minimap = !view.minimap;
     }
     // Places the scenario has just shown wait in line (dark until their turn). Tab or a
@@ -1179,34 +1169,41 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for shown in std::mem::take(&mut game.shown) {
         view.shows.push_back(Showing::new(game, &shown));
     }
-    if (!view.shows.is_empty() || view.returning.is_some()) && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
+    if idle && (!view.shows.is_empty() || view.returning.is_some()) && !input_blocked() && (clicked() || key(KeyCode::Tab)) {
         view.shows.clear();
         view.returning = None;
         view.look = None;
     }
-    if key(KeyCode::Tab) {
+    if idle && key(KeyCode::Tab) {
         view.look = None;
     }
-    edge_scroll(game, view, dialogs.is_empty());
+    if idle && dialogs.is_empty() {
+        scroll(game, view);
+    }
+    // While he walks the view is locked on him (interface.md §8).
+    if game.moving() && view.shows.is_empty() {
+        view.look = None;
+    }
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
     let mut reopened = None;
-    if clicked() && !on_minimap {
-        if game.moving() {
-            // A click while the hero walks stops him, as in the original.
-            game.stop();
+    if !idle {
+        // A left click or any key held while he walks cuts his route: he finishes the step
+        // under way and stops (0x4cd132). The right button does nothing; a wait goes on.
+        if game.moving() && (clicked() || held_key().is_some()) {
+            game.cut_walk();
             view.preview = None;
-            view.look = None;
-        } else if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
+        }
+    } else if clicked() && !on_minimap {
+        if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
             // A click on the building the party stands in opens it again.
             *message = None;
             reopened = Some(screen);
         } else if let Some(target) = hovered.filter(|&t| game.can_target(t)) {
             // Only a target cell counts (explored, open on his map, or his ship): a click
             // anywhere else does nothing, as in the original. The first click shows the
-            // route; a second one on the same spot (a double click, or a later click) sets
-            // off.
+            // route; a second one on the same spot sets off (0x4cc99f).
             if target != game.tile() {
                 if view.preview.as_ref().is_some_and(|p| p.0 == target) {
                     view.preview = None;
@@ -1225,15 +1222,6 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             }
             view.look = None;
         }
-    }
-    // Right button: a click stops the walk; held and moved, it grabs the map (the hand).
-    if key(KeyCode::Space) {
-        game.stop();
-        view.preview = None;
-    }
-    if grab_map(game, view, &cam, on_minimap) {
-        game.stop();
-        view.preview = None;
     }
     // A shown route belongs to where the hero stood.
     if view.preview.as_ref().is_some_and(|p| p.2 != game.tile() || game.moving()) {
@@ -1308,7 +1296,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     }
     // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
     // time, a 30-minute tick every 150 ms (`Game::tick`).
-    let can_wait = game.foe.is_none() && !game.waiting() && game.reading().is_none();
+    let can_wait = idle && game.foe.is_none();
     let clock = game_bar::time_panel();
     let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
     if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {
@@ -1318,7 +1306,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         game.begin_wait(4);
     }
 
-    let (bar, toggle_map) = bottom_bar(game, message, view.minimap);
+    let (bar, toggle_map) = bottom_bar(game, message, view.minimap, idle);
     next = next.or(bar);
     if toggle_map {
         view.minimap = !view.minimap;
@@ -1328,7 +1316,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             view.look = Some(at);
         }
     }
-    if let Some(t) = hover_tooltip(game, &cam).filter(|_| !on_minimap) {
+    // The right button held (the left one up) shows the tooltip of the army or building
+    // under it; it is never a command (interface.md §7.4).
+    let right_held = !input_blocked() && is_mouse_button_down(MouseButton::Right) && !is_mouse_button_down(MouseButton::Left);
+    if let Some(t) = hover_tooltip(game, &cam).filter(|_| idle && right_held && !on_minimap) {
         draw_tooltip(game, assets, &t);
     }
     if on_clock && can_wait {
@@ -1344,4 +1335,21 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         text_centered(m, cx, y + 25.0, 22.0, ACCENT);
     }
     next
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_scroll_step_follows_the_scroll_speed() {
+        // F = 0.5 at 100: 2 px per ms across, 1.375 down (62.5 cells a second both ways).
+        assert_eq!(scroll_step(100, 16.0), (32.0, 22.0));
+        assert_eq!(scroll_step(100, 1000.0), (2000.0, 1375.0));
+        // F = 2 at 0: 0.5 px per ms; 5.5 rounds to the even 6, 2.5 to 2.
+        assert_eq!(scroll_step(0, 16.0), (8.0, 6.0));
+        assert_eq!(scroll_step(0, 5.0), (2.0, 2.0));
+        // F = 1.25 at 50.
+        assert_eq!(scroll_step(50, 10.0), (8.0, 6.0));
+    }
 }

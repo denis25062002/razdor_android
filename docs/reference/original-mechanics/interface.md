@@ -974,22 +974,22 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | # | Topic | Razdor now | Original | § |
 |---|---|---|---|---|
 | 1 | Display | Resizable window, interface scaled from the 960×720 footage | Full screen 1024×768, 16-bit, fixed layout | 1 |
-| 2 | Click to walk | First click shows the route, second click on the same spot (or a double click) walks; the code comment calls this a Razdor extra | The original does the same two-click walk (no double click); the comment is wrong | 7.3 |
-| 3 | Stop walking | Left click, right click or Space | Left click or any key; the hero stops at the end of the current step | 7.3 |
-| 4 | Right button | Click stops, drag pans the map (extra) | Held: tooltip of the army or building under it, pointer frozen; never a command | 7.4 |
-| 5 | Map tooltips | On hover | Only while the right button is held, 500 ms fade-in | 7.4 |
+| 2 | Click to walk | Matches: first click shows the route, a second click on the same spot walks | The original does the same two-click walk (no double click); the comment is wrong | 7.3 |
+| 3 | Stop walking | Matches: left click or any key held; the step under way is finished (`Game::cut_walk`); no other input while he walks or waits | Left click or any key; the hero stops at the end of the current step | 7.3 |
+| 4 | Right button | Matches: held, the tooltip of the army or building under it; never a command (the pointer is not frozen: presentation, left out) | Held: tooltip of the army or building under it, pointer frozen; never a command | 7.4 |
+| 5 | Map tooltips | Only while the right button is held (left up), on the idle map; no fade-in (presentation, left out) | Only while the right button is held, 500 ms fade-in | 7.4 |
 | 6 | Pointer | System pointer | Own pointers: arrow, ask, denied, swords, house, clock, with animated frames | 7.2 |
-| 7 | Edge scroll | 6 px margin, 18 cells/s | 5 px margin, `dt / F` px per ms with F from ScrollSpeed (62.5 cells/s at 100) | 7.6 |
-| 8 | Arrow keys | None | Held arrow scrolls | 7.6 |
+| 7 | Edge scroll | Matches: 5 px margin (scaled with the screen), `round(dt / F)` and `round(dt × 0.6875 / F)` original px per frame, `ScrollSpeed` from the install | 5 px margin, `dt / F` px per ms with F from ScrollSpeed (62.5 cells/s at 100) | 7.6 |
+| 8 | Arrow keys | Matches: the held arrow scrolls (only the last key down counts) | Held arrow scrolls | 7.6 |
 | 9 | Zoom | Wheel and +/− (extra) | None | 7.7 |
-| 10 | Camera while walking | Follows the hero unless moved; minimap or edge scroll keeps it away | Locked on the hero (his cell at column 14, row 16) while he walks | 8 |
+| 10 | Camera while walking | Locked on the hero while he walks (centred on him; the original's off-centre placement is presentation, left out) | Locked on the hero (his cell at column 14, row 16) while he walks | 8 |
 | 11 | Centre on hero | Tab | Centre button on the message box, 900 ms cosine glide | 6, 8 |
 | 12 | Shown places | 0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep | 900 ms cosine glide, only when farther than 300 px | 8 |
 | 13 | Waiting | Keys 1 and 4; time panel left / right click | Two buttons that appear over the message box (1 h, 4 h); Community F4 endless wait, F5 ends it | 6, 7.7 |
 | 14 | Minimap | M or the panel button opens a minimap window | Overlay in the top right corner, 200 or 400 px, toggled by the panel button and saved; left-drag on it moves the view | 6, 7.6 |
 | 15 | Hotkeys | F1 key list, F2 language, F5 quick save, F9 quick load, N music, letters for windows (extras) | Community F1 newest autosave, F2 newest own save, F3 save, F4/F5 endless wait; no letters | 7.7 |
 | 16 | Panel icon order | Left Menu, Settings, Save, Load; right Journal, Squad, Spells, Map | Left from the centre: Save, Load, Options, Exit menu; right from the centre: Hero, Army, Spell book, Minimap | 6 |
-| 17 | Esc on the map | Closes the minimap, else the game menu | Leaves spell targeting, else opens the exit menu | 7.7 |
+| 17 | Esc on the map | Matches: opens the game menu (Razdor has no spell targeting on the map) | Leaves spell targeting, else opens the exit menu | 7.7 |
 | 18 | Esc in the main menu | Does nothing | Quits the game at once, without a question | 4 |
 | 19 | Hero choice Back / Esc | Back to the scenario list | Back to the main menu | 5 |
 | 20 | Yes/No boxes | Enter or Y = Yes, Esc or N = No | Esc = No, any other key except Tab, Alt, Up, Down = Yes | 11 |

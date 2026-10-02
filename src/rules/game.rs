@@ -834,6 +834,14 @@ impl Game {
         self.step_elapsed = 0.0;
     }
 
+    /// A left click or any key while the hero walks (interface.md §7.3, 0x4cd132): the route
+    /// is cut to end at the cell of the step under way, so he finishes that step and stops
+    /// there, arriving as at any walk's end. Only the route is cut, as in the original: the
+    /// army he chases stays his target. A wait is not cut.
+    pub fn cut_walk(&mut self) {
+        self.path.truncate(1);
+    }
+
     /// Waits in real time (the UI's 1 h and 4 h): `hours × 2` wait ticks of
     /// [`WAIT_TICK_MINUTES`], one every [`STEP_SECONDS`], played by [`Game::tick`].
     pub fn begin_wait(&mut self, hours: u32) {
@@ -3359,6 +3367,23 @@ mod tests {
         assert!(!g.moving(), "showing a route does not set off");
         assert!(g.set_destination((20, 2)));
         assert_eq!(g.path, shown);
+    }
+
+    #[test]
+    fn a_cut_walk_ends_with_the_step_under_way() {
+        let mut g = start(&strip());
+        g.fog = Fog::disabled(24, 6);
+        let from = g.tile();
+        assert!(g.set_destination((20, 2)));
+        let first = g.path[0];
+        assert!(g.path.len() > 2);
+        g.tick(STEP_SECONDS * 0.5);
+        g.cut_walk();
+        assert_eq!(g.path, vec![first], "the step under way stays");
+        assert_eq!(g.goal, Some((20, 2)), "only the route is cut");
+        walk_until_stopped(&mut g);
+        assert_ne!(g.tile(), from);
+        assert_eq!(g.tile(), first, "he stops on the step's cell");
     }
 
     #[test]
