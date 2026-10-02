@@ -1569,6 +1569,42 @@ mod quick_battle {
         assert_eq!(bt.auto_play_to_end(), Outcome::Defeat);
         assert!(bt.player_xp().is_empty(), "no experience without a victory");
     }
+
+    /// Everything a finished battle hands on: the result, the log, the units.
+    type Ending = (Outcome, Option<EndReason>, u32, Vec<String>, Vec<(i32, Slot)>, Vec<XpAward>, Vec<FighterResult>);
+
+    fn result(b: &Battle) -> Ending {
+        (b.outcome(), b.end_reason(), b.round, b.log.clone(), b.fighters.iter().map(|f| (f.hp, f.slot)).collect(), b.player_xp(), b.player_results())
+    }
+
+    #[test]
+    fn the_watched_quick_battle_ends_as_the_instant_one() {
+        let c = content_with(vec![], Formation::WIDE);
+        let (p, e) = armies();
+        for improved in [false, true] {
+            let mut instant = prepared(&c, &p, &e, Team::Player);
+            instant.set_improved_ai(improved);
+            instant.begin();
+            let mut watched = instant.clone();
+            let mut skipped = instant.clone();
+            instant.auto_play_to_end();
+            // Watched to the end, step by step as the screen plays them.
+            let mut steps = 0;
+            while watched.outcome() == Outcome::Ongoing {
+                assert!(watched.auto_step().is_some(), "a step while the battle goes on");
+                steps += 1;
+            }
+            assert!(steps > 3, "a battle of several steps");
+            assert_eq!(result(&watched), result(&instant), "improved {improved}");
+            assert!(watched.auto_step().is_none(), "nothing after the end");
+            // Watched for a while, then skipped to the end.
+            for _ in 0..steps / 2 {
+                skipped.auto_step();
+            }
+            skipped.auto_play_to_end();
+            assert_eq!(result(&skipped), result(&instant), "improved {improved}, skipped halfway");
+        }
+    }
 }
 
 /// The gameplay video's fort battle ("Форт в Трясине", РК3, 09:49): the garrison's starting

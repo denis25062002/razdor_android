@@ -93,11 +93,12 @@ impl Team {
         }
     }
 
-    fn index(self) -> usize {
+    /// 0 for the player's side, 1 for the enemy's (the original's side order).
+    pub fn index(self) -> usize {
         self as usize
     }
 
-    const BOTH: [Team; 2] = [Team::Player, Team::Enemy];
+    pub const BOTH: [Team; 2] = [Team::Player, Team::Enemy];
 }
 
 /// How the battle went. There is no draw: at the turn limit the player wins if any of his
@@ -507,6 +508,12 @@ thread_local! {
 /// The Community patch's globals now.
 pub fn patch_globals() -> PatchGlobals {
     PATCH.with(|g| g.get())
+}
+
+/// Puts the patch's globals back as they were (a custom battle leaves them as it found them,
+/// so it changes nothing in a campaign).
+pub fn set_patch_globals(g: PatchGlobals) {
+    PATCH.with(|p| p.set(g));
 }
 
 fn patch_update(f: impl FnOnce(&mut PatchGlobals)) {
@@ -3038,12 +3045,21 @@ impl Battle {
             if self.outcome() != Outcome::Ongoing {
                 break;
             }
-            // A plan that cannot be carried out still ends the unit's turn.
-            if self.ai_step().is_none() {
-                self.skip();
-            }
+            self.auto_step();
         }
         self.outcome()
+    }
+
+    /// One step of the quick battle: the active fighter's action by the battle AI, whatever
+    /// its side. A plan that cannot be carried out still ends the unit's turn (a wait). The
+    /// watched quick battle plays these one by one on screen, so stopping to watch, or
+    /// skipping to the end, ends as [`Battle::auto_play_to_end`] would have.
+    pub fn auto_step(&mut self) -> Option<Step> {
+        let actor = self.active()?;
+        self.ai_step().or_else(|| {
+            self.skip();
+            Some(Step::Wait { actor })
+        })
     }
 
     // ------------------------------------------------------------------------------------
