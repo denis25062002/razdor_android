@@ -41,6 +41,8 @@ pub struct DtInstall {
     pub artefacts: Vec<ArtefactDef>,
     pub spells: Vec<SpellDef>,
     pub options: GlobalOptions,
+    /// The player's settings that change play.
+    pub settings: PlayOptions,
     /// Sorted by file name.
     pub maps: Vec<MapEntry>,
 }
@@ -76,11 +78,28 @@ fn read_ini(dir: &Path, name: &str) -> Result<Ini, DtError> {
     Ok(Ini::from_cp1251(&bytes))
 }
 
-/// The player's "impossible difficulty" setting: `[Options] OptValue10=1` in
-/// [`SETTINGS_FILE`]. A missing file or key means off.
-fn impossible_difficulty(dir: &Path) -> bool {
-    let Ok(ini) = read_ini(dir, SETTINGS_FILE) else { return false };
-    ini.section("Options").and_then(|s| s.get("OptValue10")).is_some_and(|v| v.trim() == "1")
+/// The player's settings in `[Options]` of [`SETTINGS_FILE`] that change play, read as the
+/// original reads them at start (0x4b8974): a flag is on when its value reads 1 (loosely,
+/// [`super::ini::loose_int`]); a missing file, section or key reads 0, so off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlayOptions {
+    /// `OptValue9`: improved enemy AI in battle.
+    pub expert_ai: bool,
+    /// `OptValue10`: "impossible" difficulty, factor F = 100 instead of 120.
+    pub impossible: bool,
+    /// `OptValue11`: the wide front row, 6 units per row instead of 4.
+    pub wide_row: bool,
+}
+
+impl PlayOptions {
+    pub fn from_ini(ini: &Ini) -> PlayOptions {
+        let on = |key: &str| ini.section("Options").is_some_and(|s| s.int(key) == 1);
+        PlayOptions { expert_ai: on("OptValue9"), impossible: on("OptValue10"), wide_row: on("OptValue11") }
+    }
+
+    fn read(dir: &Path) -> PlayOptions {
+        read_ini(dir, SETTINGS_FILE).map(|ini| PlayOptions::from_ini(&ini)).unwrap_or_default()
+    }
 }
 
 /// All `*.DTm` files of the maps folder, sorted by name.
@@ -111,7 +130,8 @@ impl DtInstall {
             loaded.value
         }
         let mut options = logged(GLOBAL_FILE, GlobalOptions::from_ini(&read_ini(dir, GLOBAL_FILE)?));
-        if impossible_difficulty(dir) {
+        let settings = PlayOptions::read(dir);
+        if settings.impossible {
             options.difficulty_factor = 100;
         }
         Ok(DtInstall {
@@ -120,6 +140,7 @@ impl DtInstall {
             artefacts: logged(ARTEFACTS_FILE, data::parse_artefacts(&read_ini(dir, ARTEFACTS_FILE)?)),
             spells: logged(SPELLS_FILE, data::parse_spells(&read_ini(dir, SPELLS_FILE)?)),
             options,
+            settings,
             maps: list_maps(dir)?,
         })
     }
@@ -145,9 +166,9 @@ impl DtInstall {
         self.artefacts.iter().find(|a| a.id == id)
     }
 
-    /// Spell by 1-based index.
+    /// Spell by id (its 1-based section position).
     pub fn spell(&self, id: u32) -> Option<&SpellDef> {
-        (id as usize).checked_sub(1).and_then(|i| self.spells.get(i))
+        self.spells.iter().find(|s| s.id == id)
     }
 
     /// Map entry by file name without extension.
@@ -363,6 +384,16 @@ mod tests {
     use crate::dt::dtm::{Archetype, BuildingType, GameDate};
 
     #[test]
+    fn play_options_read_as_the_original() {
+        // 0x4b8974: on when the value reads 1, loosely; anything else, or nothing, is off.
+        let ini = Ini::parse("[Options]\nOptValue9=1\nOptValue10= 1 \nOptValue11=1x\n");
+        assert_eq!(PlayOptions::from_ini(&ini), PlayOptions { expert_ai: true, impossible: true, wide_row: true });
+        let ini = Ini::parse("[Options]\nOptValue9=01\nOptValue10=2\nOptValue11=on\n");
+        assert_eq!(PlayOptions::from_ini(&ini), PlayOptions { expert_ai: true, impossible: false, wide_row: false });
+        assert_eq!(PlayOptions::from_ini(&Ini::default()), PlayOptions::default());
+    }
+
+    #[test]
     fn missing_dir_is_an_io_error() {
         let err = DtInstall::load(Path::new("/nonexistent/razdor-dt")).unwrap_err();
         assert!(matches!(err, DtError::Io { .. }), "{err}");
@@ -409,7 +440,9 @@ mod tests {
         assert_eq!(dt.artefacts.iter().filter(|a| a.kind == data::ArtefactType::Potion).count(), 8);
         assert_eq!(dt.artefacts.iter().filter(|a| a.kind == data::ArtefactType::Item).count(), 27);
         assert!(dt.artefacts.iter().all(|a| a.extra.is_empty()), "unknown artefact keys");
-        assert!(dt.spells.iter().all(|s| s.extra.is_empty()), "unknown spell keys");
+        // Commented-out lines are keys like any other to the reader (`//Effect1`); they never
+        // match.
+        assert!(dt.spells.iter().flat_map(|s| s.extra.keys()).all(|k| k.starts_with("//")), "unknown spell keys");
         // Global options match the documented vanilla values; only the misspelled key is extra.
         let o = &dt.options;
         let d = GlobalOptions::default();

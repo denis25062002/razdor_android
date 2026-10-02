@@ -564,15 +564,15 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 
 | Topic | Razdor now | Original | Where |
 |---|---|---|---|
-| Ini keys | case-insensitive, trimmed, first match wins | exact and case-sensitive, key untrimmed, **last** match wins | `dt/ini.rs` |
-| Ini sections | header only at line start; first match; a missing section is absent | `[`…`]` anywhere in a line; last match; a missing section keeps the previous one selected | `dt/ini.rs` |
-| Ini comments, line ends | `//` and `;` lines skipped; LF or CRLF | nothing skipped (harmless: such keys never match); CR ends a line, the next byte is dropped; tabs removed | `dt/ini.rs` |
-| Ini integers | strict parse; unreadable → absent → default | digits picked out of the text, `-` anywhere negates (`1.5` → 15) | `dt/data.rs` `Fields::opt_int` |
-| Unit entries | sections with a `GlobalIndex` | sections with `Name`, `StartExpirience` and `Cost`; pictures by section order; upgrades by section position | `dt/data.rs` `parse_units` |
-| Upgrade slots | a lone option in slot 1 moves to 2 | also lone slot 3 → 2; options 1+2 and 2+3 → 1+3 | `UnitDef::from_section` |
-| Bonus / enum names | case-insensitive; unknown kept as `Other` | exact; unknown → 0 (no bonus) | `Bonus::parse` |
-| MagicDirection `ToAll` | parsed as its own value | not matched; reads as 0, which the code treats as "all" (same outcome) | `MagicDirection::parse` |
-| Artefact `Type` | entry skipped without a type | unknown type = Potion; entry needs Icon, Name, Type, Cost | `dt/data.rs` |
+| Ini keys | Matches: exact and case-sensitive, key untrimmed, last match wins | exact and case-sensitive, key untrimmed, **last** match wins | `dt/ini.rs` |
+| Ini sections | Matches: `[`…`]` anywhere in a line; last match; a missing section keeps the previous one selected (`Ini::select`, used for `_Global.ini`) | `[`…`]` anywhere in a line; last match; a missing section keeps the previous one selected | `dt/ini.rs` |
+| Ini comments, line ends | Matches for the install's files (`Ini::from_cp1251`); Razdor's own `data/*.ini` may also end lines at a bare line feed | nothing skipped (harmless: such keys never match); CR ends a line, the next byte is dropped; tabs removed | `dt/ini.rs` |
+| Ini integers | Matches: digits picked out of the text, `-` anywhere negates; a missing key reads 0 (in `_Global.ini` too) | digits picked out of the text, `-` anywhere negates (`1.5` → 15) | `dt/ini.rs` `loose_int` |
+| Unit entries | Matches (records): sections with `Name`, `StartExpirience` and `Cost`, stored by `GlobalIndex`; upgrades by section position. Pictures are presentation, left out | sections with `Name`, `StartExpirience` and `Cost`; pictures by section order; upgrades by section position | `dt/data.rs` `parse_units` |
+| Upgrade slots | Matches: lone slot 1 or 3 → 2; options 1+2 and 2+3 → 1+3, after the names are resolved | also lone slot 3 → 2; options 1+2 and 2+3 → 1+3 | `normalise_upgrade_slots` |
+| Bonus / enum names | Matches: exact; unknown → none | exact; unknown → 0 (no bonus) | `Bonus::known_token`, `Nature::parse` |
+| MagicDirection `ToAll` | Matches (same outcome): parsed as its own value, meaning all | not matched; reads as 0, which the code treats as "all" (same outcome) | `MagicDirection::parse` |
+| Artefact `Type` | Matches: unknown type = Potion; entry needs Icon, Name, Type, Cost | unknown type = Potion; entry needs Icon, Name, Type, Cost | `dt/data.rs` |
 | DTm container | exact `AIpf\r\n` magic, the u16 as version | magic `A?pf`; bytes 6/7 are compression code and scramble mode | `dt/container.rs` |
 | DTm strings | text marker and trailing bytes checked, load refused | seeks to the header's text offset; nothing checked; header byte 9 < `'4'` → nothing loaded | `dt/dtm.rs` `parse_payload` |
 | Event picture size | u16 | 32-bit | `dt/dtm.rs` |
@@ -593,6 +593,7 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Autosave moments | before every battle, every noon | as each battle window and each noon report opens; a silent noon only writes a pending one | `ui/saves.rs`, `Game::pass_slice` |
 | Autosave date name | day padded to two digits | day index 9 printed without the leading zero | `save::date_name` |
 | Carry-over gold | (see economy.md) | set to the old amount, not added | `Game::apply_carry_over` |
+| Play options | Matches: `OptValue9`/`10`/`11` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row | flags read at start, 1 = on; the wide row 6 or 4 per row | `dt/install.rs` `PlayOptions`, `Content::from_dt` |
 
 ## Unknowns
 

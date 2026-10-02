@@ -381,6 +381,18 @@ old id, and their versions give both.
   record; the worn items of those that fall go to the loot too. The XP an AI army's hires
   get from the player's army uses the units' level value without the Community "at least
   1".
+- The install's ini files are read by the original's rules: keys and section names are
+  exact (case-sensitive, a key is not trimmed), the last of a repeated key or section wins,
+  a section header may sit anywhere in its line, a line ends only at a carriage return, and
+  numbers are read the loose way (`1.5` reads 15, a minus anywhere negates). A key missing
+  from `_Global.ini` reads 0, not its usual value, and `DecSpellelemental` is spelt as the
+  exe asks for it. A unit is any section with a name, starting XP and cost, its upgrades
+  come from the section at its position, and an upgrade to a name no unit has is no option.
+  An item needs an icon, name, type and cost; a spell's id is its section's position and
+  any type but Life and Death is Elemental. Names of natures, schools and bonuses are exact
+  (`People` is the ordinary nature, so the AI hires such units alongside ordinary ones).
+- The front row is 6 wide only when the install's wide-row option (`OptValue11`) is on,
+  else 4 wide, and the options count as on when they read 1, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

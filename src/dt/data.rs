@@ -73,9 +73,9 @@ impl Stat {
         }
     }
 
-    /// Parse the ini spelling, ignoring ASCII case.
+    /// Parse the ini spelling, exactly.
     pub fn from_key(key: &str) -> Option<Stat> {
-        Stat::ALL.into_iter().find(|s| s.key().eq_ignore_ascii_case(key))
+        Stat::ALL.into_iter().find(|s| s.key() == key)
     }
 }
 
@@ -83,7 +83,7 @@ impl Stat {
 pub type StatMods = BTreeMap<Stat, i32>;
 
 /// Magic school. Units and artefacts write `LifeMagic`/`ElementalMagic`/`DeathMagic`;
-/// spells write `Life`/`Elemental`/`Death`. Both spellings are accepted everywhere.
+/// spells write `Life`/`Elemental`/`Death`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MagicSchool {
     Life,
@@ -92,11 +92,25 @@ pub enum MagicSchool {
 }
 
 impl MagicSchool {
+    /// A unit's or an artefact's `Magic`, compared exactly as the loader does (0x48efd0):
+    /// anything else is no school.
     pub fn parse(s: &str) -> Option<MagicSchool> {
-        let s = s.strip_suffix("Magic").unwrap_or(s);
-        [MagicSchool::Life, MagicSchool::Elemental, MagicSchool::Death]
-            .into_iter()
-            .find(|m| format!("{m:?}").eq_ignore_ascii_case(s))
+        match s {
+            "LifeMagic" => Some(MagicSchool::Life),
+            "ElementalMagic" => Some(MagicSchool::Elemental),
+            "DeathMagic" => Some(MagicSchool::Death),
+            _ => None,
+        }
+    }
+
+    /// A spell's `Type` (0x49ac64): `Life` and `Death` exactly, **anything else is
+    /// Elemental**.
+    pub fn of_spell(s: &str) -> MagicSchool {
+        match s {
+            "Life" => MagicSchool::Life,
+            "Death" => MagicSchool::Death,
+            _ => MagicSchool::Elemental,
+        }
     }
 }
 
@@ -109,10 +123,11 @@ pub enum MagicDirection {
 }
 
 impl MagicDirection {
+    /// Exact names. The exe knows only `ToEnemy` and `ToAlly`: `ToAll` (or anything else)
+    /// reads 0, which its battle code treats as "all", the meaning of Razdor's `ToAll` and of
+    /// no direction, so the outcome is the same.
     pub fn parse(s: &str) -> Option<MagicDirection> {
-        [MagicDirection::ToAll, MagicDirection::ToEnemy, MagicDirection::ToAlly]
-            .into_iter()
-            .find(|m| format!("{m:?}").eq_ignore_ascii_case(s))
+        [MagicDirection::ToAll, MagicDirection::ToEnemy, MagicDirection::ToAlly].into_iter().find(|m| format!("{m:?}") == s)
     }
 
     /// The caster can use hostile magic.
@@ -150,8 +165,11 @@ impl Nature {
         Nature::People,
     ];
 
+    /// The loader's exact compare (0x48efd0): Undead, Elemental, Rogue, Animal and Hero;
+    /// anything else, `People` included (the editor's name for 9 shipped units), is 0, the
+    /// ordinary nature.
     pub fn parse(s: &str) -> Option<Nature> {
-        Nature::ALL.into_iter().find(|n| format!("{n:?}").eq_ignore_ascii_case(s))
+        [Nature::Undead, Nature::Elemental, Nature::Rogue, Nature::Animal, Nature::Hero].into_iter().find(|n| format!("{n:?}") == s)
     }
 
     /// Editor index (0 = Normal … 6 = People).
@@ -321,12 +339,15 @@ impl Bonus {
         Bonus::VANILLA.iter().chain(Bonus::COMMUNITY.iter())
     }
 
-    /// Parse an ini token (ignoring case); unknown tokens become [`Bonus::Other`].
+    /// Parse an ini token, exactly; unknown tokens become [`Bonus::Other`].
     pub fn parse(s: &str) -> Bonus {
-        Bonus::known()
-            .find(|b| b.token().eq_ignore_ascii_case(s))
-            .cloned()
-            .unwrap_or_else(|| Bonus::Other(s.to_string()))
+        Bonus::known_token(s).unwrap_or_else(|| Bonus::Other(s.to_string()))
+    }
+
+    /// One of the 52 names the loader knows, compared exactly (0x48efd0); anything else is 0,
+    /// no bonus.
+    pub fn known_token(s: &str) -> Option<Bonus> {
+        Bonus::known().find(|b| b.token() == s).cloned()
     }
 
     /// The ini token.
@@ -466,6 +487,11 @@ impl SpellTarget {
     pub fn parse(s: &str) -> Option<SpellTarget> {
         [SpellTarget::Hero, SpellTarget::Enemy, SpellTarget::OneEnemy].into_iter().find(|t| format!("{t:?}") == s)
     }
+
+    /// `Target` as the loader keeps it: missing, empty or unknown is the hero's army (1).
+    pub fn read(s: &str) -> SpellTarget {
+        SpellTarget::parse(s).unwrap_or(SpellTarget::Hero)
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -492,7 +518,7 @@ impl<T> Loaded<T> {
 }
 
 /// Tracks which keys were consumed (the rest becomes `extra`) and collects warnings for
-/// values that could not be read; those read as absent.
+/// values the loader does not know; those read as absent.
 struct Fields<'a> {
     sec: &'a Section,
     used: RefCell<Vec<String>>,
@@ -514,7 +540,7 @@ impl<'a> Fields<'a> {
     }
 
     fn mark(&self, key: &str) {
-        self.used.borrow_mut().push(key.to_ascii_lowercase());
+        self.used.borrow_mut().push(key.to_string());
     }
 
     fn str(&self, key: &str) -> Option<&'a str> {
@@ -526,32 +552,23 @@ impl<'a> Fields<'a> {
         self.str(key).unwrap_or_default().to_string()
     }
 
-    /// An integer; `None` when absent, empty or not a number (with a warning).
+    /// An integer read loosely, as the original reads every number ([`crate::dt::ini::loose_int`]: `1.5`
+    /// is 15, `abc` is 0); `None` when absent or empty, which the original reads as 0.
     fn opt_int(&self, key: &str) -> Option<i32> {
         self.mark(key);
-        self.sec.get_int(key).unwrap_or_else(|_| {
-            self.warn(key, self.sec.get(key).unwrap_or(""), "not a number, ignored");
-            None
-        })
+        self.sec.get_int(key)
     }
 
     fn int(&self, key: &str) -> i32 {
         self.opt_int(key).unwrap_or(0)
     }
 
-    /// A comma-separated list of exactly `N` integers; `None` when absent, empty or
-    /// malformed (with a warning).
+    /// The first `N` fields of a comma-separated list, each read loosely, a field past the
+    /// end reading 0 (0x472874); `None` when the key is absent or empty.
     fn int_array<const N: usize>(&self, key: &str) -> Option<[i32; N]> {
         self.mark(key);
-        let read = self.sec.get_int_list(key).ok().map(|list| list.map(<[i32; N]>::try_from));
-        match read {
-            Some(None) => None,
-            Some(Some(Ok(a))) => Some(a),
-            Some(Some(Err(_))) | None => {
-                self.warn(key, self.sec.get(key).unwrap_or(""), &format!("not {N} numbers, ignored"));
-                None
-            }
-        }
+        self.sec.get_nonempty(key)?;
+        Some(std::array::from_fn(|k| self.sec.field_int(key, k + 1)))
     }
 
     /// An enum value; `None` when absent, empty or unknown (with a warning).
@@ -559,12 +576,12 @@ impl<'a> Fields<'a> {
         let v = self.str(key)?;
         let parsed = parse(v);
         if parsed.is_none() {
-            self.warn(key, v, "unknown value, ignored");
+            self.warn(key, v, "unknown value, read as none");
         }
         parsed
     }
 
-    /// All `<prefix><Stat>` keys with a readable value.
+    /// All `<prefix><Stat>` keys with a value.
     fn mods(&self, prefix: &str) -> StatMods {
         let mut out = StatMods::new();
         for stat in Stat::ALL {
@@ -576,12 +593,16 @@ impl<'a> Fields<'a> {
         out
     }
 
-    /// `GlobalIndex` as an id; an error (the entry gets skipped) when it is empty, not a
-    /// number or negative.
+    /// `GlobalIndex` as an id, read loosely. The loader stores the entry at record
+    /// `GlobalIndex − 1`; below 1 that is before its table (it writes over other memory),
+    /// which Razdor cannot follow: such an entry is skipped with a warning.
     fn global_index(&self) -> Result<u32, String> {
         self.mark("GlobalIndex");
-        let v = self.sec.get("GlobalIndex").unwrap_or("");
-        v.parse().map_err(|_| format!("[{}] GlobalIndex={v}: not an id, entry skipped", self.sec.name))
+        let v = self.sec.int("GlobalIndex");
+        u32::try_from(v)
+            .ok()
+            .filter(|&id| id >= 1)
+            .ok_or_else(|| format!("[{}] GlobalIndex={}: not an id, entry skipped", self.sec.name, self.sec.get("GlobalIndex").unwrap_or("")))
     }
 
     /// Entries not consumed by the typed fields, empty values dropped.
@@ -590,10 +611,17 @@ impl<'a> Fields<'a> {
         self.sec
             .entries
             .iter()
-            .filter(|(k, v)| !v.is_empty() && !used.contains(&k.to_ascii_lowercase()))
+            .filter(|(k, v)| !v.is_empty() && !used.contains(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
+}
+
+/// Keeps one definition per id: a later section with the same `GlobalIndex` overwrites the
+/// record, as the loader writes it again.
+fn last_per_id<T>(defs: Vec<T>, id: impl Fn(&T) -> u32) -> Vec<T> {
+    let ids: Vec<u32> = defs.iter().map(&id).collect();
+    defs.into_iter().enumerate().filter(|(i, _)| !ids[i + 1..].contains(&ids[*i])).map(|(_, d)| d).collect()
 }
 
 // ------------------------------------------------------------------------------------------
@@ -695,15 +723,11 @@ impl UnitDef {
     fn from_section(sec: &Section, warnings: &mut Vec<String>) -> Option<UnitDef> {
         let f = Fields::new(sec);
         let id = f.global_index().map_err(|w| warnings.push(w)).ok()?;
-        let mut upgrades = Vec::new();
+        // The upgrades are read by the second pass, by section position ([`parse_units`]).
         for n in 1..=3u8 {
-            let name_key = format!("NextUnit{n}");
-            let level = f.int(&format!("NextUnit{n}Level"));
-            if let Some(target) = f.str(&name_key) {
-                upgrades.push(Upgrade { target_name: target.to_string(), target: None, level, slot: n });
-            }
+            f.mark(&format!("NextUnit{n}"));
+            f.mark(&format!("NextUnit{n}Level"));
         }
-        normalise_upgrade_slots(&mut upgrades);
         let unit = UnitDef {
             id,
             name: f.string("Name"),
@@ -729,10 +753,11 @@ impl UnitDef {
             vampirism: f.int("Vampirizm"),
             magic: f.enum_opt("Magic", MagicSchool::parse),
             magic_direction: f.enum_opt("MagicDirection", MagicDirection::parse),
-            nature: f.enum_opt("Nature", Nature::parse).unwrap_or_default(),
-            bonus: f.str("Bonus").map(Bonus::parse),
+            // `People`, the editor's name, is no name the exe knows: 0, as is no value.
+            nature: f.enum_opt("Nature", |v| if v == "People" { Some(Nature::Normal) } else { Nature::parse(v) }).unwrap_or_default(),
+            bonus: f.enum_opt("Bonus", Bonus::known_token),
             surrender: f.int("Surrender"),
-            upgrades,
+            upgrades: Vec::new(),
             level_up: f.mods("d-"),
             evasion: f.opt_int("Evasion"),
             min_magic_power: f.opt_int("MinMagicPower"),
@@ -763,23 +788,55 @@ impl UnitDef {
     }
 }
 
-/// All units of `Rus_Units.ini`, in file order, with upgrade targets resolved by name.
+/// A section the unit loader takes (0x4e0448): its `Name`, `StartExpirience` and `Cost` are
+/// all non-empty; `GlobalIndex` is not part of the test.
+fn is_unit(sec: &Section) -> bool {
+    ["Name", "StartExpirience", "Cost"].iter().all(|k| sec.get_nonempty(k).is_some())
+}
+
+/// The `NextUnitN` options of a section in their file slots, targets unresolved.
+fn upgrade_options(sec: &Section) -> Vec<Upgrade> {
+    (1..=3u8)
+        .filter_map(|n| {
+            let name = sec.get_nonempty(&format!("NextUnit{n}"))?;
+            Some(Upgrade { target_name: name.to_string(), target: None, level: sec.int(&format!("NextUnit{n}Level")), slot: n })
+        })
+        .collect()
+}
+
+/// All units of `Rus_Units.ini`, in file order, as the loader's two passes read them
+/// (0x4e0448):
+/// - pass 1 takes every section with a `Name`, `StartExpirience` and `Cost` and stores it at
+///   its `GlobalIndex` (a later section with the same index overwrites it);
+/// - pass 2 gives the `NextUnitN` options of the section at **position** p (all sections
+///   counted) to the type with id p + 1, not to the section's own `GlobalIndex` (the shipped
+///   file has `GlobalIndex` = position + 1 everywhere, so the two agree there). Each target
+///   name is matched exactly against every type's `Name` in id order, the last match winning;
+///   a name that matches nothing is no option. Then the slots are normalised
+///   ([`normalise_upgrade_slots`]).
+///
+/// An empty `NextUnitN` also matches the empty name of an unfilled record in the original
+/// (a non-unit section or a hole in the numbering); Razdor has no such records, so it stays
+/// empty (as it does with the shipped file).
 pub fn parse_units(ini: &Ini) -> Loaded<Vec<UnitDef>> {
     let mut warnings = Vec::new();
-    let mut units: Vec<UnitDef> = ini
-        .sections
-        .iter()
-        .filter(|s| s.get("GlobalIndex").is_some())
-        .filter_map(|s| UnitDef::from_section(s, &mut warnings))
-        .collect();
-    let by_name: BTreeMap<String, u32> = units.iter().map(|u| (u.name.clone(), u.id)).collect();
+    let units = ini.sections.iter().filter(|s| is_unit(s)).filter_map(|s| UnitDef::from_section(s, &mut warnings)).collect();
+    let mut units = last_per_id(units, |u: &UnitDef| u.id);
+    let mut by_id: Vec<&UnitDef> = units.iter().collect();
+    by_id.sort_by_key(|u| u.id);
+    let by_name: BTreeMap<String, u32> = by_id.iter().map(|u| (u.name.clone(), u.id)).collect();
+    let options: Vec<Option<Vec<Upgrade>>> = ini.sections.iter().map(|s| is_unit(s).then(|| upgrade_options(s))).collect();
     for u in &mut units {
-        for up in &mut u.upgrades {
+        let mut upgrades = options.get(u.id as usize - 1).cloned().flatten().unwrap_or_default();
+        upgrades.retain_mut(|up| {
             up.target = by_name.get(&up.target_name).copied();
             if up.target.is_none() {
-                warnings.push(format!("{} (GlobalIndex {}): upgrade to {}: no unit of that name", u.name, u.id, up.target_name));
+                warnings.push(format!("{} (GlobalIndex {}): upgrade to {}: no unit of that name, no option", u.name, u.id, up.target_name));
             }
-        }
+            up.target.is_some()
+        });
+        normalise_upgrade_slots(&mut upgrades);
+        u.upgrades = upgrades;
     }
     Loaded { value: units, warnings }
 }
@@ -814,16 +871,13 @@ pub struct ArtefactDef {
 }
 
 impl ArtefactDef {
-    /// The artefact of `sec`, or `None` (with a warning) when it has no usable
-    /// `GlobalIndex` or `Type`.
+    /// The artefact of `sec` (an item section, [`is_item`]), or `None` (with a warning) when
+    /// it has no usable `GlobalIndex`.
     fn from_section(sec: &Section, warnings: &mut Vec<String>) -> Option<ArtefactDef> {
         let f = Fields::new(sec);
         let id = f.global_index().map_err(|w| warnings.push(w)).ok()?;
-        // A section needs a Type; one the loader does not know reads as a potion (0x4990cc).
-        let Some(kind) = f.str("Type").map(|t| ArtefactType::parse(t).unwrap_or(ArtefactType::Potion)) else {
-            warnings.push(format!("[{}] Type=: not an item type, entry skipped", sec.name));
-            return None;
-        };
+        // A type the loader does not know reads as a potion (0x4990cc).
+        let kind = f.str("Type").and_then(ArtefactType::parse).unwrap_or(ArtefactType::Potion);
         let def = ArtefactDef {
             id,
             name: f.string("Name"),
@@ -831,7 +885,7 @@ impl ArtefactDef {
             icon: f.string("Icon"),
             cost: f.int("Cost"),
             kind,
-            bonus: f.str("Bonus").map(Bonus::parse),
+            bonus: f.enum_opt("Bonus", Bonus::known_token),
             magic: f.enum_opt("Magic", MagicSchool::parse),
             add: f.mods("d-"),
             percent: f.mods("p-"),
@@ -848,16 +902,19 @@ impl ArtefactDef {
     }
 }
 
-/// All artefacts of `Rus_Artefacts.ini`, in file order.
+/// A section the artefact loader fills (0x498eb4): its `Icon`, `Name`, `Type` and `Cost` are
+/// all non-empty. (`Icon` is only tested; the picture comes from `Items.ugs`.) Any other
+/// section keeps an empty record and is no item.
+fn is_item(sec: &Section) -> bool {
+    ["Icon", "Name", "Type", "Cost"].iter().all(|k| sec.get_nonempty(k).is_some())
+}
+
+/// All artefacts of `Rus_Artefacts.ini`, in file order, each stored at its `GlobalIndex`
+/// (a later section with the same index overwrites it).
 pub fn parse_artefacts(ini: &Ini) -> Loaded<Vec<ArtefactDef>> {
     let mut warnings = Vec::new();
-    let value = ini
-        .sections
-        .iter()
-        .filter(|s| s.get("GlobalIndex").is_some())
-        .filter_map(|s| ArtefactDef::from_section(s, &mut warnings))
-        .collect();
-    Loaded { value, warnings }
+    let defs = ini.sections.iter().filter(|s| is_item(s)).filter_map(|s| ArtefactDef::from_section(s, &mut warnings)).collect();
+    Loaded { value: last_per_id(defs, |a: &ArtefactDef| a.id), warnings }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -950,10 +1007,10 @@ impl SpellDef {
             name: f.string("Name"),
             cost_gold: f.int("CostGold"),
             cost_mana: f.int("CostMana"),
-            school: f.enum_opt("Type", MagicSchool::parse),
+            school: f.str("Type").map(MagicSchool::of_spell),
             time_work: f.opt_int("TimeWork"),
             time_cast: f.opt_int("TimeCast"),
-            target: f.enum_opt("Target", SpellTarget::parse),
+            target: Some(SpellTarget::read(f.str("Target").unwrap_or(""))),
             icons,
             effects,
             delta_fixed_hits: f.opt_int("DeltaFixedHits"),
@@ -968,29 +1025,24 @@ impl SpellDef {
     }
 }
 
-/// Name of the editor bookkeeping section at the end of `Rus_Spells.ini`.
-pub const EDITOR_OPTIONS_SECTION: &str = "MapEditorSpecialOptions";
-
-/// A spell section left as an editor template: no cost, school, times or target.
-fn is_template(sec: &Section) -> bool {
-    ["CostGold", "CostMana", "Type", "TimeWork", "TimeCast", "Target"]
-        .iter()
-        .all(|k| sec.get_nonempty(k).is_none())
+/// A section the spell loader fills (0x4e0c60): its `Name`, `Type` and `CostGold` are all
+/// non-empty.
+fn is_spell(sec: &Section) -> bool {
+    ["Name", "Type", "CostGold"].iter().all(|k| sec.get_nonempty(k).is_some())
 }
 
-/// All spells of `Rus_Spells.ini`. The id is the 1-based position among spell sections;
-/// `[MapEditorSpecialOptions]` and the trailing empty template section are skipped.
+/// All spells of `Rus_Spells.ini`. A spell's id is its section's 1-based **position among
+/// all sections** (0x4e0c60), so a section that is no spell (the trailing empty template,
+/// `[MapEditorSpecialOptions]`, anything in between) leaves its id unused.
 pub fn parse_spells(ini: &Ini) -> Loaded<Vec<SpellDef>> {
-    let mut secs: Vec<&Section> = ini
+    let mut warnings = Vec::new();
+    let value = ini
         .sections
         .iter()
-        .filter(|s| !s.name.eq_ignore_ascii_case(EDITOR_OPTIONS_SECTION) && !s.name.is_empty())
+        .enumerate()
+        .filter(|(_, s)| is_spell(s))
+        .map(|(i, s)| SpellDef::from_section(s, i as u32 + 1, &mut warnings))
         .collect();
-    while secs.last().is_some_and(|s| is_template(s)) {
-        secs.pop();
-    }
-    let mut warnings = Vec::new();
-    let value = secs.iter().enumerate().map(|(i, s)| SpellDef::from_section(s, i as u32 + 1, &mut warnings)).collect();
     Loaded { value, warnings }
 }
 
@@ -1026,7 +1078,7 @@ pub struct AiTargets {
 }
 
 /// Gameplay constants from `_Global.ini` (mechanics.md appendix).
-/// [`Default`] gives the vanilla values, used for any key the file leaves out.
+/// [`Default`] gives the vanilla values, for content without the file (the built-in demo).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalOptions {
     /// Elemental bless/curse initiative divisor.
@@ -1144,17 +1196,17 @@ impl Default for GlobalOptions {
 }
 
 impl GlobalOptions {
-    /// Read `_Global.ini`. Missing keys, and values that cannot be read, keep their vanilla
-    /// defaults.
+    /// Read `_Global.ini` as the original does: every key read loosely, and a **missing key
+    /// reads 0**, not its vanilla value ([`Default`] holds those for content without the
+    /// file). Sections are selected the way the reader selects them over a session: first
+    /// `[GlobalOptions]` (at start), then `[BattleEffects]` (at the first map load), then
+    /// `[Costs]` (at a shipyard); a missing one leaves the one before selected, so its reads
+    /// come from there (saves-data.md §1, rule 3).
     pub fn from_ini(ini: &Ini) -> Loaded<GlobalOptions> {
         let mut o = GlobalOptions::default();
         let mut warnings = Vec::new();
-        if let Some(sec) = ini.section("Costs") {
-            let f = Fields::new(sec);
-            o.ship_cost = f.opt_int("ShipCost").unwrap_or(o.ship_cost);
-            f.warnings_into(&mut warnings);
-        }
         if let Some(sec) = ini.section("AIArmyGeneration") {
+            // Razdor's own reading: the exe has no such section.
             for (k, v) in &sec.entries {
                 let mut ids = Vec::new();
                 for x in v.split(',').map(str::trim).filter(|x| !x.is_empty()) {
@@ -1166,13 +1218,15 @@ impl GlobalOptions {
                 o.army_generation.push((k.clone(), ids));
             }
         }
-        let Some(sec) = ini.section("GlobalOptions") else { return Loaded { value: o, warnings } };
-        let f = Fields::new(sec);
-        let set = |v: &mut i32, key: &str| {
-            if let Some(x) = f.opt_int(key) {
-                *v = x;
-            }
-        };
+        // The reader starts with its first section selected.
+        let first = (!ini.sections.is_empty()).then_some(0);
+        let general = ini.select("GlobalOptions", first);
+        let costs = ini.select("Costs", ini.select("BattleEffects", general));
+        let none = Section::default();
+        let at = |i: Option<usize>| i.map_or(&none, |i| &ini.sections[i]);
+        o.ship_cost = at(costs).int("ShipCost");
+        let f = Fields::new(at(general));
+        let set = |v: &mut i32, key: &str| *v = f.int(key);
         set(&mut o.wizard_main_spell, "WizardMainSpell");
         set(&mut o.bless_main_spell, "BlessMainSpell");
         set(&mut o.bless_next_spell, "BlessNextSpell");
@@ -1180,7 +1234,8 @@ impl GlobalOptions {
         set(&mut o.curse_next_spell, "CurseNextSpell");
         set(&mut o.dec_spell_life, "DecSpellLife");
         set(&mut o.dec_spell_death, "DecSpellDeath");
-        set(&mut o.dec_spell_elemental, "DecSpellElemental");
+        // Spelt so in the exe (and in the shipped file).
+        set(&mut o.dec_spell_elemental, "DecSpellelemental");
         set(&mut o.min_spell_life, "MinSpellLife");
         set(&mut o.min_spell_death, "MinSpellDeath");
         set(&mut o.min_spell_elemental, "MinSpellElemental");
@@ -1276,6 +1331,8 @@ Custom=yes\r\n\
 [2 Squire]\r\n\
 GlobalIndex=2\r\n\
 Name=Squire\r\n\
+Cost=40\r\n\
+StartExpirience=20\r\n\
 MagicPower=20\r\n\
 Magic=DeathMagic\r\n\
 MagicDirection=ToAlly\r\n\
@@ -1286,7 +1343,7 @@ Evasion=15\r\n";
     #[test]
     fn units_parse_fields_mods_and_upgrades() {
         let loaded = parse_units(&Ini::parse(UNITS));
-        assert_eq!(loaded.warnings, ["Hero (GlobalIndex 1): upgrade to Nobody: no unit of that name"]);
+        assert_eq!(loaded.warnings, ["Hero (GlobalIndex 1): upgrade to Nobody: no unit of that name, no option"]);
         let units = loaded.value;
         assert_eq!(units.len(), 2);
         let h = &units[0];
@@ -1296,10 +1353,9 @@ Evasion=15\r\n";
         assert_eq!(h.bonus, Some(Bonus::SpearDefense));
         assert_eq!(h.nature, Nature::Normal);
         assert_eq!(h.magic, None);
-        assert_eq!(h.upgrades.len(), 2);
-        assert_eq!((h.upgrades[0].target, h.upgrades[0].level), (Some(2), 1));
-        assert_eq!((h.upgrades[1].target, h.upgrades[1].level), (None, 2));
-        assert_eq!([h.upgrades[0].slot, h.upgrades[1].slot], [1, 3], "options 1 and 2 end in slots 1 and 3");
+        // The unknown name is no option, so the lone option left moves to the middle slot.
+        assert_eq!(h.upgrades.len(), 1);
+        assert_eq!((h.upgrades[0].target, h.upgrades[0].level, h.upgrades[0].slot), (Some(2), 1, 2));
         assert_eq!(h.extra.get("Custom").map(String::as_str), Some("yes"));
         assert_eq!(h.extra.get("d-Bogus").map(String::as_str), Some("1"));
         assert_eq!(h.extra.len(), 2);
@@ -1331,29 +1387,72 @@ Evasion=15\r\n";
     }
 
     #[test]
-    fn unreadable_values_read_as_absent() {
-        let ini = Ini::parse("[x]\nGlobalIndex=1\nNature=Martian\nHits=lots\nd-Hits=2\nd-AttackBlow=?\nCost=40\n");
+    fn values_are_read_loosely_and_names_exactly() {
+        // saves-data.md §1 rule 5 and §3: digits picked out of the text, exact enum names.
+        let ini = Ini::parse(
+            "[x]\nGlobalIndex=1\nName=x\nStartExpirience=1\nNature=Martian\nHits=lots\nd-Hits=2\nd-AttackBlow=?\n\
+             Cost=40\nInitiative=1.5\nManevres=- 2\nMagic=deathmagic\nBonus=splash\n",
+        );
         let loaded = parse_units(&ini);
         let u = &loaded.value[0];
-        assert_eq!((u.nature, u.hits, u.cost), (Nature::Normal, 0, 40));
-        assert_eq!(u.level_up, StatMods::from([(Stat::Hits, 2)]));
+        assert_eq!((u.nature, u.hits, u.cost, u.initiative, u.manevres), (Nature::Normal, 0, 40, 15, -2));
+        assert_eq!(u.level_up, StatMods::from([(Stat::Hits, 2), (Stat::AttackBlow, 0)]));
+        assert_eq!((u.magic, u.bonus.as_ref()), (None, None), "names are case-sensitive; unknown is none");
         assert_eq!(
             loaded.warnings,
-            [
-                "[x] Hits=lots: not a number, ignored",
-                "[x] Nature=Martian: unknown value, ignored",
-                "[x] d-AttackBlow=?: not a number, ignored",
-            ]
+            ["[x] Magic=deathmagic: unknown value, read as none", "[x] Nature=Martian: unknown value, read as none", "[x] Bonus=splash: unknown value, read as none"]
         );
+        // `People` (the editor's name) and `ToAll` are no names the exe knows: 0, the
+        // ordinary nature and "all" directions, without a warning for `People`.
+        let ini = Ini::parse("[x]\nGlobalIndex=1\nName=x\nStartExpirience=1\nCost=1\nNature=People\nMagicDirection=ToAll\n");
+        let loaded = parse_units(&ini);
+        assert_eq!(loaded.value[0].nature, Nature::Normal);
+        assert!(loaded.value[0].magic_direction.is_none_or(|d| d.hits_enemies() && d.helps_allies()));
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(MagicSchool::parse("Life"), None, "units and items write LifeMagic");
+        assert_eq!(MagicSchool::parse("LifeMagic"), Some(MagicSchool::Life));
     }
 
     #[test]
-    fn entry_without_usable_id_is_skipped() {
-        let ini = Ini::parse("[a]\nGlobalIndex=abc\n[b]\nGlobalIndex=-4\n[c]\nGlobalIndex=\n[d]\nGlobalIndex=7\n");
+    fn a_unit_is_a_section_with_name_start_experience_and_cost() {
+        let unit = |gi: &str| format!("GlobalIndex={gi}\nName=n{gi}\nStartExpirience=1\nCost=1\n");
+        let ini = Ini::parse(&format!(
+            "[a]\n{}[b]\n{}[c]\n{}[d]\n{}[e]\nGlobalIndex=9\nName=x\nCost=1\n[f]\n{}[g]\n{}",
+            unit("abc"),
+            unit("-4"),
+            unit(""),
+            unit("7"),
+            unit("x8"),
+            unit("7").replace("Cost=1", "Cost=2"),
+        ));
         let loaded = parse_units(&ini);
-        assert_eq!(loaded.value.iter().map(|u| u.id).collect::<Vec<_>>(), [7]);
+        // abc and the empty index read 0 and -4 reads -4: records before the table, skipped;
+        // x8 reads 8; [e] has no StartExpirience; the second 7 overwrites the first.
+        let got: Vec<(u32, i32)> = loaded.value.iter().map(|u| (u.id, u.cost)).collect();
+        assert_eq!(got, [(8, 1), (7, 2)]);
         assert_eq!(loaded.warnings.len(), 3, "{:?}", loaded.warnings);
         assert!(loaded.strict().is_err());
+    }
+
+    #[test]
+    fn upgrades_go_by_section_position() {
+        // Pass 2 gives the options of the section at position p to the type with id p + 1.
+        let ini = Ini::parse(
+            "[first]\nGlobalIndex=2\nName=A\nStartExpirience=1\nCost=1\nNextUnit1=B\nNextUnit1Level=1\n\
+             [second]\nGlobalIndex=1\nName=B\nStartExpirience=1\nCost=1\nNextUnit1=A\nNextUnit3=A\n",
+        );
+        let units = parse_units(&ini).strict().unwrap();
+        let (a, b) = (units.iter().find(|u| u.name == "A").unwrap(), units.iter().find(|u| u.name == "B").unwrap());
+        assert_eq!((b.id, b.upgrades.iter().map(|u| (u.target, u.slot)).collect::<Vec<_>>()), (1, vec![(Some(1), 2)]), "B gets the first section's option");
+        assert_eq!(a.upgrades.iter().map(|u| (u.target, u.slot)).collect::<Vec<_>>(), [(Some(2), 1), (Some(2), 3)]);
+        // A name matches the last type of that name in id order.
+        let ini = Ini::parse(
+            "[a]\nGlobalIndex=1\nName=X\nStartExpirience=1\nCost=1\nNextUnit2=Twin\n\
+             [b]\nGlobalIndex=3\nName=Twin\nStartExpirience=1\nCost=1\n\
+             [c]\nGlobalIndex=2\nName=Twin\nStartExpirience=1\nCost=1\n",
+        );
+        let units = parse_units(&ini).strict().unwrap();
+        assert_eq!(units[0].upgrades[0].target, Some(3));
     }
 
     #[test]
@@ -1364,7 +1463,8 @@ Evasion=15\r\n";
         assert_eq!(Bonus::parse("GodStrike").vanilla_index(), Some(8));
         assert_eq!(Bonus::parse("Berserk").vanilla_index(), None);
         assert_eq!(Bonus::parse("Berserk").token(), "Berserk");
-        assert_eq!(Bonus::parse("berserk"), Bonus::Berserk);
+        assert_eq!(Bonus::known_token("Berserk"), Some(Bonus::Berserk));
+        assert_eq!(Bonus::known_token("berserk"), None, "exact names only");
         assert_eq!(Bonus::COMMUNITY.len(), 31);
         assert_eq!(Bonus::Hunger.index(), Some(22));
         assert_eq!(Bonus::PoisonS.index(), Some(32));
@@ -1395,11 +1495,24 @@ Evasion=15\r\n";
         assert_eq!(a.percent, StatMods::from([(Stat::Hits, 10)]));
         assert_eq!(a.magic, Some(MagicSchool::Life));
         assert_eq!(a.bonus, Some(Bonus::ArmorIgnore));
-        let ini = Ini::parse("[5 Sword]\nGlobalIndex=5\n[6 Axe]\nGlobalIndex=6\nType=Spoon\n[7 Mace]\nGlobalIndex=7\nType=BlowWeapon\n[8 Bow]\nGlobalIndex=8\nType=shotweapon\n");
+    }
+
+    #[test]
+    fn an_item_needs_icon_name_type_and_cost() {
+        // 0x498eb4: other sections keep an empty record; an unknown Type is a potion and the
+        // compare is case-sensitive (0x4990cc).
+        let item = |gi: u32, ty: &str| format!("[{gi}]\nGlobalIndex={gi}\nName=i{gi}\nIcon=x\nCost=1\nType={ty}\n");
+        let ini = Ini::parse(&format!(
+            "{}{}{}{}[9]\nGlobalIndex=9\nName=i9\nCost=1\nType=Ring\n[10]\nGlobalIndex=10\nName=i10\nIcon=x\nCost=\nType=Ring\n",
+            item(5, ""),
+            item(6, "Spoon"),
+            item(7, "BlowWeapon"),
+            item(8, "shotweapon"),
+        ));
         let loaded = parse_artefacts(&ini);
         let kinds = [(6, ArtefactType::Potion), (7, ArtefactType::BlowWeapon), (8, ArtefactType::Potion)];
-        assert_eq!(loaded.value.iter().map(|a| (a.id, a.kind)).collect::<Vec<_>>(), kinds, "an unknown Type is a potion, the compare is case-sensitive");
-        assert_eq!(loaded.warnings, ["[5 Sword] Type=: not an item type, entry skipped"]);
+        assert_eq!(loaded.value.iter().map(|a| (a.id, a.kind)).collect::<Vec<_>>(), kinds);
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     }
 
     const SPELLS: &str = "\
@@ -1464,8 +1577,21 @@ Generated=1\r\n";
     }
 
     #[test]
+    fn a_spell_is_its_section_position() {
+        // 0x4e0c60: the record is the section's position among all sections; a spell needs
+        // Name, Type and CostGold. Type: Life and Death, anything else Elemental; Target:
+        // Enemy and OneEnemy, anything else (or none) the hero's army.
+        let ini = Ini::parse(
+            "[A]\nName=a\nType=Fire\nCostGold=1\n[junk]\nName=j\nCostGold=1\n[B]\nName=b\nType=death\nCostGold=2\nTarget=OneEnemy\n",
+        );
+        let spells = parse_spells(&ini).strict().unwrap();
+        let got: Vec<(u32, Option<MagicSchool>, Option<SpellTarget>)> = spells.iter().map(|s| (s.id, s.school, s.target)).collect();
+        assert_eq!(got, [(1, Some(MagicSchool::Elemental), Some(SpellTarget::Hero)), (3, Some(MagicSchool::Elemental), Some(SpellTarget::OneEnemy))]);
+    }
+
+    #[test]
     fn bad_effect_is_ignored() {
-        let ini = Ini::parse("[S]\nName=x\nCostGold=1\nEffect1=file,1,2\n");
+        let ini = Ini::parse("[S]\nName=x\nType=Life\nCostGold=1\nEffect1=file,1,2\n");
         let loaded = parse_spells(&ini);
         assert_eq!(loaded.value[0].effects[0], None);
         assert_eq!(loaded.warnings, ["[S] Effect1=file,1,2: not an effect, ignored"]);
@@ -1473,39 +1599,51 @@ Generated=1\r\n";
 
     #[test]
     fn blank_effect_number_is_zero() {
-        let ini = Ini::parse("[S]\nName=x\nCostGold=1\nEffect2=file,255,0,0,2000,47,1500,\n");
+        let ini = Ini::parse("[S]\nName=x\nType=Life\nCostGold=1\nEffect2=file,255,0,0,2000,47,1500,\n");
         let spell = &parse_spells(&ini).strict().unwrap()[0];
         assert_eq!(spell.effects[1].as_ref().map(|e| (e.scale_milli, e.start_ms)), Some((1500, 0)));
     }
 
     #[test]
-    fn global_options_override_defaults() {
+    fn global_options_are_read_as_the_original() {
         let ini = Ini::parse(
-            "[Costs]\nShipCost=300\n[GlobalOptions]\nRow2Def=7\nDecSpellelemental=9\n\
-             MinAtackArmyTarget=1,1,100,50,50\nMixHealingTarget=50,150,1,50,50\nNewKey=3\n\
+            "[Costs]\nShipCost=300\n[GlobalOptions]\nRow2Def=7\nDecSpellelemental=9\nDecSpellLife=1.5\n\
+             MinAtackArmyTarget=1,1,100,50,50\nMixHealingTarget=50,150,1,50,50\nMinRandomTarget=1,2\nNewKey=3\n\
              [AIArmyGeneration]\nNormal=4,5,6\nUndead=43\n",
         );
         let o = GlobalOptions::from_ini(&ini).strict().unwrap();
-        assert_eq!((o.ship_cost, o.row2_def, o.dec_spell_elemental), (300, 7, 9));
+        assert_eq!((o.ship_cost, o.row2_def, o.dec_spell_elemental, o.dec_spell_life), (300, 7, 9, 15));
         assert_eq!(o.dec_spell(MagicSchool::Elemental), 9);
-        assert_eq!(o.battle_end_turn, 25);
+        assert_eq!(o.battle_end_turn, 0, "a missing key reads 0, not its vanilla 25");
+        assert_eq!(o.difficulty_factor, 120, "not a _Global.ini value");
         assert_eq!(o.ai_targets.min_attack_army, Some([1, 1, 100, 50, 50]));
+        assert_eq!(o.ai_targets.min_random, Some([1, 2, 0, 0, 0]), "fields past the end read 0");
         assert_eq!(o.ai_targets.min_healing, None);
         assert!(o.extra.contains_key("MixHealingTarget") && o.extra.contains_key("NewKey"));
         assert_eq!(o.extra.len(), 2);
         assert_eq!(o.army_generation, vec![("Normal".to_string(), vec![4, 5, 6]), ("Undead".to_string(), vec![43])]);
-        let bad = Ini::parse("[GlobalOptions]\nMinRandomTarget=1,2\nRow2Def=x\n[AIArmyGeneration]\nNormal=4,x,6,\n");
+        // The exe asks for `DecSpellelemental`: the usual spelling is another key.
+        let o = GlobalOptions::from_ini(&Ini::parse("[GlobalOptions]\nDecSpellElemental=9\n")).value;
+        assert_eq!(o.dec_spell_elemental, 0);
+        let bad = Ini::parse("[GlobalOptions]\nRow2Def=x\n[AIArmyGeneration]\nNormal=4,x,6,\n");
         let loaded = GlobalOptions::from_ini(&bad);
-        assert_eq!((loaded.value.ai_targets.min_random, loaded.value.row2_def), (None, 5));
+        assert_eq!(loaded.value.row2_def, 0);
         assert_eq!(loaded.value.army_generation, vec![("Normal".to_string(), vec![4, 6])]);
-        assert_eq!(
-            loaded.warnings,
-            [
-                "[AIArmyGeneration] Normal=4,x,6,: x is not a unit id, ignored",
-                "[GlobalOptions] Row2Def=x: not a number, ignored",
-                "[GlobalOptions] MinRandomTarget=1,2: not 5 numbers, ignored",
-            ]
-        );
+        assert_eq!(loaded.warnings, ["[AIArmyGeneration] Normal=4,x,6,: x is not a unit id, ignored"]);
+    }
+
+    #[test]
+    fn a_missing_section_reads_from_the_one_selected_before() {
+        // No [Costs]: ShipCost comes from [BattleEffects], selected at the first map load;
+        // without that too, from [GlobalOptions]. No [GlobalOptions]: the first section.
+        let o = GlobalOptions::from_ini(&Ini::parse("[GlobalOptions]\nShipCost=7\n[BattleEffects]\nShipCost=8\n")).value;
+        assert_eq!(o.ship_cost, 8);
+        let o = GlobalOptions::from_ini(&Ini::parse("[GlobalOptions]\nShipCost=7\nRow2Def=3\n")).value;
+        assert_eq!((o.ship_cost, o.row2_def), (7, 3));
+        let o = GlobalOptions::from_ini(&Ini::parse("[Other]\nRow2Def=4\n[Costs]\nShipCost=1\n")).value;
+        assert_eq!((o.row2_def, o.ship_cost), (4, 1));
+        let o = GlobalOptions::from_ini(&Ini::parse("")).value;
+        assert_eq!((o.row2_def, o.ship_cost), (0, 0));
     }
 }
 
@@ -1518,20 +1656,26 @@ mod real_install {
     #[test]
     fn every_bonus_token_of_the_install_is_known() {
         let Some(dir) = std::env::var_os(ENV_VAR) else { return };
-        let dt = DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
-        let bonuses = dt.units.iter().filter_map(|u| u.bonus.as_ref()).chain(dt.artefacts.iter().filter_map(|a| a.bonus.as_ref()));
-        let (mut known, mut community, mut unknown) = (0, 0, Vec::new());
-        for b in bonuses {
-            match b {
-                Bonus::Other(t) => unknown.push(t.clone()),
-                b => {
-                    known += 1;
-                    community += usize::from(b.is_community());
+        let dir = std::path::Path::new(&dir);
+        let (mut known, mut community, mut unknown) = (0, 0, 0);
+        for file in [crate::dt::install::UNITS_FILE, crate::dt::install::ARTEFACTS_FILE] {
+            let path = crate::dt::install::find_path(dir, file).expect("file present");
+            let ini = Ini::from_cp1251(&std::fs::read(path).expect("file reads"));
+            for token in ini.sections.iter().filter_map(|s| s.get_nonempty("Bonus")) {
+                match Bonus::known_token(token) {
+                    Some(b) => {
+                        known += 1;
+                        community += usize::from(b.is_community());
+                    }
+                    None => unknown += 1,
                 }
             }
         }
-        println!("{known} bonuses on units and items ({community} Community), {} unknown tokens", unknown.len());
-        assert!(unknown.is_empty(), "{} unknown bonus tokens", unknown.len());
+        let dt = DtInstall::load(dir).expect("install loads");
+        let on_defs = dt.units.iter().filter(|u| u.bonus.is_some()).count() + dt.artefacts.iter().filter(|a| a.bonus.is_some()).count();
+        println!("{known} bonuses on units and items ({community} Community), {unknown} unknown tokens");
+        assert_eq!(unknown, 0, "unknown bonus tokens");
         assert!(known > 0);
+        assert_eq!(on_defs, known);
     }
 }

@@ -157,7 +157,8 @@ impl Content {
     }
 
     /// Content read from a Discord Times install. The formation is the Community wide row
-    /// (2 × 6), as in the player's install.
+    /// (2 × 6) when the player's `OptValue11` is on (as in his install), else the vanilla
+    /// 3 × 4 (0x4b8974: 6 or 4 per row).
     ///
     /// Battle XP is paid at the rate of the gameplay video (experience.md §3): its fort
     /// battle gave "+24 / +25 / +26" for shares of 25, i.e. `HeroExpirienceModificator` 100.
@@ -165,7 +166,8 @@ impl Content {
     /// whatever the install says (the player's choice, 2026-09-29).
     pub fn from_dt(dt: &DtInstall) -> Content {
         let options = GlobalOptions { hero_experience_modificator: PLAYER_XP_MODIFICATOR, ..dt.options.clone() };
-        Content::new(dt.units.clone(), dt.artefacts.clone(), dt.spells.clone(), options, Formation::WIDE)
+        let formation = if dt.settings.wide_row { Formation::WIDE } else { Formation::VANILLA };
+        Content::new(dt.units.clone(), dt.artefacts.clone(), dt.spells.clone(), options, formation)
     }
 
     /// The built-in demo: `data/units.ini`, `data/items.ini` and `data/spells.ini` (our own

@@ -291,7 +291,7 @@ fn slider(r: Rect, value: f32) -> Option<f32> {
 /// The battle AI's level: the player's choice, else the install's "improved enemy AI in
 /// battle" (`[Options] OptValue9`), else easy.
 pub fn expert_ai(audio: &super::audio::Settings) -> bool {
-    audio.expert_ai.unwrap_or_else(|| chrome::ui_text("Options", "OptValue9").is_some_and(|v| v.trim() == "1"))
+    audio.expert_ai.unwrap_or_else(|| chrome::ui_text("Options", "OptValue9").is_some_and(|v| razdor::dt::ini::loose_int(&v) == 1))
 }
 
 /// "Настройки звука, графики и геймплея", with what Razdor lets the player change: the
