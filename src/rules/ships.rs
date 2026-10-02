@@ -276,12 +276,15 @@ impl Game {
     }
 
     /// The hero goes to sea (`true`) or leaves it (0x496d28): the scenario's flag `Sea` is
-    /// added (when it does not occur yet) or removed, and the AI armies on the medium he is
-    /// now on (ships, or land armies) lose their banked time and plan again at their next
-    /// arrival.
+    /// added (when it does not occur yet) or removed; going to sea also removes the flag
+    /// `EnterShipyard`. The AI armies on the medium he is now on (ships, or land armies) lose
+    /// their banked time and plan again at their next arrival.
     fn sea_changed(&mut self, at_sea: bool) {
         if let Some(engine) = self.script.as_mut() {
             engine.set_engine_flag("Sea", at_sea);
+            if at_sea {
+                engine.set_engine_flag("EnterShipyard", false);
+            }
         }
         for a in self.world.armies.iter_mut().filter(|a| a.sails() == at_sea) {
             a.budget = 0.0;
@@ -438,6 +441,19 @@ mod tests {
         assert_eq!(g.tile(), (5, 5));
         assert!(g.ship.is_none() && !g.plans_at_sea(), "the purchase is lost");
         assert!(!g.can_target((12, 5)));
+    }
+
+    /// Going to sea (0x496d28) adds `Sea` and removes `EnterShipyard`, should a script have
+    /// set it.
+    #[test]
+    fn going_to_sea_sets_sea_and_drops_enter_shipyard() {
+        let mut g = at_yard(&strait());
+        g.script.as_mut().unwrap().set_flag_string("EnterShipyard\u{a0}A\u{a0}");
+        g.rent_ship().unwrap();
+        assert!(g.set_destination((12, 5)));
+        walk_until_stopped(&mut g);
+        assert!(g.aboard());
+        assert_eq!(g.script().unwrap().flag_string(), "A\u{a0}Sea\u{a0}");
     }
 
     #[test]

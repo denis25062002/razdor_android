@@ -237,7 +237,9 @@ fn field(e: &mut Event, off: u16) -> Option<Field<'_>> {
         18 => U8(&mut c.stats_check),
         19 => I16(&mut c.level),
         21 => I16(&mut c.gold),
+        23..=24 => U8(&mut e.unknown_23[o - 23]),
         25 => I16(&mut c.holiness_mana),
+        27..=28 => U8(&mut e.unknown_27[o - 27]),
         29 => U8(&mut c.buildings_check),
         30..=32 => U8(&mut c.buildings[o - 30]),
         33..=35 => U8(&mut c.buildings_owner[o - 33]),
@@ -267,7 +269,9 @@ fn field(e: &mut Event, off: u16) -> Option<Field<'_>> {
         82 => U8(&mut r.picture),
         83 => I16(&mut r.experience),
         85 => I16(&mut r.gold),
+        87..=88 => U8(&mut e.unknown_87[o - 87]),
         89 => I16(&mut r.mana),
+        91..=92 => U8(&mut e.unknown_91[o - 91]),
         93..=96 => U8(&mut r.spells_learned[o - 93]),
         97..=100 => U8(&mut r.units_add[o - 97]),
         101..=104 => U8(&mut r.units_add_named[o - 101]),
@@ -293,6 +297,8 @@ fn field(e: &mut Event, off: u16) -> Option<Field<'_>> {
         147 => U8(&mut r.start_battle_with),
         148 => U8(&mut r.no_meeting),
         149 => U8(&mut r.repeat_after_yes),
+        150 => U8(&mut e.generate_battle_army),
+        151..=155 => U8(&mut e.unknown_151[o - 151]),
         _ => return None,
     })
 }
@@ -376,8 +382,9 @@ pub trait EventWorld {
     fn add_mana(&mut self, mana: i64);
     /// `named` 0 = an ordinary unit; `from_army` is the army it is taken from.
     fn add_unit(&mut self, unit: u8, named: u8, from_army: Option<ArmyId>);
-    /// Unit `index` of the player's army leaves it, for `to_army` if given.
-    fn remove_unit(&mut self, index: usize, to_army: Option<ArmyId>);
+    /// Unit `index` of the player's army leaves it, for `to_army` if given; `lead`: the
+    /// removal's slot names a character, so the unit becomes that army's leader.
+    fn remove_unit(&mut self, index: usize, lead: bool, to_army: Option<ArmyId>);
     fn give_item(&mut self, artifact: u8);
     fn take_item(&mut self, artifact: u8);
     fn learn_spell(&mut self, spell: u8);
@@ -443,6 +450,22 @@ struct EventState {
     /// back to now when the scan goes idle; `None` is the file's value (0).
     #[serde(default)]
     last_fired: Option<u64>,
+    /// The record's answer byte when it is neither 0 nor 1 (from the file or an opcode's
+    /// poke); `answer` then stays `None`.
+    #[serde(default)]
+    odd_answer: Option<u8>,
+}
+
+impl EventState {
+    /// The record's answer byte (162): 1 after a No.
+    fn answer_byte(&self) -> u8 {
+        self.odd_answer.unwrap_or((self.answer == Some(Answer::No)) as u8)
+    }
+
+    fn set_answer_byte(&mut self, b: u8) {
+        self.answer = (b == 1).then_some(Answer::No);
+        self.odd_answer = (b > 1).then_some(b);
+    }
 }
 
 /// The script state of a scenario: see the module docs. A save keeps the state only; the
@@ -653,12 +676,13 @@ impl EventEngine {
             .iter()
             .map(|e| {
                 let (last, times, answer) = e.runtime_state();
-                EventState {
-                    answer: (answer == 1).then_some(Answer::No),
+                let mut st = EventState {
                     times: times as u32,
-                    start: None,
                     last_fired: (last != 0).then_some(last.max(0) as u64),
-                }
+                    ..EventState::default()
+                };
+                st.set_answer_byte(answer);
+                st
             })
             .collect();
         EventEngine {
@@ -753,17 +777,52 @@ impl EventEngine {
         self.event(id).map(|_| (id, off as u16))
     }
 
-    /// A byte of an event record as it stands now; `None` for a byte Razdor does not model
-    /// (the texts, the runtime state) *(guess: such a poke or test is ignored)*.
+    /// A byte of an event record as it stands now: the engine's state for bytes 156–162
+    /// (last fired, times fired, the answer); `None` for a byte Razdor does not model (the
+    /// picture's size and pointer) *(guess: such a poke or test is ignored)*.
     fn record_byte(&self, id: EventId, off: u16) -> Option<u8> {
+        if let Some(k) = off.checked_sub(156).filter(|k| *k < 7) {
+            self.event(id)?;
+            let st = self.st(id);
+            let last = st.last_fired.unwrap_or(0) as u32;
+            let times = st.times as u16;
+            let answer = st.answer_byte();
+            return Some(match k {
+                0..=3 => (last >> (8 * k)) as u8,
+                4 | 5 => (times >> (8 * (k - 4))) as u8,
+                _ => answer,
+            });
+        }
         let mut e = self.event(id)?.clone();
         let (start, k) = field_of_byte(&mut e, off)?;
         let f = field(&mut e, start)?;
         Some((f.bytes() >> (8 * k)) as u8)
     }
 
-    /// Writes one byte of an event record (opcodes 1–2 poke bytes, not fields).
+    /// Writes one byte of an event record (opcodes 1–2 poke bytes, not fields); bytes
+    /// 156–162 are the engine's state, which a poke changes like any other byte.
     fn set_record_byte(&mut self, id: EventId, off: u16, b: u8) {
+        if let Some(k) = off.checked_sub(156).filter(|k| *k < 7) {
+            if self.event(id).is_none() {
+                return;
+            }
+            let st = self.st_mut(id);
+            match k {
+                0..=3 => {
+                    let mask = 0xFFu32 << (8 * k);
+                    let last = (st.last_fired.unwrap_or(0) as u32 & !mask) | ((b as u32) << (8 * k));
+                    // The record holds a signed minute; a negative one is as good as 0 here.
+                    st.last_fired = Some((last as i32).max(0) as u64);
+                }
+                4 | 5 => {
+                    let shift = 8 * (k - 4);
+                    let times = (st.times as u16 & !(0xFF << shift)) | ((b as u16) << shift);
+                    st.times = times as u32;
+                }
+                _ => st.set_answer_byte(b),
+            }
+            return;
+        }
         let Some(mut e) = self.event(id).cloned() else { return };
         let Some((start, k)) = field_of_byte(&mut e, off) else { return };
         let Some(f) = field(&mut e, start) else { return };
@@ -1032,16 +1091,17 @@ impl EventEngine {
             // or quest). It counts as happened and uses up a once-event.
             let now = w.now();
             let st = self.st_mut(id);
-            st.answer = Some(Answer::No);
+            st.set_answer_byte(1);
             st.last_fired = Some(now + 1);
             st.times += 1;
             out.push(EventOutcome::Declined(id));
         } else {
-            // Yes: the ask byte is cleared, and once := not "repeat after yes" (149), so
+            // Yes: the ask byte is cleared, and once := "repeat after yes" (149) xor 1, so
             // without 149 every answered event becomes a once-event, whatever its box said.
-            let again = self.ev(id).results.repeat_after_yes != 0;
+            // As in the original it is a bit flip, not a logical not: a 149 of 2 gives once 3.
+            let again = self.ev(id).results.repeat_after_yes;
             self.set_event_field(id, 76, 0);
-            self.set_event_field(id, 141, (!again) as i64);
+            self.set_event_field(id, 141, (again ^ 1) as i64);
             if self.ev(id).message.is_empty() {
                 // No message: finished at once, its artifacts, units and spells never
                 // applied. With 149 the original's "ask again" write lands outside the event
@@ -1251,7 +1311,7 @@ impl EventEngine {
     /// dialog-time results applied in the original's order: artifacts gained, artifacts lost,
     /// units added, units removed, spells learned.
     fn show(&mut self, id: EventId, w: &mut dyn EventWorld, out: &mut Vec<EventOutcome>) {
-        self.st_mut(id).answer = None;
+        self.st_mut(id).set_answer_byte(0);
         let e = self.ev(id).clone();
         out.push(EventOutcome::Fired { event: id, message: !e.message.is_empty() });
         let r = &e.results;
@@ -1283,7 +1343,7 @@ impl EventEngine {
         if slots.iter().any(|&(t, n)| find_unit(&units, t, n, 1).is_some()) {
             for (t, n) in slots {
                 if let Some(i) = find_unit(&w.player_units(), t, n, 1) {
-                    w.remove_unit(i, to);
+                    w.remove_unit(i, n != 0, to);
                 }
             }
         }
@@ -1400,7 +1460,7 @@ impl EventEngine {
             return;
         }
         // 21. The follow-ups. The answer is cleared.
-        self.st_mut(id).answer = None;
+        self.st_mut(id).set_answer_byte(0);
         if q.battle != 0 {
             w.start_battle(q.battle);
         }
@@ -1559,11 +1619,13 @@ impl EventEngine {
         // The lists name events; times fired and the answer byte are read (an answer of 1 is
         // "the last response was No").
         let times = |id: EventId| self.event(id).map_or(0, |_| self.st(id).times);
-        let said_no = |id: EventId| self.event(id).is_some_and(|_| self.st(id).answer == Some(Answer::No));
-        if c.happened_yes_check != 0 && !nonzero(&c.happened_yes).all(|id| times(id) > 0 && !said_no(id)) {
+        // "With Yes" fails on an answer of 1, "with No" on an answer of 0: a byte poked to
+        // another value passes both, as in the original.
+        let answer = |id: EventId| self.event(id).map_or(0, |_| self.st(id).answer_byte());
+        if c.happened_yes_check != 0 && !nonzero(&c.happened_yes).all(|id| times(id) > 0 && answer(id) != 1) {
             return before("happened with Yes");
         }
-        if c.happened_no_check != 0 && !nonzero(&c.happened_no).all(said_no) {
+        if c.happened_no_check != 0 && !nonzero(&c.happened_no).all(|id| answer(id) != 0) {
             return before("happened with No");
         }
         if c.not_happened_check != 0 && !nonzero(&c.not_happened).all(|id| times(id) == 0) {
@@ -1671,6 +1733,9 @@ impl EventEngine {
     /// that type counts too), or carrying the slot's name, or for type 255 an unnamed event
     /// unit; code 1 needs one, 6 none. Codes 2–5 search the armies of faction code − 1
     /// alike, without the alive test and the 255 rule. Code 0 fails.
+    ///
+    /// The units taken go into a list of three places, as in the original: once it is full,
+    /// each new one overwrites the third, so the unit noted there is free again.
     fn units_hold(&self, c: &crate::dt::dtm::EventConditions, w: &dyn EventWorld) -> bool {
         let fits = |u: &UnitRecord, t: u8, name: u8, player: bool| {
             (u.unit == t as u32 && name == 0)
@@ -1678,7 +1743,11 @@ impl EventEngine {
                 || (player && t == 0xFF && u.from_event && u.named == 0)
         };
         let mine = w.player_units();
-        let mut used: Vec<(usize, usize)> = Vec::new();
+        let mut used: [Option<(usize, usize)>; 3] = [None; 3];
+        let note = |used: &mut [Option<(usize, usize)>; 3], at: (usize, usize)| {
+            let k = used.iter().position(Option::is_none).unwrap_or(2);
+            used[k] = Some(at);
+        };
         for i in 0..3 {
             let (t, name, code) = (c.units[i], c.units_named[i], c.units_owner[i]);
             if t == 0 {
@@ -1686,17 +1755,17 @@ impl EventEngine {
             }
             let ok = match code {
                 SIDE_PLAYER | OWNER_NOT_PLAYER => {
-                    let found = (0..mine.len()).find(|&k| !used.contains(&(0, k)) && mine[k].hp != 0 && fits(&mine[k], t, name, true));
+                    let found = (0..mine.len()).find(|&k| !used.contains(&Some((0, k))) && mine[k].hp != 0 && fits(&mine[k], t, name, true));
                     if let Some(k) = found {
-                        used.push((0, k));
+                        note(&mut used, (0, k));
                     }
                     (code == SIDE_PLAYER) == found.is_some()
                 }
                 2..=5 => {
                     let mut any = false;
                     for (a, army) in w.faction_units(code - 1).iter().enumerate() {
-                        if let Some(k) = (0..army.len()).find(|&k| !used.contains(&(a + 1, k)) && fits(&army[k], t, name, false)) {
-                            used.push((a + 1, k));
+                        if let Some(k) = (0..army.len()).find(|&k| !used.contains(&Some((a + 1, k))) && fits(&army[k], t, name, false)) {
+                            note(&mut used, (a + 1, k));
                             any = true;
                         }
                     }
@@ -1930,7 +1999,7 @@ pub(crate) mod mock {
             self.units.push(UnitRecord { from_event: true, ..unit(u as u32, named) });
             self.log.push(Fx::AddUnit(u, named, from_army));
         }
-        fn remove_unit(&mut self, index: usize, to_army: Option<ArmyId>) {
+        fn remove_unit(&mut self, index: usize, _lead: bool, to_army: Option<ArmyId>) {
             self.squads -= 1;
             self.units.remove(index);
             self.log.push(Fx::RemoveUnit(index, to_army));
@@ -2365,6 +2434,26 @@ mod tests {
         assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2], "no squads, no gold: neither is tested");
     }
 
+    /// The units a named-squad check takes go into a list of three (0x4a8237): from the
+    /// fourth on, each overwrites the third, which frees the unit noted there. Codes 2–5
+    /// note one unit in every army of the faction that has one.
+    #[test]
+    fn the_units_taken_are_noted_in_three_places() {
+        let mut e = global();
+        let c = &mut e.conditions;
+        (c.units_check, c.units, c.units_owner) = (1, [60, 60, 0], [2, 2, 0]);
+        let mut g = engine(vec![e]);
+        let mut w = MockWorld::new();
+        // Faction 1: three armies of one such unit each. Slot 1 notes all three; slot 2
+        // finds none left.
+        w.armies.insert(1, vec![vec![unit(60, 0)]; 3]);
+        assert!(tick_at(&mut g, &mut w, 0).is_empty());
+        // A fourth army: slot 1's fourth unit overwrites the third army's, which slot 2
+        // then takes.
+        w.armies.insert(1, vec![vec![unit(60, 0)]; 4]);
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1]);
+    }
+
     /// Owner code 0 (the list's empty first entry): a building slot is left out; a unit or
     /// artifact slot fails.
     #[test]
@@ -2767,6 +2856,21 @@ mod tests {
         }
     }
 
+    /// Yes writes once := byte 149 xor 1 (0x4c2189), a bit flip: a 149 of 2 gives once 3,
+    /// which still closes the event.
+    #[test]
+    fn a_yes_flips_the_low_bit_of_149_into_once() {
+        let mut w = MockWorld::new();
+        for (repeat, once) in [(0, 1), (1, 0), (2, 3), (3, 2)] {
+            let mut e = with_message(many(asking(global())));
+            e.results.repeat_after_yes = repeat;
+            let mut g = engine(vec![e]);
+            g.tick(&mut w);
+            g.answer(&mut w, true);
+            assert_eq!(g.event_field(1, 141), Some(once), "149 = {repeat}");
+        }
+    }
+
     /// An asking event with an empty message: Yes finishes it at once, without its
     /// artifacts, units and spells (10 shipped events ask so).
     #[test]
@@ -3113,6 +3217,36 @@ mod tests {
         let mut g = engine(vec![target_event(), op(1, -1, 85, 2), chain]);
         tick_at(&mut g, &mut w, 0);
         assert_eq!(w.log, vec![Fx::Gold(7)]);
+    }
+
+    /// Bytes 156–162 of a record are the engine's state (last fired, times fired, the
+    /// answer): opcodes poke and compare them like any byte. Setting a once-event's count back
+    /// to 0 lets it fire again; an answer byte other than 0 and 1 passes both "happened with
+    /// Yes" and "happened with No", as in the original.
+    #[test]
+    fn opcodes_reach_the_runtime_state_bytes() {
+        let mut once = global();
+        once.results.gold = 5;
+        // A many-event that sets event 1's times fired (byte 160) back to 0.
+        let reset = many(op(2, -1, 160, 0));
+        let mut g = engine(vec![once, reset]);
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2]);
+        assert_eq!(g.times_fired(1), 0);
+        assert_eq!(tick_at(&mut g, &mut w, 10), vec![1, 2], "fired again");
+
+        // Times fired compared (op 4: byte 160 = 1), and the answer byte poked to 2.
+        let mut both = global();
+        let c = &mut both.conditions;
+        (c.happened_yes_check, c.happened_yes, c.happened_no_check, c.happened_no) = (1, [1, 0], 1, [1, 0]);
+        let mut no = global();
+        let c = &mut no.conditions;
+        (c.happened_no_check, c.happened_no) = (1, [1, 0]);
+        let events = vec![global(), op(4, -1, 160, 1), op(2, -2, 162, 2), both, no];
+        let mut g = engine(events);
+        let mut w = MockWorld::new();
+        assert_eq!(tick_at(&mut g, &mut w, 0), vec![1, 2, 3, 4, 5]);
+        assert_eq!(g.happened(1), Some(Answer::Yes));
     }
 
     /// Opcodes 3–5 compare a byte (c26754): 3 below, 4 equal, 5 above, signed; the second

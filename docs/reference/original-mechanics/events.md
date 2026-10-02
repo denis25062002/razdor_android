@@ -121,7 +121,7 @@ All conditions must hold. They are evaluated in this order (0x4a7b80 and its con
 |---|---|---|
 | 1 | Defeated by the player (53; armies 54, 55) | Each listed army's "beaten by" mark is the player (1). |
 | 2 | Happened with Yes (56; events 57, 59) | Each listed event has times fired > 0 and answer ≠ 1. |
-| 3 | Happened with No (69; events 70, 72) | Each listed event has answer = 1. |
+| 3 | Happened with No (69; events 70, 72) | Each listed event has answer ≠ 0 (only a Community poke can store a value other than 0 and 1; such a value passes both this test and condition 2). |
 | 4 | Not happened (61; events 62, 64) | Each listed event has times fired = 0. |
 | 5 | Army active (75) | The army is on the map and not destroyed. |
 | 6 | Army inactive (15) | The army is off the map **and not destroyed**. A destroyed army is neither active nor inactive. |
@@ -145,6 +145,8 @@ units. **code**
   or it carries the slot's character name (whatever its type); or the slot type is 255, the
   unit was added by an event (wage kind 3) and has no name. Code 1 needs a match, code 6
   needs none. (Unit removal, §7.1, does require the unit to be unnamed for a type match.)
+- The units taken are noted in a list of three places; once it is full, each new one
+  overwrites the third, which frees the unit noted there.
 - Codes 2–5 search the AI armies whose faction is code − 1 with the same type-or-name rule but
   without the alive test and without the 255 rule; a match in any such army passes.
 - **Code 0 fails the condition** (no branch accepts it).
@@ -201,7 +203,8 @@ one on purpose (a short prefix test meant as "any of these numbered flags").
 - After the action: a test part containing `end_tutorial` marks the tutorial done (§13).
 
 **Engine flags.** The exe itself adds `Sea` while the hero is aboard a ship and removes it when
-he lands (0x496d28), and adds or removes `EnterShipyard` in the ship-return logic (0x497c68).
+he lands (0x496d28), and adds or removes `EnterShipyard` in the ship-return logic (0x497c68);
+going to sea also removes `EnterShipyard` (0x496d28).
 Scenario tests see them like any flag. **code**
 
 **Lifetime.** A new game empties the flag string (0x4c10e3). Loading the next campaign map does
@@ -231,10 +234,10 @@ the same two steps without a window. **code**
 - **OK** (0x4c206c): finishes the event (§7.2). If the player has been defeated (§11), it
   returns to the main menu instead. **code**
 - **Yes** (0x4c2100): **code**
-  1. *ask* is cleared, and **once := not "repeat after yes" (149)**. Without byte 149 (no
-     shipped event sets it) every answered event becomes a once-event the moment the player
-     says Yes, whatever its once box said; with 149 it becomes a many-times event even if its
-     once box was set.
+  1. *ask* is cleared, and **once := "repeat after yes" (149) xor 1** (a bit flip: 2 gives
+     3). Without byte 149 (no shipped event sets it) every answered event becomes a
+     once-event the moment the player says Yes, whatever its once box said; with 149 = 1 it
+     becomes a many-times event even if its once box was set.
   2. If the event has **no message text**, it is finished at once **without the dialog-time
      results**: its artifacts, units and spells are never applied (10 shipped events ask with
      an empty message; one of them would remove four units).
@@ -310,10 +313,12 @@ unit. Then per slot, the unit is searched **from the last unit backwards** (0x49
 - any other type: the last unit of that type with no name when the slot has no name, or the
   unit carrying the slot's name. This search can reach unit 1, **the hero**, when no other
   unit of his type is left.
-- **Given to an army** (136): an unnamed unit is appended (its count is capped at 12, so in a
-  full army it overwrites the last unit); a named unit is put first, as the army's leader,
-  with the others shifted down.
-- Then the unit is removed and the army closes the gap.
+- **Given to an army** (136): when the slot has no character name the unit is appended (its
+  count is capped at 12, so in a full army it overwrites the last unit); when the slot names
+  one, the unit is put first, as the army's leader, with the others shifted down. The test
+  is on the slot's name, so an unnamed unit picked by 255 or 254 under a named slot leads.
+- Then the unit is removed and the army closes the gap (0x496310). The removal only deletes
+  the record: a unit given to no army loses its worn items with it.
 
 **Spells learned** (93–96): each one not yet in the book is appended (0x49c144); the code has
 no book limit. Events with "no meeting" (148) set teach nothing (the Community hook 0xc28604
@@ -567,12 +572,12 @@ world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag scr
 | Topic | Razdor now | Original | Status |
 |---|---|---|---|
 | Byte 145 | A condition: the hero's HP is exactly 1; it never sets HP | A **condition**: the hero's HP is exactly 1 (§4) | Matches |
-| Yes answer | Yes clears ask and sets once := not byte 149; with a message, ask is set back for later firings; without one, ask stays 0 (the write that misses) | Yes sets once := not byte 149; the question returns for later firings (§6.2) | Matches |
+| Yes answer | Yes clears ask and sets once := byte 149 xor 1; with a message, ask is set back for later firings; without one, ask stays 0 (the write that misses) | Yes sets once := byte 149 xor 1; the question returns for later firings (§6.2) | Matches |
 | Ask with empty message | Yes finishes it at once: artifacts, units and spells never applied | Artifacts, units and spells are never applied (§6.2) | Matches |
 | When results apply | The window's results (gains, losses, units added, removed, spells) when it opens, then the finish's in the exe's order, then battle, spell, delay (`EventEngine::show`, `finish`) | Artifacts, units, spells when the window opens; the rest at OK (§6.1, §7.2) | Matches (the finish follows the opening at once: nothing happens while the window is up) |
 | Flag test | Substring search of the one flag string; first `^` dropped; `/` negates; empty or `end_tutorial` passes | Substring of the flag string (§5) | Matches |
 | Flag action | `+X` appends X with a non-breaking space if not a substring yet; `-X` removes the first occurrence and the next character; counters only with `^`, their slips included; actions of ≤ 2 characters ignored | Same (§5) | Matches |
-| Engine flags | `Sea` added when the hero goes to sea and removed when he lands (`Game::sea_changed`) | `Sea` aboard a ship, `EnterShipyard` in the ship logic | `Sea` matches; `EnterShipyard` left out (Razdor does not track the ship's shipyard; no shipped event tests it) |
+| Engine flags | `Sea` added when the hero goes to sea and removed when he lands, `EnterShipyard` removed when he goes to sea (`Game::sea_changed`) | `Sea` aboard a ship, `EnterShipyard` in the ship logic | `Sea` matches; `EnterShipyard` is only removed at sea: its setting is left out (Razdor does not track the ship's shipyard; no shipped event tests it) |
 | Quests in buildings | Listed in the main hall with the rumours and fired when taken; villages and shipyards fire them on entering | Listed in the main hall and taken by the player, except in villages and shipyards (§2, §10) | Matches |
 | Event points | Every listed event, whatever its type | Every listed event, whatever its type | Matches |
 | Rumour or quest list | The building's quests and rumours that pass the full check (`EventEngine::hall`); taking one opens it without a new check | Quests and rumours of the building that pass the full check | Matches |
@@ -591,15 +596,15 @@ world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag scr
 | Artifact holder 2–5 | Worn items of the faction's armies only | Worn items only | Matches |
 | Units added to a full army | The weakest of units 2–12 is dismissed (items to the pack), then the unit joins | The weakest of units 2–12 is dismissed (items to the pack), then the unit joins | Matches |
 | Unit taken from an army | The whole record (level, XP, wounds, items, name, wage kind); an emptied army leaves the map | Takes the whole record; an emptied army leaves the map | Matches |
-| Unit removed, by type | From the last unit back; unnamed slot: unnamed unit of the type; named slot: that name, any type; nothing unless a slot finds one; never the hero | Unnamed slot: unnamed unit of the type; named slot: that name, any type; can hit the hero | Matches, except the hero (unknown whether reachable: Razdor's guard kept) |
-| Removed unit given to an army | Unnamed: appended, over the last of a full army; named: the leader, the others down | Appended (overwriting the last of a full army); a named one becomes the leader | Matches |
+| Unit removed, by type | From the last unit back; unnamed slot: unnamed unit of the type; named slot: that name, any type; nothing unless a slot finds one; never the hero; given to no army, its worn items go with it | Unnamed slot: unnamed unit of the type; named slot: that name, any type; can hit the hero | Matches, except the hero (unknown whether reachable: Razdor's guard kept) |
+| Removed unit given to an army | Slot without a name: appended, over the last of a full army; slot with a name: the leader, the others down | Appended (overwriting the last of a full army); under a named slot it becomes the leader | Matches |
 | "No meeting" and spells | Not learned; no resource row | Not learned; no resource row | Matches |
 | Lantern with radius 0 | Not lit | Not lit | Matches |
 | Move army to hero | Army 136 only, not activated, cheapest neighbour | Army 136 only, not activated, cheapest neighbour by terrain cost | Matches |
 | Patrol change | Radius, and the box back around the home cell; in opcode mode the opcode is the delta | Radius and the patrol box around home | Matches |
 | Chain timing | Dropped behind a delay unless lanterns, a shown army or a spell start the chain timer; a battle does not stop it; nothing after a victory or defeat (no spell, battle or delay either) | After animations; dropped behind a delay; not after a victory or defeat | Matches |
 | Guard | *Last fired* := now + 1; with a duration L ≤ now, without L < now − 60; set back to now when the scan goes idle | Same scan blocked (idle reset to now); duration 0: more than 60 min after `now + 1` | Matches |
-| Opcode mode test | Byte 148 = 1 and byte 17 ≠ 0 (signed); pokes of one byte across records; strict < and >; op 18 the digit of the event's `^` flag; op 21 only with byte 17 = 21 | Byte 148 = 1 and byte 17 ≠ 0; op 21 needs byte 17 = 21; no spell-removal extension | Matches |
+| Opcode mode test | Byte 148 = 1 and byte 17 ≠ 0 (signed); pokes of one byte across records, the run-time bytes 156–162 included; strict < and >; op 18 the digit of the event's `^` flag; op 21 only with byte 17 = 21 | Byte 148 = 1 and byte 17 ≠ 0; op 21 needs byte 17 = 21; no spell-removal extension | Matches |
 | Placeholders | `#HERONAME` only; titles cut at `%` and `#` | `#HERONAME` only; titles cut at `#` | Matches |
 | Double spaces | Collapsed when the game loads the map's events, names and descriptions | Collapsed at load | Matches |
 | Defeat by army loss | Game over screen | Defeat report, then the main menu; the defeat event does not fire | Matches in effect |

@@ -353,6 +353,15 @@ old id, and their versions give both.
   >), opcode 18 draws the digit of the event's `^` flag, and a "no meeting" event with a
   spell casts it.
 - Save format 8: the event flags are one string; older saves load with their flags joined.
+- A unit an event removes takes its worn items with it unless it goes to another army,
+  where it leads when the event's slot names a character (not when the unit has a name).
+  Going to sea also clears the flag `EnterShipyard`.
+- A Yes sets an event's once box to its "repeat after yes" byte with the lowest bit flipped,
+  as the original does. A named-squad check notes the units it takes in three places only,
+  so from the fourth on a unit can count twice.
+- Community opcodes reach an event's run-time bytes (last fired, times fired, the answer):
+  a poke can let a once-event fire again, and an answer byte other than 0 and 1 counts as
+  both "with Yes" and "with No".
 
 ## 0.2.2 — 2026-10-01
 
