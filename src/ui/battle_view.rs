@@ -227,6 +227,11 @@ impl BattleView {
         BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
     }
 
+    /// The battle is won and its result is up: the triumph has started.
+    pub fn won(&self) -> bool {
+        self.result_cued && self.battle.outcome() == Outcome::Victory
+    }
+
     fn cell_under_mouse(&self, l: &Layout) -> Option<(Team, Slot)> {
         all_cells(&self.battle).into_iter().find(|&(t, s)| {
             let p = l.cell_pos(t, s);

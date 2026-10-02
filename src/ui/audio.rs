@@ -40,8 +40,9 @@ pub enum Cue {
     SpellEvil,
     /// A battle begins (`Global-Battle`, the horn).
     BattleHorn,
-    /// A scenario event's window (`Global-Event-1..3`, in turn).
-    Event,
+    /// An event window, the village or the shipyard window opens (`Global-Event-1..3`): the
+    /// chord the game's generator drew (`Game::event_chord`).
+    Event(u8),
     /// A card moves in deployment or battle (`Card-Move`).
     CardMove,
     /// A level gained or a promotion (`Unit-Upgrade`).
@@ -59,13 +60,13 @@ pub enum Cue {
     Item(ArtefactType),
     /// Gold gained (`Item-Gold`).
     Gold,
-    /// A battle won: the triumph music once, then the map music again.
+    /// A battle won: the triumph music, looped until the next map track.
     Triumph,
 }
 
 impl Cue {
-    /// The `[SFX-Effects]` key; `turn` picks among the three event chords.
-    fn key(self, turn: usize) -> String {
+    /// The `[SFX-Effects]` key.
+    fn key(self) -> String {
         let key = match self {
             Cue::Button => "InterfaceButtonDown",
             Cue::Panel => "InterfacePanelDown",
@@ -74,7 +75,7 @@ impl Cue {
             Cue::SpellGood => "Spell-Good",
             Cue::SpellEvil => "Spell-Evil",
             Cue::BattleHorn => "Global-Battle",
-            Cue::Event => return format!("Global-Event-{}", turn % 3 + 1),
+            Cue::Event(k) => return format!("Global-Event-{}", k % 3 + 1),
             Cue::CardMove => "Card-Move",
             Cue::Upgrade => "Unit-Upgrade",
             Cue::Fight => "Battle-Fight",
@@ -256,8 +257,6 @@ struct Backend {
     /// The music volume last applied.
     gain: f32,
     jukebox: Jukebox,
-    /// Which event chord comes next.
-    event_turn: usize,
 }
 
 pub struct Audio {
@@ -268,12 +267,11 @@ pub struct Audio {
 }
 
 impl Audio {
-    /// A game was loaded: the triumph of a battle won before it stops, and the map music
-    /// plays again.
-    pub fn loaded_game(&mut self) {
+    /// The map rotation's track from now on (`rules::music`): the world theme at a map start
+    /// or load, then the app's picks. A triumph still playing ends.
+    pub fn set_map_track(&mut self, track: &'static str) {
         if let Some(b) = self.backend.as_mut() {
-            let change = b.jukebox.interrupt_sting();
-            b.apply(change, &self.settings, self.log);
+            b.jukebox.set_map_track(track);
         }
     }
 
@@ -337,15 +335,14 @@ impl Audio {
         let Some(b) = self.backend.as_mut() else {
             if self.log {
                 for c in cues {
-                    razdor::diag!("audio (silent): {}", c.key(0));
+                    razdor::diag!("audio (silent): {}", c.key());
                 }
             }
             return;
         };
         for c in cues {
             if c == Cue::Triumph {
-                let change = b.jukebox.sting(jukebox::TRIUMPH);
-                b.apply(change, &self.settings, self.log);
+                b.jukebox.triumph();
             } else {
                 b.play_effect(c, &self.settings, self.log);
             }
@@ -378,16 +375,12 @@ impl Backend {
                 Err(e) => razdor::diag!("{key}={file}: {e}"),
             }
         }
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-        let jukebox = Jukebox::new(|t| table.background(t).is_some(), seed);
-        Ok(Backend { dir: dir.to_path_buf(), table, raw_rate, sfx, music: None, gain: 0.0, jukebox, event_turn: 0 })
+        let jukebox = Jukebox::new(|t| table.background(t).is_some());
+        Ok(Backend { dir: dir.to_path_buf(), table, raw_rate, sfx, music: None, gain: 0.0, jukebox })
     }
 
     fn play_effect(&mut self, c: Cue, settings: &Settings, log: bool) {
-        let key = c.key(self.event_turn);
-        if c == Cue::Event {
-            self.event_turn += 1;
-        }
+        let key = c.key();
         let gain = settings.sfx_gain();
         match self.sfx.get(&key.to_ascii_lowercase()) {
             Some(s) if gain > 0.0 => {
@@ -451,11 +444,11 @@ mod tests {
 
     #[test]
     fn cue_keys_match_the_ini() {
-        assert_eq!(Cue::Item(ArtefactType::BlowWeapon).key(0), "Item-BlowWeapon");
-        assert_eq!(Cue::Item(ArtefactType::Potion).key(0), "Item-Potion");
-        assert_eq!(Cue::Cannon.key(0), "Battle-Strike");
-        let chords: Vec<String> = (0..4).map(|t| Cue::Event.key(t)).collect();
-        assert_eq!(chords, ["Global-Event-1", "Global-Event-2", "Global-Event-3", "Global-Event-1"]);
+        assert_eq!(Cue::Item(ArtefactType::BlowWeapon).key(), "Item-BlowWeapon");
+        assert_eq!(Cue::Item(ArtefactType::Potion).key(), "Item-Potion");
+        assert_eq!(Cue::Cannon.key(), "Battle-Strike");
+        let chords: Vec<String> = (0..3).map(|k| Cue::Event(k).key()).collect();
+        assert_eq!(chords, ["Global-Event-1", "Global-Event-2", "Global-Event-3"]);
     }
 
     #[test]
@@ -504,10 +497,10 @@ mod tests {
         ];
         cues.extend(kinds.map(Cue::Item));
         for c in cues {
-            assert!(t.effect(&c.key(0)).is_some(), "{c:?}");
+            assert!(t.effect(&c.key()).is_some(), "{c:?}");
         }
-        assert!((0..3).all(|k| t.effect(&Cue::Event.key(k)).is_some()));
-        let tracks = [jukebox::MENU, jukebox::TRIUMPH, jukebox::DEFEAT].into_iter().chain(jukebox::MAP).chain(jukebox::BATTLE);
+        assert!((0..3).all(|k| t.effect(&Cue::Event(k).key()).is_some()));
+        let tracks = [jukebox::MENU, jukebox::AUTHORS, jukebox::TRIUMPH, jukebox::DEFEAT].into_iter().chain(jukebox::MAP).chain(jukebox::BATTLE);
         for track in tracks {
             assert!(t.background(track).is_some(), "{track}");
         }

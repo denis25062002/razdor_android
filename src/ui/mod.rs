@@ -37,9 +37,10 @@ use razdor::dt::dtm::Scenario;
 use razdor::i18n::tr;
 use razdor::rules::content::Content;
 use razdor::rules::events::EventOutcome;
-use razdor::rules::game::Game;
+use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, Install};
 use razdor::rules::script::ScriptEnd;
+use razdor::rules::world::LocationKind;
 
 use assets::Assets;
 use audio::{Audio, Cue, Mood};
@@ -110,6 +111,16 @@ pub struct ScenarioEntry {
     pub scenario: Scenario,
 }
 
+/// The map music's rotation as the original runs it (interface.md §13): the last pick, when
+/// the next change is due (in macroquad's clock, seconds), and whether a won battle's triumph
+/// is playing (the world map waits for it; closing a dialog changes the track at once).
+#[derive(Default)]
+struct MapMusic {
+    pick: usize,
+    due: f64,
+    triumph: bool,
+}
+
 pub struct App {
     pub assets: Assets,
     /// The built-in demo content.
@@ -130,6 +141,8 @@ pub struct App {
     /// Why the last load failed (shown in the load window).
     pub load_error: Option<String>,
     pub audio: Audio,
+    /// The map music's rotation (`rules::music`).
+    map_music: MapMusic,
     /// The screen of the last frame, to hear windows open and battles begin.
     last_screen: Option<std::mem::Discriminant<Screen>>,
     /// Gold at the end of the last frame of this game (`None` right after a new game or load).
@@ -177,6 +190,7 @@ impl App {
             pending_load: None,
             load_error: None,
             audio,
+            map_music: MapMusic::default(),
             last_screen: None,
             last_gold: None,
             play_last: ("", None),
@@ -231,7 +245,6 @@ impl App {
                 self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());
                 self.map_view.reset();
                 self.map_view.forget_shows();
-                self.audio.loaded_game();
                 self.last_gold = None;
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "editor test play"));
                 self.game = Some(game);
@@ -252,7 +265,6 @@ impl App {
                 self.load_error = None;
                 self.map_view.reset();
                 self.map_view.forget_shows();
-                self.audio.loaded_game();
                 self.last_gold = None;
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "loaded"));
                 if let Some(q) = game.pending_question() {
@@ -302,9 +314,10 @@ impl App {
     /// The music the current screen wants.
     fn mood(&self) -> Mood {
         match &self.screen {
-            Screen::MainMenu | Screen::Authors(_) | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
+            Screen::Authors(_) => Mood::Credits,
+            Screen::MainMenu | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
             Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
-            Screen::Battle(_) => Mood::Battle,
+            Screen::Battle(_) => Mood::Battle { garrison: matches!(self.game.as_ref().and_then(|g| g.foe.as_ref()), Some(Foe::Garrison(_))) },
             Screen::GameOver => Mood::Lost,
             Screen::Victory => Mood::Won,
             _ if self.game.is_some() => Mood::Map,
@@ -312,12 +325,48 @@ impl App {
         }
     }
 
+    /// The map music's change when it is due (interface.md §13): the pick and its time are
+    /// draws of the game's generator, as in the original, so they shift the rolls that follow.
+    fn rotate_music(&mut self) {
+        let Some(game) = self.game.as_mut() else { return };
+        let (pick, ms) = game.music_rotate(self.map_music.pick);
+        self.map_music = MapMusic { pick, due: macroquad::prelude::get_time() + ms as f64 / 1000.0, triumph: false };
+        self.audio.set_map_track(razdor::rules::music::ROTATION[pick]);
+    }
+
     /// Sounds that follow from what changed this frame (a window opened, a battle began, gold
     /// came in, a dialog appeared), then the audio frame.
     fn sounds(&mut self) {
+        // A map start or a load starts the world theme; its first change was drawn then.
+        let clock = macroquad::prelude::get_time();
+        if let Some(wait) = self.game.as_mut().and_then(|g| g.take_music_wait()) {
+            let pick = razdor::rules::music::WORLD_THEME;
+            self.map_music = MapMusic { pick, due: clock + wait as f64 / 1000.0, triumph: false };
+            self.audio.set_map_track(razdor::rules::music::ROTATION[pick]);
+        }
+        // The change is checked by the map and its windows, not in battle or the menus; the
+        // world map alone waits while the triumph plays.
+        if let Screen::Battle(v) = &self.screen {
+            if v.won() {
+                self.map_music.triumph = true;
+            }
+        }
+        let waits = self.map_music.triumph && matches!(self.screen, Screen::WorldMap);
+        if self.mood() == Mood::Map && clock >= self.map_music.due && !waits {
+            self.rotate_music();
+        }
         let now = std::mem::discriminant(&self.screen);
         if self.last_screen != Some(now) {
+            // The village and shipyard windows open with an event chord (a draw).
+            let chord_window = match (&self.screen, self.game.as_ref()) {
+                (Screen::Building(_), Some(g)) => g.location.is_some_and(|l| matches!(g.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard)),
+                _ => false,
+            };
             match self.screen {
+                Screen::Building(_) if chord_window => {
+                    let k = self.game.as_mut().map_or(0, |g| g.event_chord());
+                    audio::cue(Cue::Event(k as u8));
+                }
                 Screen::Battle(_) => audio::cue(Cue::BattleHorn),
                 Screen::Building(_)
                 | Screen::Squad { .. }
@@ -341,7 +390,12 @@ impl App {
         self.last_gold = gold;
         if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
             d.cued = true;
-            audio::cue(if d.event.is_some() { Cue::Event } else { Cue::Panel });
+            if d.event.is_some() {
+                let k = self.game.as_mut().map_or(0, |g| g.event_chord());
+                audio::cue(Cue::Event(k as u8));
+            } else {
+                audio::cue(Cue::Panel);
+            }
         }
         // N: music on/off (not while typing or answering a question: N is its "No").
         if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
@@ -588,6 +642,11 @@ impl App {
         if let Some(d) = self.dialogs.front() {
             if let Some(close) = dialog::draw(d, &self.assets) {
                 let asked = self.dialogs.pop_front().is_some_and(|d| d.question);
+                // Closing a dialog while the triumph plays changes the map track at once
+                // (0x4c20b3).
+                if self.map_music.triumph {
+                    self.rotate_music();
+                }
                 // A scenario question: the answer goes to the event engine.
                 if let (true, Some(game)) = (asked, self.game.as_mut()) {
                     let events = game.answer_question(close == Close::Yes);

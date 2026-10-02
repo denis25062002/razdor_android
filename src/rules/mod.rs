@@ -13,6 +13,7 @@ pub mod items;
 pub mod journal;
 pub mod magic;
 pub mod map;
+pub mod music;
 pub mod rng;
 pub mod save;
 #[cfg(test)]

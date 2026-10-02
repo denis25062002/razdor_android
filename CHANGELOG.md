@@ -426,6 +426,14 @@ old id, and their versions give both.
 - A battle starts as soon as its window opens, as in the original: there is no deployment
   step (the formation is the one set in the army window). Finish automatically (Q) still
   plays a battle under way out at once.
+- The music as in the original, and its draws from the game's random numbers: a map
+  starts with `BkgMap2`, then a new track is drawn on a timer per track among the seven
+  map themes and the credits theme (never the same twice), each looping until the next.
+  Battles play `BkgBattle1` against a garrison and `BkgBattle2` against an army; the
+  triumph starts with a won battle's result and loops until a dialog is closed; the
+  credits play their own theme. An event's window, a village's and a shipyard's open with
+  one of the three chords drawn from the game's random numbers. Like the original, these
+  draws shift the rolls that follow.
 
 ## 0.2.2 — 2026-10-01
 

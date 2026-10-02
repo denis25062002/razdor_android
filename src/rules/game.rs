@@ -217,6 +217,10 @@ pub struct Game {
     /// The Community event generator (opcode 18), seeded from the clock at every load.
     #[serde(skip)]
     pub(crate) event_rng: EventRng,
+    /// A map start or a load has just started the world theme: the ms until its first change
+    /// (90 s and the music's draw), for the interface to take ([`Game::take_music_wait`]).
+    #[serde(skip)]
+    pub(crate) music_wait: Option<u32>,
     pub(crate) battles: u64,
     /// The scenario's event engine (`None` in the demo). Taken out while it runs.
     pub(crate) script: Option<Box<EventEngine>>,
@@ -424,6 +428,7 @@ impl Game {
             start_day: clock.day_index(),
             rng: Rng::map_load(),
             event_rng: EventRng::from_clock(),
+            music_wait: None,
             battles: 0,
             script: None,
             pending: Vec::new(),
@@ -480,7 +485,7 @@ impl Game {
         // The map load's draws (engine.md §3.2): the state is 1, the markets are stocked,
         // then the world music draws its first change time.
         g.restock_markets();
-        g.rng.random(WORLD_MUSIC_DRAW);
+        g.music_wait = Some(90_000 + g.rng.random(WORLD_MUSIC_DRAW) as u32);
         g.fog = Fog::disabled(g.world.map.w, g.world.map.h);
         g
     }
@@ -840,6 +845,25 @@ impl Game {
     /// army he chases stays his target. A wait is not cut.
     pub fn cut_walk(&mut self) {
         self.path.truncate(1);
+    }
+
+    /// The world theme's first change time if a map start or a load has just drawn it
+    /// (interface.md §13); taken once.
+    pub fn take_music_wait(&mut self) -> Option<u32> {
+        self.music_wait.take()
+    }
+
+    /// The map music's change when it is due, drawn from the game's generator as the
+    /// original draws it (`rules::music::rotate`): the new pick and the ms to the next one.
+    pub fn music_rotate(&mut self, last: usize) -> (usize, u32) {
+        super::music::rotate(last, &mut self.rng)
+    }
+
+    /// Which of the three `Global-Event` chords an event window, the village window or the
+    /// shipyard window plays as it opens: `Random(3)` of the game's generator (interface.md
+    /// §14), so opening one shifts every later roll.
+    pub fn event_chord(&mut self) -> usize {
+        self.rng.random(3) as usize
     }
 
     /// Waits in real time (the UI's 1 h and 4 h): `hours × 2` wait ticks of
@@ -3367,6 +3391,21 @@ mod tests {
         assert!(!g.moving(), "showing a route does not set off");
         assert!(g.set_destination((20, 2)));
         assert_eq!(g.path, shown);
+    }
+
+    #[test]
+    fn the_music_and_the_event_chord_draw_from_the_games_generator() {
+        let mut g = quiet_game(HeroClass::Knight);
+        let wait = g.take_music_wait().expect("the map start drew it");
+        assert!((90_000..=122_767).contains(&wait), "{wait}");
+        assert_eq!(g.take_music_wait(), None, "taken once");
+        let mut r = g.rng.clone();
+        let chord = g.event_chord();
+        assert_eq!(chord, r.random(3) as usize);
+        assert_eq!(g.rng.state(), r.state(), "one draw");
+        let (pick, ms) = g.music_rotate(1);
+        assert_eq!((pick, ms), crate::rules::music::rotate(1, &mut r));
+        assert_eq!(g.rng.state(), r.state());
     }
 
     #[test]

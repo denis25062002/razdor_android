@@ -80,13 +80,19 @@ impl Rng {
     /// its idle offset, and the world music draws. A map without plants keeps the state the
     /// program had *(guess: 0, the state at start; the original keeps the last session's)*.
     pub fn save_load(w: i32, plants: &[u16], armies: usize) -> Rng {
+        Rng::save_load_with_music(w, plants, armies).0
+    }
+
+    /// [`Rng::save_load`], and the world music's draw: its first change comes that many ms
+    /// after 90 s.
+    pub fn save_load_with_music(w: i32, plants: &[u16], armies: usize) -> (Rng, i32) {
         let mut r = Rng::default();
         r.jitter_plants(w, plants);
         for _ in 0..armies {
             r.random(ARMY_IDLE_DRAW);
         }
-        r.random(WORLD_MUSIC_DRAW);
-        r
+        let music = r.random(WORLD_MUSIC_DRAW);
+        (r, music)
     }
 }
 

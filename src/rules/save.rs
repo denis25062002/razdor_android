@@ -393,7 +393,9 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
         (None, _) => {}
         (Some(_), None) => return Err(SaveError::Mismatch(tr("events saved for the demo").into())),
     }
-    game.rng = Rng::save_load(game.world.map.w, &plants, armies);
+    let (rng, music) = Rng::save_load_with_music(game.world.map.w, &plants, armies);
+    game.rng = rng;
+    game.music_wait = Some(90_000 + music as u32);
     game.event_rng = EventRng::from_clock();
     // The row width the game was saved with holds for it (0x4b771c), whatever the option
     // says now.
@@ -858,6 +860,8 @@ pub(crate) mod tests {
         let plants = rng::plant_layer(g.world.map.w, g.world.map.h, scenario.objects.iter().map(|o| (o.x as i32, o.y as i32, o.class, o.sprite)));
         assert!(plants.iter().any(|&p| (9..=11).contains(&(p >> 8))), "РК1 has plants");
         assert_eq!(loaded.rng.state(), Rng::save_load(g.world.map.w, &plants, scenario.armies.len()).state());
+        let music = Rng::save_load_with_music(g.world.map.w, &plants, scenario.armies.len()).1;
+        assert_eq!(loaded.music_wait, Some(90_000 + music as u32), "the world theme's first change");
         let (mut a, mut b) = (g, loaded);
         a.rng = b.rng.clone();
         // A load sets the AI up again (0x4a1ff0); so does the game played on.

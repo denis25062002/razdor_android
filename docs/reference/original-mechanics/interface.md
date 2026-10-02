@@ -1000,20 +1000,20 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 25 | AI pacing | 0.45 s delay before each AI action | No delay: the AI acts as soon as the previous animation ends | 12 |
 | 26 | Strike animation | 0.7 s; moves 0.25 s | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
 | 27 | Battle end | Result box at once | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |
-| 28 | Music crossfade | None, tracks follow each other by length | 2000 ms crossfade on screen changes, 4000 ms in the rotation; tracks loop | 13 |
-| 29 | Map music order | Shuffled seven tracks, all before a repeat | Uniform pick among eight (the seven map tracks and `BkgAuthors`), never the previous pick, changed on a timer per track (40–122.8 s, see §13) | 13 |
-| 30 | First map track | Random | Always `BkgMap2` | 13 |
-| 31 | Battle music | Random first, then alternating | `BkgBattle1` against a garrison, `BkgBattle2` against an army | 13 |
-| 32 | Triumph | Once after a won battle, then the map music | Starts at the win (during the 2.5 s hold), loops until the report is closed, then a random map track; the world map does not change it meanwhile | 13 |
-| 33 | `BkgAuthors` | Unused: the credits screen plays the menu theme | The credits theme, and part of the map rotation | 4, 13 |
-| 34 | Event chord | `Global-Event-1..3` in turn | One of three at random (game generator), also for the village and shipyard windows | 14 |
+| 28 | Music crossfade | No crossfades (presentation, left out); tracks loop until changed | 2000 ms crossfade on screen changes, 4000 ms in the rotation; tracks loop | 13 |
+| 29 | Map music order | Matches: `rules::music::rotate` with the game's generator, timed per pick; checked by the map and its windows, the map waiting while the triumph plays | Uniform pick among eight (the seven map tracks and `BkgAuthors`), never the previous pick, changed on a timer per track (40–122.8 s, see §13) | 13 |
+| 30 | First map track | Matches: `BkgMap2`, its first change from the load's draw (`Game::take_music_wait`) | Always `BkgMap2` | 13 |
+| 31 | Battle music | Matches: `BkgBattle1` against a garrison, `BkgBattle2` against an army | `BkgBattle1` against a garrison, `BkgBattle2` against an army | 13 |
+| 32 | Triumph | Matches: starts with the result, loops, the world map waits for it; closing a dialog draws the next map track | Starts at the win (during the 2.5 s hold), loops until the report is closed, then a random map track; the world map does not change it meanwhile | 13 |
+| 33 | `BkgAuthors` | Matches: the credits theme and pick 3 of the rotation | The credits theme, and part of the map rotation | 4, 13 |
+| 34 | Event chord | Matches: `Random(3)` of the game's generator (`Game::event_chord`) for event dialogs and the village and shipyard windows, drawn when the dialog comes up (several dialogs of one moment draw after that moment's rolls) | One of three at random (game generator), also for the village and shipyard windows | 14 |
 | 35 | `InterfacePanelDown` | Every window or non-event dialog opening | Only the press of a bottom panel icon | 14 |
 | 36 | `MainMenuPress` | Picking a scenario or a class | Pressing a main-menu item; choosing a class | 14 |
 | 37 | Hover bells | Unused | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
 | 38 | `InterfaceCastSpell` | World spell cast | Spell book cast, building tab switch, load window tab switch | 14 |
 | 39 | `InterfaceBarScroll` | Unused | Options slider test sound | 14 |
 | 40 | `Item-Gold` | Whenever gold goes up | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
-| 41 | Random generator | Music and sounds use their own seed | Music picks and the event chord use the game's generator | 13, 14 |
+| 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
 | 43 | Options window | Music and sound volume, battle AI | Five sliders and eight checkboxes; slider test sound | 16 |
 | 44 | Loading | Razdor's own start-up | Logo slides, a loading bar that takes at least 4 s, first-run sound conversion | 3 |

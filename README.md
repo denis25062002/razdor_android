@@ -390,10 +390,13 @@ save only).
 ## Sounds and music
 With an install, Razdor plays the original's sounds and music, read at runtime from
 `_Sounds.ini` and the `Sounds/` folder (nothing is copied; the `.raw` music is wrapped in a
-WAV header in memory). The menu theme plays on the title, scenario and class screens; the
-seven map themes rotate in random order on the world map and its windows; one of the two
-battle themes in battle; the triumph piece after a won battle (then the map music again) and
-at the scenario's victory; the defeat piece when the hero falls. Effects: buttons, windows
+WAV header in memory). The menu theme plays on the title, scenario and class screens, the
+credits theme on the credits. On the world map and its windows the music follows the
+original's rotation: `BkgMap2` when a map starts or loads, then a track drawn on a timer
+among the seven map themes and the credits theme, with the game's own random numbers (so,
+as in the original, it shifts the rolls that follow). `BkgBattle1` plays against a garrison,
+`BkgBattle2` against an army; the triumph piece from a won battle's result until a dialog
+is closed, and at the scenario's victory; the defeat piece when the hero falls. Effects: buttons, windows
 opening, the battle horn, melee, shots (cannon for shooters with ranged attack of at least
 `ShotWeaponRange`), heals, blessings, curses and magic strikes, cards moving, event chords,
 level-ups and promotions, casting a spell (good or evil by the target), items bought,
