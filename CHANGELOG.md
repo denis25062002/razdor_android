@@ -377,8 +377,9 @@ old id, and their versions give both.
   An item needs an icon, name, type and cost; a spell's id is its section's position and
   any type but Life and Death is Elemental. Names of natures, schools and bonuses are exact
   (`People` is the ordinary nature, so the AI hires such units alongside ordinary ones).
-- The front row is 6 wide only when the install's wide-row option (`OptValue11`) is on,
-  else 4 wide, and the options count as on when they read 1, as in the original.
+- The front row is 4 wide when the install sets its wide-row option (`OptValue11`) to
+  anything but 1, as in the original; on, or not set, it stays 6 wide, Razdor's default.
+  The options count as on when they read 1, as in the original.
 - Maps load as the original loads them: an army stands exactly on its file's cell (two
   shipped armies stand where they cannot walk), and only its "inactive" byte keeps it off
   the map. Unit ids 1–3 listed among the troops of a hero preset, an army or a garrison
@@ -441,8 +442,9 @@ old id, and their versions give both.
 - A building given to the player takes the hero's attitudes as the map lists them, his
   attitude to his own side included.
 - The autosave before a battle is named by the army's or the building's name only, cut at
-  its first `#`, so armies named alike share an autosave as in the original; autosaves are
-  written only when the install's autosave option (`OptValue8`) is on.
+  its first `#`, so armies named alike share an autosave as in the original; an install
+  that turns its autosave option (`OptValue8`) off gets none (without the option Razdor
+  autosaves, as before).
 - A loaded game's front-row width holds for the rest of the session: the next new game,
   restart or campaign map is played with it, as in the original.
 - Restart on a campaign map starts it again with what the map before carried over (army,

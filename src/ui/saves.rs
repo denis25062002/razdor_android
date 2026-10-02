@@ -105,15 +105,20 @@ fn battle_name(game: &Game) -> String {
 /// Writes an autosave named `name` (`in_battle`: the one before a battle, see
 /// [`save::write_autosave`]); a failure is reported on stderr (the game goes on).
 pub fn autosave(game: &Game, name: &str, in_battle: bool) {
-    // Only with the install's autosave option on (`[Options] OptValue8` = 1, 0x4b7410);
-    // without an install to read it from, Razdor always autosaves.
-    if super::chrome::has_texts() && super::chrome::options_value("OptValue8").is_none_or(|v| razdor::dt::ini::loose_int(&v) != 1) {
+    if !autosaves_on(super::chrome::has_texts().then(|| super::chrome::options_value("OptValue8")).flatten().as_deref()) {
         return;
     }
     let Some(dir) = save::default_dir() else { return };
     if let Err(e) = save::write_autosave(&dir, name, game, in_battle) {
         razdor::diag!("autosave: {e}");
     }
+}
+
+/// Whether autosaves are written, by the install's `[Options] OptValue8` (`None`: no install
+/// texts, or no such key): an install that sets it follows it as the original does (on when it
+/// reads 1, 0x4b7410); without it Razdor autosaves, as it always did before the parity pass.
+fn autosaves_on(opt_value8: Option<&str>) -> bool {
+    opt_value8.is_none_or(|v| razdor::dt::ini::loose_int(v) == 1)
 }
 
 /// The install's content for the rest of the session after `game` was loaded: a save's row
@@ -547,8 +552,8 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
     (choice, cancel || key(KeyCode::Escape))
 }
 
-/// A question with Yes / No, `None` until answered (Esc: no, any other key: yes, as the
-/// original's box: `answer_key`).
+/// A question with Yes / No, `None` until answered (Esc or N: no, any other key: yes, as
+/// the original's box but for Razdor's N: `answer_key`).
 fn question(title: &str, text: &str) -> Option<bool> {
     let k = super::chrome::k();
     let (w, h) = (380.0 * k, 150.0 * k);
@@ -591,6 +596,14 @@ mod tests {
         game.origin = Some(save::ScenarioRef::Map { file: "m".into(), hash: 0 });
         assert_eq!(session_content(Some(wide.clone()), &game).unwrap().formation, Formation::VANILLA);
         assert!(session_content(None, &game).is_none());
+    }
+
+    #[test]
+    fn autosaves_are_on_unless_the_install_turns_them_off() {
+        assert!(autosaves_on(None), "no install, or no OptValue8: Razdor autosaves");
+        assert!(autosaves_on(Some("1")));
+        assert!(!autosaves_on(Some("0")));
+        assert!(!autosaves_on(Some("")));
     }
 
     #[test]

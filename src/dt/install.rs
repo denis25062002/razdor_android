@@ -80,8 +80,10 @@ fn read_ini(dir: &Path, name: &str) -> Result<Ini, DtError> {
 
 /// The player's settings in `[Options]` of [`SETTINGS_FILE`] that change play, read as the
 /// original reads them at start (0x4b8974): a flag is on when its value reads 1 (loosely,
-/// [`super::ini::loose_int`]); a missing file, section or key reads 0, so off.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// [`super::ini::loose_int`]); a missing file, section or key reads 0, so off. The wide row
+/// is the exception: Razdor's default since its first release, it is on unless the install
+/// sets `OptValue11` (to anything but 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayOptions {
     /// `OptValue9`: improved enemy AI in battle.
     pub expert_ai: bool,
@@ -91,10 +93,18 @@ pub struct PlayOptions {
     pub wide_row: bool,
 }
 
+impl Default for PlayOptions {
+    fn default() -> Self {
+        PlayOptions { expert_ai: false, impossible: false, wide_row: true }
+    }
+}
+
 impl PlayOptions {
     pub fn from_ini(ini: &Ini) -> PlayOptions {
-        let on = |key: &str| ini.section("Options").is_some_and(|s| s.int(key) == 1);
-        PlayOptions { expert_ai: on("OptValue9"), impossible: on("OptValue10"), wide_row: on("OptValue11") }
+        let options = ini.section("Options");
+        let on = |key: &str| options.is_some_and(|s| s.int(key) == 1);
+        let wide_row = options.and_then(|s| s.get("OptValue11")).is_none_or(|_| on("OptValue11"));
+        PlayOptions { expert_ai: on("OptValue9"), impossible: on("OptValue10"), wide_row }
     }
 
     fn read(dir: &Path) -> PlayOptions {
@@ -391,6 +401,10 @@ mod tests {
         let ini = Ini::parse("[Options]\nOptValue9=01\nOptValue10=2\nOptValue11=on\n");
         assert_eq!(PlayOptions::from_ini(&ini), PlayOptions { expert_ai: true, impossible: false, wide_row: false });
         assert_eq!(PlayOptions::from_ini(&Ini::default()), PlayOptions::default());
+        // Razdor's wide row default: with no OptValue11 the row is wide.
+        assert_eq!(PlayOptions::default(), PlayOptions { expert_ai: false, impossible: false, wide_row: true });
+        assert!(PlayOptions::from_ini(&Ini::parse("[Options]\nOptValue9=1\n")).wide_row);
+        assert!(!PlayOptions::from_ini(&Ini::parse("[Options]\nOptValue11=0\n")).wide_row);
     }
 
     #[test]

@@ -75,9 +75,9 @@ above).
 - Bandit gangs roam the map, chase you when you're close ("!") and attack on contact.
   Surviving camps send out new gangs every few days.
 - Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
-  2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row is
-  supported too). As in the original the battle starts when its window opens: the formation
-  is the one set in the army window beforehand. Until anyone has acted, **Quick battle** (Q /
+  2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row when
+  the install's `OptValue11` is set to anything but 1). As in the original the battle starts
+  when its window opens: the formation is the one set in the army window beforehand. Until anyone has acted, **Quick battle** (Q /
   Enter) plays it out at once; later **Finish automatically** (Q) plays the rest (see below).
 - Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
   actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
@@ -385,7 +385,7 @@ previous one) and **F9** loads it. The load window has two tabs, your saves and 
 with the scenario, the hero and the in-game date. The game autosaves before every battle
 and at every 12:00 report (named by the date, "1204.06.03, 12 h"), in the original's 12
 slots: an autosave of the same name (on the same map) is overwritten, and once there are 12
-the oldest is.
+the oldest is. An install whose autosave option (`OptValue8`) is off gets no autosaves.
 
 Saves are your data and live in your data folder, never in the repo or the game folder:
 `$XDG_DATA_HOME/razdor/saves` (usually `~/.local/share/razdor/saves`) on Linux,
