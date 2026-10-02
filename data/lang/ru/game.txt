@@ -304,6 +304,7 @@ Type a command; help lists them. = Введите команду; help — их 
 Unknown command "{word}"; help lists them. = Нет команды «{word}»; help — список команд.
 Usage: {usage} = Как писать: {usage}
 Only in battle. = Только в бою.
+The battle is over. = Бой уже окончен.
 Only in a game (not in a custom battle). = Только в игре (не в своей битве).
 Not during a battle: the army is fighting. = Не во время боя: армия сражается.
 God mode on: your army takes no damage. = Бессмертие включено: ваша армия не получает урона.

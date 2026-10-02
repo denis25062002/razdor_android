@@ -10,7 +10,7 @@ use crate::i18n::{n_, tr};
 use crate::search;
 use crate::trf;
 
-use super::battle::{Battle, Team};
+use super::battle::{Battle, Outcome, Team};
 use super::content::{Content, ItemId, UnitId};
 use super::game::{Event, Game, PACK_SIZE, SPELL_BOOK_SIZE};
 use super::units::Unit;
@@ -222,6 +222,8 @@ pub fn run(cheat: &Cheat, game: Option<&mut Game>, battle: Option<&mut Battle>) 
     let in_battle = battle.is_some();
     match (cheat, battle) {
         (Cheat::Win | Cheat::Lose, None) => return Err(tr("Only in battle.").into()),
+        // A battle already decided keeps its result (a second side falling would turn it).
+        (Cheat::Win | Cheat::Lose, Some(b)) if b.outcome() != Outcome::Ongoing => return Err(tr("The battle is over.").into()),
         (Cheat::Win, Some(b)) => {
             b.force_end(Team::Player);
             mark(game);
@@ -361,7 +363,6 @@ fn run_on_game(cheat: &Cheat, game: &mut Game) -> Result<Done, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::battle::Outcome;
     use crate::rules::content::HeroClass;
     use std::sync::Arc;
 
@@ -535,6 +536,9 @@ mod tests {
         let mut b = battle(&mut g);
         run(&Cheat::Lose, Some(&mut g), Some(&mut b)).unwrap();
         assert_eq!(b.outcome(), Outcome::Defeat);
+        assert!(run(&Cheat::Win, Some(&mut g), Some(&mut b)).is_err(), "a lost battle stays lost");
+        assert_eq!(b.outcome(), Outcome::Defeat);
+        assert!(run(&Cheat::Lose, Some(&mut g), Some(&mut b)).is_err());
         // A custom battle has no game behind it.
         let mut b = battle(&mut g);
         run(&Cheat::Win, None, Some(&mut b)).unwrap();
