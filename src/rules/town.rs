@@ -1472,6 +1472,25 @@ mod tests {
     }
 
     #[test]
+    fn a_map_good_of_negative_cost_pays_its_buyer() {
+        let mut c = content();
+        c.items.push(crate::rules::content::ArtefactDef { cost: -100, ..ck::item(40, ArtefactType::Ring) });
+        let c = Arc::new(Content::new(c.units.clone(), c.items.clone(), c.spells.clone(), Default::default(), crate::rules::formation::Formation::WIDE));
+        let mut s = map();
+        let mut t = town(BuildingType::Market, 2, 2, 0);
+        t.artifact_slots[0] = 40;
+        s.buildings = vec![t];
+        let mut g = Game::from_scenario(c, &s, HeroClass::Knight);
+        g.location = Some(0);
+        // Round(−100 × 1.1) = −110 (0x4b9e18 takes the sign off the goods id, not the Cost).
+        assert_eq!(g.buy_price(ItemId(40)), -110);
+        let gold = g.gold;
+        g.buy(0).unwrap();
+        assert_eq!(g.gold, gold + 110);
+        assert!(!g.can_sell(ItemId(40)), "and it cannot be sold back");
+    }
+
+    #[test]
     fn the_map_load_sets_the_price_window() {
         use crate::rules::world::Shop;
         // The top capped at the dearest item, the bottom 0 unless below the top; 0 means

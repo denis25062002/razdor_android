@@ -279,6 +279,9 @@ old id, and their versions give both.
 - The market lists only items that can be sold, shows unaffordable prices in red, opens on
   the goods when there are some, and a purchase no longer checks the pack's room. An AI
   army shops (sells its pack) in a market even when its goods are gone.
+- A map's good of negative price (a personal item placed in a market) pays its buyer, as in
+  the original; an attitude outside −3..3 leaves a price unchanged; a dead Merchant still
+  bargains.
 
 ## 0.2.2 — 2026-10-01
 

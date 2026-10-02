@@ -517,8 +517,8 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Stock growth | Every building with a maximum; the mana sum wraps on a byte (`grow_mana`) | Every building with a max > 0; byte wrap for mana | Matches |
 | Ranger heal | 15% at noon, 20% more when the report is shown | 15%, plus 20% when the report is shown | Matches |
 | Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight; a dead medic counts | Same (a dead medic counts) | Matches |
-| Relation factor | Exact table, half to even | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
-| Buy / sell / spells / hire / ship prices | As the original | §2 | Yes |
+| Relation factor | Exact table, half to even; an attitude outside −3..3 leaves the price unchanged | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
+| Buy / sell / spells / hire / ship prices | As the original; a fixed good of negative Cost has a negative price that pays the buyer; a dead Merchant counts | §2 | Matches |
 | Market buildings | Towns, markets, churches only: the map load drops every other building's goods | Towns, markets, churches only | Matches |
 | Market stock | 12 places with the map's goods fixed in theirs; a 12-hour timer; bands walking down the window, town potions (one of 95/96/97/114/115 when more than 6 remain, the rest 98 + Rand(3)), type and school rules, 1/n widening, run-down lists, 26 tries, no overwrite, not sorted (`restock_market`). Where fewer than two items can ever fit the original hangs; Razdor gives up on that good after 10 000 widenings | Bands walking down the window, n − 1 healing potions + one of 95/96/97/114/115 when R > 6 remains, type and school rules, 1/n widening, no overwrite of a full list, not sorted | Matches |
 | Barracks regrowth | `1/(10 div max)` | Same | Yes |

@@ -39,10 +39,19 @@ pub fn round_ratio(num: i64, den: i64) -> i64 {
 /// buildings count as +3).
 pub const RELATION_PERCENT: [i64; 7] = [170, 145, 125, 110, 100, 90, 75];
 
-/// `Round(base × m)` with the relation factor m of `attitude` (+3 if the buyer owns it).
+/// `Round(base × m)` with the relation factor m of `attitude` (+3 if the buyer owns it)
+/// (0x4a03ec). An attitude outside −3..3 leaves the price as it is, and so does +1. The
+/// base keeps its sign: a map's fixed good of negative Cost gets a negative price, which
+/// pays the buyer (the original takes the sign off the goods id only).
 pub fn relation_price(base: i32, attitude: i8, own: bool) -> i32 {
-    let a = if own { 3 } else { attitude.clamp(-3, 3) };
-    round_ratio(base.max(0) as i64 * RELATION_PERCENT[(a + 3) as usize], 100) as i32
+    let a = if own { 3 } else { attitude };
+    if !(-3..=3).contains(&a) {
+        return base;
+    }
+    let m = RELATION_PERCENT[(a + 3) as usize];
+    let num = base as i64 * m;
+    // Round is symmetric about 0.
+    (if num < 0 { -round_ratio(-num, 100) } else { round_ratio(num, 100) }) as i32
 }
 
 /// A `Merchant` in the army takes `price × 30 / 100` off a purchase.
@@ -418,7 +427,7 @@ impl Game {
             (l.attitude, l.owned())
         });
         let p = relation_price(self.content.item(item).cost, attitude, own);
-        if self.squad_has(&Bonus::Merchant) {
+        if self.squad_has_any(&Bonus::Merchant) {
             merchant_price(p)
         } else {
             p
@@ -430,7 +439,7 @@ impl Game {
     pub fn sell_price(&self, item: ItemId) -> i32 {
         let cost = self.content.item(item).cost.max(0) as i64;
         let p = (cost * self.content.options.item_sale_cost as i64 * self.difficulty() as i64 / 10_000) as i32;
-        if self.squad_has(&Bonus::Merchant) {
+        if self.squad_has_any(&Bonus::Merchant) {
             p + p / 2
         } else {
             p
@@ -881,6 +890,9 @@ mod tests {
         assert_eq!(relation_price(1000, -3, true), 750, "own = +3");
         assert_eq!(relation_price(10, 0, false), 11);
         assert_eq!(merchant_price(1450), 1015);
+        assert_eq!(relation_price(1000, 4, false), 1000, "outside −3..3: unchanged");
+        assert_eq!(relation_price(-100, 0, false), -110, "a negative Cost keeps its sign");
+        assert_eq!(merchant_price(-110), -77);
     }
 
     #[test]
