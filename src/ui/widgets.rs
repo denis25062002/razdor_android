@@ -180,6 +180,12 @@ pub fn track_held_key() {
     });
 }
 
+/// Forgets the held key: one the cheat console took (its ~ or Esc, still held as it closes)
+/// does not then scroll the map or stop the hero's walk. The next key pressed is held again.
+pub fn forget_held_key() {
+    HELD_KEY.with(|h| h.set(None));
+}
+
 /// The held key as the original sees it ([`track_held_key`]); none while input is blocked.
 pub fn held_key() -> Option<KeyCode> {
     if input_blocked() {
@@ -769,6 +775,14 @@ pub fn tabs(x: f32, y: f32, w: f32, labels: &[&str], selected: &mut usize) -> f3
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forgotten_key_is_not_held() {
+        HELD_KEY.with(|h| h.set(Some(KeyCode::GraveAccent)));
+        assert_eq!(held_key(), Some(KeyCode::GraveAccent));
+        forget_held_key();
+        assert_eq!(held_key(), None, "the console's ~ does not stop the walk once it closes");
+    }
 
     #[test]
     fn the_question_box_takes_any_key_but_four_as_yes() {

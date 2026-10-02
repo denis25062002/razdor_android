@@ -139,6 +139,12 @@ pub(super) fn set_pack_filter(query: &str) {
     FILTER.with(|f| query.clone_into(&mut f.borrow_mut()));
 }
 
+/// The backpack's filter as the army screen is left by any way (its own buttons clear it;
+/// F9 or a battle leave by the app's).
+pub(super) fn clear_pack_filter() {
+    FILTER.with(|f| f.borrow_mut().clear());
+}
+
 /// Squad member `unit` wears or drinks the pack item at `i`; the message to show, if any.
 fn use_pack_item(game: &mut Game, unit: usize, i: usize) -> Option<String> {
     let c = game.content.clone();

@@ -651,6 +651,10 @@ impl App {
         let console_here = matches!(place, hotkeys::Place::WorldMap | hotkeys::Place::Battle) && (self.game.is_some() || self.in_custom());
         let (held, entered) = self.console.input(console_here && self.dialogs.is_empty() && !self.help && !widgets::typing());
         self.console_held = held;
+        if held {
+            // A key the console took is not held for the map once it closes.
+            widgets::forget_held_key();
+        }
         let console_next = entered.and_then(|line| self.run_cheat(&line));
         // A dialog or the key list on top: the screen below is drawn but takes no input.
         let guard = self.guard();
@@ -862,8 +866,12 @@ impl App {
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
             }
-            // A field that had the keyboard (the inventory filter) lets it go with its screen.
+            // A field that had the keyboard (the inventory filter) lets it go with its screen,
+            // and the backpack's filter does not stay for the next game or the next visit.
             widgets::clear_focus();
+            if matches!(self.screen, Screen::Squad { .. }) && !matches!(next, Screen::Squad { .. }) {
+                items_view::clear_pack_filter();
+            }
             self.screen = next;
         }
         self.play_log_frame();
