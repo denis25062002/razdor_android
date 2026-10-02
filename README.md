@@ -259,6 +259,7 @@ original but for Razdor's N).
 | Journal | Left / Right, Up / Down, wheel, PgUp / PgDn, J | tabs, entries, scrolling, close |
 | Spell book | click / B | cast the spell (an enemy spell: pick the army) / close |
 | Army | A | close |
+| Army, market | a letter, Ctrl+F | the inventory filter: type to filter the backpack or the market's list; Enter takes the first match, Esc clears |
 | Battle, before anyone acts | Q / Enter | quick battle |
 | Battle | Space / Q / Enter | as a click on the unit's own card / finish automatically / OK on the result |
 | Battle | W | watch the AI play both sides / take control back |
@@ -324,6 +325,17 @@ in any battle. The result box offers **Again** (Enter, the same armies), **Chang
 (Esc) and **Main menu**; it counts the rounds won and lost. The setup is kept until the game
 is closed. Nothing of it touches a game or a save: no experience, no loot, and the Community
 patch's battle counters (Hunger, Flock) are put back as the round found them.
+
+## Inventory filter
+A Razdor extra (issue #1), like a Spotlight search: on the hero and army screen a filter line
+stands over the backpack, and on a market's tab over its list (the goods and the sell shop).
+Start typing (A and N keep their meaning on an empty line: Ctrl+F or a click on the line
+starts it then) and the list keeps, as you type, the items whose name, type, stats, bonus or
+description hold every word you typed, in any case and any script (Ё counts as Е). The
+matched part of each name is lit (in the backpack, the matches are listed in the description
+box until you point at an item). Enter takes the first match: on the army screen it is worn
+or drunk by the selected unit, on the market it is picked for Buy or Sell. Esc clears the
+line; a second Esc closes the window as usual.
 
 ## Cheat console
 A Razdor extra (issue #1): **~** (the key left of 1, Ё on a Russian layout) on the world

@@ -132,8 +132,18 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             ("Esc", n_("close the minimap, else the game menu")),
             ("~", n_("cheat console (help lists its commands)")),
         ],
-        Place::Building => vec![(n_("Click"), n_("tabs and buttons")), ("F5", n_("quick save")), ("Esc", n_("back to the map"))],
-        Place::Army => vec![(n_("Click"), n_("a unit, an item")), ("F5", n_("quick save")), ("A / Esc", n_("close"))],
+        Place::Building => vec![
+            (n_("Click"), n_("tabs and buttons")),
+            (n_("Type, Ctrl+F"), n_("market: filter the list (Enter picks the first, Esc clears)")),
+            ("F5", n_("quick save")),
+            ("Esc", n_("back to the map")),
+        ],
+        Place::Army => vec![
+            (n_("Click"), n_("a unit, an item")),
+            (n_("Type, Ctrl+F"), n_("filter the backpack (Enter: the first to the unit, Esc clears)")),
+            ("F5", n_("quick save")),
+            ("A / Esc", n_("close")),
+        ],
         Place::Battle => vec![
             (n_("Click a framed card"), n_("attack or cast")),
             (n_("Click a lit cell"), n_("step there")),

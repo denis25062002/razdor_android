@@ -6,11 +6,12 @@
 //! Scenes (`<map>` is a map file name of the install without `.DTm`, e.g. `РК3-Столица`):
 //! `title`, `authors`, `options`, `scenarios`, `tutorial`, `load`, `editor`, `classes:<map>`, `map:<map>[:x,y]`, `minimap:<map>`, `walk:<map>:dx,dy` (the
 //! hero sets off that many cells away), `building:<map>:<n>`
-//! (the hero in the n-th building), `army:<map>`, `journal:<map>`, `spells:<map>`,
+//! (the hero in the n-th building; `:barracks`, `:garrison`, `:market` open that tab), `army:<map>`, `journal:<map>`, `spells:<map>`,
 //! `menu:<map>`, `battle:<map>:<n>` (against the n-th army), `custom` (the custom battle
 //! setup), `custom-battle` (its first round; `custom-battle:watch` watches the AI play it). `RAZDOR_SCENE_SHOW=x,y,r` shows
 //! a place as a lantern event does; `RAZDOR_SCENE_CONSOLE=help;gold 100` opens the cheat
-//! console after those commands; `RAZDOR_SCENE_QUIET=1` drops
+//! console after those commands; `RAZDOR_SCENE_FILTER=text` fills the inventory filter
+//! (army screen, market); `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
 //! puts the pointer there.
 
@@ -56,6 +57,13 @@ pub fn stage(app: &mut App) {
     let Ok(scene) = std::env::var("RAZDOR_SCENE") else { return };
     if let Err(e) = try_stage(app, &scene) {
         razdor::diag!("RAZDOR_SCENE={scene}: {e}");
+    }
+    // `RAZDOR_SCENE_FILTER=меч`: the inventory filter (army screen, market) holds that.
+    if let Ok(q) = std::env::var("RAZDOR_SCENE_FILTER") {
+        super::items_view::set_pack_filter(&q);
+        if let Screen::Building(v) = &mut app.screen {
+            v.filter = q;
+        }
     }
     // `RAZDOR_SCENE_CONSOLE=help;gold 100`: the cheat console open, after those commands.
     if let Ok(lines) = std::env::var("RAZDOR_SCENE_CONSOLE") {
@@ -175,6 +183,7 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
             match parts.next() {
                 Some("barracks") => tab = razdor::rules::town::Tab::Barracks,
                 Some("garrison") => tab = razdor::rules::town::Tab::Garrison,
+                Some("market") => tab = razdor::rules::town::Tab::Market,
                 _ => {}
             }
             game.pos = game.world.map.center(loc.anchor);

@@ -14,6 +14,7 @@ use super::audio::{cue, cued, Cue};
 use super::building_view::{service_error, BuildingView};
 use super::screens::attack_line;
 use super::chrome;
+use super::item_filter;
 use super::unit_sheet;
 use super::widgets::*;
 use super::Screen;
@@ -126,6 +127,16 @@ thread_local! {
     static HELD: std::cell::Cell<Option<Held>> = const { std::cell::Cell::new(None) };
     /// The unit whose Dismiss (or Bury) was pressed: confirm or cancel (0x4c3744).
     static CONFIRM: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// What the backpack's filter line holds (`ui::item_filter`).
+    static FILTER: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// The backpack filter's field.
+const FILTER_KEY: &str = "army:pack-filter";
+
+/// Puts `query` into the backpack's filter (debug snapshots).
+pub(super) fn set_pack_filter(query: &str) {
+    FILTER.with(|f| query.clone_into(&mut f.borrow_mut()));
 }
 
 /// Squad member `unit` wears or drinks the pack item at `i`; the message to show, if any.
@@ -207,13 +218,13 @@ fn tree_view(game: &mut Game, assets: &Assets, sel: usize, u: &Unit, r: Rect, me
     }
 }
 
-/// The backpack: 5 columns of the original's inventory squares, scrolling. Returns the
-/// pack index pressed.
-fn pack_view(game: &Game, assets: &Assets, r: Rect, scroll: &mut usize, hover: &mut Option<ItemId>) -> Option<usize> {
+/// The backpack: 5 columns of the original's inventory squares, scrolling; with a filter, only
+/// the pack indices `kept`, in their order. Returns the pack index pressed.
+fn pack_view(game: &Game, assets: &Assets, r: Rect, scroll: &mut usize, hover: &mut Option<ItemId>, kept: Option<&[usize]>) -> Option<usize> {
     let k = chrome::k();
     let cell = ((r.w - 18.0 * k) / PACK_COLS as f32).floor();
     let rows_shown = ((r.h / cell).floor() as usize).max(1);
-    let rows = PACK_SIZE.div_ceil(PACK_COLS);
+    let rows = kept.map_or(PACK_SIZE, |v| v.len().max(1)).div_ceil(PACK_COLS).max(rows_shown);
     let max_scroll = rows.saturating_sub(rows_shown);
     if mouse_in(r.x, r.y, r.w, r.h) {
         let w = wheel();
@@ -240,6 +251,7 @@ fn pack_view(game: &Game, assets: &Assets, r: Rect, scroll: &mut usize, hover: &
                     draw_rectangle_lines(cr.x, cr.y, cr.w, cr.h, 1.0, Color::new(0.5, 0.35, 0.2, 0.8));
                 }
             }
+            let Some(i) = kept.map_or(Some(i), |v| v.get(i).copied()) else { continue };
             let Some(&item) = game.pack.get(i) else { continue };
             assets.draw_item(item, cr.x + 2.0, cr.y + 2.0, cell - 4.0);
             if mouse_in(cr.x, cr.y, cr.w, cr.h) {
@@ -341,10 +353,33 @@ pub fn squad(
         });
     }
     let content = at(258.0, 54.0, 300.0, 242.0);
+    // The backpack's filter line above it: typing a letter starts it.
+    let mut query = FILTER.with(|f| f.borrow().clone());
+    let mut filter = item_filter::Reply::default();
+    let mut kept = Vec::new();
+    if show_tree {
+        if has_focus(FILTER_KEY) {
+            clear_focus();
+        }
+    } else {
+        let all: Vec<(usize, ItemId)> = game.pack.iter().copied().enumerate().collect();
+        let before = item_filter::keep(&c, all.iter().copied(), &query).len();
+        filter = item_filter::field(FILTER_KEY, &mut query, at(258.0, 31.0, 300.0, 20.0), &[KeyCode::A, KeyCode::N], before, game.pack.len());
+        kept = item_filter::keep(&c, all, &query);
+        FILTER.with(|f| query.clone_into(&mut f.borrow_mut()));
+    }
+    let filtering = !query.trim().is_empty();
+    let kept_ids: Vec<usize> = kept.iter().map(|(i, _)| *i).collect();
     if show_tree {
         tree_view(game, assets, sel, &u, content, message);
-    } else if let Some(i) = pack_view(game, assets, content, scroll, &mut hover) {
+    } else if let Some(i) = pack_view(game, assets, content, scroll, &mut hover, filtering.then_some(&kept_ids[..])) {
         held = Some(Held { from: From::Pack(i), item: game.pack[i], at: pointer().into(), moved: false });
+    }
+    // Enter wears or drinks the first match on the selected unit.
+    if filter.pick {
+        if let Some(&first) = kept_ids.first() {
+            *message = use_pack_item(game, sel, first);
+        }
     }
     if let Some(h) = held.as_mut() {
         h.moved |= Vec2::from(pointer()).distance(h.at) > DRAG_START;
@@ -362,6 +397,24 @@ pub fn squad(
     let desc = if sel > 0 { at(570.0, 54.0, 256.0, 172.0) } else { at(570.0, 54.0, 256.0, 242.0) };
     match hover {
         Some(item) => super::building_view::item_description(game, assets, item, desc.x, desc.y, desc.w, desc.h),
+        // While filtering: the matches by name, their matched part lit; Enter takes the first.
+        None if filtering => {
+            chrome::text_box(desc);
+            let size = (15.0 * k).round();
+            let pitch = (size * 1.35).round();
+            let x = desc.x + 12.0 * k;
+            let mut y = desc.y + 12.0 * k + size;
+            let head = if kept.is_empty() { tr("Nothing in the pack matches.") } else { tr("Enter gives the first to the selected unit:") };
+            text_fit(head, x, y, desc.w - 24.0 * k, size, chrome::CREAM);
+            for (n, (i, m)) in kept.iter().enumerate() {
+                y += pitch;
+                if y > desc.bottom() - 8.0 * k {
+                    break;
+                }
+                let name = &c.item(game.pack[*i]).name;
+                item_filter::marked_name(name, m, x, y, desc.w - 24.0 * k, size, if n == 0 { chrome::GOLD } else { chrome::CREAM });
+            }
+        }
         None => chrome::text_box(desc),
     }
     let row = at(570.0, 234.0, 256.0, 62.0);
@@ -510,8 +563,9 @@ pub fn squad(
         }
     }
 
-    if close || key(KeyCode::Escape) || key(KeyCode::A) {
+    if close || (!filter.keys_taken && (key(KeyCode::Escape) || key(KeyCode::A))) {
         HELD.with(|c| c.set(None));
+        FILTER.with(|f| f.borrow_mut().clear());
         super::unit_drag::cancel();
         *message = None;
         return Some(match back {
@@ -529,6 +583,7 @@ pub fn squad(
     };
     if next.is_some() {
         HELD.with(|c| c.set(None));
+        FILTER.with(|f| f.borrow_mut().clear());
     }
     next
 }

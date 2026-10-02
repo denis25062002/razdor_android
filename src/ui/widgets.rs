@@ -270,6 +270,22 @@ pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
     }
 }
 
+/// `s` with its byte range `marked` lit (a search's match): that part in `mark` on a dark
+/// band, the rest in `color`.
+pub fn text_marked(s: &str, marked: Option<std::ops::Range<usize>>, x: f32, y: f32, size: f32, color: Color, mark: Color) {
+    let Some(r) = marked.filter(|r| r.end <= s.len() && s.is_char_boundary(r.start) && s.is_char_boundary(r.end)) else {
+        text(s, x, y, size, color);
+        return;
+    };
+    let (head, hit, tail) = (&s[..r.start], &s[r.clone()], &s[r.end..]);
+    let hx = x + measure(head, size).width;
+    let hw = measure(hit, size).width;
+    draw_rectangle(hx - 1.0, y - size * 0.85, hw + 2.0, size * 1.1, Color::new(0.35, 0.22, 0.02, 0.9));
+    text(head, x, y, size, color);
+    text(hit, hx, y, size, mark);
+    text(tail, hx + hw, y, size, color);
+}
+
 /// The font size, at most `size` and not below 70% of it, at which `s` fits in `width`
 /// (Russian texts run longer than the English ones the layouts were drawn for).
 pub fn fit_size(s: &str, width: f32, size: f32) -> f32 {
@@ -400,6 +416,17 @@ pub fn typing() -> bool {
 
 pub fn clear_focus() {
     FOCUS.with(|f| *f.borrow_mut() = None);
+}
+
+/// The field of `key` ([`field_id`]) has the keyboard.
+pub fn has_focus(key: &str) -> bool {
+    focused(field_id(key))
+}
+
+/// Gives the keyboard to the field of `key` (a field that draws itself, like the inventory
+/// filter).
+pub fn take_focus(key: &str) {
+    set_focus(field_id(key), String::new());
 }
 
 fn focused(id: u64) -> bool {

@@ -22,6 +22,7 @@ use super::assets::Assets;
 use super::chrome;
 use super::audio::{cue, Cue};
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
+use super::item_filter;
 use super::items_view::{level_gains, unit_stat_lines};
 use super::screens::stat_lines;
 use super::story;
@@ -33,6 +34,14 @@ const PARCHMENT_INK: Color = Color::new(0.45, 0.28, 0.14, 1.0);
 const BOX_INK: Color = Color::new(1.0, 0.86, 0.58, 1.0);
 const SILVER: Color = Color::new(0.78, 0.78, 0.82, 1.0);
 const TAB_RED: Color = Color::new(0.75, 0.18, 0.12, 1.0);
+
+/// The market's filter field.
+const FILTER_KEY: &str = "market:filter";
+
+thread_local! {
+    /// The market's filter took this frame's keys (its Esc does not close the window).
+    static FILTER_KEYS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// State of the building window between frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,14 +56,19 @@ pub struct BuildingView {
     pub garrison_sel: Option<(bool, usize)>,
     /// The garrison unit being bought back: (index, cell, price), waiting for the answer.
     pub garrison_buy: Option<(usize, Slot, i32)>,
+    /// What the market's filter line holds (`ui::item_filter`).
+    pub filter: String,
 }
 
 impl BuildingView {
     pub fn new(tab: Tab) -> BuildingView {
-        BuildingView { tab, pick: None, scroll: 0, selling: false, garrison_sel: None, garrison_buy: None }
+        BuildingView { tab, pick: None, scroll: 0, selling: false, garrison_sel: None, garrison_buy: None, filter: String::new() }
     }
 
     fn switch(&mut self, tab: Tab) {
+        if has_focus(FILTER_KEY) {
+            clear_focus();
+        }
         *self = BuildingView::new(tab);
     }
 }
@@ -645,9 +659,9 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
 }
 
 /// A list with a selection and a scroll bar. Rows are (icon item, name, price, the price in
-/// red). Returns the clicked row.
+/// red); `marks` light a filter's match in the names. Returns the clicked row.
 #[allow(clippy::too_many_arguments)]
-fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String, bool)], pick: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32, visible: usize) -> Option<usize> {
+fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String, bool)], marks: &[Option<std::ops::Range<usize>>], pick: Option<usize>, scroll: &mut usize, x: f32, y: f32, w: f32, visible: usize) -> Option<usize> {
     let k = chrome::k();
     let row_h = 30.0 * k;
     draw_rectangle(x, y, w, 26.0 * k + visible as f32 * row_h, Color::new(0.0, 0.04, 0.02, 0.45));
@@ -674,7 +688,8 @@ fn price_list(assets: Option<&Assets>, rows: &[(Option<ItemId>, String, String, 
             assets.draw_item(*item, x + 8.0 * k, ry + 1.0, row_h - 4.0 * k);
         }
         let shown: String = name.chars().take(26).collect();
-        text(&shown, x + 50.0 * k, ry + 21.0 * k, 18.0 * k, if sel { WHITE } else { ACCENT });
+        let mark = marks.get(n).cloned().flatten();
+        text_marked(&shown, mark, x + 50.0 * k, ry + 21.0 * k, 18.0 * k, if sel { WHITE } else { ACCENT }, chrome::GOLD);
         text(price, x + w - 80.0 * k, ry + 21.0 * k, 18.0 * k, if *red { RED } else { ACCENT });
         if mouse_in(x, ry, w - 18.0 * k, row_h) && clicked() {
             hit = Some(n);
@@ -743,9 +758,27 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     } else {
         goods.iter().map(|&i| (Some(i), c.item(i).name.clone(), game.buy_price(i).to_string(), game.buy_price(i) > game.gold)).collect()
     };
-    text_centered(if view.selling { tr("Your pack: what the market pays") } else { tr("Goods for sale") }, lx + lw / 2.0, y + 18.0 * k, 18.0 * k, ACCENT);
-    if let Some(k) = price_list(Some(assets), &rows, view.pick, &mut view.scroll, lx, y + 26.0 * k, lw, 8) {
-        view.pick = Some(k);
+    // The title on the left of its row, the filter line on the right: the list keeps the
+    // items that match what is typed, their matched part lit; Enter picks the first.
+    let head = if view.selling { tr("Your pack: what the market pays") } else { tr("Goods for sale") };
+    text_fit(head, lx, y + 18.0 * k, lw * 0.5 - 6.0 * k, 18.0 * k, ACCENT);
+    let all: Vec<(usize, ItemId)> = rows.iter().enumerate().filter_map(|(n, r)| r.0.map(|i| (n, i))).collect();
+    let before = item_filter::keep(&c, all.iter().copied(), &view.filter).len();
+    let filter_rect = Rect::new(lx + lw * 0.5, y + 2.0 * k, lw * 0.5, 21.0 * k);
+    let reply = item_filter::field(FILTER_KEY, &mut view.filter, filter_rect, &[KeyCode::N], before, rows.len());
+    let kept = item_filter::keep(&c, all, &view.filter);
+    let shown: Vec<(Option<ItemId>, String, String, bool)> = kept.iter().map(|(n, _)| rows[*n].clone()).collect();
+    let marks: Vec<Option<std::ops::Range<usize>>> = kept.iter().map(|(_, m)| m.name_range.clone()).collect();
+    let at_pick = view.pick.and_then(|p| kept.iter().position(|(n, _)| *n == p));
+    if let Some(k) = price_list(Some(assets), &shown, &marks, at_pick, &mut view.scroll, lx, y + 26.0 * k, lw, 8) {
+        view.pick = Some(kept[k].0);
+    }
+    if reply.pick {
+        view.pick = kept.first().map(|(n, _)| *n);
+    }
+    // A row the filter hides is not the one picked.
+    if !view.filter.trim().is_empty() && view.pick.is_some_and(|p| !kept.iter().any(|(n, _)| *n == p)) {
+        view.pick = None;
     }
     if view.pick.is_some_and(|k| k >= rows.len()) {
         view.pick = None;
@@ -810,6 +843,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
         view.pick = None;
         view.scroll = 0;
     }
+    FILTER_KEYS.with(|f| f.set(reply.keys_taken));
     if let Some(l) = game.location {
         let dy = by + 52.0 * k;
         description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0 * k);
@@ -826,7 +860,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     let (lx, lw) = (x + dw + 10.0 * k, w - dw - 10.0 * k);
     let rows: Vec<_> = spells.iter().map(|s| (None, s.name.clone(), s.cost_gold.to_string(), false)).collect();
     text_centered(tr("Spells"), lx + lw / 2.0, y + 18.0 * k, 18.0 * k, ACCENT);
-    if let Some(k) = price_list(None, &rows, view.pick, &mut view.scroll, lx, y + 26.0 * k, lw, 7) {
+    if let Some(k) = price_list(None, &rows, &[], view.pick, &mut view.scroll, lx, y + 26.0 * k, lw, 7) {
         view.pick = Some(k);
     }
     let dh = 150.0 * k;
@@ -1010,7 +1044,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         draw_rectangle(cx - w / 2.0, y, w, 30.0, PANEL);
         text_centered(m, cx, y + 21.0, 20.0, ACCENT);
     }
-    if close || exit || key(KeyCode::Escape) {
+    let filter_keys = FILTER_KEYS.with(|f| f.replace(false));
+    if close || exit || (!filter_keys && key(KeyCode::Escape)) {
         *message = None;
         return Some(Screen::WorldMap);
     }

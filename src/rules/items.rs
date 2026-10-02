@@ -416,6 +416,14 @@ pub fn describe(content: &Content, item: ItemId) -> String {
     parts.join(", ")
 }
 
+/// How item `item` matches the inventory filter's `query` ([`crate::search::matches`]):
+/// by its name, and by the words of its summary ([`describe`]: its type, its stats and its
+/// bonus) and description.
+pub fn filter_match(content: &Content, item: ItemId, query: &str) -> Option<crate::search::Match> {
+    let d = content.item(item);
+    crate::search::matches(query, &d.name, &[&describe(content, item), &d.description])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +431,28 @@ mod tests {
     use crate::rules::content::{Bonus, MagicDirection, MagicSchool, StatMods, UnitDef, UnitId};
     use crate::rules::content::testkit::spell;
     use crate::rules::formation::{Row, Slot};
+
+    #[test]
+    fn the_inventory_filter_reads_names_types_and_bonuses() {
+        let mut sword = item(1, ArtefactType::BlowWeapon);
+        sword.name = "Long Sword".into();
+        sword.add = StatMods::from([(Stat::AttackBlow, 3)]);
+        sword.bonus = Some(Bonus::ArmorIgnore);
+        let mut amulet = item(2, ArtefactType::Amulet);
+        amulet.name = "Ёлочный амулет".into();
+        amulet.description = "Пахнет хвоей".into();
+        let c = Content::new(vec![warrior(5, 20, 0)], vec![sword, amulet], Vec::new(), Default::default(), crate::rules::formation::Formation::WIDE);
+        let names = |q: &str| [1, 2].into_iter().filter(|&i| filter_match(&c, ItemId(i), q).is_some()).collect::<Vec<_>>();
+        assert_eq!(names(""), [1, 2], "an empty filter keeps all");
+        assert_eq!(names("SWORD"), [1]);
+        assert_eq!(names("melee"), [1], "by type");
+        assert_eq!(names("piercing"), [1], "by bonus");
+        assert_eq!(names("attack"), [1], "by stat");
+        assert_eq!(names("елоч"), [2], "Cyrillic, Ё as Е");
+        assert_eq!(names("хвоей"), [2], "by description");
+        assert_eq!(names("amulet long"), Vec::<u32>::new(), "every word must match");
+        assert_eq!(filter_match(&c, ItemId(1), "melee sw").unwrap().name_range, Some(5..7));
+    }
 
     /// A warrior (type 1 unless given) with the given protections, wearing `items`.
     fn wearing(c: &Content, def: u32, items: &[u32]) -> Unit {

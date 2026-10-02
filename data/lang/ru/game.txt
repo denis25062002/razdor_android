@@ -331,3 +331,12 @@ Nothing has id {id}. = Ничего с номером {id} нет.
 Nothing is called "{query}". = Ничего не называется «{query}».
 {name} (of {hits} that match; type more of the name or the id) = {name} (подходит: {hits}; уточните название или наберите номер)
 {title} (cheats) = {title} (читы)
+
+# The inventory filter
+Search: type a name (Ctrl+F) = Поиск: наберите название (Ctrl+F)
+{found} of {of} = {found} из {of}
+Nothing in the pack matches. = В рюкзаке ничего не подходит.
+Enter gives the first to the selected unit: = Enter отдаёт первый выбранному воину:
+Type, Ctrl+F = Набор, Ctrl+F
+market: filter the list (Enter picks the first, Esc clears) = рынок: отбор списка (Enter — первый, Esc — сброс)
+filter the backpack (Enter: the first to the unit, Esc clears) = отбор рюкзака (Enter — первый воину, Esc — сброс)

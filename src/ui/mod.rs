@@ -12,6 +12,7 @@ pub mod dt_font;
 pub mod editor;
 pub mod game_bar;
 pub mod hotkeys;
+pub mod item_filter;
 pub mod items_view;
 pub mod jukebox;
 pub mod language;
@@ -861,6 +862,8 @@ impl App {
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
             }
+            // A field that had the keyboard (the inventory filter) lets it go with its screen.
+            widgets::clear_focus();
             self.screen = next;
         }
         self.play_log_frame();

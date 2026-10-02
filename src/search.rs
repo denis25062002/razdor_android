@@ -34,6 +34,35 @@ pub fn find(hay: &str, needle: &str) -> Option<std::ops::Range<usize>> {
     })
 }
 
+/// The words of a query: split at spaces, empty ones dropped.
+pub fn words(query: &str) -> Vec<&str> {
+    query.split_whitespace().collect()
+}
+
+/// A record that matches a query ([`matches`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Match {
+    /// The part of the name to light up: the first query word found in the name.
+    pub name_range: Option<std::ops::Range<usize>>,
+}
+
+/// How a record matches a query: every word of the query stands in its name or in one of its
+/// other fields (type, bonus words, ids). `None` when some word is missing; an empty query
+/// matches everything with no highlight.
+pub fn matches(query: &str, name: &str, other: &[&str]) -> Option<Match> {
+    let mut name_range = None;
+    for w in words(query) {
+        match find(name, w) {
+            Some(r) => {
+                name_range.get_or_insert(r);
+            }
+            None if other.iter().any(|f| find(f, w).is_some()) => {}
+            None => return None,
+        }
+    }
+    Some(Match { name_range })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +77,15 @@ mod tests {
         assert_eq!(find("Меч", "мечи"), None);
         assert_eq!(find("Меч", ""), None);
         assert_eq!(fold("ЁЛКА"), "елка");
+    }
+
+    #[test]
+    fn every_word_must_stand_somewhere() {
+        assert_eq!(matches("", "Sword", &[]), Some(Match { name_range: None }), "an empty query keeps everything");
+        assert_eq!(matches("sw", "Sword", &[]).unwrap().name_range, Some(0..2));
+        assert!(matches("sword weapon", "Sword", &["Weapon", "+3 attack"]).is_some(), "a word in the type");
+        assert!(matches("attack", "Sword", &["Weapon", "+3 attack"]).unwrap().name_range.is_none(), "found in a bonus only");
+        assert!(matches("sword staff", "Sword", &["Weapon"]).is_none(), "staff is nowhere");
+        assert_eq!(matches("weapon sw", "Sword", &["Weapon"]).unwrap().name_range, Some(0..2), "the name's word is lit");
     }
 }
