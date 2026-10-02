@@ -578,11 +578,15 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Event picture size | Matches: 32-bit, read when positive | 32-bit | `dt/dtm.rs` |
 | Space runs in texts | Matches: collapsed in building, army and event strings; titles and named characters kept | collapsed to one space at load (not in titles of the map) | `dt/dtm.rs` / `rules/world.rs` |
 | Troops of unit ids 1–3 | Matches: skipped in presets, armies and garrisons (leaders excepted) | skipped in presets, armies and garrisons (leaders excepted) | `world.rs` `dt_entries` |
-| Start time | Matches: header minute + 1 | header minute + 1 | `World::from_scenario` |
+| Start time | Matches: header minute + 1, a header time of 0 included (minute 1 of year 0) | header minute + 1 | `World::from_scenario` |
+| Empty army records | Matches: kept, on or off the map by byte 63, so events can fill and call them | every record fills its slot | `World::from_scenario` |
+| Army spell (byte 84) | Matches: every unit's first slot holds it, ending at minute 1 036 800 000 | the same | `World::from_scenario` |
+| Garrison triples | Matches: read only for towns, castles, forts and ruins | types 1, 3, 4, 12 | `World::from_scenario` |
+| Lanterns at start | Matches: active with a radius, the model not checked | the same | `fog::start_lanterns` |
 | Village start stock | Matches: one day's gold and mana | confirmed: one day's gold and mana | `World::from_scenario` |
 | Army placement | Matches: exactly the file cell; at sea when that cell is water and not a bridge; off the map only by byte 63 | exactly the file cell; at sea when that cell is water | `World::from_scenario` |
 | Building owner byte 0 | Matches: the player | the player | `World::from_scenario` |
-| Faction-1 buildings | Matches: only the preset's start building and the class-flagged buildings are given | only the preset's start building and the class-flagged buildings; their attitudes are the hero's | `World::from_scenario`, `give_to_player` |
+| Faction-1 buildings | Matches: only the preset's start building and the class-flagged buildings are given, with the hero's four attitudes as they are | only the preset's start building and the class-flagged buildings; their attitudes are the hero's | `World::from_scenario`, `give_to_player` |
 | Start buildings | Matches: bridges not excluded | not excluded | `World::start_buildings` |
 | Save format | bzip2 JSON `.rzsave`, map re-read on load | binary dump of the whole state (§12) | `rules/save.rs` (by design; reading original saves is not supported) |
 | Manual save names | slug of letters/digits/`-`, same name replaces | cp1251 sanitising, `[n]` suffix on a clash, 12 slots | `save::slug`, `save::write` |
@@ -590,10 +594,12 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Deleting a save | Matches: Delete sign on the selected row, Yes/No question, file removed, list refreshed | the same flow: the file is deleted, the selection cleared, the other saves keep their order | `ui/saves.rs` `load_screen` |
 | Save window | a typed name (pre-filled with map title + game date) matched by name; a click on a save takes its name | 12 fixed slots; a click selects a slot, an empty slot starts blank, a used one keeps its name; the preview shows the real (computer) date; no overwrite question in either | `ui/saves.rs` `save_screen` |
 | Autosaves | Matches: at most 12; reused by name before a battle, by name and map title otherwise (the oldest match); else a new one while fewer than 12, else the oldest overwritten | at most 12, reuse by name (+ map), else the oldest overwritten | `save::write_autosave` |
-| Autosave moments | Matches: before every battle (as its window opens) and as each noon report opens; a noon without a report (no wages, no income) writes none | as each battle window and each noon report opens; a silent noon only writes a pending one | `ui/saves.rs`, `Game::pass_slice` |
-| Autosave date name | Matches: day index 9 printed without the leading zero | day index 9 printed without the leading zero | `save::date_name` |
+| Autosave moments | Matches: before every battle (as its window opens) and as each noon report opens, only with `OptValue8` on (without an install Razdor always autosaves); a noon without a report (no wages, no income) writes none | as each battle window and each noon report opens, option on; a silent noon only writes a pending one | `ui/saves.rs`, `Game::pass_slice` |
+| Autosave date name | Matches: day index 9 printed without the leading zero; under 60 minutes the "less than an hour" text (Razdor's own wording) | day index 9 printed without the leading zero; `cLessAtHour` under 60 minutes | `save::date_name` |
+| Battle autosave name | Matches: the army's or building's name cut at the first `#`, trailing spaces trimmed (no leader-name fallback) | the same | `save::autosave_foe` |
+| Restart | Matches: a campaign map restarts from what it was handed over (kept in saves), a new-game map from its preset in the starting class | the restart snapshot of §15 | `Game::restart` |
 | Carry-over gold | Matches: set to the old amount | set to the old amount, not added | `Game::apply_carry_over` |
-| Play options | Matches: `OptValue9`/`10`/`11` and `[Tutorial] Completed` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row, and a loaded game keeps the width it was saved with. Left out: the loaded width does not carry over to the session's next new game | flags read at start, 1 = on; the wide row 6 or 4 per row; a save load sets the row width for the session | `dt/install.rs` `PlayOptions`, `Content::from_dt`, `save::restore` |
+| Play options | Matches: `OptValue9`/`10`/`11` and `[Tutorial] Completed` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row, and a loaded game keeps the width it was saved with, which holds for the rest of the session (next new game, restart, campaign map) | flags read at start, 1 = on; the wide row 6 or 4 per row; a save load sets the row width for the session | `dt/install.rs` `PlayOptions`, `Content::from_dt`, `save::restore` |
 
 ## Unknowns
 

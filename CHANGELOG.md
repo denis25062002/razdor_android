@@ -444,6 +444,23 @@ old id, and their versions give both.
   such wait runs.
 - The map scrolls by the whole milliseconds since its last frame, as in the original, so
   the first frame back from a window scrolls by the time spent in it.
+- Maps whose header time is 0 (ДС1, ДС2, Другой берег) start at minute 1 of year 0, as in
+  the original, not at a date of Razdor's choosing, so their events and noons keep the
+  original's times. An autosave in their first hour is named "less than an hour".
+- An army's own spell in the map (army byte 84, used by many shipped armies) is on every
+  one of its units from the start, for good, as in the original. An army record without
+  units is kept, so Проклятое озеро's army 44 can be given units and called up by its
+  event. A point marked active with a radius lights up at the start whatever its model
+  (РК1's point 3), and only towns, castles, forts and ruins read their garrison troops.
+- A building given to the player takes the hero's attitudes as the map lists them, his
+  attitude to his own side included.
+- The autosave before a battle is named by the army's or the building's name only, cut at
+  its first `#`, so armies named alike share an autosave as in the original; autosaves are
+  written only when the install's autosave option (`OptValue8`) is on.
+- A loaded game's front-row width holds for the rest of the session: the next new game,
+  restart or campaign map is played with it, as in the original.
+- Restart on a campaign map starts it again with what the map before carried over (army,
+  gold, mana, book, pack, flags), as the original's restart snapshot, which saves keep.
 
 ## 0.2.2 — 2026-10-01
 

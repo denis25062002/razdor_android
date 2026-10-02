@@ -151,9 +151,24 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 /// the month 1-based, the day 0-based. The original pads the day only when its index is
 /// below 9 (0x49ce20 tests the index, not the printed value), so day 9 prints as `9`.
 pub fn date_name(clock: &Clock) -> String {
+    // Under an hour since year 0 (a map whose header time is 0) the original names it by its
+    // "less than an hour" text instead.
+    if clock.total_minutes() < 60.0 {
+        return tr(LESS_THAN_AN_HOUR).to_string();
+    }
     let day = if clock.day() < 9 { format!("{:02}", clock.day()) } else { clock.day().to_string() };
     let date = format!("{}.{:02}.{day}", clock.year(), clock.month());
     crate::trf!("{date}, {hour} h", date, hour = clock.hour())
+}
+
+/// The autosave name of a moment under an hour since year 0 (`[Time] cLessAtHour`).
+pub const LESS_THAN_AN_HOUR: &str = crate::i18n::n_("Less than an hour");
+
+/// The opponent's part of a battle autosave's name (0x4b7410 → 0x4973a0): the army's or the
+/// building's name (an army's leader name is not used), cut at its first `#` and its
+/// trailing spaces trimmed. Two foes whose names differ only after a `#` share an autosave.
+pub fn autosave_foe(name: &str) -> &str {
+    name.split_once('#').map_or(name, |(head, _)| head).trim_end_matches(' ')
 }
 
 /// The save folder: `RAZDOR_SAVE_DIR`, else `razdor/saves` in the platform data folder.
@@ -566,6 +581,12 @@ pub(crate) mod tests {
         assert_eq!(date_name(&Clock::at(1204, 6, 8, 7)), "1204.06.08, 7 h");
         assert_eq!(date_name(&Clock::at(1204, 10, 9, 12)), "1204.10.9, 12 h");
         assert_eq!(date_name(&Clock::at(1204, 9, 29, 0)), "1204.09.29, 0 h");
+        // Under 60 minutes since year 0 the "less than an hour" text (a map starting at 0).
+        assert_eq!(date_name(&Clock::at_minutes(59)), "Less than an hour");
+        assert_eq!(date_name(&Clock::at_minutes(60)), "0.01.00, 1 h");
+        assert_eq!(autosave_foe("Bandits #the second"), "Bandits");
+        assert_eq!(autosave_foe(" Old fort  "), " Old fort");
+        assert_eq!(autosave_foe("#hidden"), "");
         assert_eq!(slug("My game: day 3!"), "My_game__day_3_");
         assert_eq!(slug("Битва - Замок"), "Битва_-_Замок");
         assert_eq!(slug("///"), "save");

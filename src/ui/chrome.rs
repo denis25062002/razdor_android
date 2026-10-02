@@ -252,6 +252,18 @@ pub fn options_value(key: &str) -> Option<String> {
     })
 }
 
+/// The install's texts and options ini (`Rus_DiscordTimes.ini`) is there to read.
+pub fn has_texts() -> bool {
+    CHROME.with(|c| {
+        let mut c = c.borrow_mut();
+        let Some(c) = c.as_mut() else { return false };
+        if c.texts.is_none() {
+            c.texts = Some(read_texts(&c.dir));
+        }
+        c.texts.as_ref().is_some_and(Option::is_some)
+    })
+}
+
 fn read_texts(dir: &std::path::Path) -> Option<Ini> {
     find_path(dir, SETTINGS_FILE).ok().and_then(|p| std::fs::read(p).ok()).map(|b| Ini::from_cp1251(&b))
 }

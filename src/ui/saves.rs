@@ -4,10 +4,12 @@
 //! 12:00 report. Files live in the player's data folder ([`save::default_dir`]).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use macroquad::prelude::*;
 
 use razdor::i18n::{n_, tr};
+use razdor::rules::content::Content;
 use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, SaveEntry, SaveKind};
 
@@ -88,13 +90,14 @@ impl LoadView {
 
 /// The autosave name before a battle: "Battle - <foe>" (the footage: "Битва - Замок …").
 fn battle_name(game: &Game) -> String {
+    // The army's or the building's name only, cut at its first `#` (0x4973a0).
     let who = match game.foe {
-        Some(Foe::Army(i)) => game.world.armies.get(i).map(|a| if a.name.is_empty() { a.leader_name.clone() } else { a.name.clone() }),
-        Some(Foe::Garrison(l)) => game.world.locations.get(l).map(|l| l.name.clone()),
+        Some(Foe::Army(i)) => game.world.armies.get(i).map(|a| a.name.as_str()),
+        Some(Foe::Garrison(l)) => game.world.locations.get(l).map(|l| l.name.as_str()),
         None => None,
     };
-    match who.filter(|w| !w.trim().is_empty()) {
-        Some(w) => razdor::trf!("Battle - {foe}", foe = w.trim()),
+    match who.map(save::autosave_foe).filter(|w| !w.trim().is_empty()) {
+        Some(w) => razdor::trf!("Battle - {foe}", foe = w.trim_start()),
         None => tr("Battle").to_string(),
     }
 }
@@ -102,9 +105,25 @@ fn battle_name(game: &Game) -> String {
 /// Writes an autosave named `name` (`in_battle`: the one before a battle, see
 /// [`save::write_autosave`]); a failure is reported on stderr (the game goes on).
 pub fn autosave(game: &Game, name: &str, in_battle: bool) {
+    // Only with the install's autosave option on (`[Options] OptValue8` = 1, 0x4b7410);
+    // without an install to read it from, Razdor always autosaves.
+    if super::chrome::has_texts() && super::chrome::options_value("OptValue8").is_none_or(|v| razdor::dt::ini::loose_int(&v) != 1) {
+        return;
+    }
     let Some(dir) = save::default_dir() else { return };
     if let Err(e) = save::write_autosave(&dir, name, game, in_battle) {
         razdor::diag!("autosave: {e}");
+    }
+}
+
+/// The install's content for the rest of the session after `game` was loaded: a save's row
+/// width holds for the session (0x4b771c sets the option in memory, not in the ini), so the
+/// next new game, restart or campaign map on the install's maps is played in it too, until
+/// Razdor is started again.
+pub fn session_content(install: Option<Arc<Content>>, game: &Game) -> Option<Arc<Content>> {
+    match install {
+        Some(c) if matches!(game.origin, Some(save::ScenarioRef::Map { .. })) && c.formation != game.content.formation => Some(game.content.clone()),
+        other => other,
     }
 }
 
@@ -560,6 +579,19 @@ fn question(title: &str, text: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loaded_map_games_row_width_holds_for_the_session() {
+        use razdor::rules::content::HeroClass;
+        use razdor::rules::formation::Formation;
+        let wide = Arc::new(Content::builtin().with_formation(Formation::WIDE));
+        let mut game = Game::new(Arc::new(wide.with_formation(Formation::VANILLA)), HeroClass::Knight);
+        // The demo is not the install's: its width does not carry.
+        assert!(Arc::ptr_eq(&session_content(Some(wide.clone()), &game).unwrap(), &wide));
+        game.origin = Some(save::ScenarioRef::Map { file: "m".into(), hash: 0 });
+        assert_eq!(session_content(Some(wide.clone()), &game).unwrap().formation, Formation::VANILLA);
+        assert!(session_content(None, &game).is_none());
+    }
 
     #[test]
     fn real_time_labels() {

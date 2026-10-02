@@ -25,8 +25,6 @@ use super::map::{Tile, TileMap};
 
 /// Largest lantern radius the editor allows.
 pub const MAX_LANTERN_RADIUS: i32 = 24;
-/// Point model of an active lantern (`.DTm` point byte 5).
-pub const LANTERN_MODEL: u8 = 8;
 /// Half-cells of the original's largest stamp (its masks run 0..=48).
 const MAX_HALF_RADIUS: usize = 48;
 
@@ -158,12 +156,13 @@ impl Fog {
     }
 }
 
-/// Active lanterns at the start of a scenario: `(cell, radius)` of every point with the
-/// lantern model that is active at start and has a radius.
+/// Active lanterns at the start of a scenario: `(cell, radius)` of every point that is
+/// active at start and has a radius. The map loader does not look at the model byte
+/// (0x4b5a37), so an event point (model 9) marked active lights up too, as in РК1.
 pub fn start_lanterns(s: &Scenario) -> Vec<(Tile, i32)> {
     s.points
         .iter()
-        .filter(|p| p.model == LANTERN_MODEL && p.active != 0 && p.radius > 0)
+        .filter(|p| p.active != 0 && p.radius > 0)
         .map(|p| ((p.x as i32, p.y as i32), p.radius as i32))
         .collect()
 }
@@ -311,8 +310,10 @@ mod tests {
         let m = open_map(60, 60);
         let mut s = Scenario::default();
         let point = |id, x, y, model, active, radius| Point { x, y, id, model, active, radius, ..blank_point() };
-        s.points = vec![point(1, 10, 10, 8, 1, 3), point(2, 40, 40, 9, 0, 5), point(3, 50, 10, 8, 0, 4), point(4, 30, 50, 8, 1, 0)];
-        assert_eq!(start_lanterns(&s), vec![((10, 10), 3)]);
+        s.points = vec![point(1, 10, 10, 8, 1, 3), point(2, 40, 40, 9, 0, 5), point(3, 50, 10, 8, 0, 4), point(4, 30, 50, 8, 1, 0), point(5, 20, 30, 9, 1, 2)];
+        // The model is not checked: an active event point with a radius is lit too (the
+        // original's loader, saves-data.md §10.7).
+        assert_eq!(start_lanterns(&s), vec![((10, 10), 3), ((20, 30), 2)]);
         assert_eq!(lantern(&s, 2), Some(((40, 40), 5)));
         assert_eq!(lantern(&s, 4), None);
         assert_eq!(lantern(&s, 9), None);

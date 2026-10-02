@@ -267,6 +267,7 @@ impl App {
                 self.map_view.forget_shows();
                 self.last_gold = None;
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "loaded"));
+                self.dt_content = saves::session_content(self.dt_content.take(), &game);
                 if let Some(q) = game.pending_question() {
                     story::show(&game, &EventOutcome::Question(q), &mut self.message, &mut self.dialogs);
                 }
@@ -281,12 +282,10 @@ impl App {
         }
     }
 
-    /// "Рестарт": the scenario under way from its beginning, with the same hero class and
-    /// name (the map is found again by its file name).
+    /// "Рестарт": the scenario under way from its beginning (the map is found again by its
+    /// file name), as the original's restart snapshot holds it ([`Game::restart`]).
     fn restart(&mut self) {
         let Some(old) = self.game.as_ref() else { return };
-        let hero = old.hero_class().unwrap_or(razdor::rules::content::HeroClass::Knight);
-        let name = old.hero_name.clone().unwrap_or_default();
         let game = match &old.origin {
             Some(save::ScenarioRef::Map { file, .. }) => {
                 let (Some(e), Some(c)) = (self.scenarios.iter().find(|e| &e.file == file), self.dt_content.clone()) else {
@@ -294,9 +293,16 @@ impl App {
                     self.screen = Screen::WorldMap;
                     return;
                 };
-                screens::start_game(&self.demo, Some((e, &c)), hero, &name)
+                // The original's restart snapshot: a campaign map starts again with what
+                // the map before carried over (0x4b5ff8).
+                let g = old.restart(c, &e.scenario);
+                razdor::diag::play(&g.clock.label(), &play_game_line(&g, "restart"));
+                g
             }
-            _ => screens::start_game(&self.demo, None, hero, &name),
+            _ => {
+                let name = old.hero_name.clone().unwrap_or_default();
+                screens::start_game(&self.demo, None, old.start_class(), &name)
+            }
         };
         self.game = Some(game);
         self.dialogs.clear();

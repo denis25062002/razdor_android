@@ -280,7 +280,8 @@ pub struct MapPoint {
     pub tile: Tile,
     /// Radius a lit lantern reveals.
     pub radius: i32,
-    /// Model 8: a lantern lit from the start.
+    /// Lit from the start: active (byte 40) with a radius; the model byte (8 lantern, 9 event
+    /// point) is not looked at (0x4b5a37).
     pub lit: bool,
 }
 
@@ -731,6 +732,9 @@ impl Army {
     }
 }
 
+/// The end minute of a map army's own spell (army byte 84): 0x3dcc5000, "for good".
+pub const MAP_ARMY_SPELL_END: u64 = 1_036_800_000;
+
 /// The Archmage's unit (GlobalIndex 2), whose armies the original's loader makes faster.
 const ARCHMAGE_UNIT: u32 = 2;
 /// Most game minutes an army banks towards its steps (world.md §2).
@@ -918,15 +922,16 @@ impl World {
             .map(|o| Decoration { tile: (o.x as i32, o.y as i32), class: o.class, sprite: o.sprite })
             .collect();
         let map = TileMap::from_codes(Grid::Square8, w, h, &s.terrain, objects);
-        // The original's clock reads the start minute plus 1 (world.md §6.3, 0x4b42d8).
-        let start = if s.header.start_time > 0 { Clock::at_minutes(s.header.start_time as u64 + 1) } else { Clock::demo_start() };
+        // The original's clock reads the start minute plus 1 (world.md §6.3, 0x4b42d8), a
+        // header time of 0 included: such a map starts at minute 1 of year 0.
+        let start = Clock::at_minutes(s.header.start_time as u64 + 1);
         let mut world = World::empty(&s.title, map, start);
         world.relations = s.header.relations;
         world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.display_title().trim().to_string() }).collect();
         world.points = s
             .points
             .iter()
-            .map(|p| MapPoint { id: p.id, tile: (p.x as i32, p.y as i32), radius: p.radius as i32, lit: p.model == 8 && p.active != 0 })
+            .map(|p| MapPoint { id: p.id, tile: (p.x as i32, p.y as i32), radius: p.radius as i32, lit: p.active != 0 && p.radius != 0 })
             .collect();
         // The building and army strings have their double spaces collapsed at load
         // (0x4b2aa1); the named characters' names are kept as they are.
@@ -964,7 +969,11 @@ impl World {
             // at 0 (0x4b55f0).
             l.tribute_gold = if kind == LocationKind::Village { l.gold_income } else { 0 };
             l.tribute_mana = if kind == LocationKind::Village { l.mana_income } else { 0 };
-            let (mut garrison, dropped) = place_troops(content, &[], &dt_entries(&b.garrison));
+            // Only towns, castles, forts and ruins get a garrison record (0x4b5600 area); the
+            // triples of any other type are not read.
+            let garrisoned = matches!(kind, LocationKind::Town | LocationKind::Castle | LocationKind::Fort | LocationKind::Ruins);
+            let triples = if garrisoned { dt_entries(&b.garrison) } else { Vec::new() };
+            let (mut garrison, dropped) = place_troops(content, &[], &triples);
             world.dropped_units += dropped;
             garrison.iter_mut().for_each(|t| t.last_paid = start.total_minutes() as u64);
             l.garrison = garrison;
@@ -1005,12 +1014,13 @@ impl World {
             entries.extend(dt_entries(&a.troops));
             let (mut troops, dropped) = place_troops(content, &[], &entries);
             world.dropped_units += dropped;
-            if troops.is_empty() {
-                continue;
-            }
+            // An army record without units is kept as it is (0x4b2504 fills every slot): an
+            // event may give it units and activate it (Проклятое озеро's army 44).
             if a.leader_unit != 0 {
                 // The leader draws no wage (economy.md §1, kind 0).
-                troops[0].kind = WageKind::Leader;
+                if let Some(leader) = troops.first_mut() {
+                    leader.kind = WageKind::Leader;
+                }
             }
             // Everyone counts as paid at the start.
             let paid = start.total_minutes() as u64;
@@ -1072,6 +1082,12 @@ impl World {
             for item in artifact_ids(content, a.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)) {
                 super::ai::give_item(content, &mut army, item);
             }
+            // Byte 84: every unit holds that spell in its first slot for good (0x4b2504).
+            if a.spell != 0 {
+                for t in &mut army.troops {
+                    t.spells[0] = Some(crate::rules::units::SpellSlot { spell: u32::from(a.spell), until: MAP_ARMY_SPELL_END });
+                }
+            }
             if a.is_active() {
                 world.armies.push(army);
             } else {
@@ -1129,16 +1145,14 @@ impl World {
         }
     }
 
-    /// Building `l` becomes the player's (a start building, a capture): owner, his faction,
-    /// full attitude.
+    /// Building `l` becomes the player's (a start building, a capture): owner, his faction
+    /// and his four attitudes (the hero's row of the relation matrix, economy.md §3,
+    /// saves-data.md §10.4), his attitude to his own faction included, 3 or not.
     pub fn give_to_player(&mut self, l: usize) {
         let mine = self.relations[0];
         let loc = &mut self.locations[l];
         loc.owner = Owner::Player;
-        loc.faction = 1;
-        loc.attitude = 3;
-        // His attitudes to the other factions are copied too (economy.md §3).
-        loc.relations = [3, mine[1], mine[2], mine[3]];
+        loc.take_sides(1, mine);
     }
 
     /// The demo kingdom of `data/kingdom.txt`, populated with the built-in demo units.
@@ -1699,7 +1713,8 @@ mod tests {
         unknown.leader_unit = 0;
         s.armies = vec![foe, friend, sleeper, unknown];
         let w = World::from_scenario(&s, &content());
-        assert_eq!(w.armies.iter().map(|a| a.id).collect::<Vec<_>>(), [1, 2]);
+        // The army whose only units are of an unknown type keeps its record, empty.
+        assert_eq!(w.armies.iter().map(|a| (a.id, a.troops.len())).collect::<Vec<_>>(), [(1, 6), (2, 1), (4, 0)]);
         assert_eq!(w.inactive.iter().map(|a| a.id).collect::<Vec<_>>(), [3]);
         assert_eq!(w.dropped_units, 2, "the unknown unit type is dropped");
         let a = &w.armies[0];
@@ -1806,6 +1821,44 @@ mod tests {
         assert_eq!(k.troops.iter().map(|t| t.unit.0).collect::<Vec<_>>(), [4]);
         assert_eq!(k.owned, [3]);
     }
+
+    #[test]
+    fn the_loader_keeps_empty_armies_and_gives_army_spells_as_the_original() {
+        // saves-data.md §10.1, §10.5, §10.6 (0x4b2504).
+        let mut s = scenario(20, 10);
+        // A header time of 0 starts at minute 1, not at some other date.
+        s.header.start_time = 0;
+        // An army record with no units is kept, off the map here (an event may fill it).
+        let mut empty = army(1, 3, 3, 1, &[]);
+        empty.inactive = 1;
+        // Byte 84: every unit, the leader included, holds the spell in its first slot.
+        let mut blessed = army(2, 6, 3, -1, &[troop(4, 0, 2)]);
+        (blessed.leader_unit, blessed.spell) = (5, 3);
+        s.armies = vec![empty, blessed];
+        // Only towns, castles, forts and ruins read their garrison triples.
+        let mut village = building(BuildingType::Village, 2, 8, (1, 1));
+        village.garrison[0] = troop(4, 0, 2);
+        let mut fort = building(BuildingType::Fort, 8, 8, (1, 1));
+        fort.garrison[0] = troop(4, 0, 2);
+        s.buildings = vec![village, fort];
+        s.header.relations[0] = [1, -2, -3, -3];
+        let c = content();
+        let mut w = World::from_scenario(&s, &c);
+        assert_eq!(w.start, Clock::at_minutes(1));
+        assert_eq!(w.inactive.iter().map(|a| (a.id, a.troops.len())).collect::<Vec<_>>(), [(1, 0)]);
+        let a = &w.armies[0];
+        assert_eq!(a.troops.len(), 3);
+        for t in &a.troops {
+            assert_eq!(t.spells[0], Some(crate::rules::units::SpellSlot { spell: 3, until: MAP_ARMY_SPELL_END }));
+            assert!(t.spells[1..].iter().all(Option::is_none));
+        }
+        assert!(w.locations[0].garrison.is_empty(), "a village has no garrison record");
+        assert_eq!(w.locations[1].garrison.len(), 2);
+        // A building given to the player takes the hero's four attitudes as they are.
+        w.give_to_player(0);
+        let v = &w.locations[0];
+        assert_eq!((v.owner, v.faction, v.attitude, v.relations), (Owner::Player, 1, 1, [1, -2, -3, -3]));
+    }
 }
 
 #[cfg(test)]
@@ -1842,8 +1895,8 @@ mod real_maps {
             let w = World::from_scenario(&s, &c);
             assert_eq!((w.map.w, w.map.h), (s.width() as i32, s.height() as i32), "{}", m.name);
             assert_eq!(w.locations.len(), s.buildings.len(), "{}", m.name);
-            let manned = s.armies.iter().filter(|a| a.leader_unit != 0 || a.troops().next().is_some()).count();
-            assert_eq!(w.armies.len() + w.inactive.len(), manned, "{}: every army with troops", m.name);
+            // Every army record, one without units too (Проклятое озеро's army 44).
+            assert_eq!(w.armies.len() + w.inactive.len(), s.armies.len(), "{}: every army", m.name);
             // Every unit type is known; one РК6 garrison lists 13 units, one more than a formation holds.
             assert!(w.dropped_units <= 1, "{}: {} units dropped", m.name, w.dropped_units);
             // Exactly on the file's cell (0x4b2504), even where it cannot walk.

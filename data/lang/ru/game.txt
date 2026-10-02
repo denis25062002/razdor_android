@@ -250,6 +250,7 @@ Name of the saved game = Имя сохраненной игры
 Name of the scenario = Название сценария
 Private = Личные
 {date}, {hour} h = {date}, {hour} час
+Less than an hour = Менее часа
 
 Attention!\n\nThe game under way will end.\nTo go on with it another time, save it from the map's bar first. = Внимание!\n\nТекущая игра будет прервана.\nЧтобы продолжить её позже, сначала сохраните игру с панели карты.
 Do you really want to start the scenario under way again from the beginning? = Начать текущий сценарий заново?

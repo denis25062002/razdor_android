@@ -1006,7 +1006,7 @@ const AI_TARGET_NODES: usize = 4000;
 
 /// What the next map of a campaign starts with ([`Game::next_map`]): the hand-over of the
 /// original (0x4b5b64). A field is `None` when the scenario does not carry it over.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NextMap {
     /// The map to load: the scenario's next-map name; after an opcode 15 branch its leading
     /// "number-variant" (or the whole name) is the chosen `N-V` *(guess: the guide names maps
@@ -1105,7 +1105,25 @@ impl Game {
     pub fn from_campaign(content: std::sync::Arc<crate::rules::content::Content>, scenario: &crate::dt::dtm::Scenario, prev: &NextMap) -> Game {
         let mut g = Game::unstarted(content, scenario, prev.class);
         g.apply_carry_over(prev);
+        g.carried = Some(Box::new(prev.clone()));
         g.start_script();
+        g
+    }
+
+    /// "Рестарт" (0x4b5ff8): the map of this game loaded again and its restart snapshot put
+    /// back: the class, the hero's army, gold, mana, book, pack and flags as the map began.
+    /// On a campaign map that is what the previous map carried over, not the map's own
+    /// preset; on a map started as a new game, the preset of the class it started with.
+    pub fn restart(&self, content: std::sync::Arc<crate::rules::content::Content>, scenario: &crate::dt::dtm::Scenario) -> Game {
+        let mut g = match &self.carried {
+            Some(prev) => Game::from_campaign(content, scenario, prev),
+            None => {
+                let mut g = Game::from_scenario(content, scenario, self.start_class());
+                g.hero_name.clone_from(&self.hero_name);
+                g
+            }
+        };
+        g.origin.clone_from(&self.origin);
         g
     }
 
@@ -2194,6 +2212,23 @@ mod tests {
         assert!(g2.script().unwrap().flag("Band"));
         assert_eq!(g2.archetype, 2);
         assert!(g2.squad.iter().any(|u| u.named == 1));
+
+        // A restart (0x4b5ff8) starts the map again from that hand-over, the restart snapshot
+        // a save keeps, not from the map's own preset.
+        let (gold, units) = (g2.gold, g2.squad.len());
+        g2.gold += 1000;
+        g2.squad.truncate(1);
+        let saved: Game = serde_json::from_value(serde_json::to_value(&g2).unwrap()).unwrap();
+        assert_eq!(saved.carried, g2.carried);
+        let mut again = saved.restart(Arc::new(content()), &s2);
+        assert_eq!((again.gold, again.squad.len(), again.archetype), (gold, units, 2));
+        assert!(again.squad.iter().any(|u| u.named == 1));
+        assert_eq!(fired(&again.drain_events()), vec![2]);
+        assert!(again.script().unwrap().flag("Band"));
+        // A map started as a new game restarts from its preset, in the class it began with,
+        // and its opening events run again (the herald joins).
+        let fresh = g.restart(Arc::new(content()), &s);
+        assert_eq!((fresh.carried.is_none(), fresh.archetype, fresh.squad.len()), (true, 2, 2));
     }
 
     #[test]

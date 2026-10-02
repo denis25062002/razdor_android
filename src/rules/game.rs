@@ -268,6 +268,11 @@ pub struct Game {
     /// An autosave is due (the noon report came): its name. The UI writes it and clears it.
     #[serde(skip)]
     pub autosave_due: Option<String>,
+    /// What this campaign map started with from the one before ([`Game::from_campaign`]):
+    /// the original's restart snapshot (0x4b5ef8), kept in every save, from which a restart
+    /// starts the map again ([`Game::restart`]). `None` on a map started as a new game.
+    #[serde(default)]
+    pub(crate) carried: Option<Box<super::script::NextMap>>,
     /// The wide front row the game was started with (the original's map header byte 0x121,
     /// from the option at the map's load): a load plays on with it whatever the option says
     /// now (0x4b771c). Saves before format 9 were all wide.
@@ -450,6 +455,7 @@ impl Game {
             map_start: Some(clock.total_minutes() as u64),
             origin: None,
             autosave_due: None,
+            carried: None,
             wide_row,
             ship: None,
             ship_bought: false,
