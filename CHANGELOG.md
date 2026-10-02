@@ -408,6 +408,8 @@ old id, and their versions give both.
   the same name, a noon autosave the one of the same name on the same map; otherwise a new
   one is made, or the oldest is overwritten once there are 12. A noon autosave on day 9
   of a month is named without the leading zero, as in the original.
+- The noon autosave is written only when the noon report opens: a noon with no wages and
+  no income makes none, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

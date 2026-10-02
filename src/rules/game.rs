@@ -1173,9 +1173,10 @@ impl Game {
             self.noon_from = Some(self.clock.day_index() + 1);
             if let Some(report) = self.new_day(day) {
                 events.push(Event::NewDay(report));
+                // The original autosaves as the noon report opens, named by the date; a noon
+                // with no report (no wages, no income) writes none (0x4abfbc).
+                self.autosave_due = Some(super::save::date_name(&self.clock));
             }
-            // The original autosaves every day at 12:00, named by the date.
-            self.autosave_due = Some(super::save::date_name(&self.clock));
         }
     }
 

@@ -695,6 +695,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_noon_without_a_report_asks_for_no_autosave() {
+        // 0x4abfbc: the flag is set as the noon report opens; no wages and no income, no
+        // report, no autosave.
+        use crate::rules::world::testkit;
+        let mut s = testkit::scenario(10, 10);
+        s.header.heroes[0] = testkit::hero(1, 1, 100, &[]);
+        let mut g = Game::from_scenario(Arc::new(testkit::content()), &s, HeroClass::Knight);
+        g.drain_events();
+        let events = g.wait(30);
+        assert!(!events.iter().any(|e| matches!(e, crate::rules::game::Event::NewDay(_))), "{events:?}");
+        assert_eq!(g.autosave_due, None);
+    }
+
+    #[test]
     fn a_save_of_another_version_or_without_a_scenario_is_refused() {
         let mut g = Game::new(demo(), HeroClass::Knight);
         let mut meta = meta_of(&g, SaveKind::Manual, "x").unwrap();
