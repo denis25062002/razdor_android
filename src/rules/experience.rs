@@ -226,6 +226,14 @@ pub fn tactical(content: &Content, id: UnitId, s: &Stats, building_defence: i32)
     (v.clamp(0, i32::MAX as i64) as i32).max(1)
 }
 
+/// A unit's level value (mode 0 of the original's tactical cost, 0x4a02a0): [`strength`]
+/// of its level stats (no items, no building) × `CostMultipler` / 100, without the Community
+/// "at least 1", so a type with a multiplier of 0 is worth 0. An event that adds a unit to a
+/// full army dismisses the unit with the lowest one.
+pub fn level_value(content: &Content, id: UnitId, level_stats: &Stats) -> i64 {
+    strength(level_stats, 0, content.options.shot_weapon_range) as i64 * content.unit(id).cost_multiplier as i64 / 100
+}
+
 /// One unit in a side's strength sum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SideUnit {

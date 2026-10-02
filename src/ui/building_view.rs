@@ -222,18 +222,16 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
     if view.pick.is_some_and(|k| k >= entries.len()) {
         view.pick = None;
     }
-    let rumour = view.pick.and_then(|k| match entries.get(k) {
-        Some(HallEntry::Rumour(id)) => Some(*id),
-        _ => None,
-    });
+    let picked = view.pick.and_then(|k| entries.get(k).copied());
     let ly = y + pic_h + 12.0 * k;
     draw_rectangle(x, ly, w, 36.0 * k, Color::new(0.0, 0.0, 0.0, 0.3));
     chrome::silver_frame(Rect::new(x, ly, w, 36.0 * k), 1.0);
     chrome::shadow_text(tr("Quests and rumours:"), x + 14.0 * k, ly + 25.0 * k, 20.0 * k, chrome::GOLD);
     let mut next = None;
-    if button(x + w - 250.0 * k, ly + 3.0 * k, 240.0 * k, 30.0 * k, tr("Hear rumour"), rumour.is_some()) {
-        if let Some(id) = rumour {
-            match game.hear_rumour(id) {
+    let label = if matches!(picked, Some(HallEntry::Quest(_))) { tr("Take quest") } else { tr("Hear rumour") };
+    if button(x + w - 250.0 * k, ly + 3.0 * k, 240.0 * k, 30.0 * k, label, picked.is_some()) {
+        if let Some(HallEntry::Rumour(id) | HallEntry::Quest(id)) = picked {
+            match game.take_hall_entry(id) {
                 Ok(events) => {
                     *message = None;
                     view.pick = None;
@@ -265,8 +263,7 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
         let ry = list_y + 6.0 * k + (n - view.scroll) as f32 * row_h;
         let (id, note, color) = match *entry {
             HallEntry::Rumour(id) => (id, tr("rumour"), Color::new(0.55, 0.1, 0.1, 1.0)),
-            HallEntry::Quest(id) => (id, tr("in your journal"), Color::new(0.1, 0.3, 0.55, 1.0)),
-            HallEntry::Done(id) => (id, tr("done"), PARCHMENT_INK),
+            HallEntry::Quest(id) => (id, tr("quest"), Color::new(0.1, 0.3, 0.55, 1.0)),
         };
         if view.pick == Some(n) {
             draw_rectangle(x + 4.0 * k, ry, w - 8.0 * k, row_h - 2.0 * k, Color::new(0.72, 0.6, 0.4, 1.0));

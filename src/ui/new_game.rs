@@ -337,13 +337,21 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
 }
 
 /// The tutorial map to offer before a new game, as an index into `scenarios`: the install's
-/// `[Tutorial] Tutorial_MapName` (Обучающий1), while the offer was never answered and the
-/// install does not say the tutorial is done (`Completed=1`, written by the original).
+/// `[Tutorial] Tutorial_MapName` (Обучающий1), at every new game while the tutorial is not
+/// done (0x4e2970): the install says so (`Completed=1`, written by the original), Razdor's
+/// settings say so (the tutorial's last event finished), or any save exists.
 pub fn tutorial_map(scenarios: &[ScenarioEntry]) -> Option<usize> {
     if chrome::win("Win-marble").is_none() || chrome::ui_text("Tutorial", "Completed").is_some_and(|c| c.trim() == "1") {
         return None;
     }
-    if super::language::Settings::load().tutorial_offered {
+    if super::language::Settings::load().tutorial_completed {
+        return None;
+    }
+    let saved = razdor::rules::save::default_dir().is_some_and(|d| {
+        use razdor::rules::save::{list, SaveKind};
+        !list(&d, SaveKind::Manual).is_empty() || !list(&d, SaveKind::Auto).is_empty()
+    });
+    if saved {
         return None;
     }
     let name = chrome::ui_text("Tutorial", "Tutorial_MapName")?;
@@ -358,8 +366,8 @@ fn paragraphs(text: &str) -> Vec<&str> {
 
 /// "Обучающий сценарий", before the first new game: the install's picture (`Как Играть`) on
 /// the left and its text on the right. «Да» starts the tutorial map (the hero choice next),
-/// «Нет» opens the scenario list; either answer, or closing the window, means it was
-/// offered, and it does not come again.
+/// «Нет» opens the scenario list; it comes again at the next new game until the tutorial is
+/// done.
 pub fn tutorial_offer(scenarios: &[ScenarioEntry]) -> Option<Screen> {
     let Some(map) = tutorial_map(scenarios) else { return Some(Screen::ScenarioSelect) };
     super::main_menu::backdrop();
@@ -406,7 +414,6 @@ pub fn tutorial_offer(scenarios: &[ScenarioEntry]) -> Option<Screen> {
     let no = win.button(386.0, 116.0, &own("Buttons", "No", n_("No")), true) || key(KeyCode::N) || key(KeyCode::Escape) || closed;
     if yes || no {
         cue(Cue::MenuPress);
-        super::language::Settings { tutorial_offered: true, ..super::language::Settings::load() }.save();
         return Some(if yes { Screen::ClassSelect { scenario: Some(map) } } else { Screen::ScenarioSelect });
     }
     None

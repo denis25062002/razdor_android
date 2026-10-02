@@ -1048,6 +1048,13 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }
     }
+    // The tutorial's end mark (0x4ac9fc): kept in the settings, so it is not offered again.
+    if game.script().is_some_and(|s| s.tutorial_done()) {
+        let settings = super::language::Settings::load();
+        if !settings.tutorial_completed {
+            super::language::Settings { tutorial_completed: true, ..settings }.save();
+        }
+    }
     next
 }
 

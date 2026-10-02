@@ -10,7 +10,7 @@ use macroquad::prelude::*;
 use razdor::i18n::{n_, tr};
 use razdor::rules::content::{ItemId, UnitId};
 use razdor::trf;
-use razdor::rules::events::{extension, EventId, EventOutcome, Extension, PICTURE_DEFEAT, PICTURE_VICTORY};
+use razdor::rules::events::{EventId, EventOutcome, PICTURE_DEFEAT, PICTURE_VICTORY};
 use razdor::rules::game::Game;
 use razdor::rules::journal::Tab;
 
@@ -68,8 +68,9 @@ pub fn event_dialog(game: &Game, id: EventId, asking: bool) -> Dialog {
         (_, 0 | PICTURE_DEFEAT | PICTURE_VICTORY) => None,
         (_, u) => game.content.try_unit(UnitId(u as u32)).map(|_| Picture::Unit(UnitId(u as u32))),
     };
-    // Opcodes use the resource fields as arguments: nothing was given.
-    if asking || matches!(extension(e), Some(Extension::Opcode(_))) {
+    // "No meeting" events show no resource row (the Community hook 0xc2831f; opcodes use
+    // the fields as arguments).
+    if asking || r.no_meeting == 1 {
         return d;
     }
     let signed = |v: i16| if v < 0 { format!("- {}", -(v as i32)) } else { format!("+ {v}") };
@@ -222,6 +223,9 @@ pub fn journal(game: &Game, assets: &super::assets::Assets, view: &mut JournalVi
             let mut sub = row.date.map_or_else(|| tr("Date unknown").to_string(), |d| d.label());
             if view.tab == Tab::Completed {
                 sub = format!("{}: {sub}", tr(QUEST_COMPLETED));
+            }
+            if let Some(m) = row.elapsed {
+                sub = trf!("Time since it was received: {t}", t = razdor::rules::clock::duration_label(m as f64));
             }
             text_centered(&sub, tx + tw / 2.0, ly + 56.0, 16.0, super::dialog::MANA);
             let lines: Vec<String> = row

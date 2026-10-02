@@ -564,51 +564,51 @@ Razdor: `src/rules/events.rs` (engine), `src/rules/script.rs` (the game as the e
 world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag script parsing),
 `src/ui/story.rs`, `src/ui/mod.rs`.
 
-| Topic | Razdor now | Original | Work |
+| Topic | Razdor now | Original | Status |
 |---|---|---|---|
-| Byte 145 | A result: sets the hero to 1 HP (`hero_to_one_hp`) | A **condition**: the hero's HP is exactly 1 (§4) | Make it a condition. The one shipped use chains into a defeat: as a result it would defeat the player as soon as its other condition holds. |
-| Yes answer | Later firings skip the question; the event keeps its once box | Yes sets once := not byte 149; the question returns for later firings (§6.2) | Set once on Yes unless 149; keep asking. A rumour that asks is heard once. |
-| Ask with empty message | All results applied on Yes | Artifacts, units and spells are never applied (§6.2) | Skip the dialog-time results in that case. |
-| When results apply | All at once when the event fires | Artifacts, units, spells when the window opens; the rest at OK (§6.1, §7.2) | Order matters little; keep the exe's order (gains, losses, units added, removed, spells; then flags, XP, gold, mana, armies, …). |
-| Flag test | Exact name, or name + one digit | Substring of the flag string (§5) | Store the string as the exe does and test with a substring search; three shipped maps depend on it. |
-| Flag action | `+X` stores `X1` (counter), `-X` lowers it | `+X` stores `X` (no digit) if X is not a substring already; `-X` removes the first occurrence; counters only with `^`; actions of ≤ 2 characters ignored | Follow the exe; the stored form also changes what substring tests see. |
-| Engine flags | None | `Sea` aboard a ship, `EnterShipyard` in the ship logic | Add them. |
-| Quests in buildings | Fired automatically on entering | Listed in the main hall and taken by the player, except in villages and shipyards (§2, §10) | List quests with rumours; fire them on take. |
-| Event points | Only local events and quests | Every listed event, whatever its type | Accept every type at points. |
-| Rumour or quest list | Rumours that pass; quests shown from the journal | Quests and rumours of the building that pass the full check | Follow the exe. |
-| Journal | No duplicates; a completed quest is never re-added; carried to the next map | Re-added on every finish; completion removes the last entry; emptied on the next map | Keep Razdor's history extra separate from the exe's quest list. |
-| Journal detail | Message only, with the date it was received; `#HERONAME` filled (`journal_rows`) | Title, a label, question then message as one justified block (no `#HERONAME` fill, markers raw), a label and the time since the event last fired, long calendar (§10) | Show the elapsed time since the latest firing, not a deadline; keep the question before the message. |
-| Dismissed unit on a full army | Nobody joins (row above) | Lowest mode-0 tactical cost of slots 2–12, first on a tie (§7.1) | Use the level-stat cost, not the current strength. |
-| Resource line after an event | The bar reads the live values every frame (`src/ui/game_bar.rs`) | Army recomputed and the resource line redrawn on every non-final finish (§8) | Matches in effect; recompute the army (wages, strength) after each event. |
-| Gold result | Can go negative | Clamped at 0 (§7.2 step 5) | Clamp at 0. |
-| Numeric conditions | Squads and strength always; level, gold, mana with byte 18 | All five only with byte 18, and skipped when byte 17 ≠ 0 with a positive squad value (Community) | Gate all five (no shipped map differs). |
-| Named squad, unnamed slot | Not checked (`player_units`) | A type match ignores the unit's own name: a named character of that type satisfies it | Follow the exe. |
-| Squad count | Living units | Unit records, the dead included | Count all records. |
-| Army inactive | Not on the map (a destroyed army counts) | Off the map and not destroyed | Exclude destroyed armies. |
-| Army in its home | Within a cell of its home's entry; a waiting army counts as home | Its current building is its home; no home passes | Follow the exe. |
-| Owner code 0 | Means the player (guess) | Units and artifacts: the slot fails; buildings: skipped | Follow the exe. |
-| Artifact slots | One item can satisfy several slots | One item per slot | Take items aside while checking. |
-| Artifact holder 2–5 | Any carried item of an AI army | Worn items only | Follow the exe. |
-| Units added to a full army | Nobody joins | The weakest of units 2–12 is dismissed (items to the pack), then the unit joins | Follow the exe. |
-| Unit taken from an army | Takes its level only | Takes the whole record; an emptied army leaves the map | Follow the exe. |
-| Unit removed, by type | Type and name must both match | Unnamed slot: unnamed unit of the type; named slot: that name, any type; can hit the hero | Follow the exe (except the hero, a bug to keep or guard: unknown). |
-| Removed unit given to an army | Appended if a cell is free; a named one sets the army's name | Appended (overwriting the last of a full army); a named one becomes the leader | Follow the exe. |
-| "No meeting" and spells | Spells learned | Not learned; no resource row | Follow the Community build. |
-| Lantern with radius 0 | Lit with radius 5 | Not lit | Skip it. |
-| Move army to hero | Army 136 or 142, activated, first free neighbour | Army 136 only, not activated, cheapest neighbour by terrain cost | Follow the exe. |
-| Patrol change | Radius only | Radius and the patrol box around home | Recompute the box. |
-| Chain timing | At once | After animations; dropped behind a delay; not after a victory or defeat | Drop chains behind delays. |
-| Guard | Same minute blocked; duration 0: 60 min | Same scan blocked (idle reset to now); duration 0: more than 60 min after `now + 1` | Within a minute; low priority. |
-| Opcode mode test | Byte 148 ≠ 0 and byte 17 in 1–20; "no meeting" + spell or + unit check read as other extensions | Byte 148 = 1 and byte 17 ≠ 0; op 21 needs byte 17 = 21; no spell-removal extension | Follow the exe. |
-| Placeholders | `#HERONAME` and `#HEROCLASS` | `#HERONAME` only; titles cut at `#` | Drop `#HEROCLASS`; cut titles at `#`. |
-| Double spaces | Kept | Collapsed at load | Collapse. |
-| Defeat by army loss | Game over screen | Defeat report, then the main menu; the defeat event does not fire | Matches in effect. |
-| Victory without next map | Victory screen | The event's window, then the main menu | UI choice; fine. |
-| Carried gold | Added to the new map's gold | Set to the old gold | Set. |
-| Carried pack, army | Appended to the new map's | Replace the new map's | Replace. |
-| Carried hero | Healed fully; unit type, level, XP and items by the bytes | His whole record (HP included) replaces the new hero, then the bytes | Keep HP; clear lasting spells. |
-| Carried flags | Carried | Carried | Matches. |
-| Tutorial offer | Every new game when the map exists | Only until the tutorial is marked done (ini, or any save) | Add the `end_tutorial` mark. |
+| Byte 145 | A condition: the hero's HP is exactly 1; it never sets HP | A **condition**: the hero's HP is exactly 1 (§4) | Matches |
+| Yes answer | Yes clears ask and sets once := not byte 149; with a message, ask is set back for later firings; without one, ask stays 0 (the write that misses) | Yes sets once := not byte 149; the question returns for later firings (§6.2) | Matches |
+| Ask with empty message | Yes finishes it at once: artifacts, units and spells never applied | Artifacts, units and spells are never applied (§6.2) | Matches |
+| When results apply | The window's results (gains, losses, units added, removed, spells) when it opens, then the finish's in the exe's order, then battle, spell, delay (`EventEngine::show`, `finish`) | Artifacts, units, spells when the window opens; the rest at OK (§6.1, §7.2) | Matches (the finish follows the opening at once: nothing happens while the window is up) |
+| Flag test | Substring search of the one flag string; first `^` dropped; `/` negates; empty or `end_tutorial` passes | Substring of the flag string (§5) | Matches |
+| Flag action | `+X` appends X with a non-breaking space if not a substring yet; `-X` removes the first occurrence and the next character; counters only with `^`, their slips included; actions of ≤ 2 characters ignored | Same (§5) | Matches |
+| Engine flags | `Sea` added when the hero goes to sea and removed when he lands (`Game::sea_changed`) | `Sea` aboard a ship, `EnterShipyard` in the ship logic | `Sea` matches; `EnterShipyard` left out (Razdor does not track the ship's shipyard; no shipped event tests it) |
+| Quests in buildings | Listed in the main hall with the rumours and fired when taken; villages and shipyards fire them on entering | Listed in the main hall and taken by the player, except in villages and shipyards (§2, §10) | Matches |
+| Event points | Every listed event, whatever its type | Every listed event, whatever its type | Matches |
+| Rumour or quest list | The building's quests and rumours that pass the full check (`EventEngine::hall`); taking one opens it without a new check | Quests and rumours of the building that pass the full check | Matches |
+| Journal | The engine's journal: re-added on every finish, completion removes the last entry, a new engine on the next map; Razdor's history is a separate extra | Re-added on every finish; completion removes the last entry; emptied on the next map | Matches |
+| Journal detail | Active quests: question then message, `#HERONAME` not filled, markers raw, and the time since the event last fired (`Game::quest_row`) | Title, a label, question then message as one justified block (no `#HERONAME` fill, markers raw), a label and the time since the event last fired, long calendar (§10) | Matches in content; the justified layout and the long calendar's wording are presentation, left |
+| Dismissed unit on a full army | Lowest level value (`experience::level_value`: level stats, no items, raw multiplier) of units 2–12, first on a tie; its worn items to the pack | Lowest mode-0 tactical cost of slots 2–12, first on a tie (§7.1) | Matches |
+| Resource line after an event | The bar reads the live values every frame; the army is marked for rescoring after each event | Army recomputed and the resource line redrawn on every non-final finish (§8) | Matches in effect |
+| Gold result | Clamped at 0 | Clamped at 0 (§7.2 step 5) | Matches |
+| Numeric conditions | All five only with byte 18, skipped when byte 17 ≠ 0 with a positive squad value; the opcode-19 cell test replaces gold, mana, squads and strength under its own test | All five only with byte 18, and skipped when byte 17 ≠ 0 with a positive squad value (Community) | Matches |
+| Named squad, unnamed slot | A type match ignores the unit's own name; codes 2–5 search the faction's armies without the alive test | A type match ignores the unit's own name: a named character of that type satisfies it | Matches |
+| Squad count | Unit records, the dead included | Unit records, the dead included | Matches |
+| Army inactive | Waiting off the map; a destroyed army is neither | Off the map and not destroyed | Matches |
+| Army in its home | Its current building is its home; no home passes | Its current building is its home; no home passes | Matches |
+| Owner code 0 | Units and artifacts: the slot fails; buildings: skipped | Units and artifacts: the slot fails; buildings: skipped | Matches |
+| Artifact slots | One item per slot, taken aside while checking | One item per slot | Matches |
+| Artifact holder 2–5 | Worn items of the faction's armies only | Worn items only | Matches |
+| Units added to a full army | The weakest of units 2–12 is dismissed (items to the pack), then the unit joins | The weakest of units 2–12 is dismissed (items to the pack), then the unit joins | Matches |
+| Unit taken from an army | The whole record (level, XP, wounds, items, name, wage kind); an emptied army leaves the map | Takes the whole record; an emptied army leaves the map | Matches |
+| Unit removed, by type | From the last unit back; unnamed slot: unnamed unit of the type; named slot: that name, any type; nothing unless a slot finds one; never the hero | Unnamed slot: unnamed unit of the type; named slot: that name, any type; can hit the hero | Matches, except the hero (unknown whether reachable: Razdor's guard kept) |
+| Removed unit given to an army | Unnamed: appended, over the last of a full army; named: the leader, the others down | Appended (overwriting the last of a full army); a named one becomes the leader | Matches |
+| "No meeting" and spells | Not learned; no resource row | Not learned; no resource row | Matches |
+| Lantern with radius 0 | Not lit | Not lit | Matches |
+| Move army to hero | Army 136 only, not activated, cheapest neighbour | Army 136 only, not activated, cheapest neighbour by terrain cost | Matches |
+| Patrol change | Radius, and the box back around the home cell; in opcode mode the opcode is the delta | Radius and the patrol box around home | Matches |
+| Chain timing | Dropped behind a delay unless lanterns, a shown army or a spell start the chain timer; a battle does not stop it; nothing after a victory or defeat (no spell, battle or delay either) | After animations; dropped behind a delay; not after a victory or defeat | Matches |
+| Guard | *Last fired* := now + 1; with a duration L ≤ now, without L < now − 60; set back to now when the scan goes idle | Same scan blocked (idle reset to now); duration 0: more than 60 min after `now + 1` | Matches |
+| Opcode mode test | Byte 148 = 1 and byte 17 ≠ 0 (signed); pokes of one byte across records; strict < and >; op 18 the digit of the event's `^` flag; op 21 only with byte 17 = 21 | Byte 148 = 1 and byte 17 ≠ 0; op 21 needs byte 17 = 21; no spell-removal extension | Matches |
+| Placeholders | `#HERONAME` only; titles cut at `%` and `#` | `#HERONAME` only; titles cut at `#` | Matches |
+| Double spaces | Collapsed when the game loads the map's events, names and descriptions | Collapsed at load | Matches |
+| Defeat by army loss | Game over screen | Defeat report, then the main menu; the defeat event does not fire | Matches in effect |
+| Victory without next map | Victory screen | The event's window, then the main menu | UI choice; fine |
+| Carried gold | Set to the old gold | Set to the old gold | Matches |
+| Carried pack, army | Replace the new map's (the army's dead dropped, paid as of now) | Replace the new map's | Matches |
+| Carried hero | His whole record (HP and class included, lasting spells cleared) replaces the new hero, then the bytes | His whole record (HP included) replaces the new hero, then the bytes | Matches (HP above a reset hero's maximum is cut: a guess) |
+| Carried flags | Carried | Carried | Matches |
+| Tutorial offer | At every new game until done: the install's mark, Razdor's settings (set by the `end_tutorial` event), or any save | Only until the tutorial is marked done (ini, or any save) | Matches (Razdor writes its own settings, not the install's ini) |
 | Window, once, class, relative start, chain ignoring checks, No counting as happened, victory stopping the chain | — | — | Match. |
 
 ## Unknowns

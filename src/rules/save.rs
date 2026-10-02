@@ -43,8 +43,12 @@ use super::world::World;
 /// flag down, no stamps, and their goods in order with the timer due. 7: world spells in
 /// each unit's 4 slots, a unit's drain and HP carry, the map's start minute; older saves
 /// load with their army-wide spells moved into the units' slots, no drain (a draining curse
-/// becomes a slot like any other) and the start day's midnight as the map start.
-pub const FORMAT_VERSION: u32 = 7;
+/// becomes a slot like any other) and the start day's midnight as the map start. 8: the
+/// event engine's flags as the original's one string (older saves' list of names is read
+/// into it), its *last fired* a minute ahead until the scan goes idle, the ask and once
+/// bytes a Yes rewrites, opcode 18's waiting digit and the tutorial's end mark; older saves
+/// load with their flags joined, no digit waiting and the mark down.
+pub const FORMAT_VERSION: u32 = 8;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";

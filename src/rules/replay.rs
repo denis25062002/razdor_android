@@ -340,9 +340,9 @@ impl Driver {
     /// Hears every rumour on offer here, as a player reading the main hall would.
     pub fn hear_rumours(&mut self) {
         for _ in 0..20 {
-            let Some(&r) = self.g.rumours_here().first() else { break };
+            let Some(&r) = self.g.hall_here().first() else { break };
             self.log(format!("hear rumour E{r}"));
-            let Ok(ev) = self.g.hear_rumour(r) else { break };
+            let Ok(ev) = self.g.take_hall_entry(r) else { break };
             self.settle(ev);
         }
     }
@@ -508,7 +508,7 @@ fn campaign_rk1_to_rk3() {
     assert_eq!(d.g.script().unwrap().times_fired(29), 0, "the herald came along");
     assert_eq!(d.ended, None);
     play_rk2(&mut d);
-    println!("РК2 fired {:?}, flags {:?}", d.fired, d.g.script().unwrap().flags().collect::<Vec<_>>());
+    println!("РК2 fired {:?}, flags {:?}", d.fired, d.g.script().unwrap().flag_string());
     assert_eq!(d.ended, Some(EventOutcome::Victory(34)), "fired {:?}", d.fired);
     assert!(d.g.script().unwrap().flag("Band") && d.g.script().unwrap().flag("King"));
     let mut d = d.next_map(&dt, &c);

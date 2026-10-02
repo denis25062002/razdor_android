@@ -116,13 +116,16 @@ pub struct Row {
     pub text: String,
     /// When it happened; `None` for quests from a save made before the history existed.
     pub date: Option<Clock>,
+    /// An active quest: minutes since its event last fired, as the original's journal shows
+    /// it (0x49c388: no deadline, the time since the latest firing).
+    pub elapsed: Option<u64>,
 }
 
 impl Game {
-    /// An event's title as shown: its title without the flag script, escapes filled in;
-    /// "Event" when it has none.
+    /// An event's title as shown: before its flag script and its editor's note (`#`),
+    /// escapes filled in; "Event" when it has none.
     pub fn event_title(&self, id: EventId) -> String {
-        let raw = self.script().and_then(|s| s.event(id)).map_or("", |e| e.title_text().trim());
+        let raw = self.script().and_then(|s| s.event(id)).map_or("", |e| e.display_title().trim());
         if raw.is_empty() {
             tr("Event").to_string()
         } else {
@@ -134,7 +137,25 @@ impl Game {
     fn event_texts(&self, id: EventId) -> (String, String) {
         self.script()
             .and_then(|s| s.event(id))
-            .map_or_else(Default::default, |e| (e.title_text().trim().to_string(), e.message.clone()))
+            .map_or_else(Default::default, |e| (e.display_title().trim().to_string(), e.message.clone()))
+    }
+
+    /// A line of the quest journal as the original fills its detail (0x49c388): the title,
+    /// then the question (if any) and the message as one text, without `#HERONAME` filled
+    /// (the stored text keeps it), and the time since the event last fired.
+    fn quest_row(&self, id: EventId) -> Row {
+        let Some((script, e)) = self.script().and_then(|s| Some((s, s.event(id)?))) else {
+            return Row { title: tr("Event").to_string(), text: String::new(), date: None, elapsed: None };
+        };
+        let title = e.display_title().trim();
+        let text = if e.question.is_empty() { e.message.clone() } else { format!("{}\n{}", e.question, e.message) };
+        let now = self.clock.total_minutes() as u64;
+        Row {
+            title: if title.is_empty() { tr("Event").to_string() } else { title.to_string() },
+            text: text.replace('\r', ""),
+            date: self.journal.find(EntryKind::Quest, id).map(Entry::date),
+            elapsed: script.last_fired(id).map(|l| now.saturating_sub(l)),
+        }
     }
 
     /// Notes what the event engine reported in the history (see the module notes).
@@ -166,17 +187,18 @@ impl Game {
     /// their date from the history); completed ones the history's, then any the engine lists
     /// that the history lacks (older saves).
     pub fn journal_rows(&self, tab: Tab) -> Vec<Row> {
-        let shown = |e: &Entry| Row { title: self.fill_title(&e.title), text: self.fill_text(&e.text), date: Some(e.date()) };
+        let shown = |e: &Entry| Row { title: self.fill_title(&e.title), text: self.fill_text(&e.text), date: Some(e.date()), elapsed: None };
         let from_engine = |id: EventId, kind: EntryKind| match self.journal.find(kind, id) {
             Some(e) => shown(e),
             None => {
                 let (_, text) = self.event_texts(id);
-                Row { title: self.event_title(id), text: self.fill_text(&text), date: None }
+                Row { title: self.event_title(id), text: self.fill_text(&text), date: None, elapsed: None }
             }
         };
         let (active, done) = self.script().map_or((&[][..], &[][..]), |s| (s.journal(), s.completed_quests()));
         match tab {
-            Tab::Active => active.iter().rev().map(|&id| from_engine(id, EntryKind::Quest)).collect(),
+            // The engine's journal, an entry each time a quest was received.
+            Tab::Active => active.iter().rev().map(|&id| self.quest_row(id)).collect(),
             Tab::Completed => {
                 let mut rows: Vec<Row> = self.journal.newest(EntryKind::Completed).map(shown).collect();
                 let missing = done.iter().rev().filter(|&&id| self.journal.find(EntryKind::Completed, id).is_none());

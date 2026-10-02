@@ -919,24 +919,26 @@ impl World {
         let start = if s.header.start_time > 0 { Clock::at_minutes(s.header.start_time as u64 + 1) } else { Clock::demo_start() };
         let mut world = World::empty(&s.title, map, start);
         world.relations = s.header.relations;
-        world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.title_text().trim().to_string() }).collect();
+        world.events = s.events.iter().map(|e| EventInfo { kind: e.kind(), title: e.display_title().trim().to_string() }).collect();
         world.points = s
             .points
             .iter()
             .map(|p| MapPoint { id: p.id, tile: (p.x as i32, p.y as i32), radius: p.radius as i32, lit: p.model == 8 && p.active != 0 })
             .collect();
-        world.named_characters = s.named_characters.iter().map(|n| n.name.clone()).collect();
+        // Every string of the map has its double spaces collapsed at load (0x4b2aa1).
+        let text = crate::dt::dtm::collapse_spaces;
+        world.named_characters = s.named_characters.iter().map(|n| text(&n.name)).collect();
 
         for (i, b) in s.buildings.iter().enumerate() {
             let kind = b.building_type().map_or(LocationKind::Smithy, LocationKind::from_building);
             let size = (b.size_x.max(1) as i32, b.size_y.max(1) as i32);
             let anchor = (b.x as i32, b.y as i32);
-            let mut l = Location::new(kind, &b.name, anchor);
+            let mut l = Location::new(kind, &text(&b.name), anchor);
             l.anchor = anchor;
             l.size = size;
             l.id = i as u16 + 1;
-            l.owner_name = b.owner_name.clone();
-            l.description = b.description.clone();
+            l.owner_name = text(&b.owner_name);
+            l.description = text(&b.description);
             l.picture = (b.picture_type, b.picture_variant);
             l.owner = b.owner().map_or(Owner::Neutral, Owner::Army);
             l.faction = b.faction;
@@ -1032,9 +1034,9 @@ impl World {
             let army = Army {
                 id: a.id,
                 uid: a.id as u32,
-                name: a.name.clone(),
-                leader_name: a.leader_name.clone(),
-                description: a.description.clone(),
+                name: text(&a.name),
+                leader_name: text(&a.leader_name),
+                description: text(&a.description),
                 model: a.model,
                 pos: world.map.center(tile),
                 home,

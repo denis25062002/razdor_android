@@ -127,8 +127,8 @@ Hear rumour = Выслушать слух
 Nothing is on offer here. = Здесь ничего не предлагают.
 No quests in the demo. = В демо нет заданий.
 rumour = слух
-in your journal = в журнале
-done = выполнено
+quest = задание
+Take quest = Взять задание
 
 # Building window: barracks
 No recruits here. = Здесь некого нанять.

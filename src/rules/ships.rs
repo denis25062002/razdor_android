@@ -275,10 +275,14 @@ impl Game {
         self.ship_bought = false;
     }
 
-    /// The hero goes to sea (`true`) or leaves it (0x496d28): the AI armies on the medium he
-    /// is now on (ships, or land armies) lose their banked time and plan again at their next
+    /// The hero goes to sea (`true`) or leaves it (0x496d28): the scenario's flag `Sea` is
+    /// added (when it does not occur yet) or removed, and the AI armies on the medium he is
+    /// now on (ships, or land armies) lose their banked time and plan again at their next
     /// arrival.
     fn sea_changed(&mut self, at_sea: bool) {
+        if let Some(engine) = self.script.as_mut() {
+            engine.set_engine_flag("Sea", at_sea);
+        }
         for a in self.world.armies.iter_mut().filter(|a| a.sails() == at_sea) {
             a.budget = 0.0;
             a.mind.countdown = 0;
@@ -446,6 +450,7 @@ mod tests {
         assert_eq!(g.tile(), (20, 5), "the route ends where he lands");
         assert_eq!(g.ship, Some(Ship { tile: (19, 5), aboard: false }));
         assert!(!g.plans_at_sea() && g.planner_cost((19, 5)) == 0);
+        assert!(!g.script().unwrap().flag("Sea"), "landing removes the flag Sea (0x496d28)");
         // On foot again; the parked ship is a target although water costs nothing on LAND.
         assert!(g.can_target((19, 5)) && !g.can_target((18, 5)));
         assert!(g.set_destination((25, 5)));
@@ -454,6 +459,7 @@ mod tests {
         assert!(g.set_destination((19, 5)));
         walk_until_stopped(&mut g);
         assert_eq!(g.ship, Some(Ship { tile: (19, 5), aboard: true }), "walking onto it, he is at sea again");
+        assert_eq!(g.script().unwrap().flag_string(), "Sea\u{a0}", "boarding adds it");
         assert!(g.can_target((15, 5)));
     }
 

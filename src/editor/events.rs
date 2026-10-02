@@ -288,7 +288,7 @@ pub const OPCODES: [OpcodeInfo; 20] = [
     OpcodeInfo { code: 15, name: n_("Campaign branch"), args: [a(n_("Map number"), Arg::Number), a(n_("Variant"), Arg::Number), None], uses: Some(n_("the chained event (the victory event)")), condition: false },
     OpcodeInfo { code: 16, name: n_("Forget spells"), args: [None, None, None], uses: Some(n_("the spells learned")), condition: false },
     OpcodeInfo { code: 17, name: n_("Change the map figure"), args: [a(n_("Army"), Arg::Army), a(n_("Figure (0-12)"), Arg::Number), None], uses: None, condition: false },
-    OpcodeInfo { code: 18, name: n_("Random flag RAND"), args: [a(n_("Lowest character code"), Arg::Number), a(n_("Highest character code"), Arg::Number), None], uses: None, condition: false },
+    OpcodeInfo { code: 18, name: n_("Random digit of its counter flag"), args: [a(n_("Lowest character code"), Arg::Number), a(n_("Highest character code"), Arg::Number), None], uses: None, condition: false },
     OpcodeInfo { code: 19, name: n_("AI army target / position check"), args: [a(n_("Army to send (1-255)"), Arg::Army), a(n_("Target X"), Arg::Number), a(n_("Target Y"), Arg::Number)], uses: Some(n_("strength, gold and mana conditions: army and cell to check")), condition: false },
     OpcodeInfo { code: 20, name: n_("Teleport the player"), args: [a("X", Arg::Number), a("Y", Arg::Number), None], uses: None, condition: false },
 ];
@@ -297,10 +297,11 @@ pub fn opcode_info(code: u8) -> Option<&'static OpcodeInfo> {
     OPCODES.iter().find(|o| o.code == code)
 }
 
-/// The opcode of an event: "no meeting" set and a patrol change of 1–20.
+/// The opcode of an event the editor offers: "no meeting" set and a patrol change of 1–20
+/// (the engine reads any other patrol value as an opcode too).
 pub fn opcode(e: &Event) -> Option<u8> {
     match extension(e) {
-        Some(Extension::Opcode(op)) => Some(op),
+        Some(Extension::Opcode(op @ 1..=20)) => Some(op),
         _ => None,
     }
 }

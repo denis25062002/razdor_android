@@ -1105,7 +1105,7 @@ pub struct EventResults {
     pub move_to_hero: u8,
     /// 144: show army.
     pub show_army: u8,
-    /// 145: hero has only 1 HP.
+    /// 145: a condition: the hero has exactly 1 HP (the original never sets HP from it).
     pub hero_one_hp: u8,
     /// 147: start a battle with this army.
     pub start_battle_with: u8,
@@ -1152,6 +1152,28 @@ impl FlagScript {
         }
         Some(f)
     }
+
+    /// The action as the original reads it (0x4ab2a3): the text between `%` and `=` (all of
+    /// it without a `=`), sign included.
+    pub fn action(&self) -> &str {
+        self.raw.split_once('=').map_or(&self.raw, |(a, _)| a)
+    }
+
+    /// The test as the original reads it (0x4a8a22): the text after the `=`, empty without
+    /// one.
+    pub fn test(&self) -> &str {
+        self.raw.split_once('=').map_or("", |(_, t)| t)
+    }
+}
+
+/// A map string as the original keeps it after loading (0x4b2aa1): every run of two spaces
+/// collapsed to one.
+pub fn collapse_spaces(s: &str) -> String {
+    let mut out = s.to_string();
+    while out.contains("  ") {
+        out = out.replace("  ", " ");
+    }
+    out
 }
 
 /// A scenario event (171 bytes). Events have 1-based ids in file order.
@@ -1386,6 +1408,31 @@ impl Event {
     /// The title without its flag script.
     pub fn title_text(&self) -> &str {
         self.title.split_once('%').map_or(&self.title, |(t, _)| t)
+    }
+
+    /// The title the game shows (0x4833f0): before the first `%`, then before the first `#`
+    /// (an editor's note), trailing spaces removed.
+    pub fn display_title(&self) -> &str {
+        let t = self.title_text();
+        t.split_once('#').map_or(t, |(t, _)| t).trim_end_matches(' ')
+    }
+
+    /// The engine's state the record carries from the file (bytes 156–162): last fired
+    /// (minutes), times fired, and the answer (1 = No).
+    pub fn runtime_state(&self) -> (i32, u16, u8) {
+        let b = &self.unknown_151;
+        (i32::from_le_bytes([b[5], b[6], b[7], b[8]]), u16::from_le_bytes([b[9], b[10]]), b[11])
+    }
+
+    /// The event as the game loads it: its texts with double spaces collapsed (0x4b2aa1)
+    /// and its flag script read again from the collapsed title.
+    pub fn for_play(&self) -> Event {
+        let mut e = self.clone();
+        e.title = collapse_spaces(&e.title);
+        e.question = collapse_spaces(&e.question);
+        e.message = collapse_spaces(&e.message);
+        e.flags = FlagScript::from_title(&e.title);
+        e
     }
 
     pub fn fires_once(&self) -> bool {

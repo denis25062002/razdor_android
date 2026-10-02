@@ -321,6 +321,38 @@ old id, and their versions give both.
 - An event whose "no meeting" byte is 1 teaches no spell, opcode or not. A spell's price in a
   sanctuary is exactly its cost, a negative one included. Item types and spell targets are
   read case-sensitively, as the original does.
+- **Scenario events as the original runs them:** conditions in its order and with its
+  rules: the squad count counts the dead, strength, squads, level, gold and mana are tested
+  only with "current stats", an army is inactive only while waiting (a destroyed one is
+  neither), "at home" means standing in its home building, an artifact in a slot is one copy,
+  an AI army's artifact must be worn, a named-character slot takes any unit of its type, and
+  owner 0 fails a unit or artifact check. The "hero at 1 HP" box is a condition, never a
+  result.
+- Event flags are the original's one string, tested by substring: a flag `AB` also holds
+  while `XAB1` is set; `+X` no longer adds a digit, counters need the `^` form. Boarding a
+  ship sets the flag `Sea`, landing clears it.
+- A Yes makes an answered event a once-event (unless "repeat after yes"); an asking event
+  with no message applies no items, units or spells on Yes. An event's items, units and
+  spells come first, then XP, gold (which no longer goes below 0), armies and the rest; a
+  delay drops the event's chain, and a victory or defeat event casts, fights and waits no
+  more. An event can fire again in the same minute on a later scan; one without a duration
+  waits 61 minutes.
+- Quests of a town or castle are taken in its main hall, with the rumours (they no longer
+  fire on entering); event points fire every event they list. A quest received twice is
+  listed twice in the journal, which shows the question and the time since it was received.
+- A unit joining a full army dismisses the weakest one; one taken from an army brings its
+  whole record and an emptied army leaves the map; a removed unit given to an army leads it
+  if it is a named character. The army moved next to the hero is always the "given to"
+  army. A patrol change re-centres the patrol box.
+- The next campaign map gets the hero's whole record (wounds and class too), the old gold
+  and mana instead of its own, and the old pack and army in place of its own. The tutorial
+  is offered at every new game until it is finished (or a save exists). Double spaces in
+  map texts are collapsed, `#HEROCLASS` is not filled any more, and titles end at `#`.
+- Community event opcodes as the patch: opcode mode needs "no meeting" = 1 and any patrol
+  value, the byte pokes and compares work on single bytes (across records, strict < and
+  >), opcode 18 draws the digit of the event's `^` flag, and a "no meeting" event with a
+  spell casts it.
+- Save format 8: the event flags are one string; older saves load with their flags joined.
 
 ## 0.2.2 — 2026-10-01
 

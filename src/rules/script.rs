@@ -10,7 +10,7 @@
 //! Choices where the sources are silent are marked *(guess)* and listed in mechanics.md §8.1.
 
 use super::content::{HeroClass, ItemId, UnitId, WageKind};
-use super::events::{ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitPick, SIDE_PLAYER};
+use super::events::{find_unit, ArmyId, EventEngine, EventId, EventOutcome, EventWorld, Holder, Place, UnitRecord};
 use super::units::{SpellSlot, SPELL_SLOTS};
 use super::game::{troop_unit, unit_into_troop, Event, Foe, Game, PACK_SIZE};
 use super::town::ServiceError;
@@ -28,16 +28,15 @@ pub enum ScriptEnd {
     Defeat(EventId),
 }
 
-/// A line of a main hall's list of quests and rumours.
+/// A line of a main hall's list (0x4beaac): the building's quests and rumours that pass
+/// their check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HallEntry {
     /// A rumour on offer. Hearing it is free; any price is the rumour event's own (its gold
     /// condition and result).
     Rumour(EventId),
-    /// A quest of this building that is in the journal.
+    /// A quest on offer: taking it opens its dialog.
     Quest(EventId),
-    /// A quest of this building that is done.
-    Done(EventId),
 }
 
 impl Event {
@@ -51,12 +50,6 @@ impl Event {
             _ => false,
         }
     }
-}
-
-/// Side code of a faction (1–4 → green, blue, yellow, red = 2–5) *(guess: the editor lists
-/// the player, then the four colours; faction 1 is the player's own colour)*.
-fn side(faction: u8) -> Option<u8> {
-    (1..=4).contains(&faction).then_some(faction + 1)
 }
 
 impl Game {
@@ -127,37 +120,29 @@ impl Game {
         self.script()?.pending_question()
     }
 
-    /// Rumours on offer where the hero stands.
-    pub fn rumours_here(&self) -> Vec<EventId> {
-        self.script().map_or_else(Vec::new, |e| e.rumours(self))
-    }
-
-    /// The main hall's list here: rumours on offer, then this building's quests in the
-    /// journal and those done.
+    /// The main hall's list here (0x4beaac): the building's quests and rumours that pass
+    /// their check, in its list order.
     pub fn hall_entries(&self) -> Vec<HallEntry> {
         let Some(engine) = self.script() else { return Vec::new() };
-        let mut out: Vec<HallEntry> = self.rumours_here().into_iter().map(HallEntry::Rumour).collect();
-        let Some(l) = self.location else { return out };
         let quest = |id: EventId| self.world.events.get(id as usize - 1).is_some_and(|e: &EventInfo| e.kind == Some(EventKind::Quest));
-        for &id in self.world.locations[l].events.iter().filter(|&&id| id > 0 && quest(id)) {
-            if engine.journal().contains(&id) {
-                out.push(HallEntry::Quest(id));
-            } else if engine.completed_quests().contains(&id) {
-                out.push(HallEntry::Done(id));
-            }
-        }
-        out
+        engine.hall(self).into_iter().map(|id| if quest(id) { HallEntry::Quest(id) } else { HallEntry::Rumour(id) }).collect()
     }
 
-    /// Hears rumour `id` of this main hall: it fires (or asks its question), then the events
-    /// run on. There is no flat price: a rumour that costs something says so in its own event
-    /// (a gold condition and a negative gold result), as the original's rumours do.
-    pub fn hear_rumour(&mut self, id: EventId) -> Result<Vec<Event>, ServiceError> {
-        if !self.rumours_here().contains(&id) || self.pending_question().is_some() {
+    /// The ids of the main hall's list here.
+    pub fn hall_here(&self) -> Vec<EventId> {
+        self.script().map_or_else(Vec::new, |e| e.hall(self))
+    }
+
+    /// Takes entry `id` of this main hall (0x4bb798): its dialog opens at once, without a new
+    /// check (its question first if it asks one), then the events run on. There is no flat
+    /// price: a rumour that costs something says so in its own event (a gold condition and a
+    /// negative gold result), as the original's rumours do.
+    pub fn take_hall_entry(&mut self, id: EventId) -> Result<Vec<Event>, ServiceError> {
+        if !self.hall_here().contains(&id) || self.pending_question().is_some() {
             return Err(ServiceError::NotHere);
         }
         let Some(mut engine) = self.script.take() else { return Ok(Vec::new()) };
-        let out = engine.hear_rumour(self, id);
+        let out = engine.take(self, id);
         self.script = Some(engine);
         Ok(self.script_events(out))
     }
@@ -246,6 +231,12 @@ impl Game {
         w.armies.iter_mut().chain(w.inactive.iter_mut()).find(|a| a.id == id)
     }
 
+    /// Every army record: on the map, waiting, and beaten waiting for a respawn.
+    fn army_records(&self) -> impl Iterator<Item = &Army> {
+        let w = &self.world;
+        w.armies.iter().chain(w.inactive.iter()).chain(w.respawns.iter().map(|r| &r.army))
+    }
+
     /// Brings a waiting army onto the map. Returns its index. A ship comes onto the water
     /// (`rules::ships`); a land army with no land near its post stays out.
     fn activate(&mut self, id: ArmyId) -> Option<usize> {
@@ -315,11 +306,10 @@ impl Game {
         Some(i)
     }
 
-    /// A text of the scenario with its escapes filled in: `#HERONAME` becomes the hero's
-    /// name ([`Game::hero_name`]), `#HEROCLASS` his class's name.
+    /// A text of the scenario with its escape filled in: every `#HERONAME` becomes the hero's
+    /// name ([`Game::hero_name`]), case-sensitive (0x4aa3de). There is no other escape.
     pub fn fill_text(&self, s: &str) -> String {
-        let class = self.hero().name(&self.content);
-        s.replace("#HERONAME", &self.hero_name()).replace("#HEROCLASS", class).replace('\r', "")
+        s.replace("#HERONAME", &self.hero_name()).replace('\r', "")
     }
 
     /// The name shown for squad member `u`: a named character's own name, else its class.
@@ -373,9 +363,13 @@ impl EventWorld for Game {
         self.mana as i64
     }
 
-    /// Living units, the hero included *(guess)*.
+    fn hero_hp(&self) -> i64 {
+        self.hero().hp as i64
+    }
+
+    /// Every unit record of the army, the hero and the dead included.
     fn squad_count(&self) -> i64 {
-        self.squad.iter().filter(|u| u.alive()).count() as i64
+        self.squad.len() as i64
     }
 
     /// Sum of the living units' tactical cost with their items (experience.md §1), as the
@@ -390,34 +384,28 @@ impl EventWorld for Game {
         Some((l.owner == super::world::Owner::Player, l.faction))
     }
 
-    fn player_units(&self, unit: u8, named: u8) -> usize {
-        let fits = |u: &Unit| match (unit, named) {
-            (0xFF, 0) => u.from_event && u.named == 0,
-            (_, 0) => u.def == UnitId(unit as u32),
-            (_, n) => u.named == n,
-        };
-        self.squad.iter().filter(|u| u.alive() && fits(u)).count()
+    fn player_units(&self) -> Vec<UnitRecord> {
+        self.squad
+            .iter()
+            .map(|u| UnitRecord { unit: u.def.0, named: u.named, hp: u.hp, from_event: u.wage_kind == WageKind::Event })
+            .collect()
     }
 
-    fn named_unit_holder(&self, unit: u8, named: u8) -> Option<u8> {
-        let fits = |u: &Unit| u.named == named && (unit == 0 || u.def == UnitId(unit as u32));
-        if self.squad.iter().any(|u| u.alive() && fits(u)) {
-            return Some(SIDE_PLAYER);
-        }
-        let w = &self.world;
-        let a = w.armies.iter().chain(w.inactive.iter()).find(|a| named != 0 && a.named == named)?;
-        side(a.faction)
+    /// Every army of the faction, on the map, waiting or beaten (the original walks all its
+    /// army records). A named character leads his army: he is its first unit.
+    fn faction_units(&self, faction: u8) -> Vec<Vec<UnitRecord>> {
+        self.army_records().filter(|a| a.faction == faction).map(army_units).collect()
     }
 
-    fn artifact_holder(&self, artifact: u8) -> Option<u8> {
-        let item = ItemId(artifact as u32);
-        let worn = self.squad.iter().any(|u| u.items.contains(&Some(item)));
-        if worn || self.pack.contains(&item) {
-            return Some(SIDE_PLAYER);
-        }
-        let w = &self.world;
-        let a = w.armies.iter().chain(w.inactive.iter()).find(|a| a.items.contains(&item))?;
-        side(a.faction)
+    fn player_items(&self) -> (Vec<u8>, Vec<u8>) {
+        let id = |i: &ItemId| u8::try_from(i.0).ok();
+        let worn = self.squad.iter().flat_map(|u| u.items.iter().flatten()).filter_map(id).collect();
+        (self.pack.iter().filter_map(id).collect(), worn)
+    }
+
+    fn faction_worn_items(&self, faction: u8) -> Vec<u8> {
+        let armies = self.army_records().filter(|a| a.faction == faction);
+        armies.flat_map(|a| a.troops.iter().flat_map(|t| t.worn.iter().flatten())).filter_map(|i| u8::try_from(i.0).ok()).collect()
     }
 
     fn player_defeated(&self, army: ArmyId) -> bool {
@@ -433,15 +421,16 @@ impl EventWorld for Game {
         self.army_index(army).is_some()
     }
 
-    /// On the map within a cell of its home building's entry; a waiting army is at home
-    /// *(guess)*.
-    fn army_at_home(&self, army: ArmyId) -> bool {
-        if let Some(i) = self.army_index(army) {
-            let a = &self.world.armies[i];
-            let map = &self.world.map;
-            return a.home.is_some_and(|h| map.distance(a.tile(map), self.world.locations[h].tile) <= 1);
-        }
+    /// Waiting off the map; a beaten army waiting for its respawn is destroyed, so it is
+    /// neither active nor inactive.
+    fn army_inactive(&self, army: ArmyId) -> bool {
         self.world.inactive.iter().any(|a| a.id == army)
+    }
+
+    /// Its current building is its home (0x4a7b80: army +0x3788 = +0x16b3); an army with
+    /// no home passes. An army Razdor no longer keeps passes too *(guess)*.
+    fn army_at_home(&self, army: ArmyId) -> bool {
+        self.army_records().find(|a| a.id == army).is_none_or(|a| a.home.is_none() || a.mind.standing == a.home)
     }
 
     fn place(&self) -> Option<Place> {
@@ -461,65 +450,124 @@ impl EventWorld for Game {
         self.unit_gains(0, xp);
     }
 
-    /// The event's gold is added as it is (the noon payment settles a debt); mana does not
-    /// go below 0.
+    /// The event's gold is added, the total held at 0 and above (0x4ab1be): a rumour that
+    /// costs more than the player has leaves him at 0. Mana alike.
     fn add_gold(&mut self, gold: i64) {
-        self.gold = (self.gold as i64 + gold).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+        self.gold = (self.gold as i64 + gold).clamp(0, i32::MAX as i64) as i32;
     }
 
     fn add_mana(&mut self, mana: i64) {
         self.mana = (self.mana as i64 + mana).clamp(0, i32::MAX as i64) as i32;
     }
 
-    /// Joins the army in a free cell of its row; a full army takes nobody. Taken from
-    /// `from_army`, the unit keeps its level there and leaves that army.
+    /// A unit joins (0x4a8fe5) at level 1, unhurt, as an event's unit (no wage), paid as of
+    /// now. A full army first dismisses its weakest unit after the hero: the lowest level
+    /// value ([`experience::level_value`]), the first of a tie, its worn items to the pack.
+    /// Taken from `from_army`, the army's unit (the same search as a removal) brings its whole
+    /// record and leaves that army; an army left empty goes off the map.
     fn add_unit(&mut self, unit: u8, named: u8, from_army: Option<ArmyId>) {
         let id = UnitId(unit as u32);
-        if self.content.try_unit(id).is_none() || self.squad.len() >= self.max_squad() {
+        if self.content.try_unit(id).is_none() {
             return;
+        }
+        let c = self.content.clone();
+        if self.squad.len() >= self.max_squad() {
+            let value = |u: &Unit| super::experience::level_value(&c, u.def, &u.base_stats(&c));
+            let mut weakest = 1;
+            for k in 2..self.squad.len() {
+                if value(&self.squad[k]) < value(&self.squad[weakest]) {
+                    weakest = k;
+                }
+            }
+            if weakest < self.squad.len() {
+                let u = self.squad.remove(weakest);
+                for item in u.items.iter().flatten() {
+                    if self.pack.len() < PACK_SIZE {
+                        self.pack.push(*item);
+                    }
+                }
+            }
         }
         let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
         let Some(slot) = self.content.formation.new_unit_slot(&taken) else { return };
-        let mut level = 1;
-        if let Some(a) = from_army.and_then(|a| self.army_mut(a)) {
-            if let Some(k) = a.troops.iter().position(|t| t.unit == id) {
-                level = a.troops.remove(k).level;
-            }
-        }
-        let c = self.content.clone();
-        let mut u = troop_unit(&c, &Troop::new(id, level, slot));
+        let now = self.clock.total_minutes() as u64;
+        let mut u = troop_unit(&c, &Troop::new(id, 1, slot));
         u.named = named;
         u.from_event = true;
         // Kind 3: an event's unit draws no wage.
         u.wage_kind = WageKind::Event;
-        u.last_paid = self.clock.total_minutes() as u64;
-        self.squad.push(u);
-    }
-
-    /// The last one to join leaves first; its items go to the pack. Sent to `to_army`, it
-    /// joins that army's troops.
-    fn remove_unit(&mut self, pick: UnitPick, named: u8, to_army: Option<ArmyId>) {
-        let fits = |u: &Unit| match pick {
-            UnitPick::Type(t) => u.def == UnitId(t as u32) && (named == 0 || u.named == named),
-            UnitPick::AddedByEvent => u.from_event,
-            UnitPick::Any => true,
-        };
-        let Some(i) = (1..self.squad.len()).rev().find(|&i| fits(&self.squad[i])) else { return };
-        let u = self.squad.remove(i);
-        let items: Vec<ItemId> = u.items.iter().flatten().copied().collect();
-        for item in items {
-            if self.pack.len() < PACK_SIZE {
-                self.pack.push(item);
+        u.last_paid = now;
+        u.heal_full(&c);
+        let mut emptied = None;
+        if let Some(a) = from_army.and_then(|a| self.army_mut(a)) {
+            let found = find_unit(&army_units(a), unit, named, 0);
+            if let Some(k) = found {
+                let t = a.troops.remove(k);
+                let leader = if k == 0 { std::mem::take(&mut a.named) } else { 0 };
+                // The whole record: level, XP, wounds, items, name and kind.
+                u = troop_unit(&c, &t);
+                u.slot = slot;
+                u.named = leader;
+                u.wage_kind = t.kind;
+                u.from_event = t.kind == WageKind::Event;
+                if a.troops.is_empty() {
+                    emptied = Some(a.id);
+                }
             }
         }
+        self.squad.push(u);
+        if let Some(a) = emptied {
+            self.deactivate_army(a);
+        }
+    }
+
+    /// The unit leaves the army, its worn items to the pack *(guess: the original's removal
+    /// is not traced for them)*. Sent to `to_army`, it goes with its whole record: an unnamed
+    /// unit is appended, over the last one of a full army; a named one becomes the army's
+    /// leader, the others moving down (the last of a full army is lost).
+    fn remove_unit(&mut self, index: usize, to_army: Option<ArmyId>) {
+        if index == 0 || index >= self.squad.len() {
+            return;
+        }
+        let u = self.squad.remove(index);
         let c = self.content.clone();
+        let now = self.clock.total_minutes() as u64;
         if let Some(a) = to_army.and_then(|a| self.army_mut(a)) {
-            let taken: Vec<_> = a.troops.iter().map(|t| t.slot).collect();
-            if let Some(slot) = c.formation.new_unit_slot(&taken).filter(|_| taken.len() < c.formation.capacity()) {
-                a.troops.push(Troop::new(u.def, u.level, slot));
-                if u.named != 0 {
-                    a.named = u.named;
+            let cap = c.formation.capacity();
+            let mut t = Troop::new(u.def, u.level, u.slot);
+            unit_into_troop(&c, &mut t, &u, now);
+            t.kind = u.wage_kind;
+            let full = a.troops.len() >= cap;
+            if u.named == 0 {
+                match a.troops.last_mut() {
+                    Some(last) if full => {
+                        t.slot = last.slot;
+                        *last = t;
+                    }
+                    _ => {
+                        let taken: Vec<_> = a.troops.iter().map(|t| t.slot).collect();
+                        let Some(slot) = c.formation.new_unit_slot(&taken) else { return };
+                        t.slot = slot;
+                        a.troops.push(t);
+                    }
                 }
+            } else {
+                if full {
+                    let lost = a.troops.pop().map(|t| t.slot);
+                    t.slot = lost.unwrap_or(t.slot);
+                } else {
+                    let taken: Vec<_> = a.troops.iter().map(|t| t.slot).collect();
+                    let Some(slot) = c.formation.new_unit_slot(&taken) else { return };
+                    t.slot = slot;
+                }
+                a.troops.insert(0, t);
+                a.named = u.named;
+            }
+            return;
+        }
+        for item in u.items.iter().flatten() {
+            if self.pack.len() < PACK_SIZE {
+                self.pack.push(*item);
             }
         }
     }
@@ -638,10 +686,13 @@ impl EventWorld for Game {
         }
     }
 
+    /// radius := max(0, radius + delta), and the patrol box is recomputed around the army's
+    /// home cell (0x4ab51b): a box an event left behind (move to the hero) follows it again.
     fn change_patrol(&mut self, army: ArmyId, delta: i8) {
         if let Some(a) = self.army_mut(army) {
             a.patrol_radius = (a.patrol_radius + delta as i32).max(0);
             a.patrols = a.patrol_radius > 0;
+            a.box_centre = None;
         }
     }
 
@@ -675,24 +726,7 @@ impl EventWorld for Game {
         self.effect_events.extend(events);
     }
 
-    fn hero_to_one_hp(&mut self) {
-        self.squad[0].hp = 1;
-    }
-
-    // --- Community Update extensions (mechanics.md §8.1) --------------------------------------
-
-    fn remove_army_spell(&mut self, spell: u8) {
-        let c = self.content.clone();
-        for u in &mut self.squad {
-            let before = u.max_hp(&c);
-            for slot in &mut u.spells {
-                if slot.is_some_and(|s| s.spell == spell as u32) {
-                    *slot = None;
-                }
-            }
-            u.follow_max(&c, before);
-        }
-    }
+    // --- Community Update extensions (events.md §15) -------------------------------------------
 
     /// The player's unit wears exactly these items; what it wore goes to the pack. AI units
     /// carry no items of their own in Razdor: for an army the items join its items (the
@@ -952,11 +986,26 @@ impl EventWorld for Game {
     }
 }
 
+/// An AI army's units as the event engine sees them: its named character leads it (its
+/// first unit); a dead unit has no hit points.
+fn army_units(a: &Army) -> Vec<UnitRecord> {
+    a.troops
+        .iter()
+        .enumerate()
+        .map(|(k, t)| UnitRecord {
+            unit: t.unit.0,
+            named: if k == 0 { a.named } else { 0 },
+            hp: if t.alive() { 1 } else { 0 },
+            from_event: t.kind == WageKind::Event,
+        })
+        .collect()
+}
+
 /// Search limit of the path to an AI army's scripted target.
 const AI_TARGET_NODES: usize = 4000;
 
-/// What the next map of a campaign starts with ([`Game::next_map`]). A field is `None` (or
-/// empty) when the scenario does not carry it over.
+/// What the next map of a campaign starts with ([`Game::next_map`]): the hand-over of the
+/// original (0x4b5b64). A field is `None` when the scenario does not carry it over.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NextMap {
     /// The map to load: the scenario's next-map name; after an opcode 15 branch its leading
@@ -964,33 +1013,34 @@ pub struct NextMap {
     /// "N-V …" and gives the next map as "0-0")*.
     pub name: String,
     pub branch: Option<(i16, i16)>,
+    /// Header byte 0: the gold, which the next map's gold is set to.
     pub gold: Option<i32>,
-    /// Gods' favour: Razdor's mana *(guess)*.
+    /// Gods' favour: Razdor's mana *(guess)*, set alike.
     pub mana: Option<i32>,
-    /// Fame carries over (Razdor has no fame yet).
+    /// Fame carries over (no code reads it).
     pub fame: bool,
-    /// The hero's (level, XP) and his whole spell book (header byte 3).
-    pub hero: Option<(i32, i32)>,
+    /// The hero's whole unit record, which always replaces the next map's hero: type (an
+    /// event-changed class stays), level, XP, HP (wounds stay), items, drain. Its spell slots
+    /// are emptied.
+    pub hero: Unit,
+    /// Byte 3: on, the hero keeps his level and XP and his spell book replaces the next
+    /// map's; off, he starts at level 1 with no XP and the next map's book.
     pub spells: Option<Vec<u8>>,
-    /// The hero's four worn items (byte 4); off, his slots are emptied.
-    pub hero_items: Option<[Option<ItemId>; crate::rules::items::SLOTS]>,
-    /// The pack.
-    pub inventory: Vec<ItemId>,
-    /// The squad without the hero, living units only.
-    pub army: Vec<Unit>,
-    /// The scenario's flags as stored (counters with their digit): they always carry over,
-    /// as the original stashes its flag string with the army (4b5ef8) and puts it back on
-    /// the next map (4b5ff8).
-    pub flags: Vec<String>,
-    /// The hero's class (his preset on the next map) and name; the hero's unit type too,
-    /// should an event have changed it (the original always carries the hero's record).
+    /// Byte 4: the hero keeps his four worn items; off, his slots are emptied.
+    pub hero_items: bool,
+    /// Byte 5: the pack, which replaces the next map's.
+    pub inventory: Option<Vec<ItemId>>,
+    /// Byte 6: the army after the hero, which replaces the next map's (its preset troops are
+    /// lost); the dead are dropped there. Every unit's spell slots are emptied.
+    pub army: Option<Vec<Unit>>,
+    /// The flag string: it always carries over, as the next map's loading does not touch it
+    /// (and the restart snapshot keeps it, 4b5ef8, 4b5ff8).
+    pub flags: String,
+    /// The hero's class (his preset on the next map) and name.
     pub class: HeroClass,
     pub hero_name: Option<String>,
-    pub hero_unit: UnitId,
-    /// The hero's drain (`p-LifeLose`): part of his unit record, always carried.
-    pub hero_drain: i32,
-    /// The journal's history (`rules::journal`), always carried: the next map is its next
-    /// chapter.
+    /// The journal's history (`rules::journal`, a Razdor extra), always carried: the next map
+    /// is its next chapter. The quest journal itself is not (0x4b2204).
     pub journal: crate::rules::journal::History,
 }
 
@@ -1025,32 +1075,26 @@ impl Game {
             None => engine.next_map_name().trim().to_string(),
         };
         let carry = engine.carry_over().map(|b| b != 0);
-        let hero = self.hero();
+        // Every unit of the army loses its lasting spells at the hand-over.
+        let unspelled = |u: &Unit| Unit { spells: [None; SPELL_SLOTS], ..u.clone() };
         Some(NextMap {
             name,
             branch,
             gold: carry[0].then_some(self.gold),
             mana: carry[1].then_some(self.mana),
             fame: carry[2],
-            hero: carry[3].then_some((hero.level, hero.xp)),
+            hero: unspelled(self.hero()),
             spells: carry[3].then(|| self.spells.clone()),
-            hero_items: carry[4].then_some(hero.items),
-            inventory: if carry[5] { self.pack.clone() } else { Vec::new() },
-            // Every unit loses its spell slots at the hand-over (0x4b5b64); its drain stays.
-            army: if carry[6] {
-                self.squad.iter().skip(1).filter(|u| u.alive()).map(|u| Unit { spells: [None; SPELL_SLOTS], ..u.clone() }).collect()
-            } else {
-                Vec::new()
-            },
-            flags: engine.flags().map(str::to_string).collect(),
+            hero_items: carry[4],
+            inventory: carry[5].then(|| self.pack.clone()),
+            army: carry[6].then(|| self.squad.iter().skip(1).map(unspelled).collect()),
+            flags: engine.flag_string(),
             class: match self.archetype {
                 2 => HeroClass::Archmage,
                 3 => HeroClass::Ranger,
                 _ => HeroClass::Knight,
             },
             hero_name: self.hero_name.clone(),
-            hero_unit: hero.def,
-            hero_drain: hero.drain,
             journal: self.journal.clone(),
         })
     }
@@ -1075,51 +1119,62 @@ impl Game {
         }
     }
 
-    /// Starts this (next) campaign map with what `prev` carries over (header 0x110): the
-    /// hero keeps his level, XP and spell book only when the scenario carries them (else
-    /// level 1 with no XP, and this map's book), and his worn items when it carries them;
-    /// gold is added, mana set, the pack's items go to the pack, and the carried army joins
-    /// with its levels and XP where the formation has room, all of it paid as of now.
+    /// Starts this (next) campaign map with what `prev` carries over (0x4b5b64): the old
+    /// hero's whole record replaces the new hero; then, by the header bytes, the gold and mana
+    /// are set to the old amounts; without byte 3 the hero is back to level 1 with no XP
+    /// (with it his book replaces this map's); without byte 4 his worn slots are emptied; the
+    /// old pack and the old army replace this map's (the army paid as of now, its dead
+    /// dropped). The flags always carry over.
     pub fn apply_carry_over(&mut self, prev: &NextMap) {
         let c = self.content.clone();
         let now = self.clock.total_minutes() as u64;
         if let Some(engine) = self.script.as_mut() {
-            engine.set_flags(prev.flags.iter().cloned());
+            engine.set_flag_string(&prev.flags);
         }
         if prev.hero_name.is_some() {
             self.hero_name = prev.hero_name.clone();
         }
         self.journal = prev.journal.clone();
         self.journal.next_chapter();
-        let hero = &mut self.squad[0];
-        if c.try_unit(prev.hero_unit).is_some() {
-            hero.def = prev.hero_unit;
+        let slot = self.squad[0].slot;
+        let mut hero = prev.hero.clone();
+        if c.try_unit(hero.def).is_none() {
+            hero.def = self.squad[0].def;
         }
-        (hero.level, hero.xp) = prev.hero.unwrap_or((1, 0));
-        hero.drain = prev.hero_drain;
-        if let Some(items) = prev.hero_items {
-            hero.items = items;
+        // With the old army he keeps his place among it; else he leads this map's preset.
+        if prev.army.is_none() {
+            hero.slot = slot;
         }
-        hero.heal_full(&c);
-        if let Some(book) = &prev.spells {
-            self.spells = book.clone();
-        }
+        self.squad[0] = hero;
         if let Some(g) = prev.gold {
-            self.gold += g;
+            self.gold = g;
         }
         if let Some(m) = prev.mana {
             self.mana = m;
         }
-        self.pack.extend(prev.inventory.iter().copied());
-        for u in &prev.army {
-            let taken: Vec<_> = self.squad.iter().map(|u| u.slot).collect();
-            let Some(slot) = c.formation.new_unit_slot(&taken) else { break };
-            let mut u = u.clone();
-            u.slot = slot;
-            u.unpaid = false;
-            u.last_paid = now;
-            self.squad.push(u);
+        match &prev.spells {
+            Some(book) => self.spells = book.clone(),
+            None => (self.squad[0].level, self.squad[0].xp) = (1, 0),
         }
+        if !prev.hero_items {
+            self.squad[0].items = [None; crate::rules::items::SLOTS];
+        }
+        if let Some(pack) = &prev.inventory {
+            self.pack = pack.clone();
+        }
+        if let Some(army) = &prev.army {
+            self.squad.truncate(1);
+            for u in army.iter().filter(|u| u.alive()) {
+                let mut u = u.clone();
+                u.unpaid = false;
+                u.last_paid = now;
+                self.squad.push(u);
+            }
+        }
+        // His wounds stay; HP above what his record now gives him (back at level 1, his
+        // items gone) is cut to it *(guess: the hand-over is not traced for it)*.
+        let max = self.squad[0].max_hp(&c);
+        self.squad[0].hp = self.squad[0].hp.min(max);
     }
 
     /// The troops of an AI army (on the map or waiting) or of a building's garrison.
@@ -1352,31 +1407,105 @@ mod tests {
     #[test]
     fn events_take_units_and_items_and_armies_away() {
         let mut give = ev(EventKind::Global);
-        (give.results.units_add, give.results.units_add_named) = ([5, 0, 0, 0], [1, 0, 0, 0]);
+        (give.results.units_add, give.results.units_add_named) = ([5, 4, 0, 0], [1, 0, 0, 0]);
         give.results.artifacts_add = [7, 0, 0, 0];
         let mut take = ev(EventKind::Global);
         take.start_time = 624_354_300 + 60;
-        take.results.units_remove = [0xFE, 0, 0, 0];
+        // 0xFE: the last unnamed event unit (not the Aide); then the Aide by his name.
+        (take.results.units_remove, take.results.units_remove_named) = ([0xFE, 9, 0, 0], [0, 1, 0, 0]);
         take.results.removed_units_to_army = 2;
         take.results.artifacts_remove = [7, 0, 0, 0];
         take.results.deactivate_army = 2;
-        take.results.hero_one_hp = 1;
         let mut s = world(vec![give, take]);
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 5, name: "Aide".into() }];
         s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1)])];
         let mut g = start(&s);
         g.drain_events();
         assert_eq!(g.unit_label(&g.squad[2]), "Aide");
-        use crate::rules::events::EventWorld as _;
-        assert_eq!(g.named_unit_holder(5, 1), Some(SIDE_PLAYER));
+        assert_eq!(g.squad.len(), 4);
         g.wait(1);
-        assert_eq!(g.squad.len(), 2, "the unit the event added leaves again");
+        assert_eq!(g.squad.len(), 2, "the units the event added leave again");
         assert!(g.pack.is_empty());
         assert!(g.world.armies.is_empty());
         let a = &g.world.inactive[0];
-        assert_eq!((a.id, a.troops.len(), a.named), (2, 2, 1), "it joined army 2, now waiting");
-        assert_eq!(g.named_unit_holder(5, 1), Some(4), "army 2 is of faction 3 (yellow)");
-        assert_eq!(g.hero().hp, 1);
+        assert_eq!((a.id, a.named), (2, 1), "it joined army 2, now waiting");
+        assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), [UnitId(5), UnitId(4), UnitId(4)], "the named one leads it");
+        let faction = a.faction;
+        let units = g.faction_units(faction);
+        assert!(units.iter().any(|u| u[0].named == 1), "the character is with the faction's army: {units:?}");
+    }
+
+    /// A full army (0x4a8fe5): the unit with the lowest level value after the hero is
+    /// dismissed (its items to the pack), the first of a tie; then the event's unit joins.
+    /// Taken from an army, the unit brings its whole record and an emptied army leaves.
+    #[test]
+    fn a_unit_joining_a_full_army_dismisses_the_weakest() {
+        let mut join = ev(EventKind::Global);
+        join.results.units_add = [5, 0, 0, 0];
+        let mut s = world(vec![join]);
+        s.armies = vec![army(2, 12, 10, 1, &[troop(5, 0, 1)])];
+        let mut g = start(&world(vec![]));
+        let c = g.content.clone();
+        while g.squad.len() < g.max_squad() {
+            let taken: Vec<_> = g.squad.iter().map(|u| u.slot).collect();
+            let slot = c.formation.new_unit_slot(&taken).unwrap();
+            g.squad.push(Unit::new(&c, UnitId(1), slot));
+        }
+        // Warriors of type 1; two weaker ones of type 4.
+        g.squad[1].def = UnitId(1);
+        let weak = 4;
+        (g.squad[weak].def, g.squad[weak + 1].def) = (UnitId(4), UnitId(4));
+        g.squad[weak].items[0] = Some(ItemId(7));
+        let kept = g.squad[weak + 1].clone();
+        EventWorld::add_unit(&mut g, 5, 0, None);
+        assert_eq!(g.squad.len(), g.max_squad());
+        assert_eq!(g.squad[weak].slot, kept.slot, "the first of the two weakest left");
+        assert_eq!(g.pack, vec![ItemId(7)]);
+        assert_eq!((g.squad.last().unwrap().def, g.squad.last().unwrap().level), (UnitId(5), 1));
+
+        let mut g = start(&s);
+        g.drain_events();
+        let k = g.world.armies.iter().position(|a| a.id == 2).unwrap();
+        (g.world.armies[k].troops[0].level, g.world.armies[k].troops[0].xp) = (3, 9);
+        EventWorld::add_unit(&mut g, 5, 0, Some(2));
+        let u = g.squad.last().unwrap();
+        assert_eq!((u.def, u.level, u.xp), (UnitId(5), 3, 9), "the army's unit, its whole record");
+        assert!(g.world.armies.iter().all(|a| a.id != 2) && g.world.inactive.iter().any(|a| a.id == 2), "emptied: off the map");
+    }
+
+    #[test]
+    fn event_gold_stops_at_0_and_the_world_answers_the_conditions() {
+        let mut g = start(&world(vec![]));
+        EventWorld::add_gold(&mut g, -700);
+        assert_eq!(g.gold, 0, "a rumour dearer than his purse leaves him at 0 (0x4ab1be)");
+        g.squad[1].hp = 0;
+        assert_eq!(EventWorld::squad_count(&g), 2, "the dead count");
+        g.squad[0].hp = 1;
+        assert_eq!(EventWorld::hero_hp(&g), 1);
+    }
+
+    /// Army conditions: inactive is off the map and not destroyed; at home is standing in
+    /// the home building (no home passes).
+    #[test]
+    fn army_conditions_read_the_army_record() {
+        let mut s = world(Vec::new());
+        s.buildings = vec![building(BuildingType::Village, 10, 8, (1, 1))];
+        let mut homed = army(3, 10, 8, -2, &[troop(4, 0, 2)]);
+        homed.home_building = 1;
+        s.armies = vec![homed, army(4, 14, 2, -2, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.drain_events();
+        assert!(EventWorld::army_at_home(&g, 4), "no home");
+        let k = g.world.armies.iter().position(|a| a.id == 3).unwrap();
+        g.world.armies[k].mind.standing = Some(0);
+        assert!(EventWorld::army_at_home(&g, 3));
+        g.world.armies[k].mind.standing = None;
+        assert!(!EventWorld::army_at_home(&g, 3));
+        EventWorld::deactivate_army(&mut g, 4);
+        assert!(EventWorld::army_inactive(&g, 4) && !EventWorld::army_active(&g, 4));
+        let k = g.world.armies.iter().position(|a| a.id == 3).unwrap();
+        Game::army_beaten(&mut g, k, crate::rules::ai::Beaten::ByPlayer);
+        assert!(!EventWorld::army_inactive(&g, 3) && !EventWorld::army_active(&g, 3), "destroyed: neither");
     }
 
     #[test]
@@ -1479,11 +1608,11 @@ mod tests {
         g.set_destination((9, 2));
         walk(&mut g);
         assert_eq!(g.location, Some(0));
-        assert_eq!(g.hall_entries(), vec![HallEntry::Rumour(1), HallEntry::Quest(2)], "the quest was given on arrival");
-        let events = g.hear_rumour(1).unwrap();
+        assert_eq!(g.hall_entries(), vec![HallEntry::Rumour(1), HallEntry::Quest(2)], "the quest waits in the hall");
+        let events = g.take_hall_entry(1).unwrap();
         assert_eq!(fired(&events), vec![1]);
         assert_eq!((g.gold, g.mana), (11, 3), "no flat price: only the event's own -4 gold");
-        assert_eq!(g.hear_rumour(1), Err(ServiceError::NotHere), "heard");
+        assert_eq!(g.take_hall_entry(1), Err(ServiceError::NotHere), "heard");
         assert_eq!(g.hall_entries(), vec![HallEntry::Quest(2)]);
     }
 
@@ -1520,6 +1649,8 @@ mod tests {
 
         g.set_destination((9, 2));
         walk(&mut g);
+        assert!(g.journal.find(EntryKind::Quest, 2).is_none(), "a building's quest is taken in its hall");
+        g.take_hall_entry(2).unwrap();
         let arrived = g.clock.total_minutes() as u64;
         assert!(arrived > opened);
         assert_eq!(g.journal.find(EntryKind::Quest, 2).map(|e| (e.minutes, e.title.as_str())), Some((arrived, "The mill")));
@@ -1530,7 +1661,7 @@ mod tests {
         assert_eq!((completed[0].title.as_str(), completed[0].text.as_str()), ("The mill", "Free the mill, Ivan."));
         assert_eq!(g.journal_rows(Tab::Messages)[0].title, "Freed", "newest first");
 
-        g.hear_rumour(1).unwrap();
+        g.take_hall_entry(1).unwrap();
         let rumours = g.journal_rows(Tab::Rumours);
         assert_eq!(rumours.len(), 1);
         assert_eq!((rumours[0].title.as_str(), rumours[0].text.as_str()), ("Word in the inn", "The mill is haunted."));
@@ -1551,6 +1682,7 @@ mod tests {
         let mut g = start(&s);
         g.set_destination((9, 2));
         walk(&mut g);
+        g.take_hall_entry(1).unwrap();
         assert_eq!(g.journal_rows(Tab::Active).len(), 1);
         g.journal = Default::default(); // a save from before the history
         let rows = g.journal_rows(Tab::Active);
@@ -1567,16 +1699,14 @@ mod tests {
             gold: None,
             mana: None,
             fame: false,
-            hero: None,
+            hero: g.squad[0].clone(),
             spells: None,
-            hero_items: None,
-            inventory: Vec::new(),
-            army: Vec::new(),
-            flags: Vec::new(),
+            hero_items: false,
+            inventory: None,
+            army: None,
+            flags: String::new(),
             class: HeroClass::Knight,
             hero_name: None,
-            hero_unit: g.squad[0].def,
-            hero_drain: 0,
             journal: g.journal.clone(),
         };
         let mut fresh = start(&world(vec![]));
@@ -1597,7 +1727,7 @@ mod tests {
         g.set_destination((9, 2));
         walk(&mut g);
         assert_eq!(g.gold, 0);
-        let events = g.hear_rumour(1).unwrap();
+        let events = g.take_hall_entry(1).unwrap();
         assert_eq!(fired(&events), vec![1]);
         assert_eq!(g.gold, 0);
     }
@@ -1824,9 +1954,6 @@ mod tests {
         assert!(g.has_spells(Holder::Player, None, &[1]) && !g.has_spells(Holder::Player, None, &[1, 2]));
         assert_eq!(g.tile(), (10, 5));
         assert_eq!(g.gold, 100, "the resources are arguments");
-        // "No meeting" + a spell lifts it.
-        g.remove_army_spell(1);
-        assert!(g.active_spells().is_empty());
     }
 
     #[test]
@@ -1907,50 +2034,57 @@ mod tests {
         assert_eq!(g.gold, 105, "level 2 passes a level-1 condition");
     }
 
+    /// The hand-over (0x4b5b64): the old hero's whole record replaces the new hero (wounds
+    /// and class too); gold and mana are set; the old pack and army replace the new map's.
     #[test]
     fn the_next_map_starts_with_what_carries_over() {
         let mut g = start(&world(vec![]));
         g.squad[0].level = 4;
         g.squad[0].xp = 33;
+        g.squad[0].hp -= 2;
+        g.squad[0].items[0] = Some(ItemId(7));
         g.squad[1].level = 3;
+        let mut dead = g.squad[1].clone();
+        dead.hp = 0;
         let next = NextMap {
             name: "Road".into(),
             branch: None,
             gold: Some(70),
             mana: Some(9),
             fame: false,
-            hero: Some((g.squad[0].level, g.squad[0].xp)),
+            hero: g.squad[0].clone(),
             spells: Some(vec![2, 5]),
-            hero_items: Some([Some(ItemId(7)), None, None, None]),
-            inventory: vec![ItemId(7)],
-            army: vec![Unit { unpaid: true, last_paid: 0, ..g.squad[1].clone() }],
-            flags: Vec::new(),
+            hero_items: true,
+            inventory: Some(vec![ItemId(7)]),
+            army: Some(vec![Unit { unpaid: true, last_paid: 0, ..g.squad[1].clone() }, dead]),
+            flags: String::new(),
             class: HeroClass::Knight,
             hero_name: None,
-            hero_unit: g.squad[0].def,
-            hero_drain: 0,
             journal: crate::rules::journal::History::default(),
         };
         let mut fresh = start(&world(vec![]));
-        fresh.squad.truncate(1);
-        let gold = fresh.gold;
+        fresh.pack = vec![ItemId(3)];
+        let hp = g.squad[0].hp;
         fresh.apply_carry_over(&next);
-        assert_eq!((fresh.squad[0].level, fresh.squad[0].xp), (4, 33));
+        assert_eq!((fresh.squad[0].level, fresh.squad[0].xp, fresh.squad[0].hp), (4, 33, hp), "his wounds stay");
         assert_eq!(fresh.spells, vec![2, 5], "byte 3 keeps the spell book");
         assert_eq!(fresh.squad[0].items[0], Some(ItemId(7)), "byte 4: the hero's worn items");
         let now = fresh.clock.total_minutes() as u64;
         assert!(!fresh.squad[1].unpaid && fresh.squad[1].last_paid == now, "the army comes paid");
-        assert_eq!((fresh.gold, fresh.mana), (gold + 70, 9));
-        assert_eq!(fresh.squad.len(), 2);
+        assert_eq!((fresh.gold, fresh.mana), (70, 9), "set, not added");
+        assert_eq!(fresh.squad.len(), 2, "the old army replaces the preset's; its dead are dropped");
         assert_eq!(fresh.squad[1].level, 3, "the army keeps its levels");
-        assert_eq!(fresh.pack, vec![ItemId(7)]);
-        // Without the flag the hero starts over at level 1.
+        assert_eq!(fresh.pack, vec![ItemId(7)], "the old pack replaces the new one");
+        // Without the bytes: level 1 with no XP and this map's book, no worn items, this
+        // map's pack and preset army behind the old hero.
         let mut again = start(&world(vec![]));
-        again.squad[0].level = 5;
+        again.pack = vec![ItemId(3)];
         let book = again.spells.clone();
-        again.apply_carry_over(&NextMap { hero: None, spells: None, hero_items: None, army: Vec::new(), inventory: Vec::new(), gold: None, mana: None, ..next });
+        let preset = again.squad.len();
+        again.apply_carry_over(&NextMap { spells: None, hero_items: false, army: None, inventory: None, gold: None, mana: None, ..next });
         assert_eq!((again.squad[0].level, again.squad[0].xp), (1, 0));
         assert_eq!((again.spells.clone(), again.squad[0].items), (book, [None; 4]));
+        assert_eq!((again.squad.len(), again.pack.clone()), (preset, vec![ItemId(3)]));
     }
 
     /// РК2's mines: a fort's own event asks for the peasants once the fort is the player's.
@@ -2005,7 +2139,7 @@ mod tests {
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Herald".into() }];
         let g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage);
         let next = g.next_map().expect("a victory with a next map");
-        assert_eq!(next.flags, vec!["Band1".to_string()]);
+        assert_eq!(next.flags, "Band\u{a0}");
         assert_eq!(next.class, HeroClass::Archmage);
 
         let mut died = ev(EventKind::Global);
@@ -2042,13 +2176,14 @@ mod tests {
         g.squad[1].spells[0] = Some(SpellSlot { spell: 1, until: u64::MAX });
         (g.squad[1].drain, g.squad[0].drain) = (20, 36);
         let next = g.next_map().unwrap();
-        assert_eq!((next.army[0].spells, next.army[0].drain, next.hero_drain), ([None; SPELL_SLOTS], 20, 36));
+        let army = next.army.clone().unwrap();
+        assert_eq!((army[0].spells, army[0].drain, next.hero.drain), ([None; SPELL_SLOTS], 20, 36));
         assert_eq!(next.name, "3-2 Road");
         assert_eq!(next.branch, Some((3, 2)));
         assert_eq!((next.gold, next.mana, next.fame), (Some(100), None, false));
-        assert_eq!(next.hero, Some((1, 0)));
-        assert_eq!(next.army.len(), 1);
-        assert!(next.inventory.is_empty() && next.hero_items.is_none());
+        assert_eq!((next.hero.level, next.hero.xp), (1, 0));
+        assert_eq!(army.len(), 1);
+        assert!(next.inventory.is_some() && !next.hero_items);
         assert_eq!(next.spells, Some(g.spells.clone()), "byte 3: the book goes with the level");
 
         // No branch: the scenario's next map; none before a victory.
@@ -2060,10 +2195,24 @@ mod tests {
         let mut g = start(&s);
         assert_eq!(g.next_map(), None);
         g.wait(4);
-        assert_eq!(g.next_map().map(|n| (n.name, n.gold, n.army.len())), Some(("Road".to_string(), None, 0)));
+        assert_eq!(g.next_map().map(|n| (n.name, n.gold, n.army)), Some(("Road".to_string(), None, None)));
         assert_eq!(branch_name("Road", (4, 1)), "4-1");
         assert_eq!(branch_name("12-3.DTm", (4, 1)), "4-1.DTm");
     }
+    /// Every string of the map has its double spaces collapsed at load (0x4b2aa1).
+    #[test]
+    fn map_strings_lose_their_double_spaces() {
+        let mut e = ev(EventKind::Global);
+        e.message = "Hail,   friend.".into();
+        let mut s = world(vec![e]);
+        let mut town = building(BuildingType::Town, 9, 2, (1, 1));
+        town.name = "Old  Town".into();
+        s.buildings = vec![town];
+        let g = start(&s);
+        assert_eq!(g.world.locations[0].name, "Old Town");
+        assert_eq!(g.script().unwrap().event(1).unwrap().message, "Hail, friend.");
+    }
+
     #[test]
     fn hero_name_escapes() {
         let g = start(&world(vec![]));
@@ -2071,7 +2220,7 @@ mod tests {
         assert_eq!(g.fill_text("Hail, #HERONAME!\r\n"), format!("Hail, {name}!\n"));
         let mut g = g;
         g.set_hero_name("  Ivo ");
-        assert_eq!(g.fill_text("#HERONAME the #HEROCLASS"), format!("Ivo the {name}"));
+        assert_eq!(g.fill_text("#HERONAME the #HEROCLASS"), "Ivo the #HEROCLASS", "no other escape");
         g.set_hero_name(" ");
         assert_eq!(g.hero_name(), name, "an empty name is the class's");
     }

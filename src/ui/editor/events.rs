@@ -374,7 +374,7 @@ fn tab_player(f: &mut Form, s: &Scenario, e: &mut Event) {
     f.threshold("squads", tr("Squads in the army"), &mut c.squad_count, 12);
     f.threshold("strength", tr("Army strength"), &mut c.army_strength, i16::MAX as i64);
     f.note(tr("A value of 0 is not checked; the switch picks at least or at most."), DIM);
-    f.flag("one_hp", tr("Result: the hero is left with 1 HP"), &mut e.results.hero_one_hp);
+    f.flag("one_hp", tr("Condition: the hero has exactly 1 HP"), &mut e.results.hero_one_hp);
 }
 
 /// Tab 2: who owns buildings, artefacts and named squads; armies beaten, active, inactive,
