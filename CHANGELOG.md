@@ -259,8 +259,9 @@ old id, and their versions give both.
   income), and the wages shown are the full bill. A short
   noon refunds full wages, cheapest first, a corpse's too, never an elemental's; deserters
   leave with their worn items.
-- With no mana at a noon (any army's), the Community's mana-short flag goes up and the
-  elementals go unpaid at the next payment.
+- With no mana at a noon (any army's), the Community's mana-short flag goes up; the
+  elementals go unpaid at that payment (or at the player's next one, when another army's
+  noon raised it), and the payment clears it.
 - The noon report shows the nominal income of the player's towns, castles and forts, the
   bill and the gold before the payment, warns when they do not cover the wages, and is not
   shown when there are neither wages nor income. A Ranger heals 20% more when it is shown;
