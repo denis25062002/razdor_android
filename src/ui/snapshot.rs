@@ -7,7 +7,8 @@
 //! `title`, `authors`, `options`, `scenarios`, `tutorial`, `load`, `editor`, `classes:<map>`, `map:<map>[:x,y]`, `minimap:<map>`, `walk:<map>:dx,dy` (the
 //! hero sets off that many cells away), `building:<map>:<n>`
 //! (the hero in the n-th building), `army:<map>`, `journal:<map>`, `spells:<map>`,
-//! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_SHOW=x,y,r` shows
+//! `menu:<map>`, `battle:<map>:<n>` (against the n-th army), `custom` (the custom battle
+//! setup), `custom-battle` (its first round; `custom-battle:watch` watches the AI play it). `RAZDOR_SCENE_SHOW=x,y,r` shows
 //! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
 //! puts the pointer there.
@@ -84,6 +85,19 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         }
         "editor" => {
             app.open_editor();
+            return Ok(());
+        }
+        "custom" => {
+            app.open_custom();
+            return Ok(());
+        }
+        "custom-battle" => {
+            app.open_custom();
+            let Some(Screen::CustomBattle(mut view)) = app.custom_round() else { return Err("no custom battle".into()) };
+            if parts.next() == Some("watch") {
+                view.watch_for_snapshot();
+            }
+            app.screen = Screen::CustomBattle(view);
             return Ok(());
         }
         _ => {}

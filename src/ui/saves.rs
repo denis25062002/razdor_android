@@ -554,7 +554,7 @@ fn exit_dialog(title: &str, warning: &str, asking: &mut bool) -> (Option<ExitCho
 
 /// A question with Yes / No, `None` until answered (Esc or N: no, any other key: yes, as
 /// the original's box but for Razdor's N: `answer_key`).
-fn question(title: &str, text: &str) -> Option<bool> {
+pub(super) fn question(title: &str, text: &str) -> Option<bool> {
     let k = super::chrome::k();
     let (w, h) = (380.0 * k, 150.0 * k);
     let r = Rect::new((screen_width() - w) / 2.0, (screen_height() - h) / 2.0, w, h);

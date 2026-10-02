@@ -4,6 +4,7 @@ pub mod audio;
 pub mod battle_view;
 pub mod building_view;
 pub mod chrome;
+pub mod custom_battle;
 pub mod dialog;
 pub mod dt_art;
 pub mod dt_font;
@@ -84,6 +85,10 @@ pub enum Screen {
     Victory,
     /// The map editor (`ui::editor`).
     Editor,
+    /// The custom battle setup over the main menu (`ui::custom_battle`).
+    CustomSetup,
+    /// A round of a custom battle.
+    CustomBattle(Box<BattleView>),
 }
 
 /// A scenario of the player's install, loaded for the select screen.
@@ -155,6 +160,8 @@ pub struct App {
     test_play: bool,
     /// The F1 key list is open over the screen.
     help: bool,
+    /// The custom battles of this run: their setup and score, kept from round to round.
+    custom: Option<custom_battle::SetupView>,
     /// The interface language the demo content was built in.
     lang: razdor::i18n::Lang,
     /// "Выход" was picked in the main menu: the process ends after this frame.
@@ -197,6 +204,7 @@ impl App {
             editor: None,
             test_play: false,
             help: false,
+            custom: None,
             lang: razdor::i18n::lang(),
             quit: false,
         }
@@ -208,6 +216,45 @@ impl App {
             self.editor = Some(Box::new(editor::EditorScreen::new(&self.assets, self.dt_content.clone(), self.demo.clone())));
         }
         self.screen = Screen::Editor;
+    }
+
+    /// The content custom battles are fought with: the install's, else the demo's.
+    fn custom_content(&self) -> Arc<Content> {
+        self.dt_content.clone().unwrap_or_else(|| self.demo.clone())
+    }
+
+    /// Opens the custom battle setup (the main menu's link), as it was left last time.
+    pub fn open_custom(&mut self) {
+        let content = self.custom_content();
+        self.custom.get_or_insert_with(|| custom_battle::SetupView::new(&content));
+        self.screen = Screen::CustomSetup;
+    }
+
+    /// A round of the custom battle, with the setup as it stands (`None` while an army is
+    /// empty). The round before it has put the battle globals back.
+    pub fn custom_round(&mut self) -> Option<Screen> {
+        let content = self.custom_content();
+        let expert = main_menu::expert_ai(&self.audio.settings);
+        let view = self.custom.get_or_insert_with(|| custom_battle::SetupView::new(&content));
+        view.session.end_round();
+        let battle = view.session.start_round(&content, expert)?;
+        Some(Screen::CustomBattle(Box::new(BattleView::custom(battle, view.session.setup.control))))
+    }
+
+    /// A new game may run on other content: its pictures are drawn (a custom battle's are
+    /// its own).
+    fn show_content(&mut self) {
+        let shown = if self.in_custom() { Some(self.custom_content()) } else { self.game.as_ref().map(|g| g.content.clone()) };
+        if let Some(c) = shown {
+            if !Arc::ptr_eq(&c, self.assets.content()) {
+                self.assets.set_content(c);
+            }
+        }
+    }
+
+    /// The setup or a round of a custom battle is on screen.
+    fn in_custom(&self) -> bool {
+        matches!(self.screen, Screen::CustomSetup | Screen::CustomBattle(_))
     }
 
     /// After an EN / RU switch: the demo's names and descriptions in the new language (for
@@ -321,7 +368,8 @@ impl App {
     fn mood(&self) -> Mood {
         match &self.screen {
             Screen::Authors(_) => Mood::Credits,
-            Screen::MainMenu | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. } | Screen::Editor => Mood::Menu,
+            Screen::MainMenu | Screen::Options | Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. } | Screen::Editor | Screen::CustomSetup => Mood::Menu,
+            Screen::CustomBattle(_) => Mood::Battle { garrison: false },
             Screen::Load(v) if v.back == saves::Back::Title || self.game.is_none() => Mood::Menu,
             Screen::Battle(_) => Mood::Battle { garrison: matches!(self.game.as_ref().and_then(|g| g.foe.as_ref()), Some(Foe::Garrison(_))) },
             Screen::GameOver => Mood::Lost,
@@ -372,7 +420,7 @@ impl App {
                     let k = self.game.as_mut().map_or(0, |g| g.event_chord());
                     audio::cue(Cue::Event(k as u8));
                 }
-                Screen::Battle(_) => audio::cue(Cue::BattleHorn),
+                Screen::Battle(_) | Screen::CustomBattle(_) => audio::cue(Cue::BattleHorn),
                 Screen::Building(_)
                 | Screen::Squad { .. }
                 | Screen::Journal(_)
@@ -419,7 +467,8 @@ impl App {
             Screen::WorldMap => Place::WorldMap,
             Screen::Building(_) => Place::Building,
             Screen::Squad { .. } => Place::Army,
-            Screen::Battle(_) => Place::Battle,
+            Screen::Battle(_) | Screen::CustomBattle(_) => Place::Battle,
+            Screen::CustomSetup => Place::Custom,
             Screen::Journal(_) => Place::Journal,
             Screen::Spellbook { .. } => Place::Spellbook,
             Screen::Menu(_) | Screen::Settings => Place::Menu,
@@ -525,6 +574,8 @@ impl App {
             Screen::GameOver => "game over",
             Screen::Victory => "victory",
             Screen::Editor => "editor",
+            Screen::CustomSetup => "custom battle setup",
+            Screen::CustomBattle(_) => "custom battle",
         }
     }
 
@@ -532,6 +583,14 @@ impl App {
         chrome::begin_frame();
         widgets::track_held_key();
         self.follow_language();
+        // A screen opened from outside the frame (a snapshot scene) draws its content.
+        self.show_content();
+        // A custom round left in any way (its buttons, F9) puts the battle globals back.
+        if !matches!(self.screen, Screen::CustomBattle(_)) {
+            if let Some(c) = self.custom.as_mut() {
+                c.session.end_round();
+            }
+        }
         self.sounds();
         // The battle AI's level from the settings: the next battle uses it.
         if let Some(g) = self.game.as_mut() {
@@ -546,12 +605,18 @@ impl App {
         let guard = self.guard();
         widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
         let mut restart = false;
+        let mut custom_round = false;
+        let custom_content = self.custom_content();
         let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::MainMenu, _) => match main_menu::frame() {
                 Some(main_menu::Pick::NewGame) if new_game::tutorial_map(&self.scenarios).is_some() => Some(Screen::TutorialOffer),
                 Some(main_menu::Pick::NewGame) => Some(Screen::ScenarioSelect),
                 Some(main_menu::Pick::Load) => Some(Screen::Load(saves::LoadView::new(saves::Back::Title))),
                 Some(main_menu::Pick::Editor) => Some(Screen::Editor),
+                Some(main_menu::Pick::Custom) => {
+                    self.custom.get_or_insert_with(|| custom_battle::SetupView::new(&custom_content));
+                    Some(Screen::CustomSetup)
+                }
                 Some(main_menu::Pick::Exit) => {
                     self.quit = true;
                     None
@@ -613,6 +678,29 @@ impl App {
             },
             (Screen::Victory, game) => screens::victory(game, &self.scenarios, self.dt_content.clone()),
             (Screen::Editor, _) => None,
+            (Screen::CustomSetup, _) => {
+                let view = self.custom.get_or_insert_with(|| custom_battle::SetupView::new(&custom_content));
+                match custom_battle::frame(view, &custom_content, &self.assets, &mut self.audio.settings) {
+                    Some(custom_battle::Pick::Fight) => {
+                        custom_round = true;
+                        None
+                    }
+                    Some(custom_battle::Pick::Back) => Some(Screen::MainMenu),
+                    None => None,
+                }
+            }
+            (Screen::CustomBattle(view), _) => {
+                let session = &mut self.custom.get_or_insert_with(|| custom_battle::SetupView::new(&custom_content)).session;
+                match view.frame_custom(&self.assets, session) {
+                    Some(battle_view::CustomEnd::Again) => {
+                        custom_round = true;
+                        None
+                    }
+                    Some(battle_view::CustomEnd::Setup) => Some(Screen::CustomSetup),
+                    Some(battle_view::CustomEnd::MainMenu) => Some(Screen::MainMenu),
+                    None => None,
+                }
+            }
             (_, None) => Some(Screen::MainMenu),
         };
         widgets::set_input_blocked(false);
@@ -628,6 +716,13 @@ impl App {
         if restart {
             self.restart();
             return;
+        }
+        if custom_round {
+            if matches!(self.screen, Screen::CustomBattle(_)) {
+                // "Again": the horn as for any battle that begins.
+                audio::cue(Cue::BattleHorn);
+            }
+            next = self.custom_round();
         }
         // F1: the key list; F5 / F9: quick save and load (when the screen did not move on).
         let pressed = |k: hotkeys::Global| next.is_none() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
@@ -668,8 +763,9 @@ impl App {
                 next = Some(saves::battle(game));
             }
         }
-        // A victory or defeat event ends the game once its window is read.
-        if next.is_none() && self.dialogs.is_empty() {
+        // A victory or defeat event ends the game once its window is read (not while a custom
+        // battle, which has no game behind it, is on screen).
+        if next.is_none() && self.dialogs.is_empty() && !self.in_custom() {
             let end = self.game.as_ref().and_then(Game::script_end);
             match end {
                 Some(ScriptEnd::Victory(_)) if !matches!(self.screen, Screen::Victory) => next = Some(Screen::Victory),
@@ -716,11 +812,6 @@ impl App {
             self.screen = next;
         }
         self.play_log_frame();
-        // A new game may run on other content: draw its pictures.
-        if let Some(g) = &self.game {
-            if !Arc::ptr_eq(&g.content, self.assets.content()) {
-                self.assets.set_content(g.content.clone());
-            }
-        }
+        self.show_content();
     }
 }

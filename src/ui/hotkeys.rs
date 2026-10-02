@@ -30,6 +30,8 @@ pub enum Place {
     /// Victory or defeat.
     End,
     Editor,
+    /// The custom battle setup.
+    Custom,
 }
 
 /// A key that works across screens.
@@ -138,6 +140,9 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             (n_("Space"), n_("as a click on the unit's own card")),
             ("Q", n_("finish the battle automatically")),
             ("Enter", n_("before the first move: quick battle")),
+            ("W", n_("watch the AI play both sides / take control back")),
+            ("S", n_("while watching: speed 1x, 2x, 4x")),
+            (n_("Q while watching"), n_("skip to the end (the same result)")),
             ("Esc", n_("ways out of the battle")),
             ("Enter", n_("OK on the result")),
         ],
@@ -154,6 +159,14 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
         Place::Load => vec![(n_("Click"), n_("pick a save")), ("Enter", n_("load it")), ("Esc", n_("cancel"))],
         Place::End => vec![(n_("Click"), n_("the buttons")), ("F9", n_("load the quick save"))],
         Place::Editor => vec![],
+        Place::Custom => vec![
+            (n_("Click a unit type"), n_("add it to the army picked")),
+            (n_("Click an army's name"), n_("pick that army")),
+            (n_("Click a unit"), n_("pick it, to give it items")),
+            ("- / + / ×", n_("level down, level up, remove")),
+            ("Enter", n_("fight")),
+            ("Esc", n_("back to the main menu")),
+        ],
     }
 }
 
@@ -183,6 +196,7 @@ fn place_name(place: Place) -> &'static str {
         Place::Load => tr("Load"),
         Place::End => tr("End of the game"),
         Place::Editor => tr("Map editor"),
+        Place::Custom => tr("Custom battle"),
     }
 }
 
@@ -223,7 +237,7 @@ pub fn help_overlay(place: Place) -> bool {
 mod tests {
     use super::*;
 
-    const ALL_PLACES: [Place; 13] = [
+    const ALL_PLACES: [Place; 14] = [
         Place::Title,
         Place::ClassSelect,
         Place::WorldMap,
@@ -237,6 +251,7 @@ mod tests {
         Place::Load,
         Place::End,
         Place::Editor,
+        Place::Custom,
     ];
 
     fn in_game() -> Guard {
@@ -288,5 +303,6 @@ mod tests {
             assert!(map.contains(&k), "the map lists {k}");
         }
         assert!(screen_keys(Place::Battle).iter().any(|(k, _)| *k == "Q"));
+        assert!(screen_keys(Place::Battle).iter().any(|(k, _)| *k == "W"), "the watched quick battle");
     }
 }

@@ -79,7 +79,7 @@ above).
   the install's `OptValue11` is set to anything but 1). As in the original the battle starts
   when its window opens: the formation is the one set in the army window beforehand. Until
   anyone has acted, **Quick battle** (Q / Enter) plays it out at once; later **Finish
-  automatically** (Q) plays the rest (see below).
+  automatically** (Q) plays the rest; **Watch** (W) lets you see the AI play it (see below).
 - Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
   actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
   card to preview the action ("strike: -12 hits", a curse's effect), left click to do it,
@@ -261,6 +261,10 @@ original but for Razdor's N).
 | Army | A | close |
 | Battle, before anyone acts | Q / Enter | quick battle |
 | Battle | Space / Q / Enter | as a click on the unit's own card / finish automatically / OK on the result |
+| Battle | W | watch the AI play both sides / take control back |
+| Battle, while watching | S / Q | speed 1×, 2×, 4× / skip to the end (the same result) |
+| Custom battle setup | Enter / Esc | fight / back to the main menu |
+| Custom battle, its result | Enter / Esc | again / change armies |
 | Battle | Esc | ways out of the battle (quit, main menu, restart) |
 
 ## Fonts
@@ -296,6 +300,29 @@ reserve, no shortcuts of the AI's off-screen battles); only the watching is skip
 result box comes at once and the battle resolves as a played one: losses, experience and
 level-ups, loot, captured castles, the events that follow. The same battle always ends
 the same way (`Battle::auto_play_to_end`).
+
+**Watch** (W) is the same quick battle played on the battle screen: the AI plays your side
+too, move by move with the normal animations, at 1×, 2× or 4× the pace (S, or the speed
+button). **Skip** (Q) finishes it at once, **Take over** (W) gives you your units back where
+the watching stopped. Watched, skipped or instant, the battle ends the same way: each move is
+the quick battle's own step (`Battle::auto_step`), and a test plays a battle all three ways.
+
+## Custom battle
+A Razdor extra (issue #1): **Custom battle** in the main menu's corner opens a setup window
+for a battle outside any campaign. Pick the units of your army (below on the battle screen)
+and of the enemy's (above) from the unit types of your install (the demo's without one): a
+click on a type adds it to the army framed in gold (a click on an army's name picks it),
+up to the formation's 12 cells. Each unit gets a level (− / +, 1 to 30) and items (pick the
+unit, step through what it may wear with ‹ › and **Put on**; a click on a worn item takes it
+off; the game's wear rules apply). Choose the formation (the wide row of 6 or the vanilla
+3 × 4), the battle AI's level (the settings' "improved enemy AI in battle") and who plays
+each side: you or the AI (the AI on both to watch, you on both to play both sides in turn).
+**Fight!** (Enter) starts the battle on the normal battle screen with the normal rules; both
+sides are placed by the original's auto-arrange, and the quick and watched battles work as
+in any battle. The result box offers **Again** (Enter, the same armies), **Change armies**
+(Esc) and **Main menu**; it counts the rounds won and lost. The setup is kept until the game
+is closed. Nothing of it touches a game or a save: no experience, no loot, and the Community
+patch's battle counters (Hunger, Flock) are put back as the round found them.
 
 ## Journal
 The journal (J, or the journal button of the bottom bar) keeps, with the in-game date, everything the

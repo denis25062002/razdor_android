@@ -296,3 +296,42 @@ Attention!\n\nYou cannot go back to the map without finishing the battle!\nTo st
 To leave the battle, press ESC = Чтобы выйти из битвы, нажмите ESC
 Ways out of the battle = Выход из битвы
 ways out of the battle = выход из битвы
+
+# Battle screen: the watched quick battle
+Watch (W) = Смотреть (W)
+Speed {n}x (S) = Темп {n}x (S)
+Skip (Q) = К концу (Q)
+Take over (W) = Управлять (W)
+The AI plays both sides (W: take over) = ИИ играет за обе стороны (W — управлять самому)
+The AI moves your army... = ИИ ведёт вашу армию...
+
+# Custom battle: the setup window
+Custom battle = Свой бой
+Your army (below) = Ваша армия (внизу)
+Enemy army (above) = Армия врага (вверху)
+Played by: you = Играете вы
+Played by: the AI = Играет ИИ
+Unit types: a click adds one = Виды воинов: щелчок добавляет одного
+{hp} HP = {hp} жизни
+{first}–{last} of {all} (wheel scrolls) = {first}–{last} из {all} (прокрутка колесом)
+Items of «{name}» (a click takes one off): = Предметы: «{name}» (щелчок снимает предмет):
+Pick a unit of an army to give it items. = Выберите воина в армии, чтобы дать ему предметы.
+none = нет
+Put on = Надеть
+Formation: wide row (6) = Строй: широкий ряд (6)
+Formation: vanilla (4) = Строй: обычный (4)
+Battle AI: normal = ИИ в бою: обычный
+Battle AI: improved = ИИ в бою: улучшенный
+Fight! (Enter) = В бой! (Enter)
+Both armies need a unit. = В каждой армии нужен хотя бы один воин.
+
+# Custom battle: the round
+Leave the battle = Покинуть бой
+The battle is not over. Leave it for the setup of the armies? = Бой не окончен. Выйти к выбору армий?
+Your army wins! = Ваша армия победила!
+The enemy army wins! = Армия врага победила!
+The whole enemy army has fallen. = Вся армия врага пала.
+Rounds won: {won}, lost: {lost} = Побед: {won}, поражений: {lost}
+Again (Enter) = Ещё раз (Enter)
+Change armies (Esc) = Сменить армии (Esc)
+Main menu = Главное меню

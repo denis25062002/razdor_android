@@ -19,6 +19,7 @@ use macroquad::prelude::*;
 use razdor::i18n::tr;
 use razdor::rules::battle::{ActionKind, Battle, EndReason, Fighter, Hit, Outcome, Preview, Step, Team, XpAward};
 use razdor::rules::content::{HeroClass, ItemId, MagicSchool, Stat};
+use razdor::rules::custom::{Control, Session};
 use razdor::rules::formation::{Row, Slot};
 use razdor::rules::game::{BattleResult, Foe, Game};
 
@@ -37,6 +38,23 @@ const MOVE_TIME: f32 = 0.25;
 const ACTIVE: Color = Color::new(0.35, 1.0, 0.35, 1.0);
 const FRIENDLY: Color = Color::new(0.35, 0.55, 1.0, 1.0);
 const HOSTILE: Color = Color::new(1.0, 0.35, 0.35, 1.0);
+/// The paces of the watched battle.
+const SPEEDS: [u8; 3] = [1, 2, 4];
+
+thread_local! {
+    /// The pace last chosen for watching: the next battle watches at it too.
+    static SPEED: std::cell::Cell<u8> = const { std::cell::Cell::new(1) };
+}
+
+/// How a custom battle's result box is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CustomEnd {
+    /// The same armies again.
+    Again,
+    /// Back to the setup.
+    Setup,
+    MainMenu,
+}
 
 /// Window, panel and grid geometry, in screen pixels (from the 960×720 reference × `k`).
 #[derive(Clone, Copy)]
@@ -44,7 +62,7 @@ struct Layout {
     k: f32,
     win: Rect,
     panel: Rect,
-    /// Under the panel: the quick battle button.
+    /// Under the panel: the quick battle buttons.
     quick: Rect,
     strip: Rect,
     card: Vec2,
@@ -136,6 +154,15 @@ pub struct BattleView {
     /// until one changes nobody has acted, and the quick battle of Razdor's old deploy
     /// screen (Q / Enter) is offered.
     begun: (usize, Option<usize>, i32, u32),
+    /// Who plays each side, by [`Team::index`]: in a campaign the player his own and the AI
+    /// the enemy; a custom battle's setup chooses.
+    control: [Control; 2],
+    /// The watched quick battle (W): the AI plays the player's side too, on screen, at
+    /// `speed` times the pace, until W gives the control back.
+    watch: bool,
+    speed: u8,
+    /// A custom battle: no campaign behind it, no experience, its own result box.
+    custom: bool,
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -229,7 +256,70 @@ impl BattleView {
     pub fn new(mut battle: Battle) -> Self {
         battle.begin();
         let begun = Self::moment(&battle);
-        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None, begun }
+        BattleView {
+            battle,
+            fx: None,
+            ai_timer: 0.0,
+            xp: None,
+            result_cued: false,
+            news: None,
+            quick_played: false,
+            exiting: false,
+            exit_asking: false,
+            exit: None,
+            begun,
+            control: [Control::Player, Control::Ai],
+            watch: false,
+            speed: SPEED.with(|s| s.get()),
+            custom: false,
+        }
+    }
+
+    /// A custom battle (`rules::custom`), each side played as `control` says.
+    pub fn custom(battle: Battle, control: [Control; 2]) -> Self {
+        BattleView { control, custom: true, ..BattleView::new(battle) }
+    }
+
+    /// The player plays `team`'s units now (not while he watches).
+    fn human(&self, team: Team) -> bool {
+        !self.watch && self.control[team.index()] == Control::Player
+    }
+
+    /// Nobody human plays: the watched quick battle, or a custom battle of AI against AI.
+    fn watching(&self) -> bool {
+        !Team::BOTH.into_iter().any(|t| self.human(t))
+    }
+
+    /// W: starts watching the AI play both sides, or stops and gives the player his side
+    /// back (in a custom battle of AI against AI, the side below).
+    fn toggle_watch(&mut self) {
+        if self.watching() {
+            self.watch = false;
+            if !self.control.contains(&Control::Player) {
+                self.control[Team::Player.index()] = Control::Player;
+            }
+        } else {
+            self.watch = true;
+            self.ai_timer = 0.0;
+        }
+    }
+
+    /// The watched battle at 4× (the `custom-battle:watch` snapshot scene).
+    pub fn watch_for_snapshot(&mut self) {
+        self.watch = true;
+        self.speed = 4;
+    }
+
+    /// S: the next pace, 1× → 2× → 4× → 1×.
+    fn next_speed(&mut self) {
+        let i = SPEEDS.iter().position(|&s| s == self.speed).unwrap_or(0);
+        self.speed = SPEEDS[(i + 1) % SPEEDS.len()];
+        SPEED.with(|s| s.set(self.speed));
+    }
+
+    /// How much faster than normal the AI's moves and their animations run.
+    fn pace(&self) -> f32 {
+        if self.watching() { self.speed as f32 } else { 1.0 }
     }
 
     /// Nobody has acted yet: the battle's first moment, where Razdor's deploy screen stood
@@ -261,12 +351,21 @@ impl BattleView {
     }
 
     /// Quick battle (Razdor extra): the rest of the battle is played at once by the battle AI
-    /// on both sides (`Battle::auto_play_to_end`); the result box follows.
+    /// on both sides (`Battle::auto_play_to_end`); the result box follows. While watching it
+    /// skips to the end, with the result the watching would have reached.
     fn quick_battle(&mut self) {
         self.fx = None;
         self.news = None;
         self.battle.auto_play_to_end();
         self.quick_played = true;
+    }
+
+    /// One move of the AI for the active unit, whichever side it is on: the quick battle's
+    /// step ([`Battle::auto_step`]), so a watched battle plays exactly as the instant one.
+    fn ai_move(&mut self) -> Option<Step> {
+        let step = self.battle.auto_step();
+        self.note_log();
+        step
     }
 
     /// Remembers the newest log line for the strip.
@@ -278,9 +377,11 @@ impl BattleView {
         }
     }
 
-    pub fn frame(&mut self, game: &mut Game, assets: &Assets, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
-        let l = Layout::new(&self.battle);
-        let dt = get_frame_time();
+    /// The fight's own part of a frame, the same in a campaign and in a custom battle: the
+    /// animations run, the keys and the AI act. Returns whether the battle is over (its last
+    /// animation played) and whether the ways out opened this frame.
+    fn advance(&mut self, l: &Layout) -> (bool, bool) {
+        let dt = get_frame_time() * self.pace();
         if let Some(fx) = &mut self.fx {
             fx.t += dt;
             if fx.t >= fx.duration() {
@@ -295,28 +396,32 @@ impl BattleView {
         }
 
         self.quick_played = false;
+        let ongoing = self.battle.outcome() == Outcome::Ongoing;
         // Esc opens the ways out, also while a strike or spell plays. The window opens on the
         // next frame, so the Esc that opened it does not also close it.
         let mut just_opened = false;
-        if !self.exiting && self.battle.outcome() == Outcome::Ongoing && key(KeyCode::Escape) {
+        if !self.exiting && ongoing && key(KeyCode::Escape) {
             self.exiting = true;
             just_opened = true;
         }
-        let exiting = self.exiting;
-        if exiting {
+        if self.exiting {
             // The battle stands still under the window.
             set_input_blocked(true);
-        } else if self.fx.is_none() && self.battle.outcome() == Outcome::Ongoing && (key(KeyCode::Q) || (self.untouched() && (key(KeyCode::Enter) || key(KeyCode::KpEnter)))) {
+        } else if ongoing && (key(KeyCode::Q) || (self.untouched() && (key(KeyCode::Enter) || key(KeyCode::KpEnter)))) {
             self.quick_battle();
+        } else if ongoing && key(KeyCode::W) {
+            self.toggle_watch();
+        } else if ongoing && self.watching() && key(KeyCode::S) {
+            self.next_speed();
         } else if self.fx.is_none() {
             if let Some(active) = self.battle.active() {
-                if self.battle.fighters[active].team == Team::Player {
-                    self.player_input(&l, active);
+                if self.human(self.battle.fighters[active].team) {
+                    self.player_input(l, active);
                 } else {
                     self.ai_timer += dt;
                     if self.ai_timer >= AI_DELAY {
                         self.ai_timer = 0.0;
-                        self.fx = match self.battle.ai_step() {
+                        self.fx = match self.ai_move() {
                             Some(Step::Act { actor, hit }) => {
                                 cue(action_cue(&self.battle, actor, hit.kind));
                                 Some(Fx { actor, kind: FxKind::Act { hit }, t: 0.0 })
@@ -329,44 +434,76 @@ impl BattleView {
                             }
                             Some(Step::Wait { .. }) | None => None,
                         };
-                        self.note_log();
                     }
                 }
             }
         }
 
-        let outcome = self.battle.outcome();
-        let over = outcome != Outcome::Ongoing && self.fx.is_none();
-        if over && self.xp.is_none() {
+        let over = self.battle.outcome() != Outcome::Ongoing && self.fx.is_none();
+        if over && self.xp.is_none() && !self.custom {
             // What the player's units gain: only a victory pays (experience.md §3).
             self.xp = Some(self.battle.player_xp());
         }
+        (over, just_opened)
+    }
 
-        world_view::backdrop(game, assets);
-        self.draw(&l, game, assets);
-
-        // Quick battle (a Razdor extra the players asked for): the battle played out at once,
-        // from its first moment or the rest of it.
-        if !over && self.battle.outcome() == Outcome::Ongoing {
-            let label = if self.untouched() { tr("Quick battle (Q)") } else { tr("Finish automatically (Q)") };
-            let q = l.quick;
-            if button(q.x, q.y, q.w, q.h, label, self.fx.is_none()) {
+    /// The buttons under the panel while the battle goes on (a Razdor extra the players
+    /// asked for): the quick battle, played out at once from its first moment or the rest of
+    /// it, and the watched one; while watching, its pace, the skip to the end and the way
+    /// back to playing.
+    fn controls(&mut self, l: &Layout, over: bool) {
+        if over || self.battle.outcome() != Outcome::Ongoing {
+            return;
+        }
+        let (q, gap) = (l.quick, 4.0 * l.k);
+        if self.watching() {
+            let w = (q.w - 2.0 * gap) / 3.0;
+            let x = |i: f32| q.x + i * (w + gap);
+            if button(x(0.0), q.y, w, q.h, &razdor::trf!("Speed {n}x (S)", n = self.speed), true) {
+                self.next_speed();
+            }
+            if button(x(1.0), q.y, w, q.h, tr("Skip (Q)"), true) {
                 self.quick_battle();
             }
-        }
-
-        if over && !self.quick_played {
-            if !self.result_cued {
-                // The triumph plays as soon as the victory box appears, and carries on over the
-                // map afterwards (a sting is not cut by the move to the map).
-                self.result_cued = true;
-                if outcome == Outcome::Victory {
-                    cue(Cue::Triumph);
-                }
+            if button(x(2.0), q.y, w, q.h, tr("Take over (W)"), true) {
+                self.toggle_watch();
             }
-            return self.result_overlay(&l, game, message, dialogs, outcome);
+            return;
         }
-        if exiting && !just_opened {
+        let label = if self.untouched() { tr("Quick battle (Q)") } else { tr("Finish automatically (Q)") };
+        let w = (q.w - gap) * 0.62;
+        if button(q.x, q.y, w, q.h, label, true) {
+            self.quick_battle();
+        }
+        if button(q.x + w + gap, q.y, q.w - w - gap, q.h, tr("Watch (W)"), true) {
+            self.toggle_watch();
+        }
+    }
+
+    /// The result box shows: the first time, a victory's triumph starts (it carries on over
+    /// the map afterwards, a sting is not cut by the move to the map). True that first time.
+    fn result_shown(&mut self) -> bool {
+        if self.result_cued {
+            return false;
+        }
+        self.result_cued = true;
+        if self.battle.outcome() == Outcome::Victory {
+            cue(Cue::Triumph);
+        }
+        true
+    }
+
+    pub fn frame(&mut self, game: &mut Game, assets: &Assets, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+        let l = Layout::new(&self.battle);
+        let (over, just_opened) = self.advance(&l);
+        world_view::backdrop(game, assets);
+        self.draw(&l, &battle_title(game), assets);
+        self.controls(&l, over);
+        if over && !self.quick_played {
+            self.result_shown();
+            return self.result_overlay(&l, game, message, dialogs, self.battle.outcome());
+        }
+        if self.exiting && !just_opened {
             set_input_blocked(false);
             match super::saves::battle_exit_dialog(&mut self.exit_asking) {
                 (Some(choice), _) => {
@@ -375,6 +512,34 @@ impl BattleView {
                 }
                 (None, true) => self.exiting = false,
                 (None, false) => {}
+            }
+        }
+        None
+    }
+
+    /// A frame of a custom battle, over the main menu's ruins: the round is counted in
+    /// `session` when its result shows. Esc asks before leaving for the setup.
+    pub fn frame_custom(&mut self, assets: &Assets, session: &mut Session) -> Option<CustomEnd> {
+        let l = Layout::new(&self.battle);
+        let (over, just_opened) = self.advance(&l);
+        super::main_menu::backdrop();
+        self.draw(&l, tr("Custom battle"), assets);
+        self.controls(&l, over);
+        if over && !self.quick_played {
+            if self.result_shown() {
+                session.record(self.battle.outcome());
+            }
+            return self.custom_result(&l, session);
+        }
+        if self.exiting && !just_opened {
+            set_input_blocked(false);
+            match super::saves::question(tr("Leave the battle"), tr("The battle is not over. Leave it for the setup of the armies?")) {
+                Some(true) => {
+                    self.exiting = false;
+                    return Some(CustomEnd::Setup);
+                }
+                Some(false) => self.exiting = false,
+                None => {}
             }
         }
         None
@@ -400,21 +565,24 @@ impl BattleView {
                 // A click on its own card passes one action, as in the original.
                 self.battle.pass();
             }
-        } else if let Some((Team::Player, to)) = self.cell_under_mouse(l) {
+        } else if let Some((team, to)) = self.cell_under_mouse(l).filter(|&(t, _)| t == self.battle.fighters[active].team) {
             let from = self.battle.fighters[active].slot;
             if self.battle.move_active(to).is_ok() {
                 cue(Cue::CardMove);
-                let kind = FxKind::Move { from: l.cell_pos(Team::Player, from), to: l.cell_pos(Team::Player, to) };
+                let kind = FxKind::Move { from: l.cell_pos(team, from), to: l.cell_pos(team, to) };
                 self.fx = Some(Fx { actor: active, kind, t: 0.0 });
             }
         }
     }
 
-    fn draw(&self, l: &Layout, game: &Game, assets: &Assets) {
+    fn draw(&self, l: &Layout, title: &str, assets: &Assets) {
         let b = &self.battle;
         let k = l.k;
         let active = b.active();
-        let player_turn = active.is_some_and(|a| b.fighters[a].team == Team::Player) && self.fx.is_none();
+        // The side whose unit the player moves now (both sides, turn about, in a custom
+        // battle of player against player).
+        let acting = active.map(|a| b.fighters[a].team);
+        let player_turn = acting.is_some_and(|t| self.human(t)) && self.fx.is_none();
         let (targets, moves) = match (player_turn, active) {
             // The player's battle grid has no blocked cells (4d2233), but the screen shows
             // only the formation's cells, as the original's does.
@@ -424,7 +592,7 @@ impl BattleView {
         let hovered_cell = self.cell_under_mouse(l);
 
         // The window: red marble, the title with both armies, the turn in the corner.
-        let (_, _) = chrome::window(l.win, &battle_title(game), Skin::Red, false);
+        let (_, _) = chrome::window(l.win, title, Skin::Red, false);
         // The frame between the panel and the formations.
         draw_line(l.panel.x + l.panel.w + 1.0, l.panel.y, l.panel.x + l.panel.w + 1.0, l.panel.y + l.panel.h, 1.5 * k, chrome::SILVER);
 
@@ -435,12 +603,12 @@ impl BattleView {
                 continue;
             }
             chrome::empty_cell(Rect::new(p.x, p.y, l.card.x, l.card.y), CellIcon::of(b.formation, slot), true);
-            let is_move = team == Team::Player && moves.contains(&slot);
+            let is_move = Some(team) == acting && moves.contains(&slot);
             let sq = l.portrait(p);
             if is_move {
                 chrome::glow_frame(sq, FRIENDLY, false);
             }
-            let lit = is_move && team == Team::Player && hovered_cell == Some((team, slot));
+            let lit = is_move && hovered_cell == Some((team, slot));
             if lit {
                 draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.4, 0.6, 1.0, 0.18));
             }
@@ -479,8 +647,8 @@ impl BattleView {
             } else if targets.contains(&i) {
                 // The enemy under the mouse is framed green, as in the original; the other
                 // enemies in reach stay faintly red.
-                let c = match (f.team, hovered) {
-                    (Team::Player, _) => FRIENDLY,
+                let c = match (Some(f.team) == acting, hovered) {
+                    (true, _) => FRIENDLY,
                     (_, true) => ACTIVE,
                     (_, false) => HOSTILE,
                 };
@@ -489,7 +657,7 @@ impl BattleView {
                 None
             };
             let order = queue.iter().position(|&q| q == i);
-            self.draw_card(l, assets, i, p, frame, hovered && targets.contains(&i), order);
+            self.draw_card(l, assets, i, p, frame, hovered && targets.contains(&i), order, Some(f.team) == acting);
         }
 
         if let Some(fx) = &self.fx {
@@ -544,7 +712,14 @@ impl BattleView {
             };
             return (hint.into(), Color::new(1.0, 0.55, 0.25, 1.0));
         }
-        (tr("The enemy moves...").into(), Color::new(1.0, 0.55, 0.25, 1.0))
+        let waiting = if self.watching() {
+            tr("The AI plays both sides (W: take over)")
+        } else if b.active().is_some_and(|a| b.fighters[a].team == Team::Player) {
+            tr("The AI moves your army...")
+        } else {
+            tr("The enemy moves...")
+        };
+        (waiting.into(), Color::new(1.0, 0.55, 0.25, 1.0))
     }
 
     /// XP needed for fighter `f`'s next level, as the battle began.
@@ -560,7 +735,7 @@ impl BattleView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, frame: Option<(Color, bool)>, aimed: bool, order: Option<usize>) {
+    fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, frame: Option<(Color, bool)>, aimed: bool, order: Option<usize>, friendly: bool) {
         let f = &self.battle.fighters[id];
         // Against the start of the battle, so every gain or loss shows (blue or red), with
         // the building's defence in the D values.
@@ -575,7 +750,7 @@ impl BattleView {
         assets.draw_portrait(f.unit, f.team, sq);
         chrome::wounds(sq, f.hp, f.max_hp());
         if aimed {
-            let tint = if f.team == Team::Player { Color::new(0.3, 0.5, 1.0, 0.22) } else { Color::new(1.0, 0.1, 0.05, 0.25) };
+            let tint = if friendly { Color::new(0.3, 0.5, 1.0, 0.22) } else { Color::new(1.0, 0.1, 0.05, 0.25) };
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, tint);
         }
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
@@ -660,7 +835,7 @@ impl BattleView {
                 None if t == active => (razdor::trf!("Click (or press SPACE) to pass one action of \"{name}\"", name = b.fighters[t].name), None, BLACK),
                 None => return,
             }
-        } else if let Some((Team::Player, slot)) = self.cell_under_mouse(l) {
+        } else if let Some((_, slot)) = self.cell_under_mouse(l).filter(|&(t, _)| t == b.fighters[active].team) {
             if !b.moves(active).contains(&slot) {
                 return;
             }
@@ -714,7 +889,7 @@ impl BattleView {
             now: &self.battle.shown_stats(id),
             start: &f.at_start,
             power: f.power,
-            wage: if f.is_hero || f.team == Team::Enemy { 0 } else { b.content().wage(f.unit) },
+            wage: if f.is_hero || f.team == Team::Enemy || self.custom { 0 } else { b.content().wage(f.unit) },
             items,
             back_row: f.slot.row == Row::Back,
             building: b.building_defence(f.team),
@@ -778,6 +953,45 @@ impl BattleView {
     }
 }
 
+impl BattleView {
+    /// A custom battle's result box over the unit panel: who won and how, the session's
+    /// score, and the ways on: "Again" (Enter), "Change armies" (Esc), "Main menu".
+    fn custom_result(&self, l: &Layout, session: &Session) -> Option<CustomEnd> {
+        let k = l.k;
+        let r = Rect::new(l.panel.x + 8.0 * k, l.panel.y + 130.0 * k, l.panel.w - 16.0 * k, 250.0 * k);
+        let won = self.battle.outcome() == Outcome::Victory;
+        let (title, color) = if won { (tr("Your army wins!"), GOLD) } else { (tr("The enemy army wins!"), RED_TEXT) };
+        let sub = match self.battle.end_reason() {
+            Some(EndReason::Surrender(Team::Player)) => tr("Your army surrenders."),
+            Some(EndReason::Surrender(Team::Enemy)) => tr("The enemy surrenders."),
+            Some(EndReason::TurnLimit) => tr("The turns run out; the field is yours."),
+            _ if won => tr("The whole enemy army has fallen."),
+            _ => tr("Your whole army has fallen."),
+        };
+        let (inner, _) = chrome::window(r, tr("Custom battle"), Skin::Marble, false);
+        let cx = inner.x + inner.w / 2.0;
+        shadow_centered(title, cx, inner.y + 34.0 * k, fit_size(title, inner.w - 12.0 * k, (24.0 * k).round()), color);
+        for (i, line) in wrap(sub, inner.w - 16.0 * k, (13.0 * k).round()).iter().enumerate() {
+            shadow_centered(line, cx, inner.y + 58.0 * k + i as f32 * 15.0 * k, (13.0 * k).round(), CREAM);
+        }
+        let score = razdor::trf!("Rounds won: {won}, lost: {lost}", won = session.won, lost = session.lost);
+        shadow_centered(&score, cx, inner.y + 96.0 * k, (13.0 * k).round(), GOLD);
+        let (bw, bh) = (inner.w - 30.0 * k, 28.0 * k);
+        let bx = inner.x + 15.0 * k;
+        let by = |i: f32| inner.y + inner.h - (3.0 - i) * (bh + 6.0 * k) - 4.0 * k;
+        if button(bx, by(0.0), bw, bh, tr("Again (Enter)"), true) || key(KeyCode::Enter) || key(KeyCode::KpEnter) {
+            return Some(CustomEnd::Again);
+        }
+        if button(bx, by(1.0), bw, bh, tr("Change armies (Esc)"), true) || key(KeyCode::Escape) {
+            return Some(CustomEnd::Setup);
+        }
+        if button(bx, by(2.0), bw, bh, tr("Main menu"), true) {
+            return Some(CustomEnd::MainMenu);
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -813,5 +1027,67 @@ mod tests {
         assert!(!view.untouched(), "once someone acted, Q finishes the rest");
         view.quick_battle();
         assert_ne!(view.battle.outcome(), Outcome::Ongoing);
+    }
+
+    fn bandit_camp() -> BattleView {
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        BattleView::new(g.start_battle())
+    }
+
+    #[test]
+    fn the_watched_quick_battle_ends_as_the_instant_one() {
+        let mut instant = bandit_camp();
+        let mut watched = bandit_camp();
+        let mut skipped = bandit_camp();
+        instant.quick_battle();
+        assert_ne!(instant.battle.outcome(), Outcome::Ongoing);
+        // W: the AI plays both sides, move by move as the screen shows them.
+        watched.toggle_watch();
+        assert!(watched.watching() && !watched.human(Team::Player));
+        let mut moves = 0;
+        while watched.battle.outcome() == Outcome::Ongoing {
+            assert!(watched.ai_move().is_some());
+            moves += 1;
+        }
+        assert_eq!(watched.battle.outcome(), instant.battle.outcome());
+        assert_eq!(watched.battle.log, instant.battle.log);
+        assert_eq!(watched.battle.player_results(), instant.battle.player_results());
+        assert_eq!(watched.battle.player_xp(), instant.battle.player_xp());
+        // Watched for a while, then skipped to the end (Q): the same result.
+        skipped.toggle_watch();
+        for _ in 0..moves / 2 {
+            skipped.ai_move();
+        }
+        skipped.quick_battle();
+        assert_eq!(skipped.battle.log, instant.battle.log);
+        assert_eq!(skipped.battle.player_results(), instant.battle.player_results());
+    }
+
+    #[test]
+    fn watching_stops_to_give_the_control_back() {
+        let mut view = bandit_camp();
+        assert!(!view.watching() && view.human(Team::Player) && !view.human(Team::Enemy));
+        assert_eq!(view.pace(), 1.0, "a battle the player plays runs at the normal pace");
+        view.toggle_watch();
+        assert!(view.watching());
+        view.speed = 1;
+        view.next_speed();
+        assert_eq!(view.pace(), 2.0);
+        view.next_speed();
+        assert_eq!(view.pace(), 4.0);
+        view.next_speed();
+        assert_eq!(view.pace(), 1.0, "4x wraps round to 1x");
+        view.toggle_watch();
+        assert!(!view.watching() && view.human(Team::Player), "W again: the player plays on");
+        // A custom battle of AI against AI: stopping takes the side below.
+        let battle = bandit_camp().battle;
+        let mut view = BattleView::custom(battle, [Control::Ai, Control::Ai]);
+        assert!(view.watching() && view.custom);
+        view.toggle_watch();
+        assert!(view.human(Team::Player) && !view.human(Team::Enemy));
+        // Player against player: each side's units are the player's.
+        let view = BattleView::custom(bandit_camp().battle, [Control::Player, Control::Player]);
+        assert!(view.human(Team::Player) && view.human(Team::Enemy) && !view.watching());
     }
 }

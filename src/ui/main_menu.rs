@@ -3,8 +3,8 @@
 //! (`Title_RUS.ugs`) with flames rising off its letters (`TitleFlame_RUS.lit`), and five oval
 //! buttons (`mb2.ugs`, the last one pointed) whose marble middles swirl in violet
 //! (`MenuFlame.lit`) under the words of `SMText_RUS.lit`; the button under the mouse turns
-//! gold. Razdor's own extras, the map editor and the interface language, sit small in the
-//! bottom corners. Layout numbers are pixels of the 960×720 video, scaled by [`chrome::k`].
+//! gold. Razdor's own extras, the map editor, the custom battle and the interface language,
+//! sit small in the bottom corners. Layout numbers are pixels of the 960×720 video, scaled by [`chrome::k`].
 
 use macroquad::prelude::*;
 
@@ -23,6 +23,8 @@ pub enum Pick {
     Authors,
     Exit,
     Editor,
+    /// Razdor's custom battle (`ui::custom_battle`).
+    Custom,
 }
 
 /// The five buttons, top to bottom, with the row of `SMText_RUS` holding their word.
@@ -186,8 +188,13 @@ pub fn frame() -> Option<Pick> {
     }
     let k = chrome::k();
     let y = screen_height() - 16.0 * k;
-    if link(tr("Map editor"), 16.0 * k, y, false) {
+    let editor = tr("Map editor");
+    if link(editor, 16.0 * k, y, false) {
         pick = Some(Pick::Editor);
+    }
+    let x = 16.0 * k + measure(editor, 18.0 * k).width + 28.0 * k;
+    if link(tr("Custom battle"), x, y, false) {
+        pick = Some(Pick::Custom);
     }
     let lang = format!("{} / {}", Lang::En.label(), Lang::Ru.label());
     if link(&lang, screen_width() - 16.0 * k, y, true) {

@@ -12,6 +12,17 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### New
+- **Custom battle**: a main-menu link opens a setup for a battle outside any campaign: both
+  armies from the install's unit types (the demo's without an install), each unit with its
+  level and items, the wide or vanilla formation, the battle AI's level and who plays each
+  side (you or the AI; the AI on both to watch). The battle runs on the normal battle screen;
+  its result box offers the same armies again, a change of armies or the main menu, and
+  counts the rounds. The setup is kept until the game closes; games and saves are untouched.
+- **Watched quick battle** (W, or **Watch** under the unit panel): the AI plays both sides
+  on the battle screen with the normal animations at 1×, 2× or 4× (S), skippable to the end
+  (Q) with the same result as the instant quick battle, and W again takes the control back.
+
 ### Changed
 - **Random numbers as in the original**: one generator, the original's (the C runtime's
   `rand()`), started at 1 on every new map, so a fresh map's markets and every roll after
