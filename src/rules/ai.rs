@@ -2969,19 +2969,20 @@ impl Game {
         }
     }
 
-    /// A feudal army pays its gold wage bill (economy.md §1), cut by the player's Rear
-    /// Service (the original reads the player's flag and stored income even here), and its
-    /// elementals' mana bill out of the *player's* mana (raising the mana-short flag when he
-    /// has none). With the gold not below 0 everyone is paid (with the flag up the
-    /// elementals go unpaid and the others keep their mark); else the paid units of kind 1
-    /// or 2, not Elementals, with the lowest full wage (the earliest of equals, corpses
-    /// included) are refunded and go unpaid until it is not, the gold is set to 0, and
-    /// every unit last paid more than `MaxTimeNotUpkeep` ago leaves.
+    /// A feudal army pays its gold wage bill (economy.md §1), cut by its own Rear Service,
+    /// and its elementals' mana bill out of the *player's* mana (raising the mana-short flag
+    /// when he has none). With the gold not below 0 everyone is paid (with the flag up the
+    /// elementals go unpaid, and the flag is cleared); else the paid units of kind 1 or 2,
+    /// not Elementals, with the lowest full wage (the earliest of equals, corpses included)
+    /// are refunded and go unpaid until it is not, the gold is set to 0, and every unit last
+    /// paid more than `MaxTimeNotUpkeep` ago leaves. Razdor fixes two of the original's bugs
+    /// here: its Rear Service read the *player's* flag and stored income for an AI army, and
+    /// with the flag up an enough-gold noon left the others' old marks and the flag itself.
     fn ai_pay_wages(&mut self, i: usize, now: u64) {
         let c = self.content.clone();
         let mut bill = self.army_totals(i).wages;
-        if self.squad_has_any(&Bonus::AddPayment) {
-            bill = rear_service(bill, self.stored_income);
+        if super::economy::army_has(&c, &self.world.armies[i], &Bonus::AddPayment) {
+            bill = rear_service(bill, self.world.armies[i].mind.income);
         }
         // The mana bill is one global in the original, rebuilt by every army's totals; this
         // army's own (dormant: no shipped unit is an Elemental).
@@ -2998,12 +2999,9 @@ impl Game {
         if a.gold >= 0 {
             for t in a.troops.iter_mut() {
                 t.last_paid = now;
-                if !flag {
-                    t.unpaid = false;
-                } else if c.paid_in_mana(t.unit) {
-                    t.unpaid = true;
-                }
+                t.unpaid = flag && c.paid_in_mana(t.unit);
             }
+            self.mana_short = false;
             return;
         }
         for t in a.troops.iter_mut() {

@@ -234,13 +234,12 @@ old id, and their versions give both.
   grown since the last noon (×F/100), not a fixed income, and towns pay nothing; every
   building with a maximum grows its stock at midnight. No building pays mana at noon, and
   villages linked to the player's buildings give him their gold only.
-- Corpses draw no wage. Rear Service cuts the whole wage bill once at noon (by the player's
-  stored income, also for the AI's armies), and the wages shown are the full bill. A short
+- Corpses draw no wage. Rear Service cuts the whole wage bill once at noon (by the stored
+  income), and the wages shown are the full bill. A short
   noon refunds full wages, cheapest first, a corpse's too, never an elemental's; deserters
   leave with their worn items.
-- With no mana at a noon (any army's), the Community's mana-short flag goes up and stays up
-  until a short-gold noon: meanwhile a unit left unpaid stays unpaid though its wage is
-  paid, as in the original.
+- With no mana at a noon (any army's), the Community's mana-short flag goes up and the
+  elementals go unpaid at the next payment.
 - The noon report shows the nominal income of the player's towns, castles and forts, the
   bill and the gold before the payment, warns when they do not cover the wages, and is not
   shown when there are neither wages nor income. A Ranger heals 20% more when it is shown;
@@ -251,9 +250,7 @@ old id, and their versions give both.
   no barracks no longer heal. Only towns, markets and churches sell items; the obelisk has
   no window. An ill-disposed village pays its tribute.
 - The player's dead are never buried by time: they can be raised in a town or church any
-  time, and come back paid. A unit whose Cost is 2 more than a multiple of 256 is raised
-  for mana after a gold check, the Community's slip; an elemental's healing is checked
-  against the gold and paid in mana.
+  time, and come back paid.
 - Ruins keep only their first five goods as treasure.
 - The garrison as in the original: one click selects a unit, the second moves it to an
   empty cell or swaps it with a unit of the other grid, free and unpaid as it was (the only
@@ -276,8 +273,8 @@ old id, and their versions give both.
 - A map's good of negative price (a personal item placed in a market) pays its buyer, as in
   the original; an attitude outside −3..3 leaves a price unchanged; a dead Merchant still
   bargains.
-- A market whose list of candidates runs out while drawing a good reads on as the original
-  does (the first item, or an empty place) instead of taking the last refused good.
+- A market whose list of candidates runs out while drawing a good leaves that place empty
+  instead of taking the last refused good.
 - **World spells per unit, as in the original.** Every unit holds up to four lasting
   spells of its own; a unit with no free slot is left alone by a spell, its instant heal or
   wound included. A life-draining curse is now a lasting drain of the unit that compounds and
@@ -288,7 +285,7 @@ old id, and their versions give both.
   that fires while the hero casts ends the casting and the spell lands at once. The spell
   card shows the original's casting time (half an hour short with a Caster or, for the
   Archmage, an odd casting time). Only the first 15 spells of the book can be cast; events
-  may teach more, and the sanctuary refuses only a book of exactly 15.
+  may teach more.
 - An event's spell on the army resets its time instead of adding to it, a spell number past
   the last spell casts the last one, and a spell that kills the whole army loses the game.
   The dead keep their items, and a dead unit still holding a spell is raised by a new cast
@@ -474,6 +471,18 @@ now fixed with the rule the original evidently meant:
   1 damage, a Splash or Flock unit cursed below 0 attack no longer strikes for a huge amount,
   and Bastion, Berserk and the damage stop at the largest value instead of wrapping negative
   (all the original's unsigned or 32-bit slips).
+- Noon: with no mana, an enough-gold noon leaves only the elementals unpaid and pays
+  everyone else (the original's bug kept a unit unpaid though its wage was paid, until a
+  short-gold noon), and an AI army's wages are cut by its own Rear Service, not the
+  player's.
+- A unit whose Cost is 2 more than a multiple of 256 is raised for gold (the Community's bug
+  raised it for mana after checking the gold), and an elemental's healing is checked
+  against the mana it is paid in (the original's bug checked the gold).
+- The sanctuary refuses a spell to a book of 15 or more (the original's bug refused only a
+  book of exactly 15, so a book an event filled past 15 bought on).
+- A market whose list of candidates runs out leaves the place empty (the original's bug read
+  on past the list: the first item of the game), and a building's mana stock stops at its
+  maximum (the original's bug wrapped it past 255).
 
 ## 0.2.2 — 2026-10-01
 

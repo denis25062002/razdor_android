@@ -444,7 +444,7 @@ Razdor's code read: `src/rules/items.rs`, `src/rules/magic.rs`, `src/rules/units
 | Spell kills | The dead keep their items; recast on a dead holder raises it | The effect routine moves no items; the recast branch has no HP test | §4.1 | Matches |
 | `p-LifeLose` | A permanent unit percentage D (`Unit::drain`) that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly; carried to the next campaign map | A permanent unit percentage D that compounds, cuts HP at cast time and again via the rebuild; a positive value lowers D linearly | §4.1, §4.3 | Matches |
 | Spell school (`Type`) | Shown in the book; no rule reads it | Ignored by every rule | §1.1 | Matches |
-| Event learning past 15 | No cap; only the first 15 can be cast; the shop refuses only at exactly 15 | No cap; spells past 15 are known but not castable | §2 | Matches |
+| Event learning past 15 | No cap; only the first 15 can be cast; the shop refuses a book of 15 or more | No cap; spells past 15 are known but not castable; the shop refuses only at exactly 15 (bug) | §2 | Razdor fixes the original's bug (the shop) |
 | Event learning, "no meeting" 1 | Skipped for any event whose "no meeting" byte is 1 | The Community hook skips it whenever that byte is 1, opcode or not | §2 | Matches |
 | Spell shop price | Exactly `CostGold`, a negative one paying the hero | Exactly `CostGold`, no clamp | §2 | Matches |
 | Percent stats (protections, regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism) | Points both ways; clamp 0..99 (protections), ≤ 99 (regen, vampirism, regen may be negative) | §6 | Matches |

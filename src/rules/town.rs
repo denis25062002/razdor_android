@@ -129,14 +129,12 @@ impl Game {
     }
 
     /// Whether the heal or raise button of squad member `i` is enabled: its price against
-    /// the gold, or the mana for an elemental's resurrection only (0xc260c5); the heal
-    /// button compares even an elemental's price with the gold.
-    pub fn can_pay_service(&self, i: usize, price: Price) -> bool {
-        let elemental = self.squad.get(i).is_some_and(|u| self.content.paid_in_mana(u.def));
-        if elemental && self.squad.get(i).is_some_and(|u| !u.alive()) {
-            self.mana >= price.amount
-        } else {
-            self.gold >= price.amount
+    /// the currency it is paid in. Razdor fixes the original's bug (0xc260c5): its heal
+    /// button compared even an elemental's price, paid in mana, with the gold.
+    pub fn can_pay_service(&self, price: Price) -> bool {
+        match price.currency {
+            super::game::Currency::Gold => self.gold >= price.amount,
+            super::game::Currency::Mana => self.mana >= price.amount,
         }
     }
 
@@ -160,7 +158,7 @@ impl Game {
             return Err(ServiceError::NotWounded);
         }
         let price = self.heal_price(i).ok_or(ServiceError::NotWounded)?;
-        if !self.can_pay_service(i, price) {
+        if !self.can_pay_service(price) {
             return Err(ServiceError::CannotAfford);
         }
         self.pay_service(price);
@@ -181,7 +179,7 @@ impl Game {
             return Err(ServiceError::NotDead);
         }
         let price = self.resurrect_price(i).ok_or(ServiceError::NotDead)?;
-        if !self.can_pay_service(i, price) {
+        if !self.can_pay_service(price) {
             return Err(ServiceError::CannotAfford);
         }
         self.pay_service(price);
@@ -360,15 +358,16 @@ impl Game {
         let spell = self.spells_here().into_iter().find(|s| s.id == id).ok_or(ServiceError::NotHere)?;
         // Exactly `CostGold`, a negative one too (it then pays the hero).
         let price = Price::gold(spell.cost_gold);
-        // The shop's tests in its order (0x4ba078): known, then gold, then a book of exactly
-        // 15. A book an event pushed past 15 passes the last test (the original's).
+        // The shop's tests in its order (0x4ba078): known, then gold, then a full book of 15.
+        // Razdor fixes the original's bug: it refused only a book of exactly 15, so a book
+        // an event pushed past 15 bought on.
         if self.knows_spell(id) {
             return Err(ServiceError::AlreadyKnown);
         }
         if !self.can_afford(price) {
             return Err(ServiceError::CannotAfford);
         }
-        if self.spells.len() == SPELL_BOOK_SIZE {
+        if self.spells.len() >= SPELL_BOOK_SIZE {
             return Err(ServiceError::BookFull);
         }
         self.spend(price);
@@ -645,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cost_of_2_mod_256_is_resurrected_for_mana_after_a_gold_check() {
+    fn a_cost_of_2_mod_256_is_resurrected_for_gold() {
         let mut c = content();
         c.units.iter_mut().find(|u| u.id == 4).unwrap().cost = 2050; // as unit 56
         let mut s = map();
@@ -653,18 +652,14 @@ mod tests {
         let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
         g.location = Some(0);
         g.squad[1].hp = 0;
-        // Round(2050 × 300% × 100 / 120) = 5125, in mana (the Cost's low byte reads as 2).
-        assert_eq!(g.resurrect_price(1), Some(Price { amount: 5125, currency: Currency::Mana }));
+        // Round(2050 × 300% × 100 / 120) = 5125, in gold: the Community's bug read the Cost's
+        // low byte (2) as "pay in mana".
+        assert_eq!(g.resurrect_price(1), Some(Price { amount: 5125, currency: Currency::Gold }));
         (g.gold, g.mana) = (5000, 9000);
-        assert_eq!(g.resurrect(1), Err(ServiceError::CannotAfford), "the button checks the gold");
+        assert_eq!(g.resurrect(1), Err(ServiceError::CannotAfford));
         g.gold = 6000;
         g.resurrect(1).unwrap();
-        assert_eq!((g.gold, g.mana), (6000, 9000 - 5125));
-        // Paid in mana, clamped at 0.
-        g.squad[2].hp = 0;
-        g.mana = 100;
-        g.resurrect(2).unwrap();
-        assert_eq!((g.gold, g.mana), (6000, 0));
+        assert_eq!((g.gold, g.mana), (6000 - 5125, 9000));
     }
 
     #[test]
@@ -711,6 +706,12 @@ mod tests {
         assert_eq!((g.mana, g.gold), (20, 1000));
         g.squad[3].hp = 25; // of 50: 1/2 × 80 × 50% × 100/120 = 16.7 → 17 mana
         assert_eq!(g.heal_price(3), Some(Price { amount: 17, currency: Currency::Mana }));
+        // The heal is checked against the mana it is paid in (the original's bug compared it
+        // with the gold).
+        g.gold = 0;
+        g.heal(3).unwrap();
+        assert_eq!((g.mana, g.gold), (3, 0));
+        g.gold = 1000;
         // Wage 80/2 × ½ = 20 mana a day.
         assert_eq!((g.daily_wages(), g.daily_mana_wages()), (12, 20));
     }
@@ -846,33 +847,30 @@ mod tests {
     }
 
     #[test]
-    fn with_no_mana_an_unpaid_unit_stays_unpaid_though_its_wage_is_paid() {
+    fn with_no_mana_the_elementals_go_unpaid_and_everyone_else_is_paid() {
         let mut s = map();
-        s.header.heroes[0] = hero(2, 2, 0, &[troop(4, 0, 2)]);
+        // Golem (an elemental, 20 mana) and two militia.
+        s.header.heroes[0] = hero(2, 2, 0, &[troop(8, 0, 1), troop(4, 0, 2)]);
         let mut g = start(&s);
         g.first_noon_today();
-        // A short noon: both militia refunded and unpaid; it clears the mana-short flag.
+        // A short noon: the militia refunded and unpaid.
         g.pass_time(3.0 * 60.0, &mut Vec::new());
-        assert!(g.squad[1].unpaid && g.squad[2].unpaid && !g.mana_short);
-        // Enough gold, but no mana: the flag goes up, nobody's mark changes (0xc25f7d), though
-        // the wages are paid and the last pay moves on.
+        assert!(g.squad[2].unpaid && g.squad[3].unpaid);
+        // Enough gold, but no mana: the golem goes unpaid, the militia are paid again and the
+        // flag is cleared. The original's bug (0xc25f7d) left every other unit's old mark,
+        // so the militia stayed unpaid though their wages were paid, and the flag stayed up.
+        g.mana = 0;
         g.gold = 100;
         g.pass_time(24.0 * 60.0, &mut Vec::new());
-        assert_eq!(g.gold, 88);
-        assert!(g.mana_short && g.squad[1].unpaid && g.squad[2].unpaid);
+        assert!(!g.mana_short);
+        assert_eq!(g.squad.iter().map(|u| u.unpaid).collect::<Vec<_>>(), [false, true, false, false]);
         let now = g.clock.total_minutes() as u64;
         assert!(g.squad.iter().all(|u| u.last_paid + 60 > now), "paid now, so nobody deserts");
-        // The flag stays up while the gold lasts; with mana it still stays up.
-        g.mana = 10;
-        g.pass_time(24.0 * 60.0, &mut Vec::new());
-        assert!(g.mana_short && g.squad[1].unpaid, "the flag is cleared only by a short noon");
-        // A short noon clears it: everyone is marked paid, the cheapest refunded.
-        g.gold = 6;
-        g.pass_time(24.0 * 60.0, &mut Vec::new());
-        assert!(!g.mana_short && g.squad[1].unpaid && !g.squad[2].unpaid);
+        // With mana an enough-gold noon pays everyone.
+        g.mana = 100;
         g.gold = 100;
         g.pass_time(24.0 * 60.0, &mut Vec::new());
-        assert!(!g.squad[1].unpaid && !g.squad[2].unpaid, "with mana, an enough-gold noon pays everyone");
+        assert!(!g.mana_short && g.squad.iter().all(|u| !u.unpaid));
     }
 
     #[test]
@@ -1634,11 +1632,12 @@ mod tests {
         assert_eq!(g.learn_spell(2), Err(ServiceError::BookFull), "15 cells in the book");
         g.gold = 499;
         assert_eq!(g.learn_spell(2), Err(ServiceError::CannotAfford), "the gold is tested before the room");
-        // A book an event filled past 15 is not "exactly 15": the shop sells into it.
+        // A book an event filled past 15 is full too (the original's bug sold into it).
         g.gold = 500;
         g.spells = (3..19).collect();
-        assert_eq!(g.learn_spell(2), Ok(()));
-        assert_eq!((g.spells.len(), g.gold), (17, 0));
+        assert_eq!(g.learn_spell(2), Err(ServiceError::BookFull));
+        g.gold = 0;
+        g.spells = vec![1];
         assert_eq!(g.learn_spell(7), Err(ServiceError::NotHere));
         // Exactly CostGold is taken (0x4ba3b0): a negative one pays the hero.
         let mut c = (*g.content).clone();

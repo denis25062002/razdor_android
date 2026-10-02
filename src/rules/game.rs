@@ -329,7 +329,8 @@ pub struct Game {
     #[serde(default)]
     pub(crate) stored_income: i32,
     /// The Community mana-short flag (0xc25eeb): up when the player's mana is 0 or below at
-    /// any army's noon, down only at a short-gold noon (economy.md §1 steps 8–10).
+    /// any army's noon, down at that army's payment (economy.md §1 steps 8–10; the original
+    /// cleared it only at a short-gold noon, a bug Razdor fixes).
     #[serde(default)]
     pub(crate) mana_short: bool,
     /// Real seconds into the step (or wait tick) under way ([`STEP_SECONDS`] each).

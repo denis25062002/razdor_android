@@ -135,12 +135,11 @@ fn price_band(i: i32, r: i32, mn: i32, mx: i32, church: bool, ran_down: bool, pr
 
 /// The original's candidate list (0x4bdf74): item indices (id − 1) in a buffer of 256 that
 /// each rebuild zeroes first, and the place of its last entry (−1 when empty). A refused
-/// good is overwritten by the last entry and the list shortens. The original does not stop
-/// when the list runs out: it draws `Random(last + 1)` (0 for an empty list), reading the
-/// buffer past the list's end (0, item 1, after a rebuild), and overwrites with the entries
-/// below it, which are the restock's own locals: the last index itself, then the
-/// building's number. Razdor reads those too, and gives up on the good below them, where
-/// the original reads further into its stack.
+/// good is overwritten by the last entry and the list shortens. Razdor fixes the original's
+/// bug: it did not stop when the list ran out, but drew `Random(last + 1)` (0 for an empty
+/// list), reading the buffer past the list's end (0, item 1, after a rebuild) and
+/// overwriting with the restock's own locals below it; here a list that runs out gives no
+/// good.
 struct Candidates {
     buf: Vec<i32>,
     last: i32,
@@ -153,16 +152,6 @@ impl Candidates {
             buf[k] = i.0 as i32 - 1;
         }
         Candidates { buf, last: items.len() as i32 - 1 }
-    }
-
-    /// Entry `k`, read as the original does for `k` below 0 (`building`: 1-based).
-    fn entry(&self, k: i32, building: i32) -> Option<i32> {
-        match k {
-            0.. => self.buf.get(k as usize).copied(),
-            -1 => Some(self.last),
-            -2 => Some(building),
-            _ => None,
-        }
     }
 }
 
@@ -184,18 +173,10 @@ pub fn grow_stock(stock: i32, income: i32, max: i32) -> i32 {
     (stock as i64 + delphi_round(income as f64 * room.sqrt())).clamp(0, max as i64) as i32
 }
 
-/// Mana stock growth: [`grow_stock`]'s rule, but the original adds on a byte, so a sum above
-/// 255 wraps before the cap (only possible with a maximum near 255).
+/// Mana stock growth: [`grow_stock`]'s rule. Razdor fixes the original's bug: it added on a
+/// byte, so a sum above 255 wrapped before the cap (only possible with a maximum near 255).
 pub fn grow_mana(stock: i32, income: i32, max: i32) -> i32 {
-    if max <= 0 {
-        return stock;
-    }
-    let room = 1.0 - stock as f64 / max as f64;
-    if room <= 0.0 {
-        return stock;
-    }
-    let sum = (stock as i64 + delphi_round(income as f64 * room.sqrt())) as u8 as i32;
-    sum.min(max)
+    grow_stock(stock, income, max)
 }
 
 /// The one thing a village may offer on a visit besides its tribute (economy.md §3), with the
@@ -306,8 +287,8 @@ impl Game {
     /// gold stock ×F/100 and the villages linked to his buildings theirs (no mana, no towns);
     /// the stored income becomes the castles' and forts' `income` plus the village stocks.
     /// Then the gold bill goes out (cut by Rear Service) and the mana bill out of his mana;
-    /// mana at 0 or below raises the sticky mana-short flag. With the gold not below 0
-    /// everyone's last pay is now. Else the cheapest paid units get their full wage back
+    /// mana at 0 or below raises the mana-short flag. With the gold not below 0 everyone's
+    /// last pay is now and everyone is paid but, with the flag up, the elementals. Else the cheapest paid units get their full wage back
     /// and go unpaid until it is not, the gold is set to 0, and every unit last paid more
     /// than `MaxTimeNotUpkeep` ago leaves with its worn items.
     pub(crate) fn pay_noon(&mut self) -> NoonPay {
@@ -339,17 +320,16 @@ impl Game {
         let short = self.gold < 0;
         let mut deserted = Vec::new();
         if !short {
+            // With the mana-short flag up the elementals go unpaid, everyone else is paid,
+            // and the flag is cleared. Razdor fixes the original's bug (0xc25f7d): there every
+            // other unit kept its old mark, so a unit left unpaid by an earlier short noon
+            // stayed unpaid though its wage was paid, and the flag was never cleared (its
+            // clearing code is unreachable).
             for u in self.squad.iter_mut() {
                 u.last_paid = now;
-                // The original's slip (0xc25f7d): with the mana-short flag up, the elementals
-                // go unpaid and every other unit keeps its old mark, so a unit left unpaid by an
-                // earlier short noon stays unpaid though its wage was paid. The flag stays up.
-                if !self.mana_short {
-                    u.unpaid = false;
-                } else if elemental(u) {
-                    u.unpaid = true;
-                }
+                u.unpaid = self.mana_short && elemental(u);
             }
+            self.mana_short = false;
         } else {
             for u in self.squad.iter_mut() {
                 u.unpaid = false;
@@ -551,8 +531,6 @@ impl Game {
 
     fn draw_goods(&mut self, c: &Content, l: usize, shop: &mut Shop) {
         let kind = self.world.locations[l].kind;
-        // The building's number (1-based), which the original's list can read (`Candidates`).
-        let building = l as i32 + 1;
         let places = &mut shop.places;
         let mut r = shop.random as i32;
         for p in places.iter_mut() {
@@ -631,23 +609,23 @@ impl Game {
                 continue;
             }
             let (mut tries, mut lost) = (0, false);
-            let mut item;
+            let mut item = -1;
             loop {
                 tries += 1;
-                let mut ok;
+                let mut ok = false;
                 loop {
+                    if cands.last < 0 {
+                        // The list ran out: no good (see `Candidates`).
+                        lost = true;
+                        break;
+                    }
                     let k = self.rng.random(cands.last + 1) as usize;
                     item = cands.buf[k];
                     let n = places.iter().filter(|p| p.map_or(0, |g| g.item.0 as i32) == item + 1).count();
                     ok = !((max_word > 500 && n > 0) || n >= 2);
                     if !ok {
-                        // The refused good is overwritten by the last entry, even when the
-                        // list has run out (the original's slip, see `Candidates`).
-                        let Some(v) = cands.entry(cands.last, building) else {
-                            lost = true;
-                            break;
-                        };
-                        cands.buf[k] = v;
+                        // The refused good is overwritten by the last entry.
+                        cands.buf[k] = cands.buf[cands.last as usize];
                         cands.last -= 1;
                     }
                     if ok || cands.last == 0 {
@@ -670,7 +648,7 @@ impl Game {
             if lost {
                 continue;
             }
-            // Stored even when refused (after 26 tries); index −1 stores 0, an empty place.
+            // Stored even when refused (after 26 tries).
             places[slot] = (item >= 0).then(|| Good { item: ItemId(item as u32 + 1), fixed: false });
         }
     }
@@ -696,19 +674,15 @@ impl Game {
     }
 
     /// Price to resurrect squad member `i`: `Round(Cost × ResurectConst% × 100 / F)`, no
-    /// minimum. `None` if it is alive. The Community's slip (0xc2606c): the "pay in mana"
-    /// test reads the low byte of the unit's `Cost` instead of its Nature, so a unit whose
-    /// Cost is 2 more than a multiple of 256 (unit 56, Cost 2050) pays in mana, while the
-    /// button compares the price with the gold ([`Game::can_pay_service`]).
+    /// minimum, in mana for elementals. `None` if it is alive. Razdor fixes the Community's
+    /// bug (0xc2606c): its "pay in mana" test read the low byte of the unit's `Cost` instead
+    /// of its Nature, so a unit whose Cost was 2 more than a multiple of 256 (unit 56, Cost
+    /// 2050) paid in mana.
     pub fn resurrect_price(&self, i: usize) -> Option<Price> {
         let u = self.squad.get(i).filter(|u| !u.alive())?;
         let cost = self.content.unit(u.def).cost;
         let amount = round_ratio(cost.max(0) as i64 * self.content.options.resurect_const.max(0) as i64, self.difficulty() as i64) as i32;
-        if cost & 0xff == 2 || self.content.paid_in_mana(u.def) {
-            Some(Price { amount, currency: Currency::Mana })
-        } else {
-            Some(Price::gold(amount))
-        }
+        Some(Price::for_unit(&self.content, u.def, amount))
     }
 
     // ---------------------------------------------------------------------------------------
@@ -922,7 +896,7 @@ fn heal_troop(c: &super::content::Content, t: &mut super::world::Troop, pct: i32
     }
 }
 
-fn army_has(c: &super::content::Content, a: &Army, b: &Bonus) -> bool {
+pub(crate) fn army_has(c: &super::content::Content, a: &Army, b: &Bonus) -> bool {
     a.troops.iter().any(|t| Stats::of_level(c, t.unit, t.level.max(1)).has(b))
 }
 
@@ -979,23 +953,20 @@ mod tests {
     }
 
     #[test]
-    fn an_exhausted_candidate_list_reads_on_as_the_original() {
+    fn a_candidate_list_holds_its_items_and_may_be_empty() {
         let c = Candidates::new(vec![ItemId(7), ItemId(9)]);
         assert_eq!((c.last, c.buf[0], c.buf[1], c.buf.len()), (1, 6, 8, 256));
-        // A rebuild with nothing in the band: `Random(0)` reads the zeroed buffer, item 1.
+        // A rebuild with nothing in the band is empty (the original's bug read on into the
+        // zeroed buffer, item 1, then its own locals).
         let empty = Candidates::new(Vec::new());
-        assert_eq!((empty.last, empty.buf[0]), (-1, 0));
-        // Below the buffer lie the last index and the building's number, then the stack.
-        assert_eq!(empty.entry(0, 4), Some(0));
-        assert_eq!(empty.entry(-1, 4), Some(-1));
-        assert_eq!(empty.entry(-2, 4), Some(4));
-        assert_eq!(empty.entry(-3, 4), None);
+        assert_eq!(empty.last, -1);
     }
 
     #[test]
-    fn mana_stock_grows_on_a_byte() {
-        // 200 + Round(255 × √(1 − 200/255)) = 200 + 118 = 318, which wraps to 62 (0x4a1998).
-        assert_eq!(grow_mana(200, 255, 255), 62);
+    fn mana_stock_grows_to_its_cap() {
+        // 200 + Round(255 × √(1 − 200/255)) = 200 + 118 = 318, capped at 255 (the original's
+        // bug added on a byte: 62, 0x4a1998).
+        assert_eq!(grow_mana(200, 255, 255), 255);
         assert_eq!(grow_mana(5, 5, 20), 9, "5 × √0.75 = 4.33");
         assert_eq!(grow_mana(3, 5, 0), 3, "no maximum: no growth");
         assert_eq!(rear_service(59, 10), 41);

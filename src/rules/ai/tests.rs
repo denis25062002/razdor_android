@@ -1063,6 +1063,34 @@ fn short_gold_at_noon_leaves_the_cheapest_unpaid_and_old_unpaid_ones_desert() {
 }
 
 #[test]
+fn an_armys_rear_service_is_its_own() {
+    // Unit 8 a quartermaster (Rear Service). The original's bug cut an AI army's wages by
+    // the *player's* Rear Service and stored income; Razdor reads the army's own.
+    let base = content();
+    let mut units = base.units.clone();
+    units.push(UnitDef { cost: 100, bonus: Some(Bonus::AddPayment), ..ck::warrior(8, 5, 1) });
+    let c = ck::content(units, base.items.clone());
+    let mut s = map();
+    s.header.heroes[0] = hero(0, 0, 100, &[troop(8, 0, 1)]);
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1), troop(6, 0, 1)]);
+    a.leader_unit = 6;
+    s.armies = vec![a];
+    let mut g = start_with(&s, c);
+    let now = g.clock.total_minutes();
+    // No Rear Service of its own: the whole bill, though the player has one.
+    let bill = g.army_totals(0).wages;
+    g.world.armies[0].gold = 1000;
+    g.ai_noon(0, now);
+    assert_eq!(g.world.armies[0].gold, 1000 - bill);
+    // Its own quartermaster cuts them (no income: × 78 div 256).
+    g.world.armies[0].troops[1].unit = UnitId(8);
+    let bill = g.army_totals(0).wages;
+    g.world.armies[0].gold = 1000;
+    g.ai_noon(0, now + MINUTES_PER_DAY as f64);
+    assert_eq!(g.world.armies[0].gold, 1000 - rear_service(bill, 0));
+}
+
+#[test]
 fn midnight_averages_the_village_gold() {
     let mut s = map();
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];

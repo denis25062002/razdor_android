@@ -433,7 +433,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
             (Some(label), Some(pr)) => {
                 chrome::surface(strip, chrome::Skin::Strip);
                 let pill = Rect::new(strip.x + 4.0 * k, strip.y + 3.0 * k, strip.w - 8.0 * k, 17.0 * k);
-                if chrome::pill_button(pill, &label, game.can_pay_service(i, pr), false) {
+                if chrome::pill_button(pill, &label, game.can_pay_service(pr), false) {
                     action = Some((i, raise));
                 }
                 let cost = trf!("Price {price}", price = pr.amount);
