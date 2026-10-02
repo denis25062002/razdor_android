@@ -130,6 +130,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             ("A", n_("hero and army")),
             ("F5 / F9", n_("quick save / quick load")),
             ("Esc", n_("close the minimap, else the game menu")),
+            ("~", n_("cheat console (help lists its commands)")),
         ],
         Place::Building => vec![(n_("Click"), n_("tabs and buttons")), ("F5", n_("quick save")), ("Esc", n_("back to the map"))],
         Place::Army => vec![(n_("Click"), n_("a unit, an item")), ("F5", n_("quick save")), ("A / Esc", n_("close"))],
@@ -145,6 +146,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             (n_("Q while watching"), n_("skip to the end (the same result)")),
             ("Esc", n_("ways out of the battle")),
             ("Enter", n_("OK on the result")),
+            ("~", n_("cheat console (help lists its commands)")),
         ],
         Place::Journal => vec![
             (n_("Left / Right"), n_("change the tab")),
@@ -304,5 +306,6 @@ mod tests {
         }
         assert!(screen_keys(Place::Battle).iter().any(|(k, _)| *k == "Q"));
         assert!(screen_keys(Place::Battle).iter().any(|(k, _)| *k == "W"), "the watched quick battle");
+        assert!(map.contains(&"~") && screen_keys(Place::Battle).iter().any(|(k, _)| *k == "~"), "the cheat console");
     }
 }

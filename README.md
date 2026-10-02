@@ -266,6 +266,7 @@ original but for Razdor's N).
 | Custom battle setup | Enter / Esc | fight / back to the main menu |
 | Custom battle, its result | Enter / Esc | again / change armies |
 | Battle | Esc | ways out of the battle (quit, main menu, restart) |
+| World map, battle | ~ (the key left of 1; Ё on a Russian layout) | the cheat console (~ or Esc closes it; see below) |
 
 ## Fonts
 Razdor draws its text with three free fonts that ship with it (`data/fonts/`, SIL Open Font
@@ -323,6 +324,35 @@ in any battle. The result box offers **Again** (Enter, the same armies), **Chang
 (Esc) and **Main menu**; it counts the rounds won and lost. The setup is kept until the game
 is closed. Nothing of it touches a game or a save: no experience, no loot, and the Community
 patch's battle counters (Hunger, Flock) are put back as the round found them.
+
+## Cheat console
+A Razdor extra (issue #1): **~** (the key left of 1, Ё on a Russian layout) on the world
+map and in battle opens a command line over the top of the screen with a short scroll-back
+(PgUp / PgDn, the wheel). While it is open every key goes to it, none to the game; Up and
+Down bring back earlier commands, ~ or Esc closes it. Command names are English, any case;
+`help` lists them with what they do in the interface language.
+
+| Command | Does |
+|---|---|
+| `help` | the list of commands |
+| `gold N`, `mana N` | gives N gold or mana (a negative N takes it) |
+| `reveal` | explores the whole map |
+| `heal` | heals the army and raises its dead |
+| `xp N` | N experience to every living unit of the army (levels follow as after a battle) |
+| `level N` | puts the hero at level N |
+| `item <id or name>` | puts the item into the pack |
+| `spell <id or name>` | writes the spell into the book (up to its 15) |
+| `unit <id or name> [level]` | the unit joins the army at that level, if there is room |
+| `time H` | lets H hours pass as a wait does (the noons, the AI armies, the events) |
+| `win`, `lose` | in battle: the other side, or yours, falls; the battle ends as any won or lost battle (result box, experience, losses) |
+| `god` | on / off: your army takes no damage in battle |
+| `speed N` | the hero walks N times faster on the map (1: normal) |
+
+A name is matched in any case (Ё as Е): the exact name first, then one that starts with what
+you typed, then one that holds it; with several the console says how many matched. The army,
+its experience and the time do not change during a battle; `win` and `lose` work in custom
+battles too. A game in which a cheat worked keeps a mark in its saves (the load list shows
+"(cheats)" after the scenario), and every command goes into the play log.
 
 ## Journal
 The journal (J, or the journal button of the bottom bar) keeps, with the in-game date, everything the

@@ -4,6 +4,7 @@ pub mod audio;
 pub mod battle_view;
 pub mod building_view;
 pub mod chrome;
+pub mod console;
 pub mod custom_battle;
 pub mod dialog;
 pub mod dt_art;
@@ -162,6 +163,10 @@ pub struct App {
     help: bool,
     /// The custom battles of this run: their setup and score, kept from round to round.
     custom: Option<custom_battle::SetupView>,
+    /// The cheat console (`~` on the map and in battle).
+    console: console::Console,
+    /// The console holds the keys this frame (open, or just closed by them).
+    console_held: bool,
     /// The interface language the demo content was built in.
     lang: razdor::i18n::Lang,
     /// "Выход" was picked in the main menu: the process ends after this frame.
@@ -205,6 +210,8 @@ impl App {
             test_play: false,
             help: false,
             custom: None,
+            console: console::Console::default(),
+            console_held: false,
             lang: razdor::i18n::lang(),
             quit: false,
         }
@@ -482,11 +489,49 @@ impl App {
     /// What stands in the way of shortcut keys this frame.
     fn guard(&self) -> hotkeys::Guard {
         hotkeys::Guard {
-            typing: hotkeys::typing(self.place(), widgets::typing()),
+            typing: hotkeys::typing(self.place(), widgets::typing()) || self.console.open || self.console_held,
             dialog: !self.dialogs.is_empty(),
             game: self.game.is_some(),
             foe: self.game.as_ref().is_some_and(|g| g.foe.is_some()),
             endless: self.game.as_ref().is_some_and(|g| g.endless_waiting()),
+        }
+    }
+
+    /// Runs a command of the cheat console on the game and the battle on screen (a custom
+    /// battle has no game behind it); its answer goes to the console and the play log. The
+    /// screen the time it let pass leads to, if any.
+    fn run_cheat(&mut self, line: &str) -> Option<Screen> {
+        use razdor::rules::cheats;
+        let when = self.game.as_ref().map_or_else(|| "menu".to_string(), |g| g.clock.label());
+        let cheat = match cheats::parse(line) {
+            Ok(c) => c,
+            Err(e) => {
+                self.console.print(e.to_string(), console::Kind::Error);
+                return None;
+            }
+        };
+        let custom = self.in_custom();
+        let battle = match &mut self.screen {
+            Screen::Battle(v) | Screen::CustomBattle(v) => Some(v.battle_mut()),
+            _ => None,
+        };
+        let game = self.game.as_mut().filter(|_| !custom);
+        match cheats::run(&cheat, game, battle) {
+            Ok(done) => {
+                if cheat != cheats::Cheat::Help {
+                    razdor::diag::play(&when, &format!("CHEAT {line}: {}", done.lines.join(" / ")));
+                }
+                for l in done.lines {
+                    self.console.print(l, console::Kind::Said);
+                }
+                let game = self.game.as_mut()?;
+                world_view::handle_events(game, done.events, &mut self.message, &mut self.dialogs)
+            }
+            Err(e) => {
+                razdor::diag::play(&when, &format!("CHEAT {line}: refused: {e}"));
+                self.console.print(e, console::Kind::Error);
+                None
+            }
         }
     }
 
@@ -600,10 +645,15 @@ impl App {
             self.editor_frame();
             return;
         }
-        // A dialog or the key list on top: the screen below is drawn but takes no input.
+        // The cheat console on the map and in battle: while it is open the screen takes no keys.
         let place = self.place();
+        let console_here = matches!(place, hotkeys::Place::WorldMap | hotkeys::Place::Battle) && (self.game.is_some() || self.in_custom());
+        let (held, entered) = self.console.input(console_here && self.dialogs.is_empty() && !self.help && !widgets::typing());
+        self.console_held = held;
+        let console_next = entered.and_then(|line| self.run_cheat(&line));
+        // A dialog or the key list on top: the screen below is drawn but takes no input.
         let guard = self.guard();
-        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
+        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help || held);
         let mut restart = false;
         let mut custom_round = false;
         let custom_content = self.custom_content();
@@ -704,6 +754,7 @@ impl App {
             (_, None) => Some(Screen::MainMenu),
         };
         widgets::set_input_blocked(false);
+        next = next.or(console_next);
         // "Варианты выхода из битвы" chose.
         if let Screen::Battle(v) = &mut self.screen {
             match v.exit.take() {
@@ -756,6 +807,7 @@ impl App {
                 }
             }
         }
+        self.console.draw();
         // A fight decided on the map or in a building begins once the messages of that moment
         // are read (the original shows a meeting's words over the map, then the battle).
         if next.is_none() && self.dialogs.is_empty() && matches!(self.screen, Screen::WorldMap | Screen::Building(_)) {

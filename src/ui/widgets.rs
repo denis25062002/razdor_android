@@ -435,7 +435,7 @@ pub fn parse_number(text: &str, min: i64, max: i64) -> Option<i64> {
 }
 
 /// Backspace pressed this frame, or held (repeats after 0.4 s, 25 per second).
-fn backspace_repeat() -> usize {
+pub fn backspace_repeat() -> usize {
     if is_key_pressed(KeyCode::Backspace) {
         HELD.with(|h| h.set(Some(get_time())));
         return 1;

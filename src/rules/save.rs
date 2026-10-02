@@ -98,6 +98,9 @@ pub struct SaveMeta {
     pub date: String,
     /// Real time of saving, seconds since 1970.
     pub saved_at: u64,
+    /// The cheat console was used in this game (`rules::cheats`); older saves: no.
+    #[serde(default)]
+    pub cheats: bool,
 }
 
 #[derive(Debug)]
@@ -199,6 +202,7 @@ pub fn meta_of(game: &Game, kind: SaveKind, name: &str) -> Result<SaveMeta, Save
         hero: game.hero().name(&game.content).to_string(),
         date: game.clock.label(),
         saved_at: now_secs(),
+        cheats: game.cheats.used,
     })
 }
 

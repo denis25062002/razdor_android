@@ -171,7 +171,9 @@ struct Row {
 fn row_of(e: &SaveEntry) -> Row {
     let m = &e.meta;
     let name = if m.name == save::QUICK_SAVE { tr(save::QUICK_SAVE).to_string() } else { m.name.clone() };
-    Row { name, scenario: m.title.clone(), time: razdor::trf!("Time: {date}", date = saved_label(m.saved_at)) }
+    // A game in which the cheat console worked says so after its scenario.
+    let scenario = if m.cheats { razdor::trf!("{title} (cheats)", title = m.title) } else { m.title.clone() };
+    Row { name, scenario, time: razdor::trf!("Time: {date}", date = saved_label(m.saved_at)) }
 }
 
 /// "2023 год, 1 месяц, 31 день, 13:01": when a file was saved, in the original's words.

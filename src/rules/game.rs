@@ -363,6 +363,9 @@ pub struct Game {
     /// The AI's simulated battles already played (`rules::ai`).
     #[serde(skip)]
     pub(crate) sims: std::cell::RefCell<ai::SimCache>,
+    /// The cheat console's marks and switches (`rules::cheats`); none in older saves.
+    #[serde(default)]
+    pub cheats: super::cheats::CheatState,
 }
 
 /// What an AI army's step needs of the hero: the cells it may not enter (his own and the
@@ -482,6 +485,7 @@ impl Game {
             improved_ai: false,
             ai_events: Vec::new(),
             sims: Default::default(),
+            cheats: Default::default(),
         };
         // The hero draws no wage; everyone counts as paid at the start.
         let now = clock.total_minutes() as u64;
@@ -655,11 +659,11 @@ impl Game {
 
     /// Game minutes of the hero's step from `from` onto its neighbour `to` (world.md §2.1):
     /// the cost of the cell he leaves on LAND, or on MIXED at sea, times his speed, ×1.5
-    /// diagonally.
+    /// diagonally; divided by the cheat console's `speed` (`rules::cheats`).
     pub fn step_time(&self, from: Tile, to: Tile) -> f32 {
         let w = &self.world;
         let left = if self.aboard() { w.mixed_cost(from) } else { w.map.cost(from).unwrap_or(0) };
-        step_minutes(w.map.grid, from, to, left, self.hero_speed())
+        step_minutes(w.map.grid, from, to, left, self.hero_speed()) / self.cheats.speed() as f32
     }
 
     /// Minutes the hero needs to walk `path`.
@@ -1444,6 +1448,7 @@ impl Game {
         b.set_bench((0..self.squad.len()).filter(|i| !fighting.contains(i)).map(|i| self.squad[i].slot).collect());
         b.set_xp_correction(correction);
         b.set_improved_ai(self.improved_ai);
+        b.god = self.cheats.god;
         // Lasting world spells are in the units' stats already (their slots).
         // An enemy army attacked in a building of its own side (one hostile to the hero)
         // defends with that building's defence, as a garrison does.

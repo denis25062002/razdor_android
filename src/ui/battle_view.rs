@@ -165,6 +165,13 @@ pub struct BattleView {
     custom: bool,
 }
 
+impl BattleView {
+    /// The battle under way, for the cheat console (`win`, `lose`, `god`).
+    pub fn battle_mut(&mut self) -> &mut Battle {
+        &mut self.battle
+    }
+}
+
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
     [Team::Enemy, Team::Player].into_iter().flat_map(|t| battle.formation.slots().map(move |s| (t, s))).collect()
 }
@@ -495,6 +502,8 @@ impl BattleView {
 
     pub fn frame(&mut self, game: &mut Game, assets: &Assets, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
         let l = Layout::new(&self.battle);
+        // Input the app holds back (the cheat console) stays held for the exit window too.
+        let outer = input_blocked();
         let (over, just_opened) = self.advance(&l);
         world_view::backdrop(game, assets);
         self.draw(&l, &battle_title(game), assets);
@@ -504,7 +513,7 @@ impl BattleView {
             return self.result_overlay(&l, game, message, dialogs, self.battle.outcome());
         }
         if self.exiting && !just_opened {
-            set_input_blocked(false);
+            set_input_blocked(outer);
             match super::saves::battle_exit_dialog(&mut self.exit_asking) {
                 (Some(choice), _) => {
                     self.exiting = false;
@@ -521,6 +530,8 @@ impl BattleView {
     /// `session` when its result shows. Esc asks before leaving for the setup.
     pub fn frame_custom(&mut self, assets: &Assets, session: &mut Session) -> Option<CustomEnd> {
         let l = Layout::new(&self.battle);
+        // Input the app holds back (the cheat console) stays held for the exit window too.
+        let outer = input_blocked();
         let (over, just_opened) = self.advance(&l);
         super::main_menu::backdrop();
         self.draw(&l, tr("Custom battle"), assets);
@@ -532,7 +543,7 @@ impl BattleView {
             return self.custom_result(&l, session);
         }
         if self.exiting && !just_opened {
-            set_input_blocked(false);
+            set_input_blocked(outer);
             match super::saves::question(tr("Leave the battle"), tr("The battle is not over. Leave it for the setup of the armies?")) {
                 Some(true) => {
                     self.exiting = false;

@@ -613,6 +613,9 @@ pub struct Battle {
     /// Cells of the player's army formation held by units that do not fight (the dead, and
     /// the unpaid when he attacks): the original's start fix sees them (4d2141).
     bench: Vec<Slot>,
+    /// The cheat console's `god` (`rules::cheats`): the player's units take no damage. Off
+    /// in the pre-simulation.
+    pub god: bool,
 }
 
 /// A fighter in its side's strength sum.
@@ -724,6 +727,7 @@ impl Battle {
             turn_lost: [0; 2],
             max_turn_lost: [0; 2],
             bench: Vec::new(),
+            god: false,
         };
         b.fit_to_formation();
         b
@@ -1005,6 +1009,7 @@ impl Battle {
         if self.predict {
             let mut sim = self.clone();
             sim.interactive = false;
+            sim.god = false;
             sim.start_turn();
             sim.advance();
             for _ in 0..AUTO_PLAY_STEPS {
@@ -1080,6 +1085,26 @@ impl Battle {
     /// `Surrender` (units killed before give none).
     pub fn surrender_mana(&self, team: Team) -> i32 {
         self.surrender_mana[team.index()]
+    }
+
+    /// The cheat console's `win` and `lose` (`rules::cheats`): every unit of the side that
+    /// loses falls where it stands, so the battle ends as any battle won or lost by arms and
+    /// the normal end follows (result box, experience, losses). A battle still deploying
+    /// begins first.
+    pub fn force_end(&mut self, winner: Team) {
+        self.begin();
+        let loser = winner.other();
+        for f in self.fighters.iter_mut().filter(|f| f.team == loser && f.listed()) {
+            let hp = f.hp.max(0);
+            f.lost += hp;
+            self.turn_lost[loser.index()] += hp as i64;
+            f.hp = 0;
+            f.suicided = false;
+        }
+        self.log.push(match winner {
+            Team::Player => tr("The enemy falls to a cheat").to_string(),
+            Team::Enemy => tr("Your army falls to a cheat").to_string(),
+        });
     }
 
     /// Fighter whose turn it is; `None` while deploying or once the battle is over.
@@ -1215,7 +1240,8 @@ impl Battle {
         let f = &mut self.fighters[i];
         let max = f.base.max_hp();
         let delta = round_even(max as i64 * f.regen as i64, 100) as i32;
-        if delta == 0 || (delta > 0 && f.hp >= max) {
+        let spared = self.god && f.team == Team::Player && delta < 0;
+        if delta == 0 || (delta > 0 && f.hp >= max) || spared {
             return;
         }
         let new = (f.hp + delta).min(max);
@@ -1901,6 +1927,7 @@ impl Battle {
             // and the unit died; here a negative sum bleeds nothing.
             let sum = f.base[Stat::AttackBlow] as i64 + f.base[Stat::AttackShot] as i64 + f.power as i64;
             let loss = (sum * f.bleed as i64 / 100).clamp(0, f.hp.max(0) as i64) as i32;
+            let loss = if self.god && f.team == Team::Player { 0 } else { loss };
             if loss > 0 {
                 f.hp -= loss;
                 let msg = crate::trf!("{name} bleeds for {loss}", name = f.name, loss);
@@ -2109,6 +2136,7 @@ impl Battle {
         };
         let Some(answer) = answer else { return true };
         let dmg = self.physical_damage(target, id, answer).min(self.fighters[id].hp.max(0));
+        let dmg = self.spare(id, dmg);
         self.fighters[id].hp -= dmg;
         *counter = Some(counter.unwrap_or(0) + dmg);
         self.log.push(crate::trf!("{name} strikes first for {dmg}", name = self.fighters[target].name, dmg));
@@ -2177,6 +2205,7 @@ impl Battle {
         let t = &self.fighters[target];
         if t.alive() && t.has(Bonus::Counterblow) {
             let dmg = self.physical_damage(target, id, ActionKind::Melee).min(self.fighters[id].hp.max(0));
+            let dmg = self.spare(id, dmg);
             self.fighters[id].hp -= dmg;
             *counter = Some(counter.unwrap_or(0) + dmg);
             self.log.push(crate::trf!("{name} hits back for {dmg}", name = self.fighters[target].name, dmg));
@@ -2265,7 +2294,7 @@ impl Battle {
         }
         // Berserk sees the HP before Drying's loss (c258bf).
         self.berserk_target(target);
-        let dry = self.drying(id, target).min(self.fighters[target].hp);
+        let dry = self.spare(target, self.drying(id, target).min(self.fighters[target].hp));
         if dry > 0 {
             self.fighters[target].hp -= dry;
             out.amount += dry;
@@ -2393,6 +2422,7 @@ impl Battle {
         let a = self.fighters[id].base.clone();
         let mark = (self.fighters[target].team.index(), self.record_index(target));
         let finish = crate::trf!("{name} finishes {tname}", name = self.fighters[id].name, tname = self.fighters[target].name);
+        let god = self.god;
         let t = &mut self.fighters[target];
         if d > 1 {
             if a.has(&Bonus::PoisonArmorIgnore) {
@@ -2406,7 +2436,7 @@ impl Battle {
                     t.base[st] -= t.base[st] * 25 / 100;
                 }
             }
-            if a.has(&Bonus::KillingStrike) && t.base.max_hp() * KILLING_STRIKE_PERCENT / 100 >= t.hp {
+            if a.has(&Bonus::KillingStrike) && t.base.max_hp() * KILLING_STRIKE_PERCENT / 100 >= t.hp && !(god && t.team == Team::Player) {
                 if t.alive() {
                     self.log.push(finish);
                 }
@@ -2443,9 +2473,20 @@ impl Battle {
         self.refresh(target);
     }
 
+    /// What `i` really loses of `amount`: nothing for the player's units under the cheat
+    /// console's `god`.
+    fn spare(&self, i: usize, amount: i32) -> i32 {
+        if self.god && self.fighters[i].team == Team::Player {
+            0
+        } else {
+            amount
+        }
+    }
+
     /// `i` loses `amount` hit points (already capped at its HP) through the damage routine
     /// (48a354): they count in its side's damage taken.
     fn wound(&mut self, i: usize, amount: i32) {
+        let amount = self.spare(i, amount);
         let f = &mut self.fighters[i];
         f.hp -= amount;
         f.lost += amount;
@@ -2468,7 +2509,7 @@ impl Battle {
             let dead = &self.fighters[i];
             let curse = dead.has(Bonus::DeathCurse)
                 || (dead.has(Bonus::Ghost) && self.fighters[killer].stats[Stat::ProtectDeath] < 30 * dead.base[Stat::Manevres]);
-            if curse {
+            if curse && self.spare(killer, 1) > 0 {
                 let kf = &mut self.fighters[killer];
                 let hp = kf.hp.max(0);
                 kf.lost += hp;

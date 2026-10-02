@@ -9,7 +9,8 @@
 //! (the hero in the n-th building), `army:<map>`, `journal:<map>`, `spells:<map>`,
 //! `menu:<map>`, `battle:<map>:<n>` (against the n-th army), `custom` (the custom battle
 //! setup), `custom-battle` (its first round; `custom-battle:watch` watches the AI play it). `RAZDOR_SCENE_SHOW=x,y,r` shows
-//! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
+//! a place as a lantern event does; `RAZDOR_SCENE_CONSOLE=help;gold 100` opens the cheat
+//! console after those commands; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
 //! puts the pointer there.
 
@@ -55,6 +56,16 @@ pub fn stage(app: &mut App) {
     let Ok(scene) = std::env::var("RAZDOR_SCENE") else { return };
     if let Err(e) = try_stage(app, &scene) {
         razdor::diag!("RAZDOR_SCENE={scene}: {e}");
+    }
+    // `RAZDOR_SCENE_CONSOLE=help;gold 100`: the cheat console open, after those commands.
+    if let Ok(lines) = std::env::var("RAZDOR_SCENE_CONSOLE") {
+        app.console.open = true;
+        for line in lines.split(';').map(str::trim).filter(|l| !l.is_empty()) {
+            app.console.print(format!("> {line}"), super::console::Kind::Typed);
+            if let Some(next) = app.run_cheat(line) {
+                app.screen = next;
+            }
+        }
     }
 }
 
