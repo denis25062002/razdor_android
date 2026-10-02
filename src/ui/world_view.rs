@@ -1157,17 +1157,16 @@ enum MapClick {
     Planned,
     /// Another cell out of reach: the route drawn is dropped, the planned cell stays.
     OutOfReach,
-    /// The planned cell with no route drawn: nothing.
-    Nothing,
 }
 
 /// The original's planning click (0x4cc426–0x4cc9bc) on `target` (not the hero's cell),
-/// with `planned` the planned cell, its route and where the hero stood. As in the original,
-/// a cell whose route was dropped (by a click out of reach, or a wait) stays the planned
-/// cell and its clicks do nothing until a click elsewhere plans again.
+/// with `planned` the planned cell, its route and where the hero stood. A click on the
+/// planned cell whose route was dropped (by a click out of reach, or a wait) plans it
+/// again. Razdor fixes the original's bug: there such a cell stayed planned and its clicks
+/// did nothing until a click elsewhere planned again.
 fn plan_click(planned: &mut Option<(Tile, Vec<Tile>, Tile)>, target: Tile, here: Tile, route: impl FnOnce() -> Vec<Tile>) -> MapClick {
-    if let Some(p) = planned.as_ref().filter(|p| p.0 == target) {
-        return if p.1.is_empty() { MapClick::Nothing } else { MapClick::SetOff };
+    if planned.as_ref().is_some_and(|p| p.0 == target && !p.1.is_empty()) {
+        return MapClick::SetOff;
     }
     let route = route();
     if route.is_empty() {
@@ -1261,7 +1260,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
                         }
                     }
                     MapClick::OutOfReach => *message = Some(tr("No way through.").into()),
-                    MapClick::Planned | MapClick::Nothing => {}
+                    MapClick::Planned => {}
                 }
             }
             view.look = None;
@@ -1410,20 +1409,18 @@ mod tests {
     }
 
     #[test]
-    fn a_planned_cell_whose_route_was_dropped_stays_dead() {
+    fn a_planned_cell_whose_route_was_dropped_plans_again() {
         let (here, a, b, c) = ((1, 1), (3, 1), (9, 9), (4, 1));
         let mut planned = None;
         assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Planned);
         assert_eq!(plan_click(&mut planned, a, here, || unreachable!("no planning")), MapClick::SetOff);
-        // A cell out of reach drops the route; the planned cell stays and its clicks do
-        // nothing, as in the original.
+        // A cell out of reach drops the route; a click on the planned cell plans it again
+        // (the original's bug left its clicks doing nothing until a click elsewhere).
         assert_eq!(plan_click(&mut planned, b, here, Vec::new), MapClick::OutOfReach);
         assert_eq!(planned, Some((a, vec![], here)));
-        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Nothing);
-        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Nothing);
-        // A click elsewhere plans again, and then the first cell can be planned anew.
-        assert_eq!(plan_click(&mut planned, c, here, || vec![(2, 1), (3, 1), c]), MapClick::Planned);
         assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Planned);
         assert_eq!(plan_click(&mut planned, a, here, Vec::new), MapClick::SetOff);
+        // A click elsewhere plans too.
+        assert_eq!(plan_click(&mut planned, c, here, || vec![(2, 1), (3, 1), c]), MapClick::Planned);
     }
 }

@@ -12,8 +12,8 @@
 //!   minutes, shallows 10; the ranger 4 and 8). Bridges close to him only when he clicks
 //!   land or stands on one.
 //! - Land or a building ahead ends his route on it: he lands and the ship is parked on the
-//!   water he left, where a click on it takes him back aboard. The land test reads a cell
-//!   further south (the original's bug, kept: [`World::landing_terrain_is_land`]).
+//!   water he left, where a click on it takes him back aboard. Razdor fixes the original's
+//!   bug: its land test read a cell further south ([`World::landing_terrain_is_land`]).
 //!
 //! The scenario's own ships are the armies placed on water (ai.md §13): the same AI as on
 //! land, on the SHIP map (water and building footprints); army byte 72 (hero, pirate and
@@ -115,16 +115,11 @@ impl World {
         }
     }
 
-    /// The landing test's terrain (world.md §4.2 d): the original reads row `(y·(W+8) + x)
-    /// div (H+2)` of the bordered terrain, column `x`, and calls it land when its code is 3 or
-    /// more (its bug: the row should be `y`). Row `H` is the copied bottom border (row `H−1`);
-    /// rows beyond the buffer count as water *(guess: the original reads past its terrain
-    /// there, into data that is mostly zero, the shallows' code)*.
+    /// The landing test's terrain (world.md §4.2 d): the cell's own terrain is land (not
+    /// water). Razdor fixes the original's bug: it read row `(y·(W+8) + x) div (H+2)` of the
+    /// bordered terrain instead of row `y`, a cell further south.
     pub fn landing_terrain_is_land(&self, (x, y): Tile) -> bool {
-        let (w, h) = (self.map.w, self.map.h);
-        let row = (y * (w + 8) + x) / (h + 2);
-        let row = if row == h { h - 1 } else { row };
-        row < h && !is_water(self.map.surface((x, row)))
+        y >= 0 && y < self.map.h && x >= 0 && x < self.map.w && !is_water(self.map.surface((x, y)))
     }
 
     /// Cost units of a ship army's step onto `to`: the original's SHIP map (shallows 2,
@@ -293,9 +288,8 @@ impl Game {
     }
 
     /// At sea, the hero's next step lands him (world.md §4.2 d, 0x4ad94c) when the cell is
-    /// land or a building other than a bridge. The original's land test reads the terrain
-    /// row as `cell index div (H+2)` instead of `div (W+8)`, a cell further south (its bug,
-    /// reproduced: [`World::landing_terrain_is_land`]); the building test is right.
+    /// land or a building other than a bridge ([`World::landing_terrain_is_land`]; Razdor
+    /// fixes the original's bug there, which read a cell further south).
     pub(crate) fn landing(&self, next: Tile) -> bool {
         let w = &self.world;
         self.aboard() && (w.landing_terrain_is_land(next) || w.location_at(next).is_some())
@@ -534,26 +528,26 @@ mod tests {
     }
 
     #[test]
-    fn the_landing_test_reads_a_cell_further_south() {
-        // The original's bug (0x4ad94c): the row read is (y·(W+8) + x) div (H+2). On a 10×10
-        // map, (5, 2) reads row 41 div 12 = 3.
+    fn the_landing_test_reads_the_cell_ahead() {
+        // The original's bug (0x4ad94c) read row (y·(W+8) + x) div (H+2), a cell further
+        // south: on a 10×10 map (5, 2) read row 3. Razdor reads the cell itself.
         let mut g = bay((4, 2), &[(5, 2), (6, 2)]);
-        assert!(!g.world.landing_terrain_is_land((5, 2)), "(5, 3) is water");
-        assert!(!g.world.landing_terrain_is_land((5, 8)), "row 149 div 12 = 12: past the map, water (guess)");
-        // So he is not stopped on the shore: he steps onto the land, which takes him off the
-        // sea without parking the ship (it is lost), and walks on.
-        assert!(g.set_destination((6, 2)));
-        walk_until_stopped(&mut g);
-        assert_eq!(g.tile(), (6, 2));
-        assert_eq!(g.ship, None, "the ship is lost");
-        // The other way round: land read under water stops him on the water.
-        let mut g = bay((3, 2), &[(5, 3)]);
         assert!(g.world.landing_terrain_is_land((5, 2)));
-        assert!(g.set_destination((7, 2)));
-        assert!(g.path.contains(&(5, 2)));
+        assert!(!g.world.landing_terrain_is_land((5, 3)));
+        assert!(!g.world.landing_terrain_is_land((5, 10)), "off the map");
+        // He lands on the shore and the ship waits on the water he left (the original lost it:
+        // the misread cell was water).
+        assert!(g.set_destination((5, 2)));
         walk_until_stopped(&mut g);
-        assert_eq!(g.tile(), (5, 2), "stopped on the water as if landing");
-        assert!(g.aboard(), "the water there puts him at sea again");
+        assert_eq!(g.tile(), (5, 2));
+        assert_eq!(g.ship, Some(Ship { tile: (4, 2), aboard: false }));
+        // Land under water no longer stops him on the water.
+        let mut g = bay((3, 2), &[(5, 3)]);
+        assert!(!g.world.landing_terrain_is_land((5, 2)));
+        assert!(g.set_destination((7, 2)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (7, 2));
+        assert!(g.aboard());
     }
 
     #[test]

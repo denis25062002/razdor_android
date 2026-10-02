@@ -974,7 +974,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | # | Topic | Razdor now | Original | § |
 |---|---|---|---|---|
 | 1 | Display | Resizable window, interface scaled from the 960×720 footage | Full screen 1024×768, 16-bit, fixed layout | 1 |
-| 2 | Click to walk | Matches: first click shows the route, a second click on the same spot walks; a planned cell whose route was dropped (a click out of reach, a wait) stays planned and its clicks do nothing (`world_view::plan_click`) | The original does the same two-click walk (no double click); the comment is wrong | 7.3 |
+| 2 | Click to walk | Matches: first click shows the route, a second click on the same spot walks; a click on a planned cell whose route was dropped (a click out of reach, a wait) plans it again (`world_view::plan_click`): Razdor fixes the original's bug | The original does the same two-click walk (no double click); a planned cell whose route was dropped stays planned and its clicks do nothing (bug) | 7.3 |
 | 3 | Stop walking | Matches: left click or any key held; the step under way is finished (`Game::cut_walk`); no other input while he walks or waits | Left click or any key; the hero stops at the end of the current step | 7.3 |
 | 4 | Right button | Matches: held, the tooltip of the army or building under it; never a command (the pointer is not frozen: presentation, left out) | Held: tooltip of the army or building under it, pointer frozen; never a command | 7.4 |
 | 5 | Map tooltips | Only while the right button is held (left up), on the idle map; no fade-in (presentation, left out) | Only while the right button is held, 500 ms fade-in | 7.4 |

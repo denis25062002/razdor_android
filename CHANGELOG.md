@@ -148,8 +148,7 @@ old id, and their versions give both.
   side lose their banked time and plan again.
 - **Ships as in the original**: buying one puts no ship on the water; he steps out of the
   shipyard onto the water to sail, and leaving it on foot loses the purchase. Landing parks
-  the ship on the water he left; the original's landing test, which reads a cell further
-  south, is kept, so he sometimes stops on open water or steps ashore and loses the ship.
+  the ship on the water he left.
 - A plant, mountain or rock standing in the water blocks ships; overlapping hills are laid
   in the original's row-by-row order.
 - The hero's sight, speed and casting time stay those of the class he started with, whatever
@@ -422,9 +421,6 @@ old id, and their versions give both.
   credits play their own theme. An event's window, a village's and a shipyard's open with
   one of the three chords drawn from the game's random numbers. Like the original, these
   draws shift the rolls that follow.
-- A planned walk whose route was dropped, by a click on a cell out of reach or by a wait,
-  keeps its cell as the planned one, and clicks on it do nothing until a click elsewhere
-  plans again, as in the original.
 - Opening a window from the bar while the hero walks no longer stops him on the spot: as in
   the original, he finishes the step under way when the map is back, and a wait goes on.
 - F4 on the idle map waits without end, half an hour at a time, through any event's
@@ -488,6 +484,13 @@ now fixed with the rule the original evidently meant:
 - The crown is worn by the unit types its list names, the knights, royals and undead lords
   (the original's off-by-one bug gave it to the next type of each), and a potion's magic
   power takes effect (the original's bug never applied it).
+- The hero lands on the shore he walks onto: the landing test reads that cell (the
+  original's bug read a cell further south, so he could lose his ship or stop on the
+  water). A walk to the map's corner cell (0, 0) starts and the corner is priced like any
+  cell (the original's bug showed the route and never walked it), and a click on a planned
+  cell whose route was dropped plans it again (the original's bug made it do nothing until
+  a click elsewhere). The route planner keeps the lower of two targets on one cell (the
+  original's off-by-one bug kept a later one 1 above).
 
 ## 0.2.2 — 2026-10-01
 

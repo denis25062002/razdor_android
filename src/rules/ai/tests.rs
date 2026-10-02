@@ -166,8 +166,9 @@ fn a_repulsion_cone_has_the_originals_box() {
 }
 
 #[test]
-fn a_seed_one_above_an_earlier_one_overwrites_its_cell() {
-    // 0x482984: a new seed is refused only when one already there is lower by 2 or more.
+fn a_seed_above_an_earlier_one_is_refused() {
+    // A new seed is refused when one already there is lower (the original's off-by-one bug,
+    // 0x482984, refused it only when lower by 2 or more, so 11 overwrote 10).
     let mut s = scenario(10, 10);
     s.header.heroes[0] = hero(0, 0, 0, &[]);
     let g = start(&s);
@@ -175,8 +176,8 @@ fn a_seed_one_above_an_earlier_one_overwrites_its_cell() {
     let ones = vec![1u16; 100];
     let at = |f: &crate::rules::map::FloodField, t: Tile| f.dist[(t.1 * 10 + t.0) as usize];
     let f = m.flood_maps(m.land_costs(), &ones, &[((5, 5), 10), ((5, 5), 11)], (9, 9));
-    assert_eq!(at(&f, (5, 5)), 12, "the later seed's 11 + 1");
-    assert_eq!(at(&f, (6, 5)), 11 + 5 * 2, "the earlier one still expands from its own 11");
+    assert_eq!(at(&f, (5, 5)), 11, "the earlier seed's 10 + 1");
+    assert_eq!(at(&f, (6, 5)), 11 + 5 * 2);
     let f = m.flood_maps(m.land_costs(), &ones, &[((5, 5), 10), ((5, 5), 12)], (9, 9));
     assert_eq!(at(&f, (5, 5)), 11, "two above: refused");
     // A seed on the walker's own cell is dropped.

@@ -745,11 +745,11 @@ impl Game {
 
     /// Walk to `to` along the planned route (the second click, world.md §1.3). A click on an
     /// army makes it the chased army, unless it stands in a building other than a bridge.
-    /// Returns false if it can't be reached; as in the original (0x4cc99f) the walk to cell
-    /// (0, 0) never starts, though its route is shown.
+    /// Returns false if it can't be reached. Razdor fixes the original's bug (0x4cc99f): the
+    /// walk to cell (0, 0) never started there, though its route was shown.
     pub fn set_destination(&mut self, to: Tile) -> bool {
         let path = self.plan(to);
-        if path.is_empty() || to == (0, 0) {
+        if path.is_empty() {
             return false;
         }
         let w = &self.world;
@@ -1827,7 +1827,7 @@ impl Game {
                 // the whole map in sight.
                 let map = &self.world.map;
                 let ideal = map.flood_route(&|t| self.planner_cost(t), &|_| 1, &[(target, 0)], here).map(|r| r.0).unwrap_or_default();
-                ideal.into_iter().rev().filter(|&t| self.fog.explored(t)).take(40).find(|&t| t != (0, 0) && !self.plan(t).is_empty())
+                ideal.into_iter().rev().filter(|&t| self.fog.explored(t)).take(40).find(|&t| !self.plan(t).is_empty())
             };
             let Some(leg) = leg else { break };
             if !self.set_destination(leg) {
@@ -2774,6 +2774,17 @@ mod tests {
         for f in b.fighters.iter_mut().filter(|f| f.team == Team::Enemy) {
             f.hp = 0;
         }
+    }
+
+    #[test]
+    fn the_hero_walks_to_the_corner_cell() {
+        // The original's bug (0x4cc99f) never started a walk to cell (0, 0), though its
+        // route was shown; Razdor fixes it.
+        let mut g = start(&strip());
+        g.fog = crate::rules::fog::Fog::disabled(g.world.map.w, g.world.map.h);
+        assert!(g.set_destination((0, 0)));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (0, 0));
     }
 
     #[test]

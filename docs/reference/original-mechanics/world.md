@@ -500,7 +500,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Plants / massifs on water | a plant, mountain or rock in the water blocks ships | the cell is blocked for ships too | Matches |
 | Massif at west/north edge | clipped | wraps / writes out of the map | keep clipping (document) |
 | Buildings on the maps | road on LAND and SHIP, 6 at sea | same | none |
-| Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, cell (0,0) quirk, seed rules of 0x482984 (a seed on the walker's cell dropped) (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | Matches (hero) |
+| Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, seed rules of 0x482984 (a seed on the walker's cell dropped); cell (0,0) priced as any and a seed above an earlier one refused (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties; cell (0,0) keeps the bare mask as its cost and is never walked to (0x4cc99f), and a seed exactly 1 above an earlier one overwrites it (bugs) | Matches (hero); Razdor fixes the original's bugs (cell (0,0), the seed off-by-one) |
 | Click into the dark | not a target, nothing happens (`Game::can_target`) | not a valid target, nothing happens | Matches |
 | First / second click | first click shows the route, second click walks (`world_view.rs`) | same | none |
 | Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
@@ -528,8 +528,8 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Casting time | wait ticks | same | none |
 | Heal / resurrect time | none for the player | none | none |
 | Ship purchase | no ship object; planner switches to MIXED in the shipyard; leaving it on land loses it | no ship object; planner switches to MIXED in the shipyard | Matches |
-| Landing | land or a building ahead ends the route on it, the ship parked on the water left; the land test reads the misplaced row (the bug); rows past the buffer read as water *(guess)* | same, but the landing test reads a cell further south (bug); building cells also land | Matches |
-| Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
+| Landing | land or a building ahead ends the route on it, the ship parked on the water left; the land test reads the cell itself | same, but the landing test reads a cell further south (bug); building cells also land | Razdor fixes the original's bug |
+| Ship lost by walking out on land | yes, from the shipyard | yes (from the shipyard, or where the misread cell is water) | Razdor fixes the original's bug (the misread cell) |
 | Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, the patrol box stays (`Army::box_centre`), a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | Matches |
 | Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
 | AI attack while waiting | never: AI attacks and greetings only after a step of his; an attack's events run first and one that fires means no battle; no attack in a step with a greeting | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |

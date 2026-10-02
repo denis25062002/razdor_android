@@ -855,8 +855,9 @@ impl TileMap {
     /// back from `from` by steepest descent.
     ///
     /// - `cost` is the planner's map (cost units, 0 = impassable) and `mask` the
-    ///   multiplier laid over it (0 closes a cell, 1 keeps it). Their product is 16-bit; the
-    ///   original's loop skips cell (0, 0), which keeps the bare mask as its cost.
+    ///   multiplier laid over it (0 closes a cell, 1 keeps it). Their product is 16-bit.
+    ///   Razdor fixes the original's bug: its loop skipped cell (0, 0), which kept the bare
+    ///   mask as its cost.
     /// - `seeds`: target cells and start values; a seed on a cell `cost` blocks is refused,
     ///   the value is capped at 32 766 and stored plus 1. A seed on `from` is dropped, so a
     ///   walker standing on the target has no route.
@@ -919,9 +920,10 @@ impl TileMap {
         for &(t, v) in seeds {
             let Some(i) = self.index(t) else { continue };
             let v = v.min(32_766);
-            // The original (0x482984) compares the stored value (plus 1) of a seed already on
-            // the cell with the new value before its plus 1: a seed one above is still added.
-            if cost[i] == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
+            // A seed on a cell that already has a lower one is refused. Razdor fixes the
+            // original's off-by-one bug (0x482984): it compared the stored value (plus 1) with
+            // the new value before its plus 1, so a seed one above was still added.
+            if cost[i] == 0 || placed.iter().any(|&(j, w)| j == i && w <= v) {
                 continue;
             }
             placed.push((i, v + 1));
@@ -944,16 +946,10 @@ impl TileMap {
 
     /// The flood itself, in `s`'s buffers.
     fn flood_with(&self, s: &mut FloodScratch, cost: &[u16], mult: &[u16], frontier: &[(usize, u32)], stop: usize, dist: &mut [u16]) {
-        // The effective cost of a cell: its cost times its multiplier, in 16 bits. The
-        // original's multiplying loop stops before cell 0, which keeps its bare multiplier.
+        // The effective cost of a cell: its cost times its multiplier, in 16 bits (cell 0
+        // too: the original's loop stopped before it, its bug).
         let epoch = s.epoch;
-        let effective_at = |i: usize| -> u16 {
-            if i == 0 {
-                mult[0]
-            } else {
-                cost[i].wrapping_mul(mult[i])
-            }
-        };
+        let effective_at = |i: usize| -> u16 { cost[i].wrapping_mul(mult[i]) };
         // When `from` itself is closed the flood never reaches it and runs to its end, and
         // then every distance is the shortest one, whatever the order. The path read from
         // `from` only needs its neighbours' distances and the lower ones around the cells it
@@ -1205,13 +1201,15 @@ mod tests {
     fn flood_by_passes(map: &TileMap, cost: &dyn Fn(Tile) -> u16, mask: &dyn Fn(Tile) -> u16, seeds: &[(Tile, u32)], from: Tile) -> Vec<u16> {
         let n = (map.w * map.h) as usize;
         let stop = map.index(from).unwrap();
-        let effective: Vec<u16> = (0..n).map(|i| if i == 0 { mask(map.tile_of(i)) } else { cost(map.tile_of(i)).wrapping_mul(mask(map.tile_of(i))) }).collect();
+        // With Razdor's fixes of the original's bugs: cell 0 priced as any, a seed one above
+        // refused.
+        let effective: Vec<u16> = (0..n).map(|i| cost(map.tile_of(i)).wrapping_mul(mask(map.tile_of(i)))).collect();
         let mut dist = vec![u16::MAX; n];
         let mut placed: Vec<(usize, u32)> = Vec::new();
         for &(t, v) in seeds {
             let i = map.index(t).unwrap();
             let v = v.min(32_766);
-            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w < v) {
+            if cost(t) == 0 || placed.iter().any(|&(j, w)| j == i && w <= v) {
                 continue;
             }
             placed.push((i, v + 1));
@@ -1561,15 +1559,15 @@ TTTTT
     }
 
     #[test]
-    fn a_second_seed_one_above_on_the_same_cell_is_still_added() {
-        // 0x482984 compares a seed already on the cell (stored plus 1) with the new value
-        // before its plus 1: (1, 0) with 0 then 1 is stored 1, then 2, the later winning.
-        // With (3, 0) stored 2 east of the walker at (2, 0), both sides read 2 and the
-        // descent keeps the first direction tried, east; with (1, 0) at 1 it would go west.
+    fn a_second_seed_above_on_the_same_cell_is_refused() {
+        // (1, 0) with 0 then 1 keeps 0 (stored 1), so the walker at (2, 0) goes west, not to
+        // (3, 0) stored 2. The original's off-by-one bug (0x482984) compared the stored value
+        // (plus 1) with the new value before its plus 1, so the 1 overwrote the 0 and both
+        // sides read 2: the descent went east.
         let m = TileMap::from_codes(Grid::Square8, 4, 1, &[Surface::GrassPlain as u8; 4], vec![]);
         let grass = |_| 5;
         let (route, _) = m.flood_route(&grass, &|_| 1, &[((1, 0), 0), ((1, 0), 1), ((3, 0), 1)], (2, 0)).unwrap();
-        assert_eq!(route, vec![(3, 0)]);
+        assert_eq!(route, vec![(1, 0)]);
         // A seed two above is refused: (1, 0) keeps 1 and the walker goes west.
         let (route, _) = m.flood_route(&grass, &|_| 1, &[((1, 0), 0), ((1, 0), 2), ((3, 0), 1)], (2, 0)).unwrap();
         assert_eq!(route, vec![(1, 0)]);
@@ -1591,9 +1589,10 @@ TTTTT
     }
 
     #[test]
-    fn cell_zero_keeps_the_bare_mask_as_its_cost() {
-        // The original's multiplying loop skips cell (0, 0): there the mask itself is the
-        // cost (1 when open), whatever stands there. Grass 5, road 3, marsh 8, deep sea:
+    fn cell_zero_is_priced_as_any_cell() {
+        // The original's bug: its multiplying loop skipped cell (0, 0), so there the mask
+        // itself was the cost (1 when open), and the corner pulled routes round it. Grass 5,
+        // road 3, marsh 8, deep sea:
         //   G G G R
         //   G M G G
         //   G ~ G G
@@ -1601,11 +1600,11 @@ TTTTT
         let codes = [GrassPlain, GrassPlain, GrassPlain, Road, GrassPlain, Marsh, GrassPlain, GrassPlain, GrassPlain, DeepSea, GrassPlain, GrassPlain].map(|s| s as u8);
         let m = TileMap::from_codes(Grid::Square8, 4, 3, &codes, vec![]);
         let cost = |t: Tile| m.cost(t).unwrap_or(0);
-        // From (2, 0) to (0, 2): the corner priced 1 pulls the route round by the west
-        // column; with (0, 0) at its real cost 5 it would cross the marsh.
-        let (route, total) = m.flood_route(&cost, &|_| 1, &[((0, 2), 0)], (2, 0)).unwrap();
-        assert_eq!(route, vec![(1, 0), (0, 1), (0, 2)]);
-        assert_eq!(total, 5 + 7 + 5);
+        // From (2, 0) to (0, 2): with (0, 0) at its real cost 5 the route crosses the marsh
+        // (the bug's corner priced 1 pulled it round by the west column).
+        let (route, _) = m.flood_route(&cost, &|_| 1, &[((0, 2), 0)], (2, 0)).unwrap();
+        assert_ne!(route, vec![(1, 0), (0, 1), (0, 2)]);
+        assert_eq!(route.last(), Some(&(0, 2)));
         // Closed by the mask, the corner is closed.
         let (route, _) = m.flood_route(&cost, &|t| u16::from(t != (0, 0)), &[((0, 2), 0)], (2, 0)).unwrap();
         assert_eq!(route, vec![(1, 1), (0, 2)]);
