@@ -77,8 +77,9 @@ above).
 - Battles follow the original's rules (`docs/reference/mechanics.md`). Each side stands in a
   2×6 formation (the Community Update's wide row; the vanilla 3×4 with a reserve row when
   the install's `OptValue11` is set to anything but 1). As in the original the battle starts
-  when its window opens: the formation is the one set in the army window beforehand. Until anyone has acted, **Quick battle** (Q /
-  Enter) plays it out at once; later **Finish automatically** (Q) plays the rest (see below).
+  when its window opens: the formation is the one set in the army window beforehand. Until
+  anyone has acted, **Quick battle** (Q / Enter) plays it out at once; later **Finish
+  automatically** (Q) plays the rest (see below).
 - Units act by initiative (the attacker gets +1). The green-framed card acts; it has as many
   actions as its `Mnvr` value, each spent on an attack, a spell or a step. Hover a framed
   card to preview the action ("strike: -12 hits", a curse's effect), left click to do it,
