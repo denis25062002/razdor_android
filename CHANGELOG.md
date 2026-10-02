@@ -25,6 +25,9 @@ old id, and their versions give both.
 - **Inventory filter**: on the army screen's backpack and the market's lists, typing (or
   Ctrl+F) filters the items live by name, type, stats, bonus and description, in any case
   (Ё as Е), with the match lit; Enter takes the first match, Esc clears.
+- **Find in the map editor** (Ctrl+F): finds buildings, armies, points, events, the hero
+  starts and objects by name or id, and the units, items and spells they hold; a click,
+  Enter or F3 (Shift+F3 back) jumps the view to the hit and selects it.
 - **Cheat console** (~, Ё on a Russian layout, on the world map and in battle): `help`,
   `gold N`, `mana N`, `reveal`, `heal`, `xp N`, `level N`, `item`, `spell`, `unit <id or
   name> [level]`, `time H`, `win`, `lose`, `god` and `speed N`, with a scroll-back and the

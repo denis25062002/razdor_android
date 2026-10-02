@@ -12,6 +12,7 @@ pub mod defaults;
 pub mod doc;
 pub mod events;
 pub mod files;
+pub mod find;
 pub mod geometry;
 pub mod palette;
 pub mod records;

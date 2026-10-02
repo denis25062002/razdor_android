@@ -311,3 +311,18 @@ events (at most 5000) = события (не больше 5000)
 # Map editor: default names of new records
 New scenario = Новый сценарий
 New character = Новый персонаж
+
+# Find on the map (Ctrl+F)
+Find on the map = Поиск по карте
+Ctrl+F: type what to find. = Ctrl+F — наберите, что найти.
+Found {n} of {all}: {what} = Найдено {n} из {all}: {what}
+Name or id of a building, army, point, event, unit or item = Название или номер здания, армии, точки, события, воина или предмета
+Nothing found for "{q}". = По запросу «{q}» ничего не найдено.
+{n} found; Enter / F3: next, Shift: back = найдено: {n}; Enter / F3 — следующее, Shift — назад
+{n}+ found; Enter / F3: next, Shift: back = найдено: {n}+; Enter / F3 — следующее, Shift — назад
+{class}, picture {sprite} = {class}, рисунок {sprite}
+type = тип
+owner = владелец
+leader = предводитель
+items = предметы
+spells = заклинания

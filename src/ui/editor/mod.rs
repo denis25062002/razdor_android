@@ -21,6 +21,7 @@ use razdor::dt::dtm::Scenario;
 use razdor::dt::install::{self, MapEntry};
 use razdor::editor::defaults::MAP_SIZES;
 use razdor::editor::files::{self, Consent, Destination, SaveBlock};
+use razdor::editor::find::{self, Hit};
 use razdor::editor::palette::{object_class_label, SURFACE_LABELS};
 use razdor::editor::validate::has_errors;
 use razdor::editor::{Command, EditorDoc, Issue, Names, NewMap, Origin, Palette, Place, SaveError, Severity, Target, Tool, ToolState};
@@ -42,6 +43,10 @@ const RIGHT_W: f32 = 300.0;
 const STATUS_H: f32 = 26.0;
 const PANEL_W: f32 = 390.0;
 const MINIMAP_H: f32 = 170.0;
+/// The find window (Ctrl+F): its width, its rows, its field.
+const FIND_W: f32 = 430.0;
+const FIND_ROWS: usize = 10;
+const FIND_KEY: &str = "find:query";
 
 /// What the editor asks the app to do.
 pub enum EditorAction {
@@ -99,6 +104,20 @@ pub struct EditorScreen {
     pressing: bool,
     last_cell: Option<(i32, i32)>,
     panning: Option<Vec2>,
+    /// Ctrl+F: the find window is open over the map's top right.
+    find: Option<FindState>,
+    /// What was searched last (F3 goes on with it after the window is closed).
+    find_query: String,
+    /// Its hits, the query and map revision they were found for, the hit shown last.
+    find_hits: Vec<Hit>,
+    find_for: Option<(String, u64)>,
+    find_at: Option<usize>,
+}
+
+/// The find window's list scrolling.
+#[derive(Default)]
+struct FindState {
+    scroll: usize,
 }
 
 fn ctrl() -> bool {
@@ -141,6 +160,11 @@ impl EditorScreen {
             pressing: false,
             last_cell: None,
             panning: None,
+            find: None,
+            find_query: String::new(),
+            find_hits: Vec::new(),
+            find_for: None,
+            find_at: None,
         }
     }
 
@@ -308,6 +332,143 @@ impl EditorScreen {
         self.modal = None;
     }
 
+    /// Debug snapshots: the map at `path` open, and the find window on `find` if given.
+    pub fn open_for_snapshot(&mut self, path: PathBuf, find: Option<&str>) {
+        self.open_file(path);
+        if let Some(q) = find {
+            self.find = Some(FindState::default());
+            self.find_query = q.to_string();
+            self.find_next(false);
+        }
+    }
+
+    /// The hits of the last query on the map as it is now (found again after an edit).
+    fn find_refresh(&mut self) {
+        let key = (self.find_query.clone(), self.doc.revision);
+        if self.find_for.as_ref() != Some(&key) {
+            self.find_hits = find::find(&self.doc.scenario, self.names(), &self.find_query);
+            self.find_for = Some(key);
+            self.find_at = None;
+        }
+    }
+
+    /// Jumps to hit `i`: the view centres on it and selects it.
+    fn find_go(&mut self, i: usize) {
+        let Some(hit) = self.find_hits.get(i).cloned() else { return };
+        self.find_at = Some(i);
+        self.go_to(hit.place);
+        self.status = Some(trf!("Found {n} of {all}: {what}", n = i + 1, all = self.find_hits.len(), what = hit.label));
+        if let Some(f) = self.find.as_mut() {
+            if i < f.scroll || i >= f.scroll + FIND_ROWS {
+                f.scroll = i.saturating_sub(FIND_ROWS / 2);
+            }
+        }
+    }
+
+    /// F3 / Enter: the next hit (Shift: the one before), round the list.
+    fn find_next(&mut self, back: bool) {
+        self.find_refresh();
+        let n = self.find_hits.len();
+        if n == 0 {
+            self.status = Some(if self.find_query.trim().is_empty() { tr("Ctrl+F: type what to find.").into() } else { trf!("Nothing found for \"{q}\".", q = self.find_query.trim()) });
+            return;
+        }
+        let i = match (self.find_at, back) {
+            (None, false) => 0,
+            (None, true) => n - 1,
+            (Some(i), false) => (i + 1) % n,
+            (Some(i), true) => (i + n - 1) % n,
+        };
+        self.find_go(i);
+    }
+
+    /// The find window's place, when open.
+    fn find_rect(&self, view: Rect) -> Option<Rect> {
+        // Narrower beside a record's panel when the window is small.
+        let w = FIND_W.min(view.w - PANEL_W - 32.0).max(280.0);
+        self.find.as_ref().map(|_| Rect::new(view.right() - w - 8.0, view.y + 8.0, w, 92.0 + FIND_ROWS as f32 * 22.0))
+    }
+
+    /// The find window: the field, the count and the hits; a click on a hit jumps to it,
+    /// Enter and F3 to the next one, Esc closes it.
+    fn find_window(&mut self, r: Rect) {
+        let focused = has_focus(FIND_KEY);
+        let enter = is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter);
+        let f3 = is_key_pressed(KeyCode::F3);
+        if focused && is_key_pressed(KeyCode::Escape) {
+            clear_focus();
+            self.find = None;
+            return;
+        }
+        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.1, 0.095, 0.09, 0.97));
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, ACCENT);
+        text(tr("Find on the map"), r.x + 10.0, r.y + 22.0, 18.0, ACCENT);
+        if small_button(r.right() - 34.0, r.y + 6.0, 26.0, 24.0, "x", true) {
+            clear_focus();
+            self.find = None;
+            return;
+        }
+        let mut query = self.find_query.clone();
+        text_field(FIND_KEY, r.x + 10.0, r.y + 32.0, r.w - 20.0, 26.0, &mut query, false);
+        if query != self.find_query {
+            self.find_query = query;
+        }
+        self.find_refresh();
+        // Enter in the field (it lets the keyboard go) or on the window, F3 while typing.
+        if (enter && !input_blocked()) || (focused && f3) {
+            let back = shift();
+            self.find_next(back);
+            if focused {
+                take_focus(FIND_KEY);
+            }
+        }
+        let n = self.find_hits.len();
+        let head = if self.find_query.trim().is_empty() {
+            tr("Name or id of a building, army, point, event, unit or item").to_string()
+        } else if n >= find::MAX_HITS {
+            trf!("{n}+ found; Enter / F3: next, Shift: back", n)
+        } else {
+            trf!("{n} found; Enter / F3: next, Shift: back", n)
+        };
+        text_fit(&head, r.x + 10.0, r.y + 76.0, r.w - 20.0, 15.0, DIM);
+        let list = Rect::new(r.x + 6.0, r.y + 84.0, r.w - 12.0, FIND_ROWS as f32 * 22.0);
+        let Some(state) = self.find.as_mut() else { return };
+        if mouse_in(list.x, list.y, list.w, list.h) {
+            let wh = mouse_wheel().1;
+            if wh > 0.0 {
+                state.scroll = state.scroll.saturating_sub(2);
+            } else if wh < 0.0 {
+                state.scroll += 2;
+            }
+        }
+        state.scroll = state.scroll.min(n.saturating_sub(FIND_ROWS));
+        let scroll = state.scroll;
+        let mut go = None;
+        for (i, hit) in self.find_hits.iter().enumerate().skip(scroll).take(FIND_ROWS) {
+            let ry = list.y + (i - scroll) as f32 * 22.0;
+            let hover = mouse_in(list.x, ry, list.w, 21.0);
+            if hover || self.find_at == Some(i) {
+                draw_rectangle(list.x, ry, list.w, 21.0, Color::new(0.3, 0.25, 0.15, 1.0));
+            }
+            let mut line = hit.label.clone();
+            if let Some(d) = &hit.detail {
+                line.push_str("  — ");
+                line.push_str(d);
+            }
+            while measure(&line, 15.0).width > list.w - 10.0 && !line.is_empty() {
+                line.pop();
+            }
+            let marked = hit.marked.clone().filter(|m| m.end <= line.len());
+            text_marked(&line, marked, list.x + 4.0, ry + 15.0, 15.0, INK, ACCENT);
+            if hover && clicked() {
+                go = Some(i);
+            }
+        }
+        if let Some(i) = go {
+            self.find_go(i);
+        }
+    }
+
     /// One frame of the event window (it is the open modal).
     fn events_window(&mut self) {
         let names = self.names().clone();
@@ -382,7 +543,8 @@ impl EditorScreen {
         }
         let overview = self.overview.texture(&self.doc);
         let panel_rect = self.tools.selected.map(|_| Rect::new(8.0, TOP + 8.0, PANEL_W, view.h - 16.0));
-        self.canvas_input(view, panel_rect);
+        let find_rect = self.find_rect(view);
+        self.canvas_input(view, &[panel_rect, find_rect]);
         let cam = self.cam.expect("set above");
         canvas::draw_map(&self.doc, art, &cam, overview.as_ref());
         let hover = (!modal_open && view.contains(Vec2::from(crate::ui::widgets::pointer()))).then(|| cam.cell_at(Vec2::from(crate::ui::widgets::pointer())));
@@ -413,6 +575,11 @@ impl EditorScreen {
             } else if let Some((cmd, key)) = edit {
                 self.apply(cmd, &key);
             }
+        }
+
+        if let Some(fr) = find_rect {
+            set_input_blocked(modal_open || popup_open());
+            self.find_window(fr);
         }
 
         let bar = self.toolbar(assets);
@@ -457,12 +624,19 @@ impl EditorScreen {
             self.modal = Some(Modal::Open { path: String::new(), scroll: 0 });
         } else if c && is_key_pressed(KeyCode::N) {
             self.modal = Some(Modal::NewMap { size: 0, w: 50, h: 50, fill: 6 });
+        } else if c && is_key_pressed(KeyCode::F) {
+            self.find.get_or_insert_with(FindState::default);
+            take_focus(FIND_KEY);
+        } else if !c && is_key_pressed(KeyCode::F3) {
+            self.find_next(shift());
         } else if !c {
             if is_key_pressed(KeyCode::Delete) {
                 self.tools.delete_selected(&mut self.doc);
             }
             if is_key_pressed(KeyCode::Escape) {
-                if self.tools.selected.is_some() {
+                if self.find.is_some() {
+                    self.find = None;
+                } else if self.tools.selected.is_some() {
                     self.tools.selected = None;
                 } else {
                     self.tools.set_tool(Tool::Select);
@@ -519,9 +693,9 @@ impl EditorScreen {
 
     /// Mouse on the map: tools with the left button, panning with the right or middle one,
     /// zoom with the wheel.
-    fn canvas_input(&mut self, view: Rect, panel: Option<Rect>) {
+    fn canvas_input(&mut self, view: Rect, panels: &[Option<Rect>]) {
         let m = Vec2::from(crate::ui::widgets::pointer());
-        let over = view.contains(m) && !panel.is_some_and(|p| p.contains(m)) && !input_blocked();
+        let over = view.contains(m) && !panels.iter().flatten().any(|p| p.contains(m)) && !input_blocked();
         let (w, h) = (self.doc.scenario.width(), self.doc.scenario.height());
         let Some(cam) = self.cam.as_mut() else { return };
         if over {

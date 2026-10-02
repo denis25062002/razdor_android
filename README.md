@@ -534,6 +534,13 @@ and names units, artefacts and spells from your install; without one it uses pla
   relative targets); if the event is still used, the editor lists where and asks first.
 - **View**: wheel zooms, right or middle drag and the arrow keys move, Home shows the whole
   map, the minimap moves the view; G grid, H hill and mountain cover, R patrol radii.
+- **Find** (Ctrl+F, a Razdor extra from issue #1): a window over the map's top right finds
+  buildings (by name, id, type, owner, garrison, barracks, goods, spells), armies (by name,
+  id, leader, troops, items), points and events (by id, title, question, message), the hero
+  starts and the map objects (by class), in any case (Ё as Е); every word typed must match,
+  `#N` finds the records with id N. A click on a hit, Enter or F3 (Shift+F3 back) moves the
+  view to the next hit and selects it (an event opens in the event window); F3 goes on after
+  the window is closed; Esc closes it.
 - **Test play** plays the map as it is in the editor; Esc > Main menu returns to it.
 
 Where maps go: your maps folder, `RAZDOR_MAPS_DIR` or `~/.local/share/razdor/maps`
