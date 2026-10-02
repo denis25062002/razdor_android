@@ -156,7 +156,7 @@ pub struct AiProfile {
     #[serde(default = "unknown_level")]
     pub garrison_level: i32,
     /// Byte 71: experience correction in percent. It scales the XP the player gains by
-    /// beating this army (experience.md §3); 0 is read as 100 *(guess: no shipped army has 0)*.
+    /// beating this army (experience.md §3); 0 pays nothing, as in the original.
     pub exp_correction: i32,
     /// Byte 14, "add experience like the player": units it hires start with XP taken from
     /// the player's army (experience.md §5).
@@ -192,7 +192,8 @@ impl AiProfile {
             respawn_all: a.respawn_all != 0,
             extra_income: a.unknown_80 as i32 * 10,
             garrison_level: a.garrison_strength as i32,
-            exp_correction: if a.exp_correction == 0 { 100 } else { a.exp_correction as i32 },
+            // As it is: 0 makes the army pay the player no XP (experience.md §3).
+            exp_correction: a.exp_correction as i32,
             exp_like_player: a.exp_like_player != 0,
             hire_bonus_exp: a.hire_bonus_exp as i32,
             no_money: a.no_money != 0,
@@ -2517,8 +2518,9 @@ impl Game {
     ///   `MinVictoryGold` here), or another garrison's `gold div VictoryGoldDiv`;
     /// - else the same XP and items for the defender.
     ///
-    /// The pool goes to the attacker when its HP left is strictly greater, else to the
-    /// defender. Returns true when the defender was wiped out (or had nobody).
+    /// "Wiped out" is a strength of 0 at the end (side +0x7e8), not an empty side. The pool
+    /// goes to the attacker when its end strength is strictly greater, else to the defender.
+    /// Returns true when the defender was wiped out (or had nobody).
     pub fn ai_battle(&mut self, att: usize, def: Defender) -> bool {
         let c = self.content.clone();
         let o = c.options.clone();
@@ -2558,8 +2560,11 @@ impl Game {
         // Each fighter's share of its side's pool (experience.md §3); the gain takes
         // `AIExpiriencePercent` of it.
         let award = |team: Team, k: usize| -> i32 { bt.xp_awards(team).iter().find(|a| a.fighter == k).map_or(0, |a| a.xp) };
-        let a_left: i64 = bt.fighters[..na].iter().map(|f| f.hp.max(0) as i64).sum();
-        let b_left: i64 = bt.fighters[na..].iter().map(|f| f.hp.max(0) as i64).sum();
+        // Each side's strength at the end (48bb10, experience.md §3): 0 beats it, even with a
+        // lone shooter or mage still standing whose fifth rounds to 0, and a side that
+        // surrendered is 0; the stronger takes the loot pool.
+        let a_left = bt.strength_now(Team::Player);
+        let b_left = bt.strength_now(Team::Enemy);
         let stamp = now as u64;
         // Write back: HP and deaths.
         {
@@ -3050,21 +3055,31 @@ fn revive_leader(c: &Content, troops: &mut [Troop]) {
     }
 }
 
-/// A troop banks `xp` and rises the levels it pays for, keeping the rest. Returns the levels
+/// A troop banks `xp` by the original's gain rule ([`super::experience::add_xp`]) and rises
+/// the levels it pays for, keeping the rest; a wounded troop's HP then follows its new
+/// maximum, as the stat rebuild after a gain does ([`follow_rebuild`]). Returns the levels
 /// gained.
 pub fn troop_gain_xp(c: &Content, t: &mut Troop, xp: i32) -> i32 {
-    t.xp = t.xp.saturating_add(xp.max(0));
-    let mut gained = 0;
-    while gained < MAX_LEVELS_AT_ONCE {
-        let need = c.xp_to_next(t.unit, t.level);
-        if t.xp < need {
-            break;
-        }
-        t.xp -= need;
-        t.level += 1;
-        gained += 1;
+    let before = troop_hp(c, t);
+    let (level, left, gained) = super::experience::add_xp(t.level, t.xp, xp, |l| c.xp_to_next(t.unit, l));
+    t.level = level;
+    t.xp = left;
+    if gained > 0 {
+        follow_rebuild(c, t, before);
     }
     gained
+}
+
+/// The stat rebuild after a troop's level or class changed: from its HP and maximum
+/// `before`, a wounded living troop keeps its HP in proportion to the new maximum with the
+/// fractional carry ([`crate::rules::units::follow_max`]).
+fn follow_rebuild(c: &Content, t: &mut Troop, (hp, old_max): (i32, i32)) {
+    if !t.alive() {
+        return;
+    }
+    let new_max = troop_max_hp(c, t);
+    let hp = crate::rules::units::follow_max(hp, &mut t.carry, old_max, new_max);
+    t.hurt = (new_max - hp).max(0);
 }
 
 /// How many levels one gain may add (a bound for absurd amounts).
@@ -3135,10 +3150,12 @@ fn ai_promote(c: &Content, rng: &mut Rng, t: &mut Troop, pool: &mut Vec<ItemId>)
     if up.level > t.level - 1 {
         return false;
     }
+    let before = troop_hp(c, t);
     t.unit = target;
     t.level = 1;
     t.xp = 0;
     pool.extend(t.worn.iter_mut().filter_map(Option::take));
+    follow_rebuild(c, t, before);
     true
 }
 

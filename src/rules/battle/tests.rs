@@ -861,6 +861,10 @@ fn row28_a_side_of_only_surrendering_units_gives_up_and_only_they_pray() {
     assert_eq!((bt.outcome(), bt.end_reason()), (Outcome::Victory, Some(EndReason::Surrender(Team::Enemy))));
     assert_eq!(bt.surrender_mana(Team::Player), 15, "the priest killed before gives nothing");
     assert!(bt.fighters[3].surrendered && !bt.fighters[3].alive());
+    // The surrendered side has no strength and gets no XP (48bb10 takes its units off).
+    assert_eq!(bt.strength_now(Team::Enemy), 0);
+    assert!(bt.xp_awards(Team::Enemy).is_empty() && bt.ai_xp(Team::Enemy).is_empty());
+    assert!(!bt.xp_awards(Team::Player).is_empty());
 }
 
 #[test]

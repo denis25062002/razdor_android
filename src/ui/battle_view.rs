@@ -581,13 +581,7 @@ impl BattleView {
     fn levels_gained(&self, a: &XpAward) -> i32 {
         let f = &self.battle.fighters[a.fighter];
         let c = self.battle.content();
-        let (mut level, mut xp, mut n) = (f.level, f.xp + a.xp, 0);
-        while n < 100 && xp >= c.xp_to_next(f.unit, level) {
-            xp -= c.xp_to_next(f.unit, level);
-            level += 1;
-            n += 1;
-        }
-        n
+        razdor::rules::experience::add_xp(f.level, f.xp, a.xp, |l| c.xp_to_next(f.unit, l)).2
     }
 
     #[allow(clippy::too_many_arguments)]

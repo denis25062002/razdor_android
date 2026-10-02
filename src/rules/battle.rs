@@ -273,7 +273,6 @@ pub struct Fighter {
     pub surrender: i32,
     /// Left the field by surrendering.
     pub surrendered: bool,
-    surrender_hp: i32,
     /// Tactical cost at the start (experience.md §1), for the sides' strength.
     pub tactical: i32,
     /// Role in the side's strength sum, set at the start.
@@ -324,7 +323,6 @@ impl Fighter {
             // A byte: the side test is "not 0" and the mana adds the bytes (48b6ba, 48bfb4).
             surrender: content.unit(unit.def).surrender as u8 as i32,
             surrendered: false,
-            surrender_hp: 0,
             tactical: 1,
             role: Role::Melee,
             useful: 0,
@@ -610,8 +608,7 @@ pub struct Battle {
 
 /// A fighter in its side's strength sum.
 fn side_unit(f: &Fighter) -> SideUnit {
-    let hp = if f.surrendered { f.surrender_hp } else { f.hp };
-    SideUnit { tactical: f.tactical, hp, max_hp: f.max_hp(), row: f.slot.row, role: f.role }
+    SideUnit { tactical: f.tactical, hp: f.hp, max_hp: f.max_hp(), row: f.slot.row, role: f.role }
 }
 
 /// Bonuses that give +1 action on the first turn (48431a).
@@ -1449,7 +1446,6 @@ impl Battle {
             for f in self.fighters.iter_mut().filter(|f| f.listed() && f.team == team) {
                 mana += f.surrender;
                 f.surrendered = true;
-                f.surrender_hp = f.hp;
                 f.hp = 0;
             }
             self.surrender_mana[team.other().index()] += mana;
@@ -3054,25 +3050,18 @@ impl Battle {
     // After the battle
     // ------------------------------------------------------------------------------------
 
-    /// Standing at the end: alive, or surrendered (a surrendering side is paid its XP
-    /// before it leaves).
-    fn present(&self, i: usize) -> bool {
-        self.fighters[i].alive() || self.fighters[i].surrendered
-    }
-
-    /// `team`'s strength now: its units still standing with their current HP and rows.
+    /// `team`'s strength now: its living units with their current HP and rows. A side that
+    /// surrendered has none left, so its strength is 0 (483ecc tests the flag).
     pub fn strength_now(&self, team: Team) -> i64 {
-        let side: Vec<SideUnit> = (0..self.fighters.len())
-            .filter(|&i| self.fighters[i].team == team && self.present(i))
-            .map(|i| side_unit(&self.fighters[i]))
-            .collect();
+        let side: Vec<SideUnit> = self.fighters.iter().filter(|f| f.team == team && f.alive()).map(side_unit).collect();
         experience::side_strength(&side)
     }
 
     /// Each survivor's share of `team`'s XP pool once the battle is over, before any
     /// modifier (experience.md §3): pool = the enemy's starting strength div 20 × the share
     /// of `team`'s starting HP not lost; share = [`experience::share`] by row and activity.
-    /// The dead get nothing but count in the divisor.
+    /// The dead get nothing but count in the divisor. A side that surrendered gets nothing:
+    /// the original works out its shares, then takes its units off the field (48bb10).
     pub fn xp_awards(&self, team: Team) -> Vec<XpAward> {
         if self.deploying || self.outcome() == Outcome::Ongoing {
             return Vec::new();
@@ -3080,7 +3069,7 @@ impl Battle {
         let own = self.start[team.index()];
         let pool = self.pool(team);
         (0..self.fighters.len())
-            .filter(|&i| self.fighters[i].team == team && self.present(i))
+            .filter(|&i| self.fighters[i].team == team && self.fighters[i].alive())
             .map(|i| {
                 let f = &self.fighters[i];
                 XpAward { fighter: i, xp: experience::share(pool, own.count, f.slot.row, f.useful, f.taken, f.actions.max(0)) }

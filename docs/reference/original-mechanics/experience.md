@@ -370,29 +370,29 @@ guard (c26c4c) crashes the game at the fourth unit type whose `LevelMultipler` i
 Razdor's code (`src/rules/experience.rs`, `battle.rs` `xp_awards`/`player_xp`/`ai_xp`,
 `units.rs` `gain_xp`/`promote`, `ai.rs` `hire_xp`/`ai_promote`, `game.rs`
 `start_battle`/`settle_battle`, `script.rs` `give_unit_xp`; the UI in `ui/battle_view.rs`
-and `ui/items_view.rs`) as read on 2026-10-01.
+and `ui/items_view.rs`) as read on 2026-10-01, rows brought in line on 2026-10-02.
 
 | Topic | Razdor now | Original (this exe) | Gap |
 |---|---|---|---|
 | Level numbering | 1 as hired; event level condition uses `level − 1` | 0 as hired, shown +1 | none |
-| XP needed | partial sums in 64-bit floats; start forced ≥ 1, multiplier ≥ 100 | 80-bit sums, raw values | only for odd data |
-| Gain loop | levels while `XP ≥ need` | the same, comparing the previous need | none for multipliers ≥ 100 |
+| XP needed | partial sums in 64-bit floats of the raw `StartExpirience` and `LevelMultipler` (`experience::xp_to_next`) | 80-bit sums, raw values | Matches (a need of 0 or less stops the gain instead of hanging) |
+| Gain loop | the original's loop, comparing the previous need; a gain below 1 adds nothing (`experience::add_xp`) | the same, comparing the previous need | Matches |
 | Last gain | the battle screen shows the award | +8 set by every gain, zeroed for the army before battle XP | display only |
-| Tactical cost | as §1, cached per type and level; `CostMultipler` 0 read as 100 | 0 stays 0 (then 1) | none in the data |
-| Army strength (event condition) | sum of the living units' tactical cost, building defence 0 (`script.rs` `army_strength`, marked a guess) | sum of +0x1AE over every record, the dead included, with the army's building defence | **dead units missing** |
-| Side strength | rows, back-row doubling, `f`, lone ÷5, HP-scaled; surrendered fighters counted | the same; a surrendered side is 0 | surrender |
+| Tactical cost | as §1, cached per type and level; `CostMultipler` as it is, then 0 → 1 and a negative `x` → its absolute value + 1 | 0 stays 0 (then 1) | Matches |
+| Army strength (event condition) | tactical cost of every record, the dead included, with the defence of the building the hero stands in (`script.rs` `army_strength`) | sum of +0x1AE over every record, the dead included, with the army's building defence | Matches |
+| Side strength | rows, back-row doubling, `f`, lone ÷5, HP-scaled; a surrendered side has no living units, so 0 | the same; a surrendered side is 0 | Matches |
 | Pre-simulation | a full AI-vs-AI run on a copy at `begin()` (no Splash), its HP loss kept as the prediction | a full AI-vs-AI run, its HP loss kept as the prediction | none |
 | Pool | the three branches with the prediction and the largest finished turn's loss (`battle_pool`) | three branches with prediction and largest turn loss (§3) | none |
 | Share | `t·((4−row) + row·useful/(taken+left))`, below 0.5 → 1 | the same | none |
-| Surrendering side | paid its share | shares computed, then the units are removed: nothing | differs (AI battles) |
-| Player modifier | × F × correction / 10⁶, abs, cap 5256; correction 0 read as 100 | the same, 0 used as it is | correction 0 |
+| Surrendering side | no award (`xp_awards` takes the living only) | shares computed, then the units are removed: nothing | Matches |
+| Player modifier | × F × correction / 10⁶, low 32 bits, abs, cap 5256; correction 0 used as it is | the same, 0 used as it is | Matches |
 | Turn limit | counts as victory, XP paid | the same | none |
-| AI XP | AI-vs-AI only, ×AI% div 100, when end strength > 0 | the same | surrender only |
-| Level-up HP | unhurt stays full, wounded keeps HP | proportional rescale with a fractional carry at the next stat rebuild | **differs** |
+| AI XP | AI-vs-AI only, ×AI% div 100, when end strength > 0; "beaten" and the loot pool by end strength (`ai_battle`) | the same | Matches |
+| Level-up HP | proportional rescale with the fractional carry after the gain (`Unit::gain_xp`, `troop_gain_xp`) | proportional rescale with a fractional carry at the next stat rebuild | Matches |
 | Percent stats | gap to 100 closes by `d`% per level in 32-bit floats, max 99 | the same | none |
-| Player promotion | any unit with a level, not the hero; level 1, XP 0; unwearable items to the pack | the same rules; items stay worn; HP rescaled | items, HP |
+| Player promotion | any unit with a level, not the hero; level 1, XP 0; items stay worn; HP rescaled | the same rules; items stay worn; HP rescaled | Matches |
 | AI promotion | Militia/Infantry fixed picks, others random filled slot; `NextUnitNLevel ≤ L`, from the game LCG (`rules/rng.rs`); worn items to the loot pool | the same with the game LCG; worn items to the loot pool | none |
-| Upgrade slots | ini slots as written | normalised (lone → 2, pair → 1+3) | none for picks, layout only |
+| Upgrade slots | normalised at load (`dt::data::normalise_upgrade_slots`) | normalised (lone → 2, pair → 1+3) | Matches |
 | Event XP | the hero, as it is; a new level shows on the map | the same | none |
 | Opcode 13 | XP banked, per unit or all units | the same; both all-units forms can write outside the army (§5) | Razdor is safe (keep) |
 | AI hires | bytes 14 and 19 as §5, `Random(X) + X div 2` from the game LCG, garrison purchases too | the same formula with the LCG; also garrison purchases | none |
@@ -408,6 +408,6 @@ and `ui/items_view.rs`) as read on 2026-10-01.
 - The prediction: Razdor has no AI-vs-AI pre-run; reproducing it exactly needs the
   battle AI and the shared seed bit for bit (battle.md).
 - Whether any shipped map gives an army an XP correction of 0 (the original pays nothing
-  for it; Razdor pays as 100).
+  for it; so does Razdor now).
 - The pool when a side had no HP at the start (cannot happen with `lost > 0`; with
   `lost = 0` it is not used).

@@ -49,7 +49,35 @@ pub fn xp_to_next(start: i32, multiplier: i32, level: i32) -> i32 {
         sum
     };
     let l = (level - 1).max(0);
-    round_half_even(partial(l + 1) - partial(l)).clamp(1, i32::MAX as i64) as i32
+    round_half_even(partial(l + 1) - partial(l)).clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// The original's gain rule (0x49273c): a gain below 1 counts as nothing; otherwise the XP
+/// grows by it and levels follow while the need of the level just left is still covered by
+/// what remains. That test reads the old need, not the next one, so with a `LevelMultipler`
+/// below 100 the loop can stop a level early (the original's behaviour). A need of 0 or less
+/// would loop for ever in the original; here it stops. `need(level)` is the XP from `level`
+/// (1 = as hired) to the next. Returns the new level, XP and the levels gained.
+pub fn add_xp(level: i32, xp: i32, gain: i32, need: impl Fn(i32) -> i32) -> (i32, i32, i32) {
+    if gain < 1 {
+        return (level, xp, 0);
+    }
+    let (mut level, mut t, mut gained) = (level, xp.saturating_add(gain), 0);
+    loop {
+        let n = need(level);
+        if n <= 0 {
+            break;
+        }
+        if n <= t {
+            level += 1;
+            gained += 1;
+            t -= n;
+        }
+        if n > t {
+            break;
+        }
+    }
+    (level, t, gained)
 }
 
 /// A percent stat after `levels` level-ups: each level cuts what is left to 100 by `d`
@@ -218,12 +246,17 @@ pub fn strength(s: &Stats, building_defence: i32, shot_weapon_range: i32) -> i32
     }
 }
 
-/// Tactical cost ("Сила" in the editor): [`strength`] × `CostMultipler` / 100, at least 1.
+/// Tactical cost ("Сила" in the editor): [`strength`] × `CostMultipler` div 100, kept by the
+/// Community hook (c25d86) when positive, 0 made 1 and a negative `x` made `|x| + 1`. A type
+/// with a multiplier of 0 is worth 1, as in the original.
 pub fn tactical(content: &Content, id: UnitId, s: &Stats, building_defence: i32) -> i32 {
     let mult = content.unit(id).cost_multiplier;
-    let mult = if mult > 0 { mult } else { 100 };
-    let v = strength(s, building_defence, content.options.shot_weapon_range) as i64 * mult as i64 / 100;
-    (v.clamp(0, i32::MAX as i64) as i32).max(1)
+    let v = (strength(s, building_defence, content.options.shot_weapon_range) as i64 * mult as i64 / 100) as i32;
+    match v {
+        1.. => v,
+        0 => 1,
+        _ => v.wrapping_neg().wrapping_add(1),
+    }
 }
 
 /// A unit's level value (mode 0 of the original's tactical cost, 0x4a02a0): [`strength`]
@@ -304,12 +337,14 @@ pub fn share(pool: i64, start_count: usize, row: Row, useful: i32, taken: i32, l
 }
 
 /// What one of the player's units gains from its share after a won battle:
-/// `round(share × HeroExpirienceModificator × F × correction / 1 000 000)`, at most
-/// [`MAX_BATTLE_XP`]. `correction` is the beaten army's experience correction (100 for a
-/// garrison), F the difficulty factor.
+/// `round(share × HeroExpirienceModificator × F × correction / 1 000 000)`, its low 32 bits
+/// made positive (c25264), at most [`MAX_BATTLE_XP`]. `correction` is the beaten army's
+/// experience correction byte as it is, so 0 pays nothing (100 for a garrison); F the
+/// difficulty factor. The low word of `i32::MIN` stays negative and so gains nothing, as in
+/// the original.
 pub fn player_gain(share: i32, hero_modificator: i32, difficulty: i32, correction: i32) -> i32 {
     let x = share as f64 * hero_modificator as f64 * difficulty as f64 * correction as f64 / 1_000_000.0;
-    (round_half_even(x).abs().min(MAX_BATTLE_XP as i64)) as i32
+    (round_half_even(x) as i32).wrapping_abs().min(MAX_BATTLE_XP)
 }
 
 /// What an AI unit gains from its share: `share × AIExpiriencePercent div 100`.
@@ -341,6 +376,28 @@ mod tests {
         assert_eq!(xp_to_next(400, 140, 2), 560);
         assert_eq!(xp_to_next(90, 160, 5), 590);
         assert_eq!((1..=4).map(|l| xp_to_next(60, 140, l)).collect::<Vec<_>>(), vec![60, 84, 118, 165]);
+    }
+
+    #[test]
+    fn xp_table_takes_odd_values_as_they_are() {
+        // LevelMultipler below 100: the needs shrink (no floor at 100 any more).
+        assert_eq!((1..=3).map(|l| xp_to_next(100, 50, l)).collect::<Vec<_>>(), vec![100, 50, 25]);
+        assert_eq!(xp_to_next(0, 140, 1), 0, "StartExpirience 0 needs nothing");
+    }
+
+    #[test]
+    fn gain_rule_compares_the_old_need() {
+        let table = |l: i32| xp_to_next(60, 140, l);
+        assert_eq!(add_xp(1, 0, 59, table), (1, 59, 0));
+        assert_eq!(add_xp(1, 0, 60 + 84 + 10, table), (3, 10, 2), "several levels, the rest kept");
+        assert_eq!(add_xp(1, 10, 0, table), (1, 10, 0));
+        assert_eq!(add_xp(1, 10, -5, table), (1, 10, 0), "below 1 counts as nothing");
+        // Multiplier 50: needs 100, 50, 25. 160 pays level 1 (60 left); the old need 100 is
+        // above 60, so the loop stops though 60 would pay level 2's 50.
+        let shrinking = |l: i32| xp_to_next(100, 50, l);
+        assert_eq!(add_xp(1, 0, 160, shrinking), (2, 60, 1));
+        // A need of 0 would hang the original; here nothing happens.
+        assert_eq!(add_xp(1, 0, 50, |_| 0), (1, 50, 0));
     }
 
     #[test]
@@ -423,6 +480,15 @@ mod tests {
         let c = content(vec![u], vec![]);
         let s = Stats::of_level(&c, UnitId(1), 1);
         assert_eq!(tactical(&c, UnitId(1), &s, 0), 29);
+        // CostMultipler 0 is 0 (then 1 by the Community hook), not read as 100; a negative
+        // value turns `x` into `|x| + 1`: 59 × −50 div 100 = −29 → 30.
+        let mut u = warrior(1, 20, 5);
+        u.cost_multiplier = 0;
+        let c = content(vec![u.clone()], vec![]);
+        assert_eq!(tactical(&c, UnitId(1), &Stats::of_level(&c, UnitId(1), 1), 0), 1);
+        u.cost_multiplier = -50;
+        let c = content(vec![u], vec![]);
+        assert_eq!(tactical(&c, UnitId(1), &Stats::of_level(&c, UnitId(1), 1), 0), 30);
     }
 
     fn su(tactical: i32, hp: i32, row: Row, role: Role) -> SideUnit {
@@ -475,6 +541,8 @@ mod tests {
         assert_eq!(player_gain(40, 50, 100, 100), 20, "impossible difficulty");
         assert_eq!(player_gain(40, 50, 120, 250), 60, "the beaten army's correction");
         assert_eq!(player_gain(1_000_000, 100, 100, 100), MAX_BATTLE_XP, "Community cap");
+        assert_eq!(player_gain(40, 50, 120, 0), 0, "a correction of 0 pays nothing");
+        assert_eq!(player_gain(40, -50, 120, 100), 24, "the result is made positive");
         assert_eq!(ai_gain(40, 100), 40);
         assert_eq!(ai_gain(45, 50), 22);
     }

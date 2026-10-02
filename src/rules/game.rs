@@ -1299,17 +1299,22 @@ impl Game {
         Ok(())
     }
 
-    /// Promote squad member `unit` to class `to` of its upgrade tree. Items the new class
-    /// cannot wear go to the pack. The hero cannot be promoted.
+    /// Promote squad member `unit` to class `to` of its upgrade tree; its worn items stay
+    /// on ([`Unit::promote`]). The hero cannot be promoted.
     pub fn promote(&mut self, unit: usize, to: UnitId) -> Result<(), PromoteError> {
         let c = self.content.clone();
         if unit == 0 {
             return Err(PromoteError::NotAvailable);
         }
-        let u = self.squad.get_mut(unit).ok_or(PromoteError::NotAvailable)?;
-        let removed = u.promote(&c, to)?;
-        self.pack.extend(removed);
-        Ok(())
+        self.squad.get_mut(unit).ok_or(PromoteError::NotAvailable)?.promote(&c, to)
+    }
+
+    /// The defence of the building the hero's army stands in (army +0x378c): one of his own or
+    /// of a friend (attitude above 0); 0 elsewhere. It is added to his units' defences in
+    /// battle (battle.md §0, 485908) and to their tactical cost.
+    pub(crate) fn hero_building_defence(&self) -> i32 {
+        let here = self.location.or_else(|| self.world.location_covering(self.tile()));
+        here.map(|l| &self.world.locations[l]).filter(|l| l.owned() || l.attitude > 0).map_or(0, |l| l.garrison_defence)
     }
 
     /// Battle against the pending foe. Unpaid units refuse to fight. Walking into a garrison
@@ -1317,12 +1322,10 @@ impl Game {
     /// army that catches the player attacks.
     pub fn start_battle(&mut self) -> Battle {
         // An army fights with its items worn (`ai::army_units`).
-        // The beaten army's experience correction scales the player's XP; a garrison's is 100.
+        // The beaten army's experience correction scales the player's XP, 0 as it is (no XP,
+        // the original's); a garrison's record is cleared and given 100 (4c55b9).
         let correction = match self.foe {
-            Some(Foe::Army(i)) => match self.world.armies[i].ai.exp_correction {
-                0 => 100,
-                c => c,
-            },
+            Some(Foe::Army(i)) => self.world.armies[i].ai.exp_correction,
             _ => 100,
         };
         let (enemies, attacker, defence) = match self.foe {
@@ -1357,9 +1360,9 @@ impl Game {
         // The hero fighting in a building of his own or of a friend (attitude above 0): its
         // extra defence is added to every defence of his units (battle.md §0, 485908), as for
         // any garrison at home.
-        let here = self.location.or_else(|| self.world.location_covering(self.tile()));
-        if let Some(own) = here.map(|l| &self.world.locations[l]).filter(|l| (l.owned() || l.attitude > 0) && l.garrison_defence > 0) {
-            b.set_building_defence(Team::Player, own.garrison_defence);
+        let own = self.hero_building_defence();
+        if own > 0 {
+            b.set_building_defence(Team::Player, own);
         }
         // The player fights in his army's formation; the enemy is arranged anew (483b3c).
         b.auto_arrange(Team::Enemy);
@@ -1462,21 +1465,22 @@ impl Game {
                 taken.push(s);
             }
         }
-        let mut level_ups = Vec::new();
+        // The potions end with every battle of the player (0x4c50ec → 0x490720), then each
+        // unit is rebuilt: its HP follows its maximum. Only then is the XP paid, and the
+        // rebuild after it rescales the HP again for a new level (experience.md §2).
         let c = self.content.clone();
+        for u in &mut self.squad {
+            let before = u.max_hp(&c);
+            u.potions.clear();
+            u.follow_max(&c, before);
+        }
+        let mut level_ups = Vec::new();
         for a in battle.player_xp() {
             let Some(i) = battle.fighters[a.fighter].squad_index else { continue };
             let gained = self.squad[i].gain_xp(&c, a.xp);
             if gained > 0 {
                 level_ups.push((i, self.squad[i].level));
             }
-        }
-        // The potions end with every battle of the player (0x4c50ec → 0x490720), then each
-        // unit is rebuilt: its HP follows its maximum.
-        for u in &mut self.squad {
-            let before = u.max_hp(&c);
-            u.potions.clear();
-            u.follow_max(&c, before);
         }
         // Then every unit the battle left dead loses its spell slots (0x4c50ec).
         for u in self.squad.iter_mut().filter(|u| !u.alive()) {
@@ -2228,7 +2232,7 @@ mod tests {
             let share = b.xp_awards(Team::Player)[0].xp;
             let xp = b.player_xp()[0].xp;
             g.resolve_battle(&b);
-            assert!(g.hero().xp > 0 || g.hero().level > 1);
+            assert_eq!(g.hero().xp > 0 || g.hero().level > 1, xp > 0);
             (share, xp)
         };
         let (share, normal) = gain(100);
@@ -2236,6 +2240,8 @@ mod tests {
         // The demo's options: modifier 100, difficulty 100.
         assert_eq!(normal, share);
         assert_eq!(double, 2 * share);
+        // A correction of 0 is used as it is: no XP (it was read as 100 before).
+        assert_eq!(gain(0).1, 0);
     }
 
     #[test]
@@ -2389,14 +2395,15 @@ mod tests {
     }
 
     #[test]
-    fn promotion_moves_unwearable_items_to_the_pack() {
+    fn promotion_needs_a_level_and_leaves_the_pack_alone() {
         let mut g = quiet_game(HeroClass::Knight);
         let (spear, sword) = (unit(&g, "spearman"), unit(&g, "swordsman"));
         g.hire(spear).unwrap();
         assert_eq!(g.promote(1, sword), Err(PromoteError::NotAvailable));
         g.squad[1].level = 2;
+        let pack = g.pack.clone();
         g.promote(1, sword).unwrap();
-        assert_eq!((g.squad[1].def, g.squad[1].level), (sword, 1));
+        assert_eq!((g.squad[1].def, g.squad[1].level, &g.pack), (sword, 1, &pack));
     }
 
     fn at_oakford(g: &mut Game) {

@@ -372,10 +372,12 @@ impl EventWorld for Game {
         self.squad.len() as i64
     }
 
-    /// Sum of the living units' tactical cost with their items (experience.md §1), as the
-    /// original sums its army strength; that the dead are left out is a *(guess)*.
+    /// The army strength (army +0x1648, 0x4a182b): the tactical cost of every unit record,
+    /// with its items and the defence of the building the army stands in (experience.md §1).
+    /// The original adds a unit's value before it tests its HP, so the dead count too.
     fn army_strength(&self) -> i64 {
-        self.squad.iter().filter(|u| u.alive()).map(|u| u.tactical(&self.content, 0) as i64).sum()
+        let bd = self.hero_building_defence();
+        self.squad.iter().map(|u| u.tactical(&self.content, bd) as i64).sum()
     }
 
     /// Whether it is the player's, and its faction (a captured building takes faction 1).
@@ -1271,6 +1273,18 @@ mod tests {
         assert_eq!(g.active_spells().len(), 1, "longer than a cast of it");
         g.wait(45);
         assert!(g.active_spells().is_empty());
+    }
+
+    #[test]
+    fn army_strength_counts_the_dead_as_the_original() {
+        let s = world(vec![]);
+        let mut g = start(&s);
+        let c = g.content.clone();
+        let all: i64 = g.squad.iter().map(|u| u.tactical(&c, 0) as i64).sum();
+        assert_eq!(g.army_strength(), all);
+        // A dead unit's value is added before its HP is tested (0x4a182b).
+        g.squad[1].hp = 0;
+        assert_eq!(g.army_strength(), all);
     }
 
     #[test]

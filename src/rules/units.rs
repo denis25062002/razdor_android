@@ -349,25 +349,19 @@ impl Unit {
         experience::tactical(content, self.def, &self.stats(content), building_defence)
     }
 
-    /// Adds XP and levels up while enough is banked, keeping what is left over; a negative
-    /// amount adds nothing. Each level adds the type's `d-*` gains. An unhurt unit stays at
-    /// full health; a wounded one keeps its hit points (experience.md §2). Returns levels
-    /// gained. The per-battle Community cap is applied by the caller.
+    /// Adds XP by the original's gain rule ([`experience::add_xp`]): a gain below 1 adds
+    /// nothing; levels follow while enough is banked, the rest is kept. The gain itself
+    /// changes no HP; the stat rebuild after it (for the player's army right after the
+    /// battle screen, 0x497240) finds the old maximum and rescales a wounded unit's HP to the
+    /// new one ([`follow_max`], experience.md §2). Returns levels gained. The per-battle
+    /// Community cap is applied by the caller.
     pub fn gain_xp(&mut self, content: &Content, amount: i32) -> i32 {
-        let unhurt = self.alive() && self.hp >= self.max_hp(content);
-        self.xp = self.xp.saturating_add(amount.max(0));
-        let mut gained = 0;
-        loop {
-            let need = self.xp_to_next(content);
-            if self.xp < need {
-                break;
-            }
-            self.xp -= need;
-            self.level += 1;
-            gained += 1;
-        }
-        if gained > 0 && unhurt {
-            self.hp = self.max_hp(content);
+        let before = self.max_hp(content);
+        let (level, xp, gained) = experience::add_xp(self.level, self.xp, amount, |l| content.xp_to_next(self.def, l));
+        self.level = level;
+        self.xp = xp;
+        if gained > 0 {
+            self.follow_max(content, before);
         }
         gained
     }
@@ -398,29 +392,19 @@ impl Unit {
     }
 
     /// Switch to class `to` from the upgrade tree, free of charge. The unit starts the new
-    /// class at level 1 with no XP (experience.md §4); an unhurt unit is at the new class's
-    /// full health, a wounded one keeps its hit points. Items the new class may not wear
-    /// are taken off and returned *(guess)*.
-    pub fn promote(&mut self, content: &Content, to: UnitId) -> Result<Vec<ItemId>, PromoteError> {
+    /// class at level 1 with no XP (experience.md §4, 0x4b1df0). Its worn items stay worn,
+    /// whether the new class could put them on or not (the original never checks), and the
+    /// stat rebuild after it rescales a wounded unit's HP to the new maximum.
+    pub fn promote(&mut self, content: &Content, to: UnitId) -> Result<(), PromoteError> {
         if !self.promotions(content).contains(&to) {
             return Err(PromoteError::NotAvailable);
         }
-        let unhurt = self.alive() && self.hp >= self.max_hp(content);
+        let before = self.max_hp(content);
         self.def = to;
         self.level = 1;
         self.xp = 0;
-        let mut removed = Vec::new();
-        let worn: Vec<ItemId> = self.items.iter().flatten().copied().collect();
-        self.items = [None; SLOTS];
-        for item in worn {
-            match items::slot_for(content, self, item) {
-                Ok(slot) => self.items[slot] = Some(item),
-                Err(_) => removed.push(item),
-            }
-        }
-        let max = self.max_hp(content);
-        self.hp = if unhurt { max } else { self.hp.min(max) };
-        Ok(removed)
+        self.follow_max(content, before);
+        Ok(())
     }
 }
 
@@ -460,7 +444,7 @@ mod tests {
         assert_eq!((u.level, u.xp), (3, 10));
         let s = u.stats(&c);
         assert_eq!((s.max_hp(), s[Stat::AttackBlow], s[Stat::Initiative]), (60, 24, 12));
-        assert_eq!(u.hp, 30, "a wounded unit keeps its hit points");
+        assert_eq!(u.hp, 36, "a wounded unit's HP follows its maximum: 60 × 30 / 50");
         let mut fresh = Unit::new(&c, UnitId(1), slot());
         fresh.gain_xp(&c, 60);
         assert_eq!(fresh.hp, 55, "an unhurt one is at the new maximum");
@@ -504,7 +488,37 @@ mod tests {
         assert_eq!(u.promotions(&c), vec![UnitId(2)], "NextUnitNLevel is not checked for the player");
         u.gain_xp(&c, 20);
         u.hp = 30; // of 55
-        assert_eq!(u.promote(&c, UnitId(2)), Ok(vec![]));
-        assert_eq!((u.def, u.level, u.xp, u.hp), (UnitId(2), 1, 0, 30), "level 1, XP reset, HP kept");
+        assert_eq!(u.promote(&c, UnitId(2)), Ok(()));
+        // The guard's maximum is 50 against the militia's 55: 50 × 30 / 55 = 27.27.
+        assert_eq!((u.def, u.level, u.xp, u.hp), (UnitId(2), 1, 0, 27), "level 1, XP reset, HP rescaled");
+        assert!((u.carry.0 - 0.272_727).abs() < 1e-4, "{}", u.carry.0);
+    }
+
+    #[test]
+    fn level_up_rescales_a_wounded_unit_as_the_spec_example() {
+        // 30 of 50 HP, the level brings 55: 55 × 30 / 50 = 33.
+        let mut u = warrior(1, 20, 5);
+        u.level_up = StatMods::from([(Stat::Hits, 5)]);
+        let c = content(vec![u], vec![]);
+        let mut u = Unit::new(&c, UnitId(1), slot());
+        u.hp = 30;
+        assert_eq!(u.gain_xp(&c, 60), 1);
+        assert_eq!(u.hp, 33);
+        let mut dead = Unit::new(&c, UnitId(1), slot());
+        dead.hp = 0;
+        dead.gain_xp(&c, 60);
+        assert_eq!((dead.level, dead.hp), (2, 0), "a corpse banks XP and stays dead");
+    }
+
+    #[test]
+    fn promotion_keeps_worn_items() {
+        // A shield on a militiaman promoted to a shooter, who could not put one on.
+        let c = content(vec![militia(), shooter(2, 10)], vec![item(1, crate::rules::content::ArtefactType::Shield)]);
+        let mut u = Unit::new(&c, UnitId(1), slot());
+        u.items[0] = Some(ItemId(1));
+        u.level = 2;
+        u.promote(&c, UnitId(2)).unwrap();
+        assert!(items::slot_for(&c, &u, ItemId(1)).is_err());
+        assert_eq!(u.items[0], Some(ItemId(1)), "the original never takes an item off");
     }
 }

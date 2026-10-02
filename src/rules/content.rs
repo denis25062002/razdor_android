@@ -287,7 +287,7 @@ impl Content {
     /// `round(StartExpirience × (LevelMultipler/100)^(level−1))` (experience.md §2).
     pub fn xp_to_next(&self, id: UnitId, level: i32) -> i32 {
         let u = self.unit(id);
-        super::experience::xp_to_next(u.start_experience.max(1), u.level_multiplier.max(100), level)
+        super::experience::xp_to_next(u.start_experience, u.level_multiplier, level)
     }
 
     /// Tactical cost of a type at `level` with no items and no building: the strength of

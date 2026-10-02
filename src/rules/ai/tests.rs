@@ -1131,6 +1131,46 @@ fn ai_units_take_the_upgrade_tree_with_the_originals_rolls() {
 }
 
 #[test]
+fn a_troops_level_and_promotion_rescale_its_wounds() {
+    use crate::rules::content::Upgrade;
+    // A warrior (50 HP, +5 a level here) at 30 of 50: the level brings 55, so
+    // 55 × 30 / 50 = 33 HP and 22 lacking (it lacked 20 before).
+    let mut units = vec![ck::warrior(1, 20, 5), ck::warrior(20, 10, 2), ck::shooter(21, 10)];
+    units[1].level_up = StatMods::from([(Stat::Hits, 5)]);
+    units[1].upgrades = vec![Upgrade { target_name: String::new(), target: Some(21), level: 1, slot: 2 }];
+    let c = ck::content(units, vec![]);
+    let mut t = Troop::new(UnitId(20), 1, slot(0));
+    t.hurt = 20;
+    assert_eq!(troop_gain_xp(&c, &mut t, 60), 1);
+    assert_eq!((t.level, t.hurt), (2, 22));
+    // Promoted to a 50 HP shooter at 33 of 55: 50 × 33 / 55 = 30, 20 lacking.
+    let (mut rng, mut pool) = (Rng::new(3), Vec::new());
+    ai_gain_xp(&c, &mut rng, &mut t, 0, 100, &mut pool);
+    assert_eq!((t.unit, t.level, t.hurt), (UnitId(21), 1, 20));
+}
+
+#[test]
+fn an_ai_battle_beats_a_side_whose_end_strength_is_0() {
+    // Units with no attack at all: nobody gets hurt and the turn limit ends it. The lone
+    // defender counts a fifth of its small strength, 0: its army is beaten though it stands
+    // (0x4a4c68 tests the end strength, not the units left).
+    let mut c = content();
+    c.units.push(ck::warrior(20, 0, 0));
+    let c = ck::content(c.units.clone(), c.items.clone());
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(20, 0, 2)]), army(2, (31, 10), 2, ALLY, 0, &[troop(20, 0, 1)])];
+    let mut g = start_with(&s, c);
+    let cc = g.content.clone();
+    let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0 };
+    let bt = fight(&cc, &side(&g, 0), &side(&g, 1), true);
+    assert!(bt.fighters.iter().all(|f| f.alive()));
+    assert_eq!(bt.strength_now(Team::Enemy), 0);
+    assert!(bt.strength_now(Team::Player) > 0);
+    assert!(g.ai_battle(0, Defender::Army(1)));
+    assert!(g.world.armies.iter().all(|a| a.id != 2), "beaten and off the map");
+}
+
+#[test]
 fn hired_units_get_their_xp_level_by_level() {
     // X = (P − its tactical cost div 2 when P ≥ 1) + bonus; fed Rand(X) + X div 2.
     let mut s = map();

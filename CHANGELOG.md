@@ -362,6 +362,17 @@ old id, and their versions give both.
 - Community opcodes reach an event's run-time bytes (last fired, times fired, the answer):
   a poke can let a once-event fire again, and an answer byte other than 0 and 1 counts as
   both "with Yes" and "with No".
+- Experience as the original: a level makes a wounded unit's HP follow its new maximum
+  (30 of 50 becomes 33 of 55), for the player's units and the AI's, and so does a
+  promotion, which now keeps every worn item on, even one the new class could not put on.
+  The XP of a won battle is paid after the potions have ended. An army whose map gives it
+  an XP correction of 0 pays no XP. A side that surrenders gets no XP, and an AI army
+  whose strength at the end of an AI battle is 0 is beaten even with a lone weak shooter
+  or mage standing; the stronger side, not the one with more HP, takes the loot. The
+  event condition on army strength counts the dead too, with the defence of the building
+  the hero stands in. The XP table takes `StartExpirience` and `LevelMultipler` as they
+  are (a multiplier below 100 can stop a gain a level early, as in the original), and a
+  `CostMultipler` of 0 counts as 0.
 
 ## 0.2.2 — 2026-10-01
 

@@ -432,6 +432,9 @@ anyway through §10.
 garrison. One simulated battle with the full engine decides (only the attacker's paid units
 fight).
 1. Units' HP, deaths (time of death = now) and stats are written back.
+   "Wiped out" below means a side **strength** of 0 at the end (side +0x7e8, experience.md
+   §3), not an empty side: a lone shooter or mage whose fifth rounds to 0 is beaten while it
+   stands, and a side that surrendered is 0.
 2. **Attacker wiped out**: off the map, destroyed, "beaten by" the winner. A feudal or rogue
    winner takes the loser's wage total (if the loser is feudal) and its gold: all of it if below
    `MinVictoryGold`, else `gold div VictoryGoldDiv`. All the loser's items go to the loot pool.
@@ -445,7 +448,7 @@ fight).
    items go to the pool.
 5. **Defender survives**: XP for its survivors, its leader at 1 HP (armies only), its dead
    units' items to the pool.
-6. The pool goes to the attacker when its HP left is strictly greater than the defender's,
+6. The pool goes to the attacker when its end strength is strictly greater than the defender's,
    otherwise (ties included) to the defender; that side wears the best items (§10.1). The
    attacker re-plans; the survivors rescore all buildings.
 7. A battle that ends with both alive counts as a defeat for the attacker's purposes (the

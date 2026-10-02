@@ -1357,7 +1357,8 @@ impl World {
             named: 0,
             old_effects: Vec::new(),
             ship: 0,
-            ai: AiProfile::default(),
+            // A gang pays the player's XP in full (a map's army gives its byte 71).
+            ai: AiProfile { exp_correction: 100, ..AiProfile::default() },
             mind: AiMind::default(),
         });
     }
