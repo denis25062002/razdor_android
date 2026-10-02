@@ -593,7 +593,7 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Autosave moments | Matches: before every battle (as its window opens) and as each noon report opens; a noon without a report (no wages, no income) writes none | as each battle window and each noon report opens; a silent noon only writes a pending one | `ui/saves.rs`, `Game::pass_slice` |
 | Autosave date name | Matches: day index 9 printed without the leading zero | day index 9 printed without the leading zero | `save::date_name` |
 | Carry-over gold | Matches: set to the old amount | set to the old amount, not added | `Game::apply_carry_over` |
-| Play options | Matches: `OptValue9`/`10`/`11` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row | flags read at start, 1 = on; the wide row 6 or 4 per row | `dt/install.rs` `PlayOptions`, `Content::from_dt` |
+| Play options | Matches: `OptValue9`/`10`/`11` and `[Tutorial] Completed` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row, and a loaded game keeps the width it was saved with. Left out: the loaded width does not carry over to the session's next new game | flags read at start, 1 = on; the wide row 6 or 4 per row; a save load sets the row width for the session | `dt/install.rs` `PlayOptions`, `Content::from_dt`, `save::restore` |
 
 ## Unknowns
 

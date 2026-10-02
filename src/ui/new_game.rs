@@ -341,7 +341,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
 /// done (0x4e2970): the install says so (`Completed=1`, written by the original), Razdor's
 /// settings say so (the tutorial's last event finished), or any save exists.
 pub fn tutorial_map(scenarios: &[ScenarioEntry]) -> Option<usize> {
-    if chrome::win("Win-marble").is_none() || chrome::ui_text("Tutorial", "Completed").is_some_and(|c| c.trim() == "1") {
+    if chrome::win("Win-marble").is_none() || chrome::ui_text("Tutorial", "Completed").is_some_and(|c| razdor::dt::ini::loose_int(&c) == 1) {
         return None;
     }
     if super::language::Settings::load().tutorial_completed {

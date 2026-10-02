@@ -21,6 +21,10 @@ use super::rng::{EventRng, Rng, WORLD_MUSIC_DRAW};
 use super::units::{PromoteError, Unit};
 use super::world::{Army, LocationKind, Stationed, Troop, World, AI_BUDGET_CAP};
 
+fn wide_row_default() -> bool {
+    true
+}
+
 /// Real seconds each hero step and each wait tick plays over: the original's
 /// `WalkDelay = 150 + (100 − WalkSpeed) × 2.5` ms at the shipped `WalkSpeed=100` (world.md
 /// §2). Game time per real second follows from the step's own minutes.
@@ -260,6 +264,11 @@ pub struct Game {
     /// An autosave is due (the noon report came): its name. The UI writes it and clears it.
     #[serde(skip)]
     pub autosave_due: Option<String>,
+    /// The wide front row the game was started with (the original's map header byte 0x121,
+    /// from the option at the map's load): a load plays on with it whatever the option says
+    /// now (0x4b771c). Saves before format 9 were all wide.
+    #[serde(default = "wide_row_default")]
+    pub(crate) wide_row: bool,
     /// The hero's ship (`rules::ships`): under him at sea, or parked where he landed.
     #[serde(default)]
     pub ship: Option<Ship>,
@@ -396,6 +405,7 @@ enum StepContact {
 impl Game {
     fn with_world(content: Arc<Content>, world: World, squad: Vec<Unit>, tile: Tile) -> Game {
         let clock = world.start;
+        let wide_row = content.formation == super::formation::Formation::WIDE;
         let mut g = Game {
             squad,
             gold: 0,
@@ -431,6 +441,7 @@ impl Game {
             map_start: Some(clock.total_minutes() as u64),
             origin: None,
             autosave_due: None,
+            wide_row,
             ship: None,
             ship_bought: false,
             noon_due: None,

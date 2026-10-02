@@ -410,6 +410,9 @@ old id, and their versions give both.
   of a month is named without the leading zero, as in the original.
 - The noon autosave is written only when the noon report opens: a noon with no wages and
   no income makes none, as in the original.
+- Save format 9: a game keeps the front-row width it was started with, and a load plays on
+  with it whatever the option says now, as the original takes it from the save's header.
+  Older saves load with the wide row they were made with.
 
 ## 0.2.2 — 2026-10-01
 

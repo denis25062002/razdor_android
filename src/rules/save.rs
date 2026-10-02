@@ -48,8 +48,9 @@ use super::world::World;
 /// event engine's flags as the original's one string (older saves' list of names is read
 /// into it), its *last fired* a minute ahead until the scan goes idle, the ask and once
 /// bytes a Yes rewrites, opcode 18's waiting digit and the tutorial's end mark; older saves
-/// load with their flags joined, no digit waiting and the mark down.
-pub const FORMAT_VERSION: u32 = 8;
+/// load with their flags joined, no digit waiting and the mark down. 9: the wide front row
+/// the game was started with; older saves load wide, as they were all made.
+pub const FORMAT_VERSION: u32 = 9;
 /// The oldest format still read.
 pub const OLDEST_VERSION: u32 = 1;
 pub const EXTENSION: &str = "rzsave";
@@ -394,7 +395,14 @@ pub fn restore(meta: &SaveMeta, mut game: Game, demo: Arc<Content>, install: Opt
     }
     game.rng = Rng::save_load(game.world.map.w, &plants, armies);
     game.event_rng = EventRng::from_clock();
-    game.content = content;
+    // The row width the game was saved with holds for it (0x4b771c), whatever the option
+    // says now.
+    let wide = super::formation::Formation::WIDE;
+    game.content = if game.wide_row == (content.formation == wide) {
+        content
+    } else {
+        Arc::new(content.with_formation(if game.wide_row { wide } else { super::formation::Formation::VANILLA }))
+    };
     game.origin = Some(meta.scenario.clone());
     // The AI is set up again on every load (0x4a1ff0 from the save loader).
     game.ai_init(meta.version >= 4);
@@ -692,6 +700,21 @@ pub(crate) mod tests {
         assert_eq!(g.autosave_due, None);
         g.wait(1);
         assert_eq!(g.autosave_due.as_deref(), Some("1200.04.00, 12 h"));
+    }
+
+    #[test]
+    fn a_load_keeps_the_row_width_the_game_was_saved_with() {
+        // 0x4b771c: header byte 0x121 sets the wide row for the loaded game, not the option.
+        use crate::rules::formation::Formation;
+        let narrow = Arc::new(demo().with_formation(Formation::VANILLA));
+        let g = Game::new(narrow, HeroClass::Knight);
+        let loaded = roundtrip(&g, demo(), None);
+        assert_eq!((loaded.content.formation, demo().formation), (Formation::VANILLA, Formation::WIDE));
+        // A save before format 9 was made wide.
+        let mut v = serde_json::to_value(&g).unwrap();
+        v.as_object_mut().unwrap().remove("wide_row");
+        let old: Game = serde_json::from_value(v).unwrap();
+        assert!(old.wide_row);
     }
 
     #[test]

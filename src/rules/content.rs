@@ -156,6 +156,11 @@ impl Content {
         Content { units, items, spells, options, formation, unit_index, item_index, tactical: TacticalCache::default() }
     }
 
+    /// The same content fought in `formation`.
+    pub fn with_formation(&self, formation: Formation) -> Content {
+        Content { formation, tactical: TacticalCache::default(), ..self.clone() }
+    }
+
     /// Content read from a Discord Times install. The formation is the Community wide row
     /// (2 × 6) when the player's `OptValue11` is on (as in his install), else the vanilla
     /// 3 × 4 (0x4b8974: 6 or 4 per row).
