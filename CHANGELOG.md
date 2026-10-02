@@ -282,6 +282,8 @@ old id, and their versions give both.
 - A map's good of negative price (a personal item placed in a market) pays its buyer, as in
   the original; an attitude outside −3..3 leaves a price unchanged; a dead Merchant still
   bargains.
+- A market whose list of candidates runs out while drawing a good reads on as the original
+  does (the first item, or an empty place) instead of taking the last refused good.
 
 ## 0.2.2 — 2026-10-01
 

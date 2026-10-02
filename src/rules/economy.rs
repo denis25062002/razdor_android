@@ -108,6 +108,64 @@ fn market_candidates(c: &Content, pool: &[ItemId], kind: LocationKind, lo: i32, 
         .collect()
 }
 
+/// The price band of random good `i` of `r` (0x4be178): with `A = (MX − MN)/180 + 1` and
+/// `t = (r − i)/(r − 1)`, `q = t / (A − (A − 1)·t)` (square-rooted in a church); the lower
+/// edge is `MN + Round((MX − MN)·q/2)`, at least MN, and the upper edge the previous band's
+/// lower edge `prev_lo` (MX for the first), or `MN + Round((MX − MN)·(1 + q)/2)` after a
+/// list that ran down. Equal edges take the lower one to `Round(lower × 0.8)`. A single
+/// good draws from the whole window.
+fn price_band(i: i32, r: i32, mn: i32, mx: i32, church: bool, ran_down: bool, prev_lo: i32) -> (i32, i32) {
+    if r <= 1 {
+        return (mx, mn);
+    }
+    let span = (mx - mn) as f64;
+    let a = span / 180.0 + 1.0;
+    let t = (r - i) as f64 / (r - 1) as f64;
+    let mut q = t / (a - (a - 1.0) * t);
+    if church {
+        q = q.sqrt();
+    }
+    let u = if ran_down { delphi_round(span * (BAND_HALF + (1.0 - BAND_HALF) * q)) as i32 + mn } else { prev_lo };
+    let mut lo = (delphi_round(span * q * (1.0 - BAND_HALF)) as i32 + mn).max(mn);
+    if lo == u {
+        lo = delphi_round(lo as f64 * 0.8) as i32;
+    }
+    (u, lo)
+}
+
+/// The original's candidate list (0x4bdf74): item indices (id − 1) in a buffer of 256 that
+/// each rebuild zeroes first, and the place of its last entry (−1 when empty). A refused
+/// good is overwritten by the last entry and the list shortens. The original does not stop
+/// when the list runs out: it draws `Random(last + 1)` (0 for an empty list), reading the
+/// buffer past the list's end (0, item 1, after a rebuild), and overwrites with the entries
+/// below it, which are the restock's own locals: the last index itself, then the
+/// building's number. Razdor reads those too, and gives up on the good below them, where
+/// the original reads further into its stack.
+struct Candidates {
+    buf: Vec<i32>,
+    last: i32,
+}
+
+impl Candidates {
+    fn new(items: Vec<ItemId>) -> Candidates {
+        let mut buf = vec![0; items.len().max(256)];
+        for (k, i) in items.iter().enumerate() {
+            buf[k] = i.0 as i32 - 1;
+        }
+        Candidates { buf, last: items.len() as i32 - 1 }
+    }
+
+    /// Entry `k`, read as the original does for `k` below 0 (`building`: 1-based).
+    fn entry(&self, k: i32, building: i32) -> Option<i32> {
+        match k {
+            0.. => self.buf.get(k as usize).copied(),
+            -1 => Some(self.last),
+            -2 => Some(building),
+            _ => None,
+        }
+    }
+}
+
 /// Village offers: the priest casts this spell, the blessing one of these, furs are this item.
 pub const PRIEST_SPELL: u32 = 1;
 pub const BLESSING_SPELLS: [u32; 5] = [3, 5, 7, 9, 11];
@@ -474,11 +532,10 @@ impl Game {
     /// Community exe jumps over the sort).
     pub(crate) fn restock_market(&mut self, l: usize) {
         let now = self.clock.total_minutes() as u64;
-        let kind = self.world.locations[l].kind;
         let c = self.content.clone();
         let Some(mut shop) = self.world.locations[l].shop.take() else { return };
         if shop.timer > 0 && shop.timer <= now {
-            self.draw_goods(&c, kind, &mut shop);
+            self.draw_goods(&c, l, &mut shop);
             if shop.random != 0 {
                 shop.timer = now + 720;
             }
@@ -492,7 +549,10 @@ impl Game {
         self.world.locations[l].shop = Some(shop);
     }
 
-    fn draw_goods(&mut self, c: &Content, kind: LocationKind, shop: &mut Shop) {
+    fn draw_goods(&mut self, c: &Content, l: usize, shop: &mut Shop) {
+        let kind = self.world.locations[l].kind;
+        // The building's number (1-based), which the original's list can read (`Candidates`).
+        let building = l as i32 + 1;
         let places = &mut shop.places;
         let mut r = shop.random as i32;
         for p in places.iter_mut() {
@@ -538,7 +598,6 @@ impl Game {
             ids.sort();
             ids
         };
-        let span = (mx - mn) as f64;
         let widen = |u: &mut i32, lo: &mut i32| {
             *u = delphi_round(*u as f64 * 1.2) as i32;
             *lo = delphi_round(*lo as f64 * 0.8) as i32;
@@ -550,24 +609,10 @@ impl Game {
         let (mut lo, mut ran_down) = (mx, false);
         for i in 1..=r {
             let mut u;
-            if r > 1 {
-                let a = span / 180.0 + 1.0;
-                let t = (r - i) as f64 / (r - 1) as f64;
-                let mut q = t / (a - (a - 1.0) * t);
-                if kind == LocationKind::Church {
-                    q = q.sqrt();
-                }
-                u = if ran_down { delphi_round(span * (BAND_HALF + (1.0 - BAND_HALF) * q)) as i32 + mn } else { lo };
-                lo = (delphi_round(span * q * (1.0 - BAND_HALF)) as i32 + mn).max(mn);
-                if lo == u {
-                    lo = delphi_round(lo as f64 * 0.8) as i32;
-                }
-            } else {
-                (u, lo) = (mx, mn);
-            }
-            let mut cands = market_candidates(c, &pool, kind, lo, u);
+            (u, lo) = price_band(i, r, mn, mx, kind == LocationKind::Church, ran_down, lo);
+            let mut cands = Candidates::new(market_candidates(c, &pool, kind, lo, u));
             let mut rounds = 0;
-            while cands.is_empty() || self.rng.random(cands.len() as i32) == 0 {
+            while cands.last < 0 || self.rng.random(cands.last + 1) == 0 {
                 // Fewer than two items that can ever fit: the original never leaves this
                 // loop (it hangs); Razdor gives up on the good.
                 rounds += 1;
@@ -575,7 +620,7 @@ impl Game {
                     break;
                 }
                 widen(&mut u, &mut lo);
-                cands = market_candidates(c, &pool, kind, lo, u);
+                cands = Candidates::new(market_candidates(c, &pool, kind, lo, u));
             }
             if rounds > STOCK_HANG {
                 continue;
@@ -585,35 +630,48 @@ impl Game {
             if places[slot].is_some() {
                 continue;
             }
-            let (mut tries, mut stale) = (0, cands[0]);
+            let (mut tries, mut lost) = (0, false);
             let mut item;
             loop {
                 tries += 1;
                 let mut ok;
                 loop {
-                    let k = self.rng.random(cands.len() as i32) as usize;
-                    // An emptied list is read past its end in the original; Razdor takes the
-                    // last good refused.
-                    item = cands.get(k).copied().unwrap_or(stale);
-                    let n = places.iter().flatten().filter(|g| g.item == item).count();
+                    let k = self.rng.random(cands.last + 1) as usize;
+                    item = cands.buf[k];
+                    let n = places.iter().filter(|p| p.map_or(0, |g| g.item.0 as i32) == item + 1).count();
                     ok = !((max_word > 500 && n > 0) || n >= 2);
-                    if !ok && k < cands.len() {
-                        stale = cands.swap_remove(k);
+                    if !ok {
+                        // The refused good is overwritten by the last entry, even when the
+                        // list has run out (the original's slip, see `Candidates`).
+                        let Some(v) = cands.entry(cands.last, building) else {
+                            lost = true;
+                            break;
+                        };
+                        cands.buf[k] = v;
+                        cands.last -= 1;
                     }
-                    if ok || cands.len() <= 1 {
+                    if ok || cands.last == 0 {
                         break;
                     }
                 }
-                if cands.len() == 1 {
+                if lost {
+                    break;
+                }
+                if cands.last == 0 {
+                    // The list ran down to one: widened once more and rebuilt.
                     widen(&mut u, &mut lo);
-                    cands = market_candidates(c, &pool, kind, lo, u);
+                    cands = Candidates::new(market_candidates(c, &pool, kind, lo, u));
                     ran_down = true;
                 }
                 if ok || tries > STOCK_TRIES {
                     break;
                 }
             }
-            places[slot] = Some(Good { item, fixed: false });
+            if lost {
+                continue;
+            }
+            // Stored even when refused (after 26 tries); index −1 stores 0, an empty place.
+            places[slot] = (item >= 0).then(|| Good { item: ItemId(item as u32 + 1), fixed: false });
         }
     }
 
@@ -907,6 +965,35 @@ mod tests {
         assert_eq!(seen, [30, 54, 73, 86, 90], "slower than 30 a day");
         assert_eq!(grow_stock(90, 30, 90), 90);
         assert_eq!(grow_stock(10, 30, 0), 10, "no maximum: no growth");
+    }
+
+    #[test]
+    fn price_bands_walk_down_the_window() {
+        // MN 50, MX 410: A = 360/180 + 1 = 3. Three goods: t = 1, ½, 0 gives q = 1, ¼, 0.
+        assert_eq!(price_band(1, 3, 50, 410, false, false, 410), (410, 230));
+        assert_eq!(price_band(2, 3, 50, 410, false, false, 230), (230, 95));
+        assert_eq!(price_band(3, 3, 50, 410, false, false, 95), (95, 50));
+        // After a list that ran down: the top is MN + Round(360 × (½ + ½ × ¼)) = 275.
+        assert_eq!(price_band(2, 3, 50, 410, false, true, 230), (275, 95));
+        // A church square-roots q: ¼ → ½, 50 + 90.
+        assert_eq!(price_band(2, 3, 50, 410, true, false, 230), (230, 140));
+        // Equal edges: the lower one × 0.8. One good: the whole window.
+        assert_eq!(price_band(1, 2, 5, 5, false, false, 5), (5, 4));
+        assert_eq!(price_band(1, 1, 50, 410, false, false, 410), (410, 50));
+    }
+
+    #[test]
+    fn an_exhausted_candidate_list_reads_on_as_the_original() {
+        let c = Candidates::new(vec![ItemId(7), ItemId(9)]);
+        assert_eq!((c.last, c.buf[0], c.buf[1], c.buf.len()), (1, 6, 8, 256));
+        // A rebuild with nothing in the band: `Random(0)` reads the zeroed buffer, item 1.
+        let empty = Candidates::new(Vec::new());
+        assert_eq!((empty.last, empty.buf[0]), (-1, 0));
+        // Below the buffer lie the last index and the building's number, then the stack.
+        assert_eq!(empty.entry(0, 4), Some(0));
+        assert_eq!(empty.entry(-1, 4), Some(-1));
+        assert_eq!(empty.entry(-2, 4), Some(4));
+        assert_eq!(empty.entry(-3, 4), None);
     }
 
     #[test]
