@@ -756,3 +756,24 @@ impl BattleView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use razdor::rules::content::{Content, HeroClass};
+    use razdor::rules::game::{Foe, Game};
+
+    use super::*;
+
+    #[test]
+    fn the_battle_starts_as_its_window_opens() {
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        g.foe = Some(Foe::Garrison(g.world.index_of("Bandit camp")));
+        let battle = g.start_battle();
+        assert!(battle.is_deploying());
+        let view = BattleView::new(battle);
+        assert!(!view.battle.is_deploying(), "no deployment step");
+        assert!(view.battle.active().is_some(), "the first unit acts at once");
+    }
+}
