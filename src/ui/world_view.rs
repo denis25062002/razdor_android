@@ -63,11 +63,15 @@ pub struct MapView {
     /// spot clicked, the route, and where the hero stood. A second click on the same spot
     /// sets off; a move of the hero drops it.
     preview: Option<(Tile, Vec<Tile>, Tile)>,
+    /// The clock (whole ms) at the last frame of the map: the scroll step is the time since
+    /// then (0x4cc18f), so the first frame back from a window counts the window's time too,
+    /// as in the original.
+    last_frame_ms: Option<i64>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None, last_frame_ms: None }
     }
 }
 
@@ -93,7 +97,7 @@ const EDGE: f32 = 5.0;
 /// at a time: the original keeps only the last key down) and the mouse within 5 px of an
 /// edge of the screen (the bar's lower edge included; a corner both ways) each move the
 /// view by the frame's step. The camera then stays there until something moves it.
-fn scroll(game: &Game, view: &mut MapView) {
+fn scroll(game: &Game, view: &mut MapView, dt_ms: i64) {
     if input_blocked() || !view.shows.is_empty() || view.minimap {
         return;
     }
@@ -115,7 +119,7 @@ fn scroll(game: &Game, view: &mut MapView) {
     if dir == Vec2::ZERO {
         return;
     }
-    let (sx, sy) = scroll_step(scroll_speed(), (get_frame_time().min(0.1) * 1000.0) as f64);
+    let (sx, sy) = scroll_step(scroll_speed(), dt_ms as f64);
     // Original pixels to world units: a cell is 32 px across, its row 22 px down.
     let rh = game.world.map.grid.row_height();
     let step = dir * vec2(sx as f32 / PX, sy as f32 / 22.0 * rh) / view.zoom;
@@ -1134,10 +1138,46 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
         }
         Some(BarButton::Map) | None => None,
     };
-    if next.is_some() {
+    // A press while the hero walks has cut his route (`frame`): as in the original, where
+    // a window opens over the walk and the wait without stopping them, he finishes the step
+    // under way, and a wait goes on, when the map is back. A save holds him where he stands
+    // *(Razdor's saves keep the route; the original's do not)*.
+    if matches!(next, Some(Screen::Save(_))) && game.moving() {
         game.stop();
     }
     (next, pressed == Some(BarButton::Map))
+}
+
+/// What a left click on a target cell of the idle map does (interface.md §7.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapClick {
+    /// The planned cell with its route drawn: the hero sets off.
+    SetOff,
+    /// Another cell in reach: its route is drawn and it becomes the planned cell.
+    Planned,
+    /// Another cell out of reach: the route drawn is dropped, the planned cell stays.
+    OutOfReach,
+    /// The planned cell with no route drawn: nothing.
+    Nothing,
+}
+
+/// The original's planning click (0x4cc426–0x4cc9bc) on `target` (not the hero's cell),
+/// with `planned` the planned cell, its route and where the hero stood. As in the original,
+/// a cell whose route was dropped (by a click out of reach, or a wait) stays the planned
+/// cell and its clicks do nothing until a click elsewhere plans again.
+fn plan_click(planned: &mut Option<(Tile, Vec<Tile>, Tile)>, target: Tile, here: Tile, route: impl FnOnce() -> Vec<Tile>) -> MapClick {
+    if let Some(p) = planned.as_ref().filter(|p| p.0 == target) {
+        return if p.1.is_empty() { MapClick::Nothing } else { MapClick::SetOff };
+    }
+    let route = route();
+    if route.is_empty() {
+        if let Some(p) = planned.as_mut() {
+            p.1.clear();
+        }
+        return MapClick::OutOfReach;
+    }
+    *planned = Some((target, route, here));
+    MapClick::Planned
 }
 
 pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
@@ -1146,6 +1186,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     // The original's world frame acts on the map only while it is idle (interface.md §7.3,
     // 0x4cc1ff): while the hero walks or waits, it only watches for the stop.
     let idle = !game.moving() && !game.waiting() && game.reading().is_none();
+    // The whole milliseconds since the map's last frame (the original's timeGetTime).
+    let now_ms = (get_time() * 1000.0) as i64;
+    let dt_ms = now_ms - view.last_frame_ms.unwrap_or(now_ms);
+    view.last_frame_ms = Some(now_ms);
 
     // Zoom: mouse wheel or +/-.
     let wheel = if idle { wheel() } else { 0.0 };
@@ -1178,7 +1222,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.look = None;
     }
     if idle && dialogs.is_empty() {
-        scroll(game, view);
+        scroll(game, view, dt_ms);
     }
     // While he walks the view is locked on him (interface.md §8).
     if game.moving() && view.shows.is_empty() {
@@ -1195,6 +1239,10 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             game.cut_walk();
             view.preview = None;
         }
+        // F5 held ends the Community endless wait (0xc27802).
+        if game.endless_waiting() && held_key() == Some(KeyCode::F5) {
+            game.end_endless_wait();
+        }
     } else if clicked() && !on_minimap {
         if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
             // A click on the building the party stands in opens it again.
@@ -1205,25 +1253,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
             // anywhere else does nothing, as in the original. The first click shows the
             // route; a second one on the same spot sets off (0x4cc99f).
             if target != game.tile() {
-                if view.preview.as_ref().is_some_and(|p| p.0 == target) {
-                    view.preview = None;
-                    if game.set_destination(target) {
-                        razdor::diag::play(&game.clock.label(), &format!("WALK from {:?} to {:?}: {} steps, {:.0} min", game.tile(), target, game.path.len(), game.minutes_left()));
-                    } else if game.route_to(target).is_empty() {
-                        *message = Some(tr("No way through.").into());
+                match plan_click(&mut view.preview, target, game.tile(), || game.route_to(target)) {
+                    MapClick::SetOff => {
+                        if game.set_destination(target) {
+                            view.preview = None;
+                            razdor::diag::play(&game.clock.label(), &format!("WALK from {:?} to {:?}: {} steps, {:.0} min", game.tile(), target, game.path.len(), game.minutes_left()));
+                        }
                     }
-                } else {
-                    let route = game.route_to(target);
-                    view.preview = (!route.is_empty()).then(|| (target, route, game.tile()));
-                    if view.preview.is_none() {
-                        *message = Some(tr("No way through.").into());
-                    }
+                    MapClick::OutOfReach => *message = Some(tr("No way through.").into()),
+                    MapClick::Planned | MapClick::Nothing => {}
                 }
             }
             view.look = None;
         }
     }
-    // A shown route belongs to where the hero stood.
+    // A planned route belongs to where the hero stood: the end of a walk forgets it
+    // (0x4ae5d8).
     if view.preview.as_ref().is_some_and(|p| p.2 != game.tile() || game.moving()) {
         view.preview = None;
     }
@@ -1305,6 +1350,17 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     if can_wait && (key(KeyCode::Key4) || (on_clock && right_clicked())) {
         game.begin_wait(4);
     }
+    // Community F4 (the held key, 0xc277d2): a wait without end; F5 ends it (`frame`'s
+    // walking branch).
+    if can_wait && held_key() == Some(KeyCode::F4) {
+        game.begin_endless_wait();
+    }
+    // A wait drops the route drawn; the planned cell stays (0x4ae280).
+    if game.waiting() {
+        if let Some(p) = view.preview.as_mut() {
+            p.1.clear();
+        }
+    }
 
     let (bar, toggle_map) = bottom_bar(game, message, view.minimap, idle);
     next = next.or(bar);
@@ -1351,5 +1407,23 @@ mod tests {
         assert_eq!(scroll_step(0, 5.0), (2.0, 2.0));
         // F = 1.25 at 50.
         assert_eq!(scroll_step(50, 10.0), (8.0, 6.0));
+    }
+
+    #[test]
+    fn a_planned_cell_whose_route_was_dropped_stays_dead() {
+        let (here, a, b, c) = ((1, 1), (3, 1), (9, 9), (4, 1));
+        let mut planned = None;
+        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Planned);
+        assert_eq!(plan_click(&mut planned, a, here, || unreachable!("no planning")), MapClick::SetOff);
+        // A cell out of reach drops the route; the planned cell stays and its clicks do
+        // nothing, as in the original.
+        assert_eq!(plan_click(&mut planned, b, here, Vec::new), MapClick::OutOfReach);
+        assert_eq!(planned, Some((a, vec![], here)));
+        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Nothing);
+        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Nothing);
+        // A click elsewhere plans again, and then the first cell can be planned anew.
+        assert_eq!(plan_click(&mut planned, c, here, || vec![(2, 1), (3, 1), c]), MapClick::Planned);
+        assert_eq!(plan_click(&mut planned, a, here, || vec![(2, 1), a]), MapClick::Planned);
+        assert_eq!(plan_click(&mut planned, a, here, Vec::new), MapClick::SetOff);
     }
 }

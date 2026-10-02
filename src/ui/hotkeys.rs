@@ -70,6 +70,9 @@ pub struct Guard {
     pub game: bool,
     /// A battle is pending (saving waits until it is over, as in the menu).
     pub foe: bool,
+    /// The Community endless wait (F4) runs: F5 ends it, as in the original, and does not
+    /// save.
+    pub endless: bool,
 }
 
 /// The screens with a text field that always has the keyboard.
@@ -95,7 +98,7 @@ pub fn allowed(place: Place, key: Global, g: Guard) -> bool {
     match key {
         Global::Help => true,
         Global::QuickSave => {
-            g.game && !g.foe && matches!(place, Place::WorldMap | Place::Building | Place::Army | Place::Journal | Place::Spellbook | Place::Menu)
+            g.game && !g.foe && !g.endless && matches!(place, Place::WorldMap | Place::Building | Place::Army | Place::Journal | Place::Spellbook | Place::Menu)
         }
         Global::QuickLoad | Global::Language => true,
     }
@@ -113,6 +116,7 @@ pub fn screen_keys(place: Place) -> Vec<(&'static str, &'static str)> {
             (n_("Arrow keys, screen edges"), n_("scroll the map")),
             (n_("Wheel, + / -"), n_("zoom")),
             ("1 / 4", n_("wait 1 or 4 hours")),
+            ("F4 / F5", n_("wait without end / stop waiting")),
             (n_("Time panel"), n_("left click: wait 1 hour, right click: 4 hours")),
             (n_("Click where you stand"), n_("the building again, or its garrison's battle")),
             ("M", n_("minimap")),
@@ -254,6 +258,7 @@ mod tests {
         assert!(allowed(Place::WorldMap, Global::QuickSave, in_game()));
         assert!(allowed(Place::Building, Global::QuickSave, in_game()));
         assert!(!allowed(Place::WorldMap, Global::QuickSave, Guard { foe: true, ..in_game() }), "a battle is pending");
+        assert!(!allowed(Place::WorldMap, Global::QuickSave, Guard { endless: true, ..in_game() }), "F5 ends the endless wait");
         assert!(!allowed(Place::Battle, Global::QuickSave, in_game()));
         assert!(!allowed(Place::Title, Global::QuickSave, Guard::default()));
         assert!(!allowed(Place::End, Global::QuickSave, in_game()));

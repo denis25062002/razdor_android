@@ -434,6 +434,16 @@ old id, and their versions give both.
   credits play their own theme. An event's window, a village's and a shipyard's open with
   one of the three chords drawn from the game's random numbers. Like the original, these
   draws shift the rolls that follow.
+- A planned walk whose route was dropped, by a click on a cell out of reach or by a wait,
+  keeps its cell as the planned one, and clicks on it do nothing until a click elsewhere
+  plans again, as in the original.
+- Opening a window from the bar while the hero walks no longer stops him on the spot: as in
+  the original, he finishes the step under way when the map is back, and a wait goes on.
+- F4 on the idle map waits without end, half an hour at a time, through any event's
+  message, until F5 is pressed (the Community's endless wait); F5 saves as before when no
+  such wait runs.
+- The map scrolls by the whole milliseconds since its last frame, as in the original, so
+  the first frame back from a window scrolls by the time spent in it.
 
 ## 0.2.2 — 2026-10-01
 

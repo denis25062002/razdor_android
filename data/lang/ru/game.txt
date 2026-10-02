@@ -97,6 +97,7 @@ the hero's name = имя героя
 delete a letter = стереть букву
 show the route; a second click on the spot: walk there = показать путь; второй щелчок туда же — идти
 stop after the step under way = остановиться после текущего шага
+wait without end / stop waiting = ждать без конца / перестать ждать
 what stands there = что там стоит
 scroll the map = прокрутка карты
 zoom = масштаб

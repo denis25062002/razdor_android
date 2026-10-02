@@ -245,10 +245,11 @@ name, a save name, an editor field) or while a dialog or question is open (there
 | World map | wheel, + / − | zoom |
 | World map | arrow keys, the mouse at a window edge or corner | scroll the map by the original's scroll speed (a click on the map or Tab brings the view back) |
 | World map | 1 / 4, or left / right click on the time panel | wait 1 or 4 hours |
+| World map | F4 / F5 | wait without end (the Community's endless wait) / end it |
 | World map | M | minimap |
 | World map | Tab | centre the camera on the hero |
 | World map | J / B / A | journal / spell book / hero and army |
-| World map and its windows | F5 | quick save: a manual save named "Quick save" that replaces the last one |
+| World map and its windows | F5 | quick save: a manual save named "Quick save" that replaces the last one (during the endless wait F5 ends the wait instead) |
 | World map | Esc | opens "Выход из игры" (quit, main menu, restart) |
 | Any window (building, army, journal, spell book, menu, save, load) | Esc | back to the map (the army screen opened from a building: back to the building) |
 | Journal | Left / Right, Up / Down, wheel, PgUp / PgDn, J | tabs, entries, scrolling, close |

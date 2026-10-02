@@ -346,10 +346,9 @@ impl App {
         }
         // The change is checked by the map and its windows, not in battle or the menus; the
         // world map alone waits while the triumph plays.
+        // A battle's theme replaces the triumph of an earlier win; a win starts it.
         if let Screen::Battle(v) = &self.screen {
-            if v.won() {
-                self.map_music.triumph = true;
-            }
+            self.map_music.triumph = v.won();
         }
         let waits = self.map_music.triumph && matches!(self.screen, Screen::WorldMap);
         if self.mood() == Mood::Map && clock >= self.map_music.due && !waits {
@@ -397,7 +396,7 @@ impl App {
                 audio::cue(Cue::Panel);
             }
         }
-        // N: music on/off (not while typing or answering a question: N is its "No").
+        // N: music on/off (not while typing or answering a question: there any key answers).
         if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
             self.audio.settings.music_muted = !self.audio.settings.music_muted;
         }
@@ -432,6 +431,7 @@ impl App {
             dialog: !self.dialogs.is_empty(),
             game: self.game.is_some(),
             foe: self.game.as_ref().is_some_and(|g| g.foe.is_some()),
+            endless: self.game.as_ref().is_some_and(|g| g.endless_waiting()),
         }
     }
 

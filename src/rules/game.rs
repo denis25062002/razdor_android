@@ -333,6 +333,10 @@ pub struct Game {
     /// Wait ticks still to play in real time ([`Game::begin_wait`], or a reading).
     #[serde(skip)]
     pub(crate) wait_ticks: u32,
+    /// The Community endless wait (F4, 0xc277d2): the ticks it has played so far, while it
+    /// runs ([`Game::begin_endless_wait`]).
+    #[serde(skip)]
+    pub(crate) endless_wait: Option<u32>,
     /// The spell being read while the wait ticks play ([`Game::begin_cast`]).
     #[serde(skip)]
     pub(crate) reading: Option<magic::Reading>,
@@ -464,6 +468,7 @@ impl Game {
             mana_short: false,
             step_elapsed: 0.0,
             wait_ticks: 0,
+            endless_wait: None,
             reading: None,
             queued_casts: Vec::new(),
             since_step: 0.0,
@@ -747,6 +752,7 @@ impl Game {
         self.path = path;
         self.goal = Some(to);
         self.wait_ticks = 0;
+        self.endless_wait = None;
         self.reading = None;
         true
     }
@@ -835,6 +841,7 @@ impl Game {
         self.goal = None;
         self.talk_to = None;
         self.wait_ticks = 0;
+        self.endless_wait = None;
         self.reading = None;
         self.step_elapsed = 0.0;
     }
@@ -875,7 +882,38 @@ impl Game {
         self.path.clear();
         self.goal = None;
         self.reading = None;
+        self.endless_wait = None;
         self.wait_ticks = hours * 2;
+    }
+
+    /// The Community endless wait (F4 on the idle map, 0xc277d2): the wait of one tick is
+    /// started with its end test switched off (0xc27802), so the ticks go on until
+    /// [`Game::end_endless_wait`]; an event's dialog opens without ending it (0xc2782b).
+    pub fn begin_endless_wait(&mut self) {
+        if self.foe.is_some() {
+            return;
+        }
+        self.begin_wait(0);
+        self.wait_ticks = 1;
+        self.endless_wait = Some(0);
+    }
+
+    /// F5 during the endless wait (0xc27802): the end test is back, and as the wait asked
+    /// for one tick it stops at once when a tick has played, else after its first. The
+    /// minutes of the tick under way are dropped *(the original keeps the part already
+    /// shown; Razdor counts game time per whole tick)*.
+    pub fn end_endless_wait(&mut self) {
+        if let Some(done) = self.endless_wait.take() {
+            if done >= 1 {
+                self.wait_ticks = 0;
+                self.step_elapsed = 0.0;
+            }
+        }
+    }
+
+    /// The Community endless wait (F4) is under way.
+    pub fn endless_waiting(&self) -> bool {
+        self.endless_wait.is_some() && self.wait_ticks > 0
     }
 
     /// A real-time rest is under way (not a reading: [`Game::reading`]).
@@ -916,6 +954,7 @@ impl Game {
             if self.foe.is_some() {
                 self.end_reading(&mut events);
                 self.wait_ticks = 0;
+                self.endless_wait = None;
             }
             return events;
         }
@@ -926,7 +965,11 @@ impl Game {
             let go = if self.moving() {
                 self.hero_step(&mut events)
             } else {
-                self.wait_ticks -= 1;
+                match self.endless_wait.as_mut() {
+                    // The endless wait's end test is off: its one tick never runs out.
+                    Some(done) => *done += 1,
+                    None => self.wait_ticks -= 1,
+                }
                 let from = events.len();
                 let go = self.wait_tick(&mut events);
                 // The reading is done, an event fired (the original pops the wait off its
@@ -941,7 +984,9 @@ impl Game {
                 // Stop and read: time stands still while a message is open. A reading
                 // goes on after it.
                 self.path.clear();
-                if self.reading.is_none() {
+                // The endless wait goes on under the event's dialog (0xc2782b), not after a
+                // battle.
+                if self.reading.is_none() && (self.endless_wait.is_none() || self.foe.is_some()) {
                     self.wait_ticks = 0;
                 }
                 break;
@@ -949,6 +994,7 @@ impl Game {
         }
         if !self.moving() && self.wait_ticks == 0 {
             self.step_elapsed = 0.0;
+            self.endless_wait = None;
         }
         events
     }
@@ -3287,6 +3333,37 @@ mod tests {
         assert!(!g.waiting());
         g.tick(1.0);
         assert_eq!(g.clock.total_minutes(), t0 + 300.0, "then time stands still");
+    }
+
+    #[test]
+    fn the_endless_wait_ticks_until_ended() {
+        let mut g = start(&strip());
+        let t0 = g.clock.total_minutes();
+        g.begin_endless_wait();
+        assert!(g.waiting() && g.endless_waiting());
+        // F5 before its first tick: the wait of one tick still plays that tick.
+        g.end_endless_wait();
+        g.tick(STEP_SECONDS * 0.5);
+        assert!(g.waiting());
+        g.tick(STEP_SECONDS);
+        assert_eq!(g.clock.total_minutes(), t0 + 30.0);
+        assert!(!g.waiting());
+        // Left alone it goes on far past any wait of the buttons.
+        g.begin_endless_wait();
+        for _ in 0..40 {
+            g.tick(STEP_SECONDS);
+        }
+        assert_eq!(g.clock.total_minutes(), t0 + 30.0 + 40.0 * 30.0);
+        assert!(g.endless_waiting());
+        // F5 after a tick: it stops at once, the tick under way not counted.
+        g.tick(STEP_SECONDS * 0.5);
+        g.end_endless_wait();
+        assert!(!g.waiting() && !g.endless_waiting());
+        g.tick(STEP_SECONDS * 2.0);
+        assert_eq!(g.clock.total_minutes(), t0 + 30.0 + 40.0 * 30.0);
+        // A wait of the buttons is not endless.
+        g.begin_wait(1);
+        assert!(!g.endless_waiting());
     }
 
     #[test]

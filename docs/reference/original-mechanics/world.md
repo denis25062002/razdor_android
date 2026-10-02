@@ -524,7 +524,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | First noon | always the next day's noon for the hero (the AI keeps its own); after each noon paid, the next is the day after the moment it was paid (`Game::noon_from`) | always the next day's noon; next noon from the payment time (0x4a41d8) | Matches |
 | Day shown | 0-based (`Clock::day`) | 0-based | none |
 | Wait 1 h / 4 h | 2 / 8 ticks of 30 min | same | none |
-| F4 endless wait | not present (`hotkeys.rs`: F5 is quick save) | Community: F4 waits until F5 | Community extra, optional |
+| F4 endless wait | F4 waits until F5 (`Game::begin_endless_wait`); an event's message does not end it; F5 saves only when no such wait runs | Community: F4 waits until F5 | Matches |
 | Casting time | wait ticks | same | none |
 | Heal / resurrect time | none for the player | none | none |
 | Ship purchase | no ship object; planner switches to MIXED in the shipyard; leaving it on land loses it | no ship object; planner switches to MIXED in the shipyard | Matches |
