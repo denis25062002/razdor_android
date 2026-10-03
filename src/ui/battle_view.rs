@@ -18,6 +18,7 @@ use macroquad::prelude::*;
 
 use razdor::i18n::tr;
 use razdor::rules::battle::{ActionKind, Battle, EndReason, Fighter, Hit, Outcome, Preview, Step, Team, XpAward};
+use razdor::av::Echo;
 use razdor::rules::content::{HeroClass, ItemId, MagicSchool, Stat};
 use razdor::rules::formation::{Row, Slot};
 use razdor::rules::game::{BattleResult, Foe, Game};
@@ -93,10 +94,14 @@ impl Layout {
 
 /// An action being animated.
 enum FxKind {
-    /// The actor lunges, the target shows the hit's animation and number.
-    Act { hit: Hit },
+    /// The actor lunges, the target shows the hit's animation and number; then, for a
+    /// counterblow, the target lunges back and the actor shows the same animation, or, for a
+    /// `DeathCurse` death of the killer, the actor shows the sorcery (`echo`, 0x4c43e8).
+    Act { hit: Hit, echo: Option<Echo>, echo_cued: bool },
     /// The actor slides between two cells.
     Move { from: Vec2, to: Vec2 },
+    /// A pass: a short pause (0x4afb54).
+    Pass,
 }
 
 struct Fx {
@@ -106,11 +111,23 @@ struct Fx {
 }
 
 impl Fx {
+    fn act(battle: &Battle, actor: usize, hit: Hit) -> Fx {
+        let echo = razdor::av::echo(battle, actor, &hit);
+        Fx { actor, kind: FxKind::Act { hit, echo, echo_cued: false }, t: 0.0 }
+    }
+
     fn duration(&self) -> f32 {
         match self.kind {
+            FxKind::Act { echo: Some(_), .. } => 2.0 * STRIKE_TIME,
             FxKind::Act { .. } => STRIKE_TIME,
             FxKind::Move { .. } => MOVE_TIME,
+            FxKind::Pass => razdor::av::BATTLE_PASS_MS as f32 / 1000.0,
         }
+    }
+
+    /// The echo's half of an action is playing.
+    fn echoing(&self) -> bool {
+        matches!(self.kind, FxKind::Act { echo: Some(_), .. }) && self.t >= STRIKE_TIME
     }
 }
 
@@ -122,6 +139,9 @@ pub struct BattleView {
     xp: Option<Vec<XpAward>>,
     /// The result box has shown and its music started (once).
     result_cued: bool,
+    /// A won battle's hold (0x4b09e8): seconds since it began. The screen stays up with the
+    /// experience on the cards, then closes; the report follows.
+    hold: Option<f32>,
     /// The last line of the log shown in the strip, and for how long more.
     news: Option<(String, f32)>,
     /// The battle was just played out by a quick battle: the result box waits a frame, so
@@ -225,7 +245,7 @@ impl BattleView {
     /// the one set in the army window beforehand (interface.md §12, 0x4daa80).
     pub fn new(mut battle: Battle) -> Self {
         battle.begin();
-        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
+        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, hold: None, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
     }
 
     /// The battle is won and its result is up: the triumph has started.
@@ -268,6 +288,17 @@ impl BattleView {
         let dt = get_frame_time();
         if let Some(fx) = &mut self.fx {
             fx.t += dt;
+            // The echo's sound as its half begins: the action's own, or the sorcery.
+            let echoing = fx.echoing();
+            if let FxKind::Act { hit, echo: Some(e), echo_cued } = &mut fx.kind {
+                if echoing && !*echo_cued {
+                    *echo_cued = true;
+                    cue(match e {
+                        Echo::Counter => action_cue(&self.battle, fx.actor, hit.kind),
+                        Echo::Curse => Cue::Sorcery,
+                    });
+                }
+            }
             if fx.t >= fx.duration() {
                 self.fx = None;
             }
@@ -304,7 +335,7 @@ impl BattleView {
                         self.fx = match self.battle.ai_step() {
                             Some(Step::Act { actor, hit }) => {
                                 cue(action_cue(&self.battle, actor, hit.kind));
-                                Some(Fx { actor, kind: FxKind::Act { hit }, t: 0.0 })
+                                Some(Fx::act(&self.battle, actor, hit))
                             }
                             Some(Step::Move { actor, from, to }) => {
                                 cue(Cue::CardMove);
@@ -345,12 +376,20 @@ impl BattleView {
 
         if over && !self.quick_played {
             if !self.result_cued {
-                // The triumph plays as soon as the victory box appears, and carries on over the
-                // map afterwards (a sting is not cut by the move to the map).
+                // The triumph starts with the win, and carries on over the map afterwards (a
+                // sting is not cut by the move to the map).
                 self.result_cued = true;
                 if outcome == Outcome::Victory {
                     cue(Cue::Triumph);
                 }
+            }
+            if outcome == Outcome::Victory {
+                // The won battle's hold: 2.5 s with the experience on the cards and no input,
+                // then the screen closes and the report follows (interface.md §9.9, §12).
+                let held = self.hold.get_or_insert(0.0);
+                *held += dt;
+                let done = *held * 1000.0 >= razdor::av::BATTLE_END_HOLD_MS as f32;
+                return done.then(|| self.close_won(game, message, dialogs));
             }
             return self.result_overlay(&l, game, message, dialogs, outcome);
         }
@@ -381,12 +420,14 @@ impl BattleView {
             if let Some(&kind) = opts.first() {
                 if let Ok(hit) = self.battle.act_with(t, kind) {
                     cue(action_cue(&self.battle, active, kind));
-                    self.fx = Some(Fx { actor: active, kind: FxKind::Act { hit }, t: 0.0 });
+                    self.fx = Some(Fx::act(&self.battle, active, hit));
                     self.note_log();
                 }
             } else if t == active {
-                // A click on its own card passes one action, as in the original.
+                // A click on its own card passes one action, with its short pause, as in the
+                // original.
                 self.battle.pass();
+                self.fx = Some(Fx { actor: active, kind: FxKind::Pass, t: 0.0 });
             }
         } else if let Some((Team::Player, to)) = self.cell_under_mouse(l) {
             let from = self.battle.fighters[active].slot;
@@ -446,19 +487,20 @@ impl BattleView {
         // Cards: the order of the next units after the active one, as small numbers.
         let queue: Vec<usize> = if b.outcome() == Outcome::Ongoing { b.queue().skip(1).take(3).collect() } else { Vec::new() };
         for (i, f) in b.fighters.iter().enumerate() {
-            let in_fx = self.fx.as_ref().is_some_and(|fx| matches!(&fx.kind, FxKind::Act { hit } if hit.target == i) || fx.actor == i);
+            let in_fx = self.fx.as_ref().is_some_and(|fx| matches!(&fx.kind, FxKind::Act { hit, .. } if hit.target == i) || fx.actor == i);
             if !f.alive() && !in_fx {
                 continue;
             }
             let mut p = l.cell_pos(f.team, f.slot);
-            if let Some(fx) = self.fx.as_ref().filter(|fx| fx.actor == i) {
-                match fx.kind {
-                    FxKind::Act { .. } => {
-                        let lunge = (fx.t / (STRIKE_TIME * 0.5)).min(1.0);
-                        let dir = if f.team == Team::Player { -1.0 } else { 1.0 };
-                        p.y += dir * 14.0 * k * (lunge * PI).sin();
-                    }
-                    FxKind::Move { from, to } => p = from.lerp(to, (fx.t / MOVE_TIME).min(1.0)),
+            if let Some(fx) = &self.fx {
+                let dir = if f.team == Team::Player { -1.0 } else { 1.0 };
+                let lunge = |t: f32| dir * 14.0 * k * ((t / (STRIKE_TIME * 0.5)).min(1.0) * PI).sin();
+                match &fx.kind {
+                    FxKind::Act { .. } if fx.actor == i && !fx.echoing() => p.y += lunge(fx.t),
+                    // The counterblow: the target lunges back at the actor.
+                    FxKind::Act { hit, echo: Some(Echo::Counter), .. } if hit.target == i && fx.echoing() => p.y += lunge(fx.t - STRIKE_TIME),
+                    FxKind::Move { from, to } if fx.actor == i => p = from.lerp(*to, (fx.t / MOVE_TIME).min(1.0)),
+                    _ => {}
                 }
             }
             let hovered = hovered_cell == Some((f.team, f.slot));
@@ -605,7 +647,24 @@ impl BattleView {
     }
 
     fn draw_fx(&self, l: &Layout, fx: &Fx) {
-        let FxKind::Act { hit } = &fx.kind else { return };
+        let FxKind::Act { hit, echo, .. } = &fx.kind else { return };
+        if fx.echoing() {
+            // The echo on the actor: the action's own picture for a counterblow, the sorcery
+            // for a curse.
+            let k = (fx.t - STRIKE_TIME) / STRIKE_TIME;
+            let a = &self.battle.fighters[fx.actor];
+            let q = l.portrait(l.cell_pos(a.team, a.slot));
+            let art = match echo {
+                Some(Echo::Curse) => effect_art(ActionKind::Strike, Some(MagicSchool::Death)).0,
+                _ => effect_art(hit.kind, self.battle.fighters[hit.target].stats.magic).0,
+            };
+            chrome::effect(art, vec2(q.x + q.w / 2.0, q.y + q.h / 2.0), q.w * 1.7, k, WHITE);
+            draw_rectangle(q.x, q.y, q.w, q.h, Color::new(1.0, 0.1, 0.1, 0.35 * (1.0 - k)));
+            if let Some(c) = hit.counter {
+                shadow_centered(&razdor::trf!("-{c} counter", c), q.x + q.w / 2.0, q.y + q.h * 0.45 - 26.0 * l.k * k, (18.0 * l.k).round(), RED);
+            }
+            return;
+        }
         let k = fx.t / STRIKE_TIME;
         let f = &self.battle.fighters[hit.target];
         let sq = l.portrait(l.cell_pos(f.team, f.slot));
@@ -626,11 +685,6 @@ impl BattleView {
         }
         let y = sq.y + sq.h * 0.45 - 26.0 * l.k * k;
         shadow_centered(&label, sq.x + sq.w / 2.0, y, (22.0 * l.k).round(), color);
-        if let Some(c) = hit.counter {
-            let a = &self.battle.fighters[fx.actor];
-            let q = l.portrait(l.cell_pos(a.team, a.slot));
-            shadow_centered(&razdor::trf!("-{c} counter", c), q.x + q.w / 2.0, q.y + q.h * 0.45 - 26.0 * l.k * k, (18.0 * l.k).round(), RED);
-        }
     }
 
     /// The hover box over a target (or the acting unit's own card, or a cell to step to):
@@ -714,7 +768,21 @@ impl BattleView {
         unit_sheet::draw(assets, b.content(), l.panel, &sheet, false, &mut hover);
     }
 
-    /// The result box over the unit panel, so the XP badges on the cards stay visible.
+    /// The won battle's hold is over: the battle is settled and the screen closes; the
+    /// victory report follows on the map (a level gained has no sound here: `Unit-Upgrade`
+    /// is the promotion screen's).
+    fn close_won(&self, game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Screen {
+        let result = game.resolve_battle(&self.battle);
+        if game.won() {
+            return Screen::Victory;
+        }
+        dialogs.extend(Dialog::victory(game, &result));
+        *message = None;
+        Screen::WorldMap
+    }
+
+    /// The result box over the unit panel (a defeat, or a battle nobody won), so the XP
+    /// badges on the cards stay visible.
     fn result_overlay(&self, l: &Layout, game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>, outcome: Outcome) -> Option<Screen> {
         let k = l.k;
         let r = Rect::new(l.panel.x + 8.0 * k, l.panel.y + 150.0 * k, l.panel.w - 16.0 * k, 200.0 * k);
@@ -741,11 +809,6 @@ impl BattleView {
             return None;
         }
         let result = game.resolve_battle(&self.battle);
-        if let BattleResult::Victory { level_ups, .. } = &result {
-            if !level_ups.is_empty() {
-                cue(Cue::Upgrade);
-            }
-        }
         match result {
             BattleResult::Defeat => Some(Screen::GameOver),
             BattleResult::Victory { .. } if game.won() => Some(Screen::Victory),
@@ -784,5 +847,31 @@ mod tests {
         let view = BattleView::new(battle);
         assert!(!view.battle.is_deploying(), "no deployment step");
         assert!(view.battle.active().is_some(), "the first unit acts at once");
+    }
+
+    /// РК1's ruins (`rk1-day1.jsonl` to step 29): the militia's blow on the swordsman at
+    /// 2:1:2 is answered by a counterblow, so the action plays twice as long, the second half
+    /// the swordsman's lunge back and the effect on the militia (interface.md §12).
+    #[test]
+    fn a_counterblow_adds_the_slide_back_and_the_effect_on_the_actor() {
+        use razdor::difftest::{parse_actions, Runner, Source};
+        let Some(dir) = std::env::var_os(razdor::dt::install::ENV_VAR) else { return };
+        let dt = razdor::dt::install::DtInstall::load(std::path::Path::new(&dir)).unwrap();
+        let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+        let mut r = Runner::new(Source::Install(&dt));
+        for a in &actions[..30] {
+            r.apply(a).unwrap();
+        }
+        let (_, Some(mut b), _) = r.into_view().unwrap() else { panic!("no battle at step 29") };
+        let actor = b.active().unwrap();
+        let target = b.at(Team::Enemy, Slot::new(Row::Front, 1)).unwrap();
+        let kind = b.options(actor, target)[0];
+        let hit = b.act_with(target, kind).unwrap();
+        let mut fx = Fx::act(&b, actor, hit);
+        assert!(matches!(fx.kind, FxKind::Act { echo: Some(Echo::Counter), .. }));
+        assert_eq!(fx.duration(), 2.0 * STRIKE_TIME);
+        assert!(!fx.echoing());
+        fx.t = STRIKE_TIME + 0.01;
+        assert!(fx.echoing());
     }
 }

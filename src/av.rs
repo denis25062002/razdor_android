@@ -73,6 +73,36 @@ pub fn battle_effect(kind: ActionKind) -> &'static str {
     }
 }
 
+/// What follows the effect on the target of an action (interface.md §12, 0x4c43e8 result
+/// codes 6 and 0x10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Echo {
+    /// A counterblow or a preventive strike: the slide back from the target to the actor and
+    /// the action's effect, with its sound, on the actor.
+    Counter,
+    /// The target was a `DeathCurse` (or `Ghost`) unit and its death killed the actor: the
+    /// sorcery effect on the actor, with `Battle-Sorcery`, no slide.
+    Curse,
+}
+
+/// The second part of the animation of `hit`, done by `actor` (the battle as it stands after
+/// the action).
+pub fn echo(battle: &Battle, actor: usize, hit: &crate::rules::battle::Hit) -> Option<Echo> {
+    use crate::rules::content::Bonus;
+    if hit.counter.is_some() {
+        return Some(Echo::Counter);
+    }
+    let (a, t) = (&battle.fighters[actor], &battle.fighters[hit.target]);
+    let ghost = t.base.has(&Bonus::Ghost) && a.stats[Stat::ProtectDeath] < 30 * t.base[Stat::Manevres];
+    (hit.killed && !a.alive() && (t.base.has(&Bonus::DeathCurse) || ghost)).then_some(Echo::Curse)
+}
+
+/// The won battle's hold (0x4b09e8): the battle screen stays up this long, the experience on
+/// the cards, before it closes and the report follows.
+pub const BATTLE_END_HOLD_MS: u32 = 2500;
+/// A pass in battle (0x4afb54): a pause with the busy pointer.
+pub const BATTLE_PASS_MS: u32 = 100;
+
 /// The sound of an item of type `kind` (`Item-<Type>`; trade goods `Item-Item`).
 pub fn item_sound(kind: ArtefactType) -> String {
     format!("Item-{kind:?}")
