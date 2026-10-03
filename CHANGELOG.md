@@ -490,6 +490,8 @@ old id, and their versions give both.
 - An AI army that starts the map in a building is counted, in the battles it simulates,
   without that building's defence until it next arrives in a building or fights, as in the
   original (its units' strengths are recounted only then).
+- A cautious AI army (negative aggression) discounts its own losses to a tenth only when it
+  lost no unit in the battle it simulates, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

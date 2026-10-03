@@ -142,8 +142,11 @@ their defence at the load (0x4b2504), so theirs always count it.
 1. If nothing happened (A1 = A0 and B1 = B0) or the battle ran to `BattleEndTurn`: score 0.
 2. Aggression g (A's byte 69, in percent) shifts both results: `B1 −= Round(g·B0/100)` (not
    below 0) and `A1 += Round(g·A0/100)`. For a negative g the second term uses 1000 instead of
-   100 (a tenth of the effect) unless A's unit count is below a side-record header value whose
-   meaning is unknown (see Unknowns). A1 is then floored at 0.
+   100 (a tenth of the effect) unless side A lost a unit: its living count at the end (the
+   side record's first word, 0xc081ac) below its start count (+4, 0xc081b0; experience.md
+   §0); a surrendered side counts none. A1 is then floored at 0. Checked in the running game
+   (Проклятое озеро, army 2 with aggression −25: A1 shifted by −219 = Round(−25·877/100)
+   after losing units, by −22 after none; FINDINGS.md §13).
 3. **Win** if A1 > 0 and A1 > B1:
    - if A1 < A0: `s = Round((1 − A1/A0) × 30·ZeroDensity × A0/B0 + 1)`;
    - else (no loss): `s = Round(A0/B0 + 1)`;
@@ -588,7 +591,7 @@ after the parity pass.
 | Stationary guards | Never bank, step, plan, arrive or get a noon | Never step, plan, arrive or get a noon (§2) | Matches |
 | Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
 | Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
-| Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
+| Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression ÷1000 only when the side lost no unit | §4 exactly | Matches (÷1000 always until 2026-10-03) |
 | Simulated battle results | the sides' strengths at the start and the end (`simulate`) | side strengths +0x7ec / +0x7e8 (483ecc) | Matches (Razdor counted hit points until 2026-10-03) |
 | Cached unit strengths | an army's sides count its units with the defence of its last recount (`AiMind::strength_bd`): 0 from the map load, the building's after an arrival in it, an AI battle or a respawn | +0x1ae per unit, written by 0x4a16d4 only | Matches |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
@@ -630,8 +633,6 @@ and forts' gold stock, which Razdor's economy grows only for villages so far (ec
 
 ## Unknowns
 
-- The side-record header value compared with the unit count when aggression is negative (§4
-  step 2): when exactly the ÷1000 applies. **unknown** (0x4a09ac, `[0xc081b0]`).
 - Whether the player's record counts as "on the map" while he is inside a building (affects
   contacts with him there). **unknown**
 - What happens when more than 512 seeds are added in one plan (no bound check; a map with

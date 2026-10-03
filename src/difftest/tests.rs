@@ -397,3 +397,24 @@ fn quiet_harbour_the_first_step_at_sea_takes_no_time() {
     assert_eq!((states[3].hero.x, states[3].hero.y), (48, 5), "{notes:?}");
     assert_eq!(states[3].clock - states[2].clock, 30);
 }
+
+/// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
+/// moves 28 AI armies through 509 draws. With the first step in place priced south of each
+/// army (§10), the simulated battles counted in side strengths (§11) from the strengths of
+/// the armies' last recount (§12) and the negative aggression's tenth only for a side that
+/// lost no unit (§13), the wait ends as the original's: the generator and every army.
+#[test]
+fn cursed_lake_the_first_wait_moves_the_armies_as_the_original() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Проклятое озеро","hero":1}
+{"op":"ok"}
+{"op":"wait","hours":4}"#,
+    )
+    .unwrap();
+    let (states, _) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[2];
+    assert_eq!(s.rng, 996_532_122);
+    let at = |id: i32| s.armies.iter().find(|a| a.id == id).map(|a| (a.x.unwrap(), a.y.unwrap()));
+    assert_eq!([2, 9, 10, 13].map(at), [Some((10, 45)), Some((16, 59)), Some((74, 39)), Some((9, 68))]);
+}

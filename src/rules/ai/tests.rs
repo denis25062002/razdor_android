@@ -62,7 +62,7 @@ fn slot(col: u8) -> Slot {
 }
 
 fn sim(own: i64, own_left: i64, theirs: i64, theirs_left: i64) -> SimResult {
-    SimResult { own, own_left, theirs, theirs_left, turn: 3 }
+    SimResult { own, own_left, theirs, theirs_left, turn: 3, own_lost_units: false }
 }
 
 /// Army `i` plans now, as at an arrival (its distances to every other party).
@@ -138,6 +138,11 @@ fn the_army_score_follows_the_simulated_battle() {
     assert_eq!(score(sim(100, 20, 100, 60), 50, 0), 46, "B1 = 10, A1 = 70: Round(0.3·150 + 1)");
     // A negative one: a tenth on its own side (÷1000), the full shift on the other's.
     assert_eq!(score(sim(100, 60, 100, 50), -50, 0), -10, "A1 = 60 − 5 = 55 < B1 = 50 + 50");
+    // Only while the side lost no unit (0x4a08f8 compares its living count with its start
+    // count): with one lost, its own shift is ÷100 too.
+    assert_eq!(score(sim(100, 60, 100, 0), -50, 0), 68, "A1 = 60 − 5 = 55 > B1 = 50: Round(0.45·150 + 1)");
+    let lost = SimResult { own_lost_units: true, ..sim(100, 60, 100, 0) };
+    assert_eq!(score(lost, -50, 0), -10, "A1 = 60 − 50 = 10 < B1 = 50: a loss");
     // The shift can lift A1 to A0: then the no-loss formula.
     assert_eq!(score(sim(100, 80, 100, 0), 50, 0), 2);
 }

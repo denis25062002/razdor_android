@@ -216,6 +216,23 @@ Candidate C1003-174927, third part.
   out every strength afresh with the current defence.
 - After the fix A0 and B0 agree with every value the traces show.
 
+## 13. A negative aggression's tenth applies only when the side lost no unit
+
+**Status: fixed** (`SimResult::own_lost_units`, `ai::army_score`; ai.md §4). Candidate
+C1003-174927, fourth part: with it the candidate is resolved.
+
+- After §12, Проклятое озеро step 2: army 2's plan at t = 7240 goes for another target;
+  Frida on its flood (0x482a58) shows other seed values for armies 21 and 22 (2235 against
+  Razdor's 1673) and others.
+- Frida on 0x4a08f8 for army 2 (aggression −25) with the four results read at its end:
+  against army 3, A0 877 and A1 141 = 360 + Round(−25 × 877 / 100); against army 9, A1 832
+  = 854 + Round(−25 × 877 / 1000). The ÷1000 applies when the side record's first word (its
+  living count after the end's copy, 0xc081ac) is not below +4 (its start count, 0xc081b0),
+  i.e. when the scoring side lost no unit; ai.md had that value as unknown and Razdor took
+  ÷1000 always.
+- After the fix the wait's 509 draws all agree with the original's and every field of the
+  step is equal.
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

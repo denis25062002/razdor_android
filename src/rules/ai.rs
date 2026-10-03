@@ -671,6 +671,9 @@ pub struct SimResult {
     pub theirs: i64,
     pub theirs_left: i64,
     pub turn: u32,
+    /// The scoring side ended with fewer units than it started with (its living count, side
+    /// +0 after the end's copy, below its start count +4; a surrendered side counts none).
+    pub own_lost_units: bool,
 }
 
 /// One side of a battle between AI sides: its units (their spells in their slots) and its
@@ -723,6 +726,7 @@ fn sim_result(bt: &Battle) -> SimResult {
         theirs: bt.start_of(Team::Enemy).strength,
         theirs_left: bt.strength_now(Team::Enemy),
         turn: bt.round,
+        own_lost_units: bt.fighters.iter().filter(|f| f.team == Team::Player && f.alive() && !f.surrendered).count() < bt.start_of(Team::Player).count,
     }
 }
 
@@ -780,9 +784,8 @@ impl SimCache {
 /// - Nothing happened, or the battle ran to `BattleEndTurn` (even one wiped out on that very
 ///   turn): 0.
 /// - The aggression shifts both results: `B1 −= Round(g·B0/100)` (not below 0) and
-///   `A1 += Round(g·A0/100)`, a tenth of that for a negative `g` *(guess: the original then
-///   divides by 1000 unless A's unit count is below a side-record value of unknown meaning;
-///   Razdor takes the ÷1000 always)*; A1 not below 0.
+///   `A1 += Round(g·A0/100)`, a tenth of that (÷1000) for a negative `g` when A lost no unit
+///   (its living count at the end is not below its start count); A1 not below 0.
 /// - A win (`A1 > 0` and `A1 > B1`): `Round((1 − A1/A0)·30·ZeroDensity·A0/B0 + 1)` after a
 ///   loss, `Round(A0/B0 + 1)` without; at least 1.
 /// - A loss: `−5 − Round(√(B0/A0)·ZeroDensity·speedA/speedC)`, not below −50.
@@ -797,7 +800,9 @@ pub fn army_score(s: SimResult, g: i32, r: i8, attack_army: i32, zero_density: i
     }
     let g = g as i64;
     b1 = (b1 - fpu_round((g * b0) as f64 / 100.0) as i64).max(0);
-    let div = if g >= 0 { 100.0 } else { 1000.0 };
+    // A negative aggression counts a tenth unless the side lost a unit (0x4a08f8 compares
+    // the side's living count with its start count).
+    let div = if g >= 0 || s.own_lost_units { 100.0 } else { 1000.0 };
     a1 = (a1 + fpu_round((g * a0) as f64 / div) as i64).max(0);
     let zd = zero_density as f64;
     let mut v = if a1 > 0 && a1 > b1 {
