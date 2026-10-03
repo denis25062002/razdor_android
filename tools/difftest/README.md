@@ -263,3 +263,52 @@ text (e.g. (512, 461) for the start message of РК1), Yes on the left and No on
 (e.g. (348, 476) and (674, 476)); bottom panel: message box (372, 684) 280×60, its wait
 buttons appear on hover at about (418, 713) 1 h and (607, 713) 4 h, the centre button
 (512, 713) glides to the hero; resource line at y = 756: mana, gold, income, upkeep.
+
+## LLM explorer (`explore.py`)
+
+A local model plays episodes and the diff test looks for divergences in them:
+
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --hours 2 --max-new 3
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --episodes 1 --maps РК1 --len 30
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --episodes 3 --play-only   # no diff
+
+Needs Ollama (`--ollama`, default `http://localhost:11434`, model `--model qwen3.6:latest`;
+it is asked a few times and the run gives up if it does not answer). Per episode: a map New
+game can start (standalone maps and campaign first maps, from the install's `Maps_Rus`) and
+a hero class in turn, an episode length (`--len`, default 40-80 actions) and goals from a
+rotating list (every building type, accept and decline offers, friendly armies, a weak
+army, noon and midnight, a long walk, magic, trade, hiring, quests; a new goal every 20
+actions). The model gets a text summary of Razdor's replay state (the hero; the nearest
+buildings and armies with their cells and whether a click there is accepted now, found by
+replaying the list with that click; open cells in 8 directions; the window on screen, found
+from Razdor's notes on a probe `ok` / `wait`; the text of the event that just fired; the
+last actions and the rejected ones) and answers `{"actions": [...]}` in the action list v1
+plus `battle_act`/`battle_pass` (`battle_auto` is refused: a no-op in the original). Its JSON
+is repaired (fences, trailing commas, aliases like `move`/`accept`, strings for numbers);
+an action that is not valid on the screen, or that Razdor's replay skips, is dropped and
+counted. Messages that only need OK are closed without asking; after three empty rounds a
+fallback action is played. The model never judges results.
+
+Then `run.py` plays the list on both sides (Frida `random` trace) and `known.py` sorts the
+differences of the step-local run: `known:N` (FINDINGS.md entry N, by field and context;
+the rules are in its docstring), `downstream:N` (a field entry N already threw off, or
+everything after a battle-formation difference or a screen desync), `noise` (an AI army one
+cell off with the generator in step: §5's frame noise), `harness`, or `new`. For the first
+`new` one the original runs once more on the prefix up to it (trace `random,ai,events`): if
+it gives other values for those fields it was noise; else the prefix is shrunk by dropping
+chunks of actions while the field still differs as `new` (`--shrink-budget` original runs),
+and `~/.cache/razdor-difftest/explore/<id>/` gets the repro, both states at the step, both
+screenshots, the trace of the step and the one before, and `candidate.json`; a short entry
+goes into `CANDIDATES.md` for a human to confirm. A signature (the action's op and the
+fields without ids) keeps the same candidate from being reported twice
+(`explore/signatures.json`).
+
+Files in `~/.cache/razdor-difftest/explore/`: `log.jsonl` (one line per episode: map, hero,
+goal, length, the model's calls, invalid actions by kind, the classes found, times),
+`<episode>-actions.jsonl`, `<episode>-chat.jsonl` (the model's replies), `runs/` (the
+run.py folders).
+
+Known limits: the vocabulary has no buying, selling, hiring or casting, so those goals only
+lead to the buildings; the model plans on Razdor's state, so when the original shows a
+window Razdor does not (a desync), the rest of the episode only skips in the original;
+every battle meets FINDINGS §3 first, so what follows a battle is not compared.
