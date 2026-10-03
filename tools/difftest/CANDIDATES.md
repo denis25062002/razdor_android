@@ -1,6 +1,9 @@
 # Diff test candidates
 
 Differences the LLM explorer (`explore.py`) found that `known.py` could not match to a FINDINGS.md entry or to noise. Each needs a human (or Claude) to confirm it, explain it and move it to FINDINGS.md, or teach `known.py` to recognise it.
+# Diff test candidates
+
+Differences the LLM explorer (`explore.py`) found that `known.py` could not match to a FINDINGS.md entry or to noise. Each needs a human (or Claude) to confirm it, explain it and move it to FINDINGS.md, or teach `known.py` to recognise it.
 
 ## C1003-173909: ДС1-С чего все начиналось, step 5 `click_map 96 18`
 
@@ -16,6 +19,10 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
 - rng: Razdor from there: Random(100) rules/ai.rs:1465, Random(100) rules/ai.rs:1466, Random(100) rules/ai.rs:1465, Random(100) rules/ai.rs:1466, Random(100) rules/ai.rs:1465, Random(100) rules/ai.rs:1466, Random(100) rules/ai.rs:1465, Random(100) rules/ai.rs:1466 ...
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1003-173909/`.
 - Re-run after the FINDINGS §1–§5 fixes (f6f51f2): **not resolved**. Razdor's walk still stops at (95,15) after 98 minutes where the original walks on to the village at (96,18) (151) and enters it (offer rolls, chord, idle draws); the step's first 56 draws now agree. Another cause than §1–§5.
+- Second round (run `r2-fix-C1003-173909`): **resolved** by FINDINGS §8 (6fa6992): a
+  village taken on the way opened Razdor's own capture window, which held the walk; the
+  original opens none. The step's 66 draws agree; left is the village's tribute, paid when
+  its window closes in the original (window timing; the repro ends with the window open).
 
 ## C1003-174531: Обучающий1, step 5 `click_map 22 41`
 
@@ -28,6 +35,10 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
 - rng: original from there: Random(3000) patroller idle offset 0x4ad933
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1003-174531/`.
 - Re-run after the fixes: the generator difference (the missing `Random(3000)`) is **resolved by §1** (1c1696f). Left: `events_done` [1..5] against [1..4] with event 4 on screen, likely the window timing of a second event queued behind the first (not confirmed).
+- Second round: **window timing only, confirmed**. With three `ok` after the repro (run
+  `r2-c174531-ext`) every step is equal, generator included: event 5 fires in the original
+  when event 4's window closes. `known.py` now classes it `timing` (FINDINGS "Not
+  differences").
 
 ## C1003-174927: Проклятое озеро, step 2 `wait 4`
 
@@ -49,6 +60,12 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
 - rng: Razdor from there: Random(7) rules/ai.rs:2162, Random(54) rules/ai.rs:2162, Random(100) rules/ai.rs:1468, Random(100) rules/ai.rs:1469, Random(100) rules/ai.rs:1468, Random(100) rules/ai.rs:1469, Random(100) rules/ai.rs:1468, Random(100) rules/ai.rs:1469 ...
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1003-174927/`.
 - Re-run after the fixes: **not resolved**, though the first 119 draws of the wait now agree (8 before). The armies' plans part after that (the original draws `Random(5)` wander points where Razdor draws `Random(11)`): another cause than §1–§5.
+- Second round (run `r2-fix-C1003-174927`): **resolved**, every step equal. Four causes,
+  FINDINGS §10-§13: the first step in place prices the step after south of the army (the
+  load's direction 5, 9301b1b); simulated battles count side strengths, not HP (d9eec17);
+  the strengths keep the building defence of the army's last recount (768ec5d); the
+  negative aggression's tenth only when no unit was lost (3688b16). The "?" caller 0x4a6b74
+  is the AI hire XP roll inside 0x4a548c (named in memread.py and engine.md §3.4).
 
 ## C1003-175950: Тихая пристань, step 3 `click_map 48 5`
 
@@ -62,3 +79,6 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
 - rng: Razdor from there: Random(11) rules/ai.rs:1465, Random(11) rules/ai.rs:1466, Random(11) rules/ai.rs:1465, Random(11) rules/ai.rs:1466, Random(11) rules/ai.rs:1465, Random(11) rules/ai.rs:1466, Random(11) rules/ai.rs:1465, Random(11) rules/ai.rs:1466 ...
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1003-175950/`.
 - Re-run after the fixes: **not resolved**. The original's walk ends 10 minutes earlier (`clock`) and makes the stop's idle draws where Razdor's walk goes on and its armies draw wander points: a walk-end difference, another cause than §1–§5.
+- Second round (run `r2-fix-C1003-175950`): **resolved**, every step equal: the hero's step
+  time is set as he comes onto a cell, priced with the at-sea flag before it, so the first
+  step from a start on the water is free (FINDINGS §9, c49d28e).

@@ -9,6 +9,8 @@ fought by explicit actions), `python -m tools.difftest.run --actions
 tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw trace on;
 §5 from a second run with the Frida trace (`--name rk1-frida --trace random,ai,events,damage`).
 "Step-local" is the run where each Razdor step starts from the original's generator state.
+§6-§15 come from the second round (2026-10-03: rk1-day1's battle and noon, the explorer's
+candidates; runs `r2-*`, traces with Frida).
 
 ## 1. No draw for the idle patrollers when the hero stops
 
@@ -146,7 +148,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 7. The battle is written back into the armies after every action
 
-**Status: fixed** (`Game::battle_write_back`; battle.md §11).
+**Status: fixed in 54461ec** (`Game::battle_write_back`; battle.md §11).
 
 - rk1-day1 steps 22-35 (the ruins' battle), step-local: `hero.units[0].hp` Razdor 80,
   original 63 at step 22 (51 at 24, 50 at 28, 49 at 34); `hero.units[1].hp` 50 against 38.
@@ -167,7 +169,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 8. A village crossed on the way stopped Razdor's walk
 
-**Status: fixed** (the capture window removed: `ui/world_view.rs`, `difftest.rs`; world.md
+**Status: fixed in 6fa6992** (the capture window removed: `ui/world_view.rs`, `difftest.rs`; world.md
 §4.2). Candidate C1003-173909.
 
 - ДС1, step 5 (`click_map 96 18`), step-local: Razdor's hero stops at (95,15) after 98
@@ -184,7 +186,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 9. The first step at sea takes no time
 
-**Status: fixed** (`Game::step_base`; world.md §2.1). Candidate C1003-175950.
+**Status: fixed in c49d28e** (`Game::step_base`; world.md §2.1). Candidate C1003-175950.
 
 - Тихая пристань (the hero starts on a ship at (48,1)), step 3 (`click_map 48 5`, four
   shallow-water steps south), step-local: `clock` Razdor 700069541, original 700069531
@@ -203,7 +205,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 10. An army's first step in place: the step after is priced south of it
 
-**Status: fixed** (`AiMind::stand_facing`; ai.md §2). Candidate C1003-174927, first part.
+**Status: fixed in 9301b1b** (`AiMind::stand_facing`; ai.md §2). Candidate C1003-174927, first part.
 
 - Проклятое озеро, step 2 (`wait 4`), step-local: the first 119 draws of the wait agree,
   then the original draws army 21's wander points (`Random(5)`) where Razdor draws army
@@ -222,7 +224,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 11. The AI's simulated battles count side strengths, not hit points
 
-**Status: fixed** (`ai::simulate`; ai.md §4). Candidate C1003-174927, second part.
+**Status: fixed in d9eec17** (`ai::simulate`; ai.md §4). Candidate C1003-174927, second part.
 
 - After §10, Проклятое озеро step 2: army 9 re-plans at t = 9000 from (20,58); the
   original's path turns through (17,59), Razdor's through (17,58).
@@ -238,7 +240,7 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
 
 ## 12. An army's unit strengths keep the defence of their last recount
 
-**Status: fixed** (`AiMind::strength_bd`, `Battle::set_strength_defence`; ai.md §4).
+**Status: fixed in 768ec5d** (`AiMind::strength_bd`, `Battle::set_strength_defence`; ai.md §4).
 Candidate C1003-174927, third part.
 
 - After §11 the side strengths still differed: army 9's A0 296 in the original, 312 in
@@ -258,7 +260,7 @@ Candidate C1003-174927, third part.
 
 ## 13. A negative aggression's tenth applies only when the side lost no unit
 
-**Status: fixed** (`SimResult::own_lost_units`, `ai::army_score`; ai.md §4). Candidate
+**Status: fixed in 3688b16** (`SimResult::own_lost_units`, `ai::army_score`; ai.md §4). Candidate
 C1003-174927, fourth part: with it the candidate is resolved.
 
 - After §12, Проклятое озеро step 2: army 2's plan at t = 7240 goes for another target;
@@ -275,7 +277,7 @@ C1003-174927, fourth part: with it the candidate is resolved.
 
 ## 14. The victory box draws the event window's chord
 
-**Status: fixed** (the replay's and the interface's victory dialog draw it; engine.md §3.4).
+**Status: fixed in 73047f5** (the replay's and the interface's victory dialog draw it; engine.md §3.4).
 
 - rk1-day1 step 36 (the blow that ends the ruins' battle), step-local: the original draws
   one `Random(3)` from 0x4d1663 (the return of the event window's chord call at 0x4d165e);
@@ -288,7 +290,7 @@ C1003-174927, fourth part: with it the candidate is resolved.
 
 ## 15. The noon report ends the wait and draws the event window's chord
 
-**Status: fixed** (`Game::tick`, the replay's and the interface's report dialog; world.md
+**Status: fixed in 2b650b1** (`Game::tick`, the replay's and the interface's report dialog; world.md
 §6.1).
 
 - rk1-day1 step 42 (`wait 4`) reaches noon an hour in. The original shows the noon report
