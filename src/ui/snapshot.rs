@@ -10,7 +10,8 @@
 //! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_SHOW=x,y,r` shows
 //! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
-//! puts the pointer there.
+//! puts the pointer there. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
+//! test's action list played to that step.
 
 use razdor::rules::content::HeroClass;
 use razdor::rules::game::{Foe, Game};
@@ -46,6 +47,39 @@ fn pointer() -> Option<(f32, f32)> {
     let s = std::env::var("RAZDOR_MOUSE").ok()?;
     let (x, y) = s.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// `replay:<step>`: the action list `RAZDOR_REPLAY` (the diff test's, `razdor --replay`)
+/// played up to and including action `<step>` (all of it without a step), and its screen:
+/// the map, the building window or the battle. Dialogs still waiting are not shown.
+fn stage_replay(app: &mut App, step: Option<&str>) -> Result<(), String> {
+    use razdor::difftest::{read_action_list, Runner, Source};
+    let list = std::env::var("RAZDOR_REPLAY").map_err(|_| "RAZDOR_REPLAY names no action list")?;
+    let actions = read_action_list(std::path::Path::new(&list), None, None)?;
+    let last = match step {
+        Some(s) => s.parse::<usize>().map_err(|_| "bad step")?,
+        None => actions.len().saturating_sub(1),
+    };
+    let dt = app.assets.dt.as_ref().ok_or("no install")?;
+    let mut r = Runner::new(Source::Install(&dt.install));
+    for a in actions.iter().take(last + 1) {
+        r.apply(a)?;
+    }
+    let (mut game, battle, building) = r.into_view().ok_or("the list has no new_game")?;
+    game.pos = game.world.map.center(game.tile());
+    app.screen = match (battle, building) {
+        (Some(b), _) => Screen::Battle(Box::new(BattleView::new(*b))),
+        (None, true) => {
+            let loc = game.location.map(|l| &game.world.locations[l]).ok_or("no building")?;
+            Screen::Building(BuildingView::new(first_tab(loc, &game.content).ok_or("the building has no window")?))
+        }
+        (None, false) => Screen::WorldMap,
+    };
+    game.look_around();
+    app.assets.set_content(game.content.clone());
+    app.dt_content = Some(game.content.clone());
+    app.game = Some(game);
+    Ok(())
 }
 
 /// Sets up the scene of `RAZDOR_SCENE`, if any; a scene that cannot be set up is reported.
@@ -86,6 +120,7 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
             app.open_editor();
             return Ok(());
         }
+        "replay" => return stage_replay(app, parts.next()),
         _ => {}
     }
     let map = parts.next().ok_or("no map named")?;
