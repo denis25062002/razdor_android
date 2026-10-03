@@ -274,7 +274,14 @@ Saves use bzip2 level 1 and 64 KiB blocks; the list caches use one chunk. **code
    maps are created empty.
 8. **All army records are cleared.** The clock starts (§0); the autosave flag is cleared.
 9. The hero (§10.4), the map's armies (§10.5), the ship slot, the buildings (§10.6), then every
-   army's units are set to full health and recomputed and their wages computed.
+   army's units are set to full health and recomputed and their wages computed. Every army,
+   the hero's (record 0) included, and every garrison is then put through a battle side and
+   back (0x49855c with all living units, then 0x4988c0): the side is **auto-arranged**
+   (battle.md, 483b3c) and its grid becomes the army's formation. So the hero's starting army
+   stands as the auto-arrange puts it, not where AddUnit put it (reserve first). His building
+   defence is still 0 here (he is put on his cell after the loop, 0x497c68). A campaign map
+   that carries the army over copies the old army's units and formation back after the load
+   (0x4b5b64).
 10. The AI buffers are cleared and the AI initialised; the hero's gold and mana are set; lit
     lanterns reveal the fog (§10.7).
 

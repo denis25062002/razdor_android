@@ -1678,3 +1678,17 @@ fn a_wait_ends_with_the_snap_but_a_run_into_a_garrison_has_none() {
     assert_eq!(idle_draws(), 0);
     crate::rules::rng::trace::stop();
 }
+
+#[test]
+fn the_heros_starting_army_is_auto_arranged_at_the_map_load() {
+    // 0x4b2504 → 0x49855c, 0x4988c0: the load's battle-side round trip auto-arranges the
+    // hero's army (483b3c) instead of leaving it where AddUnit put it (reserve first).
+    let mut s = map();
+    s.header.heroes[0] = hero(0, 0, 100, &[troop(4, 0, 1), troop(5, 0, 1), troop(6, 0, 1)]);
+    let g = start(&s);
+    let at = |kind: u32| g.squad.iter().find(|u| u.def == UnitId(kind)).unwrap().slot;
+    assert_eq!(at(6), Slot::new(Row::Front, 3), "the best front value, first column of the order");
+    assert_eq!(at(5), Slot::new(Row::Back, 3), "the non-warrior to the back row");
+    assert!(g.squad.iter().all(|u| u.slot.row != Row::Reserve), "{:?}", g.squad.iter().map(|u| u.slot).collect::<Vec<_>>());
+    assert_eq!(g.squad.iter().filter(|u| u.slot.row == Row::Front).count(), 3, "the other warriors in front");
+}

@@ -773,7 +773,9 @@ it into every unit of that side (48b75c). Physical damage adds the **target's** 
 3 × (4 or 6) grid, the one the player's side uses in battle (step 4 above). **code**
 - **Adding a unit** (495ce0). Hiring in a building (4c7380), AI hiring (4a548c), the starting
   units at map load (4b2504) and units given by events (4a8e66, 4a8fe5) all go through it. Garrisons
-  use it too.
+  use it too. At map load the formations it builds do not last: the load then auto-arranges
+  every army, the hero's included, through a battle side and back (0x49855c, 483b3c, 0x4988c0;
+  saves-data.md §10.1 step 9).
   - It refuses when the army already has 12 units. The new unit gets the next number n.
   - With 6 columns it first writes the −1 blocks into the six unused cells (back row columns 1
     and 6, reserve columns 1, 2, 5, 6). This is unconditional: a unit standing in one of those
@@ -902,7 +904,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 44 | Off-screen battle | `set_simulation` (no Splash follow-ups but for heals and blessings, AI mode 0), both sides auto-arranged with the wide blocks, attacker paid only | Same flags; auto-arranged formations; attacker paid only | 10 | Matches |
 | 45 | AI target-scoring battle (`ai::simulate`) | Mode 0, no Splash follow-ups but for heals and blessings, both sides auto-arranged, the defending player with all his living units | Same engine as the off-screen battle: mode 0, no Splash | 10 | Matches |
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
-| 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units). The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
+| 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units); at map start the hero's army is then auto-arranged (`Game::arrange_at_load`), as the load's round trip does. The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
 | 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first, columns in plain order (`Formation::after_battle_slot`) | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
 
 ## Unknowns and open points

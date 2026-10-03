@@ -320,3 +320,16 @@ fn rk1_day1_the_village_waits_for_the_event_window() {
     assert_eq!(states[2].hero.gold, 100, "no tribute under the event's window");
     assert_eq!(states[3].hero.gold, 140, "the village entered after it");
 }
+
+/// FINDINGS.md §3: the knight's army enters the ruins' battle (step 18) in the formation the
+/// map load's auto-arrange gave it, as read in the original: knight and militia in front,
+/// hunter and novice behind.
+#[test]
+fn rk1_day1_the_start_army_stands_as_auto_arranged() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions[..19], Some(&RK1_DAY1_ORIGINAL_RNG)).unwrap();
+    let b = r.states[18].battle.clone().expect("the ruins' battle");
+    let own: Vec<(i32, i32, i32)> = b.sides[0].iter().map(|u| (u.kind, u.row, u.col)).collect();
+    assert_eq!(own, [(1, 1, 4), (4, 1, 3), (19, 2, 4), (26, 2, 3)]);
+}

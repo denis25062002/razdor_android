@@ -468,6 +468,9 @@ old id, and their versions give both.
 - A building the hero walks into as an event's window opens is entered when the window is
   read, as in the original: a village's offer rolls, its window and its tribute come after
   the event, not with it.
+- A new map starts the hero's army in the formation the battle's auto-arrange gives it (the
+  best warrior in front, the shooters and mages behind), as the original's map load does,
+  not with the preset troops in the reserve.
 
 ## 0.2.2 — 2026-10-01
 

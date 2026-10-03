@@ -562,6 +562,7 @@ impl Game {
         let mut squad = vec![leader];
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
         let mut g = Game::with_world(content, world, squad, start.tile);
+        g.arrange_at_load();
         // A preset on the water ("Тихая пристань") puts him there, at sea: aboard a ship
         // *(guess: the original plans on its MIXED map while he is on water)*.
         if g.world.is_sea(start.tile) {
@@ -586,6 +587,22 @@ impl Game {
 
     pub fn hero(&self) -> &Unit {
         &self.squad[0]
+    }
+
+    /// The map load puts every army, the hero's too, through a battle side and back (0x4b2504
+    /// → 0x49855c, 0x4988c0): the side is auto-arranged (483b3c, [`Battle::auto_arrange`])
+    /// and its grid becomes the army's formation. So the hero's starting army stands as the
+    /// auto-arrange puts it, not where adding the units put it (reserve first, 0x495ce0).
+    /// His building defence is still 0 then (he enters his cell after, 0x497c68). A campaign
+    /// map's carried-over army brings its own formation back after it (0x4b5b64).
+    fn arrange_at_load(&mut self) {
+        let player: Vec<(usize, &Unit)> = self.squad.iter().enumerate().filter(|(_, u)| u.alive()).collect();
+        let mut b = Battle::new(self.content.clone(), &player, &[], Team::Player);
+        b.auto_arrange(Team::Player);
+        let slots: Vec<(usize, Slot)> = b.fighters.iter().filter_map(|f| Some((f.squad_index?, f.slot))).collect();
+        for (i, s) in slots {
+            self.squad[i].slot = s;
+        }
     }
 
     /// The hero's name for `#HERONAME`: the one the player chose, else his class's name.
