@@ -38,7 +38,7 @@ fn every_action_of_v1_parses() {
 {"op":"snapshot"}"#;
     let a = parse_actions(text).unwrap();
     assert_eq!(a.len(), 8);
-    assert_eq!(a[0], Action::NewGame { map: "РК1.DTm".into(), hero: 2 });
+    assert_eq!(a[0], Action::NewGame { map: "РК1.DTm".into(), hero: 2, carry: None });
     assert_eq!(a[1], Action::ClickMap { x: 3, y: 4 });
     assert_eq!(a[4], Action::Answer { yes: false });
     assert_eq!(a[6], Action::BattleAuto);
@@ -538,4 +538,37 @@ fn cursed_lake_casts_as_the_original() {
     assert!(notes.is_empty(), "{notes:?}");
     let got: Vec<(u64, u32, i32)> = states.iter().map(|s| (s.clock, s.rng, s.hero.mana)).collect();
     assert_eq!(got[2..], [(592_229_701, 1_410_398_721, 350), (592_229_821, 558_336_172, 250)]);
+}
+
+/// A later campaign map started with a hand-given carry-over (the video experiment,
+/// tools/difftest/VIDEO.md): РК3 as the archmage with РК2's flags `Band` and `King`, the
+/// map explored; at the capital the opening chain gives the normal reward (+1000) and,
+/// through the two reports the flags allow, the large one (+750 and item 93), as in the
+/// gameplay video. Without the flags only the normal reward comes.
+#[test]
+fn rk3_carry_over_flags_open_the_large_reward() {
+    let Some(dt) = install() else { return };
+    let list = |flags: &str| {
+        parse_actions(&format!(
+            r#"{{"op":"new_game","map":"РК3","hero":2,"carry":{{"gold":3154,"mana":1172,"hero_level":4,"units":[[14,3],[28,3],[27,2]],"book":[1,11],"flags":[{flags}],"reveal":true}}}}
+{{"op":"ok"}}
+{{"op":"click_map","x":14,"y":189}}
+{{"op":"ok"}}
+{{"op":"click_map","x":63,"y":143}}
+{{"op":"ok"}}"#
+        ))
+        .unwrap()
+    };
+    let (states, notes) = replay(Source::Install(&dt), &list(r#""Band","King""#)).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let s = &states[0];
+    assert_eq!((s.hero.gold, s.hero.mana, s.hero.units[0].level, s.hero.book.clone()), (3154, 1172, 4, vec![1, 11]));
+    assert_eq!(s.hero.units.iter().map(|u| u.kind).collect::<Vec<_>>(), [2, 14, 28, 27]);
+    let s = &states[5];
+    assert!([11, 13].iter().all(|e| s.events_done.contains(e)), "{:?}", s.events_done);
+    assert_eq!(s.hero.pack, [93]);
+    let (states, _) = replay(Source::Install(&dt), &list("")).unwrap();
+    let s = &states[5];
+    assert!(s.events_done.contains(&11) && !s.events_done.contains(&13), "{:?}", s.events_done);
+    assert!(s.hero.pack.is_empty());
 }

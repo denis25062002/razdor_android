@@ -37,8 +37,16 @@ use crate::rules::world::{Army, LocationKind, Owner, Troop};
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Action {
     /// A new game on map file `map` (its file name, with or without `.DTm`; `demo` for the
-    /// built-in demo) with hero preset `hero`: 1 knight, 2 archmage, 3 ranger.
-    NewGame { map: String, hero: u8 },
+    /// built-in demo) with hero preset `hero`: 1 knight, 2 archmage, 3 ranger. Any map of the
+    /// install starts, later campaign maps too; `carry` stands in for what a campaign carries
+    /// over from the map before (Razdor has no carry-over yet; the original only starts a
+    /// campaign at its first map).
+    NewGame {
+        map: String,
+        hero: u8,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carry: Option<Carry>,
+    },
     /// A click on map cell (x, y): the hero walks there (both clicks of the original).
     ClickMap { x: i32, y: i32 },
     /// Wait 1 or 4 hours.
@@ -88,6 +96,87 @@ pub enum Action {
     /// The army window: puts pack item `slot` (0-based in pack order, empty places left out)
     /// on unit `unit` of the hero's army. A building window is closed first.
     Equip { slot: usize, unit: usize },
+}
+
+/// A start on a later campaign map with what the map before carries over, given by hand in
+/// the state's encodings (unit `[type, level]` with a 1-based type and a 0-based level, item
+/// and spell numbers, the campaign flags by name). It goes through Razdor's own hand-over
+/// ([`Game::from_campaign`], 0x4b5b64), so the map's opening events see the carried army,
+/// gold and flags. A field left out is not carried (the map's own preset stays).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Carry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gold: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mana: Option<i32>,
+    /// The hero's level (0-based); with it his book (`book`) replaces the map's, as the
+    /// hand-over's byte 3 does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hero_level: Option<i32>,
+    /// The army after the hero (replaces the map's preset troops).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<[i32; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pack: Vec<i32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub book: Vec<i32>,
+    /// The campaign flags set on the maps before (event title scripts `%+X`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flags: Vec<String>,
+    /// The whole map explored (a player who knows it from the campaign's earlier play), so
+    /// that a click plans the route the planner finds over all of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reveal: bool,
+}
+
+impl Carry {
+    /// The hand-over this stands for, onto map `map` for class `class`.
+    fn next_map(&self, c: &Content, map: &str, class: HeroClass) -> crate::rules::script::NextMap {
+        use crate::rules::content::{ItemId, UnitId};
+        use crate::rules::units::Unit;
+        let front = Slot::new(Row::Front, c.formation.cols / 2);
+        let mut hero = Unit::new(c, class.unit(), front);
+        hero.level = self.hero_level.map_or(1, |l| l + 1);
+        hero.wage_kind = crate::rules::content::WageKind::Leader;
+        hero.heal_full(c);
+        let mut taken = vec![front];
+        let mut army = Vec::new();
+        for &[kind, level] in &self.units {
+            let Some(slot) = c.formation.new_unit_slot(&taken) else { break };
+            taken.push(slot);
+            let mut u = Unit::new(c, UnitId(kind as u32), slot);
+            u.level = level + 1;
+            u.heal_full(c);
+            army.push(u);
+        }
+        crate::rules::script::NextMap {
+            name: map.to_string(),
+            branch: None,
+            gold: self.gold,
+            mana: self.mana,
+            fame: false,
+            hero,
+            spells: self.hero_level.map(|_| self.book.iter().map(|&s| s as u8).collect()),
+            hero_items: true,
+            inventory: (!self.pack.is_empty()).then(|| self.pack.iter().map(|&i| ItemId(i as u32)).collect()),
+            army: (!self.units.is_empty()).then_some(army),
+            flags: self.flags.iter().map(|f| format!("{f}\u{a0}")).collect(),
+            class,
+            hero_name: None,
+            journal: Default::default(),
+        }
+    }
+
+    fn reveal_all(&self, g: &mut Game) {
+        if self.reveal {
+            let (w, h) = (g.world.map.w, g.world.map.h);
+            for y in 0..h {
+                for x in 0..w {
+                    g.fog.mark((x, y));
+                }
+            }
+        }
+    }
 }
 
 /// A unit of the hero's army.
@@ -228,11 +317,13 @@ struct Dialog {
     cued: bool,
     /// A village's offer: the original asks it in the event window (slot N + 2, 0x4aca80).
     offer: bool,
+    /// The map event whose window it is (1-based), if it is one.
+    id: Option<u16>,
 }
 
 impl Dialog {
     fn message() -> Self {
-        Dialog { event: true, question: false, cued: false, offer: false }
+        Dialog { event: true, question: false, cued: false, offer: false, id: None }
     }
 }
 
@@ -333,8 +424,8 @@ impl<'a> Runner<'a> {
 
     /// Applies one action.
     pub fn apply(&mut self, action: &Action) -> Result<(), String> {
-        if let Action::NewGame { map, hero } = action {
-            return self.new_game(map, *hero);
+        if let Action::NewGame { map, hero, carry } = action {
+            return self.new_game(map, *hero, carry.as_ref());
         }
         if self.game.is_none() {
             return Err("no game: the list must start with new_game".into());
@@ -369,7 +460,7 @@ impl<'a> Runner<'a> {
         Ok(())
     }
 
-    fn new_game(&mut self, map: &str, hero: u8) -> Result<(), String> {
+    fn new_game(&mut self, map: &str, hero: u8, carry: Option<&Carry>) -> Result<(), String> {
         let class = match hero {
             1 => HeroClass::Knight,
             2 => HeroClass::Archmage,
@@ -403,7 +494,14 @@ impl<'a> Runner<'a> {
                         c
                     }
                 };
-                let mut g = Game::from_scenario(content, &s, class);
+                let mut g = match carry {
+                    Some(k) => {
+                        let mut g = Game::from_campaign(content.clone(), &s, &k.next_map(&content, &m.name, class));
+                        k.reveal_all(&mut g);
+                        g
+                    }
+                    None => Game::from_scenario(content, &s, class),
+                };
                 g.improved_ai = dt.settings.expert_ai;
                 self.map = format!("{}.DTm", m.name);
                 self.scenario = Some(s);
@@ -679,7 +777,10 @@ impl<'a> Runner<'a> {
             (Screen::Building, None) => "building",
             (Screen::Map, None) => "map",
         };
-        let mut out = json!({"screen": screen});
+        let mut out = json!({"screen": screen, "income": g.daily_income(), "wages": g.daily_wages()});
+        if let Some(id) = self.dialogs.front().and_then(|d| d.id) {
+            out["event"] = json!(id);
+        }
         let book: Vec<_> = g
             .spells
             .iter()
@@ -843,15 +944,15 @@ impl<'a> Runner<'a> {
                     let g = self.game.as_ref().expect("a game");
                     if g.foe.is_none() && g.village_offer().is_some() {
                         // The offer is a question in the event window, before any village window.
-                        self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: true });
+                        self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: true, id: None });
                     } else if g.foe.is_none() && crate::rules::town::first_tab(&g.world.locations[l], &g.content).is_some() {
                         self.screen = Screen::Building;
                     }
                 }
                 // The noon report is the event window too: it opens with the chord.
                 Event::NewDay(_) => self.dialogs.push_back(Dialog::message()),
-                Event::Script(EventOutcome::Fired { message: true, .. }) => self.dialogs.push_back(Dialog::message()),
-                Event::Script(EventOutcome::Question(_)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: false }),
+                Event::Script(EventOutcome::Fired { message: true, event }) => self.dialogs.push_back(Dialog { id: Some(event), ..Dialog::message() }),
+                Event::Script(EventOutcome::Question(event)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: false, id: Some(event) }),
                 _ => {}
             }
         }
@@ -1129,7 +1230,7 @@ pub fn read_action_list(list: &Path, map: Option<String>, hero: Option<String>) 
     let mut actions = parse_actions(&text)?;
     if let Some(map) = map {
         let hero = hero.as_deref().unwrap_or("1").parse().map_err(|_| "--hero: 1, 2 or 3".to_string())?;
-        actions.insert(0, Action::NewGame { map, hero });
+        actions.insert(0, Action::NewGame { map, hero, carry: None });
     }
     Ok(actions)
 }
