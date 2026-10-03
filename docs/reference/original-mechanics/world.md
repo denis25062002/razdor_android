@@ -464,7 +464,16 @@ map or is destroyed during the ticks (0x4ae536).
 - Leaving onto a cell outside any building (or onto a bridge) clears it; a bridge counts as
   "the building the hero is on" for events but never as entered.
 - When the walk ends inside a building other than a bridge or an obelisk (types 13–15), its
-  window opens (0x4aed85 → 0x4bbc84).
+  window opens (0x4aed85 → 0x4bbc84), unless the arrival's event scan (0x4aed3a) opened an
+  event's window: then the building is entered only when that window is read, and only if it
+  is the building under the clicked cell (0x4ed430 = 0x68dc74 → pending 0x4ed42c; else nothing
+  is entered). The event's OK (0x4c206c → Event_Finish 0x4ab1ec), with no chained event,
+  enters the pending building (0x4bbc84), which scans the events again first (0x4bbd34; one
+  that opens its window keeps the building pending) and only then rolls a village's offer
+  (economy.md §3) and opens the building's window with its chord. So in a village reached as
+  an event fires, the order is: the event's chord, the stop's idle draws (§2.2.1), then after
+  the OK the offer rolls and the village window's chord; its stock is paid when that window
+  is closed.
 - Event scan order (0x4abfbc): global events, then the event point under the hero (a single
   cell), then the building he is in (only local events there, except in villages and
   shipyards where all its events count).

@@ -465,6 +465,9 @@ old id, and their versions give both.
   AI army facing a next step with a patrol radius, outside buildings, draws its idle offset
   from the game's generator as in the original, after the windows the stop opened; a run
   into an army or a garrison draws none.
+- A building the hero walks into as an event's window opens is entered when the window is
+  read, as in the original: a village's offer rolls, its window and its tribute come after
+  the event, not with it.
 
 ## 0.2.2 — 2026-10-01
 

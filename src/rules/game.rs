@@ -308,6 +308,10 @@ pub struct Game {
     /// with them).
     #[serde(skip)]
     pub(crate) click_buildings: (Option<usize>, Option<usize>),
+    /// The building he walked into while an event's window opened, entered once the windows
+    /// are read (0x4ed42c; [`Game::enter_waiting_building`]).
+    #[serde(skip)]
+    pub(crate) waiting_entry: Option<usize>,
     /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
     #[serde(default)]
     pub hero_name: Option<String>,
@@ -473,6 +477,7 @@ impl Game {
             facing: None,
             noon_from: None,
             click_buildings: (None, None),
+            waiting_entry: None,
             hero_name: None,
             journal: History::default(),
             offer: None,
@@ -1114,8 +1119,10 @@ impl Game {
     }
 
     /// The end of a walk (0x4ae5d8): he stops on his cell, which counts as arriving on it
-    /// again, so a building he stands in is entered; its window opens unless it is a bridge
-    /// or an obelisk ([`Event::Arrived`]), with a village's offer or tribute.
+    /// again, so a building he stands in is entered ([`Game::enter_building`]). When the
+    /// step's event scan opened an event's window (0x4aed3a), the building is not entered
+    /// now: if it is the one he clicked (0x4ed430), it waits for the windows to be read
+    /// (0x4ed42c, [`Game::enter_waiting_building`]); else it is not entered at all.
     fn arrive_at_end(&mut self, events: &mut Vec<Event>) {
         self.goal = None;
         self.talk_to = None;
@@ -1126,6 +1133,47 @@ impl Game {
         if self.world.locations[l].kind == LocationKind::Obelisk {
             return;
         }
+        if events.iter().any(Event::needs_reading) {
+            if self.click_buildings.0 == Some(l) {
+                self.waiting_entry = Some(l);
+            }
+            return;
+        }
+        self.enter_building(l, before != Some(l), events);
+    }
+
+    /// The building he walked into while an event's window was open, once the windows are
+    /// read (the event's OK, 0x4c206c → 0x4ab1ec: with no chained event, the building waiting
+    /// at 0x4ed42c is entered, 0x4bbc84). The interface calls it when its last dialog closes;
+    /// not while a fight is pending, nor when he no longer stands there.
+    pub fn enter_waiting_building(&mut self) -> Vec<Event> {
+        let mut events = Vec::new();
+        if self.foe.is_some() {
+            return events;
+        }
+        if let Some(l) = self.waiting_entry.take() {
+            if self.location == Some(l) {
+                self.enter_building(l, false, &mut events);
+            }
+        }
+        events
+    }
+
+    /// Entering building `l` (0x4bbc84): its window opens unless it is a bridge or an
+    /// obelisk ([`Event::Arrived`]), with a village's offer or tribute. `scan` runs the
+    /// events first when he has only now come into it; one that opens its window keeps the
+    /// building waiting for it (0x4ed42c).
+    fn enter_building(&mut self, l: usize, scan: bool, events: &mut Vec<Event>) {
+        if scan {
+            // Entered only now: its local events.
+            let script = self.run_script();
+            let shown = script.iter().any(Event::needs_reading);
+            events.extend(script);
+            if shown {
+                self.waiting_entry = Some(l);
+                return;
+            }
+        }
         self.visit_village(l);
         // The building's window recomputes his army and marks his pairs with the AI's
         // armies to be rescored on its hire, garrison and close tabs (0x4ba854 →
@@ -1133,10 +1181,6 @@ impl Game {
         self.mark_dirty(ai::HERO);
         events.push(Event::Arrived(l));
         events.extend(self.auto_tribute(l));
-        if before != Some(l) {
-            // Entered only now: its local events.
-            events.extend(self.run_script());
-        }
     }
 
     /// What stops or changes the hero's step onto `next` (world.md §4.2, 0x4ad94c), in this

@@ -1591,9 +1591,42 @@ mod tests {
         assert!(fired(&g.drain_events()).is_empty(), "not at the start: the hero is elsewhere");
         assert!(g.set_destination((9, 2)));
         let events = walk(&mut g);
-        assert!(events.contains(&Event::Arrived(0)));
         assert_eq!(fired(&events), vec![1]);
         assert_eq!(g.gold, 125);
+        // Its window open, the town is entered only once it is read (0x4ed42c).
+        assert!(!events.contains(&Event::Arrived(0)));
+        assert_eq!(g.enter_waiting_building(), vec![Event::Arrived(0)]);
+        assert!(g.enter_waiting_building().is_empty(), "once");
+    }
+
+    #[test]
+    fn a_village_entered_as_an_event_opens_waits_for_it_to_be_read() {
+        // 0x4ae6dc: the arrival's event scan opens the event's window; the village he
+        // clicked waits (0x4ed42c) and is entered when the window is read (0x4bbc84): only
+        // then the offer rolls and the tribute.
+        let e = ev(EventKind::Local);
+        let mut s = world(vec![e]);
+        s.header.heroes[0] = hero(2, 2, 100, &[]);
+        let mut v = building(BuildingType::Village, 9, 2, (1, 1));
+        (v.gold_per_day, v.gold_max, v.relations) = (25, 60, [1, 0, 0, 0]);
+        v.event_slots[0] = 1;
+        v.event_count = 1;
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        g.drain_events();
+        assert!(g.set_destination((9, 2)));
+        crate::rules::rng::trace::start();
+        let events = walk(&mut g);
+        let rolls = |d: &[crate::rules::rng::trace::Draw]| d.iter().filter(|d| d.site.file().ends_with("economy.rs")).count();
+        assert_eq!(fired(&events), vec![1]);
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_) | Event::Tribute { .. })), "{events:?}");
+        assert_eq!((g.gold, rolls(&crate::rules::rng::trace::take())), (100, 0), "no tribute, no offer rolls yet");
+        let entered = g.enter_waiting_building();
+        let draws = crate::rules::rng::trace::take();
+        crate::rules::rng::trace::stop();
+        assert_eq!(entered.first(), Some(&Event::Arrived(0)));
+        assert!(rolls(&draws) > 0, "the offer rolls now");
+        assert!(g.village_offer().is_some() || g.gold == 125, "the offer, or the tribute");
     }
 
     #[test]

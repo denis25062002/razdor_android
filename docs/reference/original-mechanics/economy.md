@@ -357,6 +357,9 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
 - Mana stocks of castles, forts and towns are never collected.
 
 **Entering a village** (code, 0x4bbc84). Entering an unguarded village first captures it (world.md).
+The events are scanned first; one that opens its window keeps the village pending (0x4ed42c)
+until it is read, and a walk that ends in the village as an event opens enters it only after
+that window (world.md §7.2): the offer rolls below come after the event's OK.
 - A hero of Nature Rogue gets nothing: no offer, no window.
 - Otherwise, if the village has gold in stock and it is not the village of the last offer (0x671d0c),
   the offer chooser runs (below). If it offers something, the offer opens.
@@ -533,6 +536,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Market display | Prices as charged; the sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test; opens on the goods when there are some | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Matches |
 | Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
 | Village tribute | No attitude test | No attitude test (entering captures the village) | Matches |
+| Village under an event's window | A walk that ends in the clicked village as an event opens enters it when the windows are read (`Game::enter_waiting_building`): offer rolls, window and tribute then; the tribute is taken as the window opens | Entered after the event's OK (0x4ed42c, 0x4bbc84); the stock is paid when the village window closes (0x4c6000) | Order matches; the tribute's moment within the window differs (no draw in between) |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
 | AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |
 | Castle capture gold | Stock + income (garrisons carry no gold) | Stock + garrison gold + income | Yes |

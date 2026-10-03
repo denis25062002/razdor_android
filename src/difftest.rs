@@ -441,10 +441,22 @@ impl<'a> Runner<'a> {
         }
     }
 
+    /// The windows are read: the building he walked into while one opened is entered now
+    /// (0x4bbc84).
+    fn enter_waiting(&mut self) {
+        if self.dialogs.is_empty() {
+            let events = self.g().enter_waiting_building();
+            self.handle(events);
+        }
+    }
+
     fn ok(&mut self) {
         match self.dialogs.front() {
             Some(d) if d.question => self.note("ok: a question is shown (answer it)".into()),
-            Some(_) => self.close_dialog(),
+            Some(_) => {
+                self.close_dialog();
+                self.enter_waiting();
+            }
             None if matches!(self.screen, Screen::Building) => self.screen = Screen::Map,
             None => self.note("ok: nothing to close".into()),
         }
@@ -458,6 +470,7 @@ impl<'a> Runner<'a> {
         self.close_dialog();
         let events = self.g().answer_question(yes);
         self.handle(events);
+        self.enter_waiting();
     }
 
     fn battle_auto(&mut self) {

@@ -664,6 +664,15 @@ impl App {
                     let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
                     next = next.or(after);
                 }
+                // The windows are read: the building he walked into while one opened is
+                // entered now (0x4bbc84).
+                if let (true, Some(game)) = (self.dialogs.is_empty(), self.game.as_mut()) {
+                    let events = game.enter_waiting_building();
+                    if !events.is_empty() {
+                        let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                        next = next.or(after);
+                    }
+                }
             }
         }
         // A fight decided on the map or in a building begins once the messages of that moment

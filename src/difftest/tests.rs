@@ -305,3 +305,18 @@ fn rk1_day1_the_stops_draw_as_the_original() {
         assert!(equal.contains(&step), "step {step}: {equal:?}");
     }
 }
+
+/// FINDINGS.md §2: the village of step 2 is entered as event 17 opens; its offer rolls and
+/// window chord come after the event's OK (step 3), as in the original.
+#[test]
+fn rk1_day1_the_village_waits_for_the_event_window() {
+    let Some(dt) = install() else { return };
+    let equal = rk1_day1_equal_steps(&dt);
+    for step in [2, 3] {
+        assert!(equal.contains(&step), "step {step}: {equal:?}");
+    }
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    let (states, _) = replay(Source::Install(&dt), &actions[..4]).unwrap();
+    assert_eq!(states[2].hero.gold, 100, "no tribute under the event's window");
+    assert_eq!(states[3].hero.gold, 140, "the village entered after it");
+}

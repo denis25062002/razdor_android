@@ -2005,7 +2005,9 @@ mod real_maps {
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;
             let start = g.clock.total_minutes();
-            let events = g.walk_through_fog(target);
+            let mut events = g.walk_through_fog(target);
+            // An event's window at the village (РК1's) is read: then it is entered.
+            events.extend(g.enter_waiting_building());
             assert!(!g.moving() || g.foe.is_some(), "{prefix}: the walk ends");
             assert!(g.clock.total_minutes() > start);
             let arrived = events.contains(&Event::Arrived(village)) && g.location == Some(village);
