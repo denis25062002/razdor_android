@@ -396,6 +396,9 @@ pub trait EventWorld {
     fn move_army_to_hero(&mut self, army: ArmyId);
     /// Light a lantern (point id): reveal its area.
     fn light_lantern(&mut self, point: u16);
+    /// The places shown since the last call (the shown army, the lanterns) are event
+    /// `event`'s: for the interface, which flies to them when its window closes.
+    fn shown_by(&mut self, _event: EventId) {}
     fn change_patrol(&mut self, army: ArmyId, delta: i8);
     /// The hero becomes this unit type; class bonuses are lost.
     fn set_hero_class(&mut self, unit: u8);
@@ -1419,6 +1422,9 @@ impl EventEngine {
         for p in nonzero(&r.light_lanterns) {
             w.light_lantern(p);
             q.shown = true;
+        }
+        if q.shown {
+            w.shown_by(id);
         }
         // 11. A quest adds itself to the journal, every time it finishes (0x49c170).
         if e.kind() == Some(EventKind::Quest) {

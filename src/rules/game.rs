@@ -146,6 +146,9 @@ pub struct DayReport {
 pub struct Shown {
     pub at: Tile,
     pub cells: Vec<Tile>,
+    /// The scenario event that showed it: the interface flies there once that event's window
+    /// is closed (the original queues the glides at its OK).
+    pub event: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

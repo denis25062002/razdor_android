@@ -337,7 +337,7 @@ impl Game {
         let dark: Vec<(i32, i32)> = if self.fog.enabled { square(&self.fog).into_iter().filter(|&t| !self.fog.explored(t)).collect() } else { Vec::new() };
         self.reveal(at.0, at.1, r);
         let cells: Vec<(i32, i32)> = dark.into_iter().filter(|&t| self.fog.explored(t)).collect();
-        self.shown.push(super::game::Shown { at, cells });
+        self.shown.push(super::game::Shown { at, cells, event: None });
     }
 }
 
@@ -683,6 +683,12 @@ impl EventWorld for Game {
         // A lantern without a radius reveals nothing (world.md §3, 0x4ab762).
         if let Some(p) = self.world.points.iter().find(|p| p.id as u16 == point && p.radius > 0).copied() {
             self.reveal_area(p.tile, p.radius);
+        }
+    }
+
+    fn shown_by(&mut self, event: EventId) {
+        for s in self.shown.iter_mut().filter(|s| s.event.is_none()) {
+            s.event = Some(event);
         }
     }
 
