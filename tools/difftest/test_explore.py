@@ -112,6 +112,13 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 0, "diffs": [["events_done", [1, 2, 3, 4, 5], [1, 2, 3, 4]]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["timing"])
 
+    def test_tribute_while_the_village_window_is_open(self):
+        c = known.Context([{"op": "click_map", "x": 96, "y": 18}], {}, [], [],
+                          [{"step": 0, "meta": {"screen": "village"}}], [{"step": 0}])
+        per = known.classify([{"step": 0, "diffs": [["hero.gold", 1050, 1000], ["buildings[id 13].mana", 0, 40],
+                                                          ["hero.x", 1, 2]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["timing", "timing", "new"])
+
     def test_an_xp_difference_is_new(self):
         # FINDINGS §6 is fixed: Razdor pays the install's rate, so XP must agree again.
         c = ctx([{"op": "battle_act"}], [{"step": 0}], [{"step": 0}])

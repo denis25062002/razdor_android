@@ -10,7 +10,8 @@ run (each Razdor step starts from the original's generator state) is given a cla
 - `timing`       a result of the event the original shows that it applies only at OK
                  (FINDINGS.md "Not differences"), when the run ends before the OK; also the
                  events Razdor counts as done that the original fires only when the window
-                 on screen is closed (queued behind it; candidate C1003-174531);
+                 on screen is closed (queued behind it; candidate C1003-174531); and the
+                 tribute while the original's village window is open (paid as it closes);
 - `harness`      one side has no state at that step (the original's harness stopped);
 - `new`          none of the above: a candidate for a human to look at.
 
@@ -196,6 +197,9 @@ def classify(rows, ctx):
                     r"hero\.(gold|mana|units)|buildings\[|armies\[id \d+\]\.(active|alive)", p):
                 cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original, which "
                                       "applies its results at OK (FINDINGS 'Not differences')")
+            if cls is None and ctx.screen(step) == "village" and re.match(r"hero\.(gold|mana)$|buildings\[id \d+\]\.(gold|mana)$", p):
+                cls, why = "timing", ("the original's village window is open: it pays the tribute when the "
+                                      "window closes, Razdor on entering (FINDINGS 'Not differences')")
             if cls is None and p == "events_done" and ctx.event_window(step) and \
                     isinstance(a, list) and isinstance(b, list) and set(b) <= set(a):
                 cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original; the "

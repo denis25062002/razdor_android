@@ -561,11 +561,13 @@ def fallback(info, state, screen, rnd, visited, razdor=None, acts=None, avoid=()
     if screen in ("question", "offer"):
         return {"op": "answer", "yes": rnd.random() < 0.5}
     if screen == "battle":
-        b = state["battle"]
-        foes = b["sides"][1]
-        if foes:
-            u = rnd.choice(foes)
-            return {"op": "battle_act", "side": 2, "row": u["row"], "col": u["col"]}
+        # A press on a foe Razdor takes (a melee unit cannot reach every card), else a pass.
+        foes = list(state["battle"]["sides"][1])
+        rnd.shuffle(foes)
+        for u in foes:
+            a = {"op": "battle_act", "side": 2, "row": u["row"], "col": u["col"]}
+            if razdor is None or not razdor.replay(acts + [a])[1].get(len(acts)):
+                return a
         return {"op": "battle_pass"}
     hp = (state["hero"]["x"], state["hero"]["y"])
     bs = [(b.x, b.y) for b in info.m.buildings if b.id not in visited.get("ids", ())]
