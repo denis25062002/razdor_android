@@ -233,6 +233,12 @@ pub struct AiMind {
     /// call that starts or ends a step (0x4a399c). Only the stop's idle draw reads it
     /// ([`Game::armies_snap`]).
     pub facing_none: bool,
+    /// Where that direction points while it has no path: the offset of the cell the step
+    /// clock prices as "the step after" a step in place (0x4a399c reads the cell one step
+    /// along +0x1710 from where it stands, 8 being no offset). The map load's 5 points south,
+    /// so a fresh record's first step in place is followed by the cell south of it; every
+    /// arrival sets it from its path (none with no next cell), and a respawn keeps it.
+    pub stand_facing: Option<Tile>,
     /// The step weights its path buffer holds, node by node (the original's direction field
     /// of each path point read through the table 0x4ecfd4): a path read writes the weight of
     /// every step out of a node but the last, whose entry keeps what an earlier, longer path
@@ -272,6 +278,10 @@ pub struct AiMind {
     #[serde(skip)]
     pub scripted: bool,
 }
+
+/// The direction the map load writes into every army record (+0x1710 := 5, south, as the
+/// offset of the cell it points at; tables 0x4ecf8c / 0x4ecfb0).
+const LOAD_FACING: Tile = (0, 1);
 
 /// A step the step clock started, arriving at the end of its play time.
 struct Pending {
@@ -1293,9 +1303,12 @@ impl Game {
                 m.income = a.ai.extra_income;
                 m.village_avg = 50;
                 m.village_today = 50;
-                // A stationary guard faces no direction (0x4a1ff0).
+                // A stationary guard faces no direction (0x4a1ff0); the others face the map
+                // load's direction 5, south.
                 if stationary(a) {
                     a.mind.facing_none = true;
+                } else {
+                    a.mind.stand_facing = Some(LOAD_FACING);
                 }
             }
         }
@@ -1313,7 +1326,7 @@ impl Game {
                 if noon < now {
                     noon += day;
                 }
-                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, facing_none: stationary(a), ..AiMind::default() };
+                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, facing_none: stationary(a), stand_facing: (!stationary(a)).then_some(LOAD_FACING), ..AiMind::default() };
             }
         }
         let incomes: Vec<(u8, i32)> = self.world.locations.iter().filter(|l| l.kind.capturable()).filter_map(|l| match l.owner {
@@ -1503,7 +1516,13 @@ impl Game {
                 Some(t) => step_minutes(map.grid, here, t, left, speed),
                 None => left as f32 * speed as f32,
             };
-            let raw = self.ai_cost(a, to) as i64 * speed as i64 * 100;
+            // With no path the step after is priced on the cell its direction points at
+            // (the map load's south, or none).
+            let ahead = match (next, a.mind.stand_facing) {
+                (None, Some(d)) => (here.0 + d.0, here.1 + d.1),
+                _ => to,
+            };
+            let raw = self.ai_cost(a, ahead) as i64 * speed as i64 * 100;
             let after = match (next, a.path.get(1)) {
                 // The path goes on from the cell it enters: that step's weight.
                 (Some(t), Some(&u)) => raw * map.grid.weight(t, u) as i64 / 2,
@@ -1669,8 +1688,10 @@ impl Game {
         }
         // The step clock ends by setting the direction of the next step from the path, 8
         // when it has no next cell (0x4a399c), before the arrival rules run (0x4ade3c).
+        let here = self.world.armies[i].tile(&self.world.map);
         let a = &mut self.world.armies[i];
         a.mind.facing_none = a.path.is_empty();
+        a.mind.stand_facing = a.path.first().map(|t| (t.0 - here.0, t.1 - here.1));
         if let Some(c) = self.ai_arrive(uid) {
             if let Some(i) = self.army_by_uid(uid) {
                 self.world.armies[i].mind.contact = Some(c);

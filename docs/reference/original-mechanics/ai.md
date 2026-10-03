@@ -77,6 +77,15 @@ Details of the step clock that matter for the AI:
 - An army with no path (or a path of one cell) still "steps in place": every time its bank
   covers the cost of its own cell (no diagonal factor) it arrives again, counts one more
   **idle plan**, picks four new wander points and re-plans. A real step resets the idle count.
+- **The step after a step in place** is priced, for the play time, on the cell one step along
+  the army's direction (+0x1710, tables 0x4ecf8c / 0x4ecfb0) from where it stands: the step
+  clock reads `cell + offset(direction)` whatever the path. Every arrival and every plan set
+  the direction from the path (8, no offset, when it has no next cell), but the map load
+  writes 5 (south) into every record and the AI's set-up 8 only for stationary guards, so a
+  fresh army's first step in place is followed by the cell **south** of it; a respawn keeps
+  the direction the army died with (0x4a28d0 does not write it). Checked in the running game
+  (Проклятое озеро: army 13 on a cell of cost 4 with a cheaper cell south of it played its
+  first step in 20 minutes, not the whole window; FINDINGS.md §10).
 - On every arrival the army computes the octile distance to every other army on the map
   (the player included) and adds 1 to its **talk counter** towards each of them (§8). An army
   standing on the very same cell has distance 0 and is treated as absent here: no +1, and it
@@ -586,6 +595,7 @@ after the parity pass.
 | Midnight | Medic 10% (with the economy's midnight), village average, every building rescored | Medic armies heal 10%; armies rescore buildings (§14) | Matches |
 | Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
 | Arrival order | Each tick (a hero's whole step, or a wait tick) the armies bank and step by the step clock's play time; every arrival at the end of its play time, arrivals in time order (army order at the same moment), a midnight among them at its moment (`Game::ai_move`) | Frame by frame (world.md §5): at most one arrival per call, the next step at the next frame, the frame rate deciding ties | Matches the limit of short frames; frame effects of the original are not modelled |
+| Step in place after the load | the step after is priced south of the army until its first arrival (`AiMind::stand_facing`); a respawn keeps the last direction | the cell along +0x1710: 5 (south) from the load, the path's or none after each arrival or plan | Matches |
 | Idle draws at the hero's stop | Every army it steers with a next step on its path (the original's direction below 8), a patrol radius above 0 and no building under it draws `Random(3000)` once per stop, after the windows the stop opened (`Game::armies_snap`) | 0x4ad8a0 (world.md §2.2.1) | Matches |
 | Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
 

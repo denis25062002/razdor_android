@@ -1754,3 +1754,28 @@ fn arrivals_come_in_the_order_of_their_play_times_not_of_the_armies() {
     assert_eq!(boxes, [two, two, one, two].concat());
     assert_eq!(g.world.armies[0].tile(&g.world.map), (31, 10));
 }
+
+#[test]
+fn the_first_step_in_place_prices_the_step_after_south_of_the_army() {
+    // 0x4a399c: a step in place prices "the step after" on the cell one step along the
+    // army's direction (+0x1710), which the map load sets to 5, south. On marsh (8) with a
+    // road (3) south of it, a bank of 60 minutes pays the 40 of the step and keeps 20,
+    // which covers the road's 15 but not the marsh's 40: the step plays its share of the
+    // tick (40 × 30 / 60 = 20 minutes), not the whole window.
+    use crate::dt::dtm::Surface;
+    let mut s = map();
+    tk::set(&mut s, 30, 10, Surface::Marsh);
+    tk::set(&mut s, 30, 11, Surface::Road);
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let uid = g.world.armies[0].uid;
+    assert_eq!((g.world.armies[0].mind.stand_facing, g.world.armies[0].speed), (Some((0, 1)), 5), "the load's direction 5");
+    let play = |g: &mut Game, facing: Option<Tile>| {
+        let a = &mut g.world.armies[0];
+        (a.budget, a.mind.free_step, a.mind.stand_facing) = (60.0, false, facing);
+        g.ai_start(uid, &hero, 3000, 6000, 3000).unwrap().1
+    };
+    assert_eq!(play(&mut g, Some((0, 1))), 2000);
+    assert_eq!(play(&mut g, None), 3000, "with no direction its own marsh: the whole window");
+}

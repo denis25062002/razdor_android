@@ -161,6 +161,25 @@ midnight restock of market 5 (step 16) starts from another state.
 - After the fix all four steps of the repro agree with the original (the 27 draws of
   step 3 too).
 
+## 10. An army's first step in place: the step after is priced south of it
+
+**Status: fixed** (`AiMind::stand_facing`; ai.md §2). Candidate C1003-174927, first part.
+
+- Проклятое озеро, step 2 (`wait 4`), step-local: the first 119 draws of the wait agree,
+  then the original draws army 21's wander points (`Random(5)`) where Razdor draws army
+  13's (`Random(11)`).
+- Frida (`ai` preset): at the wait's first frame every army steps in place (no path,
+  direction 5 from the map load). Army 13 stands on a cell of cost 4 (2000 centi-minutes,
+  bank left 1000) and plays the step in 2000, so it arrives in the frame of t = 2020;
+  Razdor gave it the whole window (3000) and it arrived with armies 18 and 21 at t = 1580.
+- The step clock (0x4a399c) prices "the step after" on `cell + offset(+0x1710)`, the cell
+  one step along the army's direction, not on the cell it stands on. The map load writes 5
+  (south, offset (0, 1); tables 0x4ecf8c / 0x4ecfb0) into every record; every arrival or
+  plan sets the direction from the path, 8 (no offset) without a next cell. So a fresh
+  army's first step in place compares its bank with the cost of the cell south of it.
+  Razdor priced its own cell.
+- After the fix the wait's first 367 draws agree (§11-§13 explain the rest).
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

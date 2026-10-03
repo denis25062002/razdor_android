@@ -483,6 +483,8 @@ old id, and their versions give both.
 - The hero's step time is worked out as he comes onto a cell, as in the original, with
   whether he was at sea before it: his first step on the water after going to sea (or on a
   map that starts him at sea) takes no time.
+- An AI army's first step in place after the map load times its play by the cell south of
+  it (the direction the map load gives every army), as in the original.
 
 ## 0.2.2 — 2026-10-01
 
