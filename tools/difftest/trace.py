@@ -206,8 +206,69 @@ def preset_events(arg=None):
     ]
 
 
+# The sound handles the loader fills (0x4e2e80, interface.md §14): the global that holds each
+# `_Sounds.ini` key's slot. MainMenuSelect-2/-3 share -1's slot; Battle-Parry is the
+# Community's (no ini entry in the shipped install).
+SOUND_GLOBALS = [
+    (0xAE1268, "BkgMenuMain"), (0xAE126C, "BkgAuthors"), (0xAE1278, "BkgMap1"), (0xAE127C, "BkgMap2"),
+    (0xAE1280, "BkgMap3"), (0xAE1284, "BkgMap4"), (0xAE1288, "BkgMap5"), (0xAE128C, "BkgMap6"),
+    (0xAE1290, "BkgMap7"), (0xAE1294, "BkgBattle1"), (0xAE1298, "BkgBattle2"), (0xAE1270, "BkgTriumph"),
+    (0xAE1274, "BkgDefeat"),
+    (0xAE12A0, "InterfaceButtonDown"), (0xAE1264, "InterfacePanelDown"), (0xAE1260, "InterfaceCastSpell"),
+    (0xAE12A4, "InterfaceBarScroll"), (0xAE1244, "MainMenuSelect-1"), (0xAE125C, "MainMenuPress"),
+    (0xAE1250, "Global-Event-1"), (0xAE1254, "Global-Event-2"), (0xAE1258, "Global-Event-3"),
+    (0xAE12AC, "Global-Battle"), (0xAE12B0, "Unit-Upgrade"), (0xAE12B4, "Spell-Good"),
+    (0xAE12B8, "Spell-Evil"), (0xAE12C0, "Battle-Fight"), (0xAE12C4, "Battle-Shoot"),
+    (0xAE12C8, "Battle-Cure"), (0xAE12CC, "Battle-Bless"), (0xAE12D0, "Battle-Strike"),
+    (0xAE12BC, "Battle-Sorcery"), (0xAE12D4, "Card-Move"), (0xAE12D8, "Item-Item"),
+    (0xAE12DC, "Item-BlowWeapon"), (0xAE12E0, "Item-ShotWeapon"), (0xAE12E4, "Item-Armor"),
+    (0xAE12E8, "Item-Helm"), (0xAE12EC, "Item-Shield"), (0xAE12F0, "Item-Staff"),
+    (0xAE12F4, "Item-Amulet"), (0xAE12F8, "Item-Ring"), (0xAE12FC, "Item-Potion"),
+    (0xAE12A8, "Item-Gold"), (0xC2A858, "Battle-Parry"),
+]
+SOUND_SLOTS = 0x5BD7FA      # 1024 × 0x2e: +0 group (1 music, 2 effects)
+MUSIC_CURRENT = 0xAE129C    # the track playing (Music_Play, Music_NextRandom)
+QUEUES = 0xB06F60           # 64 deferred-call queues of 0x404: count, then 64 × {fn, a, b, c}
+
+
+def _sound_name(expr):
+    table = json.dumps([[a, n] for a, n in SOUND_GLOBALS])
+    return (f"(() => {{ const s = {expr}; for (const [ad, nm] of {table}) if (s && i32(ad) === s) "
+            f"return nm; return null; }})()")
+
+
+def _queue_entry(index):
+    base = f"({QUEUES + 4} + a.q * 0x404 + ({index}) * 16)"
+    return {"entry": f"[u32({base}), i32({base} + 4), i32({base} + 8), i32({base} + 12)]"}
+
+
+def preset_av(arg=None):
+    """Sounds, music and the timed animations (tools/difftest/av.py reads them):
+    Sound_Play 0x481420 (slot, restart, loop; the slot's group and `_Sounds.ini` key),
+    Music_Play 0x49d774 (track), Music_NextRandom 0x49d7f8 (the track it picked), and every
+    entry pushed on the deferred-call queues (Queue_Push 0x48c2e4, Queue_PushFront 0x48c348:
+    the callback and its {a, b, c}): battle slides 0x4afbd8, effects 0x4afe7c, passes 0x4afb54,
+    card slides 0x4b0284, the walk 0x4ae6dc, waits 0x4ae280, camera glides 0x4af96c..."""
+    return [
+        {"name": "SoundPlay", "addr": 0x481420,
+         "args": [["slot", "eax", "i32"], ["restart", "edx", "u8"], ["loop", "ecx", "u8"]],
+         "enter": {"group": f"(a.slot > 0 && a.slot <= 1024) ? i32({SOUND_SLOTS} + a.slot * 0x2e) : null",
+                   "name": _sound_name("a.slot")}, "ret": None},
+        {"name": "MusicPlay", "addr": 0x49D774, "args": [["track", "eax", "i32"]],
+         "enter": {"name": _sound_name("a.track")}, "ret": None},
+        {"name": "MusicNext", "addr": 0x49D7F8, "args": [],
+         "leave": {"name": _sound_name(f"i32({MUSIC_CURRENT})")}},
+        {"name": "QueuePush", "addr": 0x48C2E4,
+         "args": [["q", "eax", "i32"], ["fn", "edx", "hex"]],
+         "leave": _queue_entry(f"i32({QUEUES} + a.q * 0x404) - 1")},
+        {"name": "QueuePushFront", "addr": 0x48C348,
+         "args": [["q", "eax", "i32"], ["fn", "edx", "hex"]], "leave": _queue_entry("0")},
+    ]
+
+
 PRESETS = {"random": preset_random, "ai": preset_ai, "ai_frames": preset_ai_frames,
-           "advance": preset_advance, "damage": preset_damage, "events": preset_events}
+           "advance": preset_advance, "damage": preset_damage, "events": preset_events,
+           "av": preset_av}
 
 
 def specs_for(names):
