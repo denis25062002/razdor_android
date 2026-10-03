@@ -142,6 +142,25 @@ midnight restock of market 5 (step 16) starts from another state.
 - After the fix the step's 66 draws all agree with the original's; left is the village's
   tribute, which the original pays when its window closes (window timing, README).
 
+## 9. The first step at sea takes no time
+
+**Status: fixed** (`Game::step_base`; world.md §2.1). Candidate C1003-175950.
+
+- Тихая пристань (the hero starts on a ship at (48,1)), step 3 (`click_map 48 5`, four
+  shallow-water steps south), step-local: `clock` Razdor 700069541, original 700069531
+  (40 minutes against 30); Razdor's armies then arrive where the original's hero has
+  stopped (the original makes its stop's idle draws, Razdor more wander points).
+- Frida on 0x497c68 (the hero comes onto a cell): at the map load it sets the step time to
+  0 (cost 0, at-sea flag 1 after the call); each later arrival sets 1000 centi-minutes
+  (shallows, cost 2 × speed 5 × 100). The step from (48,1) took no game time.
+- 0x497c68 reads the cell's cost on the map the at-sea flag (0x75bfdc) chooses, then sets
+  the flag from the cell's terrain (0x496d28). At the map load the flag is still 0, so the
+  start cell is priced on LAND, where water costs 0. The same holds for every boarding: the
+  first water cell is priced on LAND and the step after it is free. Razdor priced every step
+  when it was taken, with the flag as it stood then.
+- After the fix all four steps of the repro agree with the original (the 27 draws of
+  step 3 too).
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

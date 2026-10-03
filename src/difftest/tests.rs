@@ -378,3 +378,22 @@ fn ds1_a_village_crossed_on_the_way_does_not_stop_the_walk() {
     let s = &states[5];
     assert_eq!((s.hero.x, s.hero.y, s.clock), (96, 18, 151), "{notes:?}");
 }
+
+/// FINDINGS.md §9 (candidate C1003-175950): Тихая пристань starts the hero on the water. The
+/// map load prices his first step on LAND, before he is at sea (0x497c68), where water costs
+/// 0: of the four shallow-water steps to (48,5) the first takes no time, so the walk takes 30
+/// minutes, as in the original, not 40.
+#[test]
+fn quiet_harbour_the_first_step_at_sea_takes_no_time() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Тихая пристань","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":48,"y":5}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert_eq!((states[3].hero.x, states[3].hero.y), (48, 5), "{notes:?}");
+    assert_eq!(states[3].clock - states[2].clock, 30);
+}

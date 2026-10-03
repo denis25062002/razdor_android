@@ -480,6 +480,9 @@ old id, and their versions give both.
   moment, and a hero's step is one tick however long.
 - A village (or an empty castle, fort or ruins) taken on the way opens no window and does
   not stop the walk, as in the original; its window opens only when the walk ends in it.
+- The hero's step time is worked out as he comes onto a cell, as in the original, with
+  whether he was at sea before it: his first step on the water after going to sea (or on a
+  map that starts him at sea) takes no time.
 
 ## 0.2.2 — 2026-10-01
 

@@ -171,6 +171,17 @@ closed or unreachable the chase ends and **the hero stops** on the cell he has r
 - Hero step time (centi-minutes) = `cost of the cell he leaves × speed × 100`, ×1.5 on a
   diagonal step (0x497c68, 0x4ae954). The cost is read on LAND, or on MIXED at sea. All
   products are exact integers (×150 for a diagonal).
+- **When the cost is read** (0x497c68): as he comes onto a cell, not as he leaves it, and on
+  the map his at-sea flag chose **before** that cell updates the flag (the flag is set from
+  the cell's terrain after the read, 0x496d28). So the first water cell he comes onto from
+  land or a building is priced on LAND, where water costs 0, and **the step after it takes no
+  time**; so is the start cell of a map that starts him on the water (the map load puts him
+  on his cell, 0x4b2504, before he is at sea). The cell is priced again, with the flag as it
+  then stands, at the end of a walk (0x4ae5d8), after a battle (0x4c50ec, 0x4c56a8), when a
+  Community event moves him (0xc27862) and at a save load (0x4b771c, which reprices a hero at
+  sea on MIXED). Landing clears the flag before the step (0x4ad94c), so a landing is priced
+  normally. Checked in the running game (Тихая пристань: the step time read 0 after the load,
+  1000 centi-minutes for each shallow step after; FINDINGS.md §9).
 - Speed by class (0x4b4300): **knight 5, archmage 5, ranger 4** → the ranger's steps take 80%
   of the time. Minutes per orthogonal grass step: 25 (ranger 20).
 - The class values (sight, speed, cast divisor) are set when the map is started (0x4b4300).
@@ -571,7 +582,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
 | Mask: buildings | castles/forts with attitude ≤ 0, ruins not his (`Location::bars_hero`) | castles/forts with attitude ≤ 0, ruins not his only | Matches |
 | Mask: bridges at sea | closed only when clicking land or standing on a bridge; a bridge is no target at sea | only when clicking land or standing in a bridge | Matches |
-| Hero step time | cost of the cell left × speed, ×1.5 diagonal | same | none |
+| Hero step time | cost of the cell left × speed, ×1.5 diagonal, the cost read as he comes onto the cell with the at-sea flag before it (`Game::step_base`): the first step after going to sea, or from a map's start on the water, is free | same | Matches |
 | AI step time | cost of the cell **left** (`step_army`) | cost of the cell **left** | Matches |
 | AI never enters the hero's cells | a step onto his cell or the one he steps from, or, standing, the cell ahead of him in his last step's direction (`Game::facing`), spends its time, the army stays | his cell plus his direction, which a stop does not clear; waits in place, then contact | Matches |
 | Stationary guards' clock | skipped (no bank) | skipped | Matches |

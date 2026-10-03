@@ -982,6 +982,9 @@ impl EventWorld for Game {
         self.path.clear();
         self.goal = None;
         self.location = None;
+        // His next step is priced on his new cell (0x497c68, from the Community's 0xc27862).
+        let cost = if self.aboard() { self.world.mixed_cost(t) } else { self.world.map.cost(t).unwrap_or(0) };
+        self.step_base = Some(u32::from(cost) * self.hero_speed());
         self.look_around();
     }
 }

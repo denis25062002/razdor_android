@@ -291,6 +291,14 @@ pub struct Game {
     /// The hero's speed as a Community event set it (0xc279e6); `None`: his class's.
     #[serde(default)]
     pub(crate) speed_set: Option<u32>,
+    /// The minutes of the hero's next orthogonal step as the original works them out when he
+    /// comes onto his cell (0x497c68: the cell's cost × his speed, ×1.5 at the step if it is
+    /// diagonal), on the map his at-sea flag chose *before* that arrival updated it: coming
+    /// onto the water from land or a building, or starting a map on the water, the cell is
+    /// priced on LAND, where water costs 0, so his first step at sea takes no time. `None`:
+    /// the cell he stands on, priced now (a save load works it out anew, 0x4b771c).
+    #[serde(skip)]
+    pub(crate) step_base: Option<u32>,
     /// While the hero steps: the cell he left, which AI armies keep off too.
     #[serde(skip)]
     pub(crate) step_from: Option<Tile>,
@@ -473,6 +481,7 @@ impl Game {
             ship_bought: false,
             noon_due: None,
             speed_set: None,
+            step_base: None,
             step_from: None,
             facing: None,
             noon_from: None,
@@ -563,6 +572,9 @@ impl Game {
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
         let mut g = Game::with_world(content, world, squad, start.tile);
         g.arrange_at_load();
+        // The map load puts him on his cell (0x4b2504 → 0x497c68) before he is at sea: his
+        // first step is priced on LAND, 0 on the water.
+        g.step_base = Some(g.land_step_base(start.tile));
         // A preset on the water ("Тихая пристань") puts him there, at sea: aboard a ship
         // *(guess: the original plans on its MIXED map while he is on water)*.
         if g.world.is_sea(start.tile) {
@@ -691,6 +703,20 @@ impl Game {
         let w = &self.world;
         let left = if self.aboard() { w.mixed_cost(from) } else { w.map.cost(from).unwrap_or(0) };
         step_minutes(w.map.grid, from, to, left, self.hero_speed())
+    }
+
+    /// Minutes of the hero's step from `from` onto `to` as he takes it: the base the original
+    /// set when he came onto `from` ([`Game::step_base`]), ×1.5 diagonally.
+    fn hero_step_minutes(&self, from: Tile, to: Tile) -> f32 {
+        match self.step_base {
+            Some(base) => step_minutes(self.world.map.grid, from, to, 1, base),
+            None => self.step_time(from, to),
+        }
+    }
+
+    /// The base of his next step on LAND (cost × speed): 0 on the water.
+    pub(crate) fn land_step_base(&self, t: Tile) -> u32 {
+        u32::from(self.world.map.cost(t).unwrap_or(0)) * self.hero_speed()
     }
 
     /// Minutes the hero needs to walk `path`.
@@ -1096,7 +1122,7 @@ impl Game {
             }
             None => {}
         }
-        let minutes = self.step_time(from, next);
+        let minutes = self.hero_step_minutes(from, next);
         if self.landing(next) {
             // He walks onto the land and stops there; the ship waits on the water he left.
             self.path.truncate(1);
@@ -1651,6 +1677,9 @@ impl Game {
     }
 
     fn settle_battle(&mut self, battle: &Battle) -> BattleResult {
+        // The battle's end puts him on his cell again (0x4c50ec → 0x497c68): his next step is
+        // priced there as it stands.
+        self.step_base = None;
         // The army's formation is rebuilt from the battle grid (4988c0): the survivors keep
         // the cells they ended on (a cell outside the formation is lost); those left without
         // one, the units that did not fight first, then the dead, take free cells, reserve
