@@ -171,7 +171,21 @@ The install comes from `RAZDOR_DT_DIR` (or `.env`); a list on `"map":"demo"` nee
 has for the step before. `--look` adds to each state line a `look` object (not part of the
 schema): Razdor's screen (`map`, `building`, `dialog`, `question`, `offer`, `battle`,
 `ended`), the book and the pack, and in a building window its tabs, goods, sell list,
-barracks, heal/raise prices and spells with the row numbers the service ops take. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
+barracks, heal/raise prices and spells with the row numbers the service ops take; also the
+income, the wages and the event whose window is shown.
+
+**Later campaign maps.** `new_game` starts any map of the install, a later campaign map too
+(the original's New game only starts a campaign at its first map). With `carry` it starts as
+after the map before, through Razdor's own campaign hand-over (`Game::from_campaign`), so
+the opening events see it:
+
+    {"op":"new_game","map":"РК3","hero":2,"carry":{"gold":3154,"mana":1172,"hero_level":4,
+     "units":[[14,3],[28,3]],"pack":[93],"book":[1,11],"flags":["Band","King"],"reveal":true}}
+
+`units` are `[type, level]` (the state's encodings), `hero_level` 0-based (with it `book`
+replaces the map's), `flags` the campaign flags of the earlier maps' event title scripts,
+`reveal` the whole map explored. A field left out keeps the map's preset. Used for the
+gameplay-video experiment (`VIDEO.md`, `rk3-video.jsonl`); Razdor only. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
 prefix). States go to `out/razdor.jsonl`, one line per action (`step` = the action's index,
 0-based), or to the standard output without `--out`. Actions that do not apply at that
 moment (an `ok` with nothing open, a click on a cell that is no target) are skipped and

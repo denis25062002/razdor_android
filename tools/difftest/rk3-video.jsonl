@@ -1,0 +1,38 @@
+{"op": "new_game", "map": "РК3", "hero": 2, "carry": {"gold": 3154, "mana": 1172, "hero_level": 4, "units": [[14, 3], [28, 3], [27, 2]], "book": [1, 11], "flags": ["Band", "King"], "reveal": true}}
+{"op": "ok"}
+{"op": "click_map", "x": 14, "y": 189}
+{"op": "ok"}
+{"op": "click_map", "x": 63, "y": 143}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "click_map", "x": 63, "y": 143}
+{"op": "cast", "slot": 1}
+{"op": "click_map", "x": 81, "y": 91}
+{"op": "click_map", "x": 77, "y": 95}
+{"op": "ok"}
+{"op": "click_map", "x": 73, "y": 98}
+{"op": "battle_auto"}
+{"op": "ok"}
+{"op": "click_map", "x": 73, "y": 98}
+{"op": "click_map", "x": 76, "y": 95}
+{"op": "ok"}
+{"op": "battle_auto"}
+{"op": "ok"}
+{"op": "click_map", "x": 77, "y": 95}
+{"op": "battle_auto"}
+{"op": "ok"}
+{"op":"wait","hours":4}
+{"op":"ok"}
+{"op":"wait","hours":4}
+{"op":"ok"}
+{"op":"wait","hours":4}
+{"op":"ok"}
