@@ -627,6 +627,8 @@ impl<'a> Runner<'a> {
             let any = !events.is_empty();
             self.handle(events);
             self.cue();
+            // The stop's snap, after the chords of the windows it opened (0x4ad8a0).
+            self.g().armies_snap();
             let g = self.game.as_mut().expect("a game");
             if self.dialogs.is_empty() {
                 if matches!(g.script_end(), Some(ScriptEnd::Victory(_) | ScriptEnd::Defeat(_))) || g.army_fallen() {

@@ -352,6 +352,14 @@ pub struct Game {
     /// Real seconds since the world last moved, for drawing armies between cells.
     #[serde(skip)]
     pub(crate) since_step: f32,
+    /// The hero stopped: the armies' snap and its idle draws are due ([`Game::armies_snap`]),
+    /// after the windows the stop opened have drawn their chords.
+    #[serde(skip)]
+    pub(crate) snap_due: bool,
+    /// The stop under way has had its snap already (an AI army's attack or greeting) or has
+    /// none (a run into an army or a garrison, 0x4ad94c in the middle of the step).
+    #[serde(skip)]
+    pub(crate) snapped: bool,
     /// "Improved enemy AI in battle" (the original's `OptValue9`, "expert" in Razdor's
     /// settings): the player's choice, set by the interface, not part of the save.
     #[serde(skip)]
@@ -478,6 +486,8 @@ impl Game {
             reading: None,
             queued_casts: Vec::new(),
             since_step: 0.0,
+            snap_due: false,
+            snapped: false,
             improved_ai: false,
             ai_events: Vec::new(),
             sims: Default::default(),
@@ -913,6 +923,7 @@ impl Game {
             if done >= 1 {
                 self.wait_ticks = 0;
                 self.step_elapsed = 0.0;
+                self.snap_due = true;
             }
         }
     }
@@ -965,12 +976,18 @@ impl Game {
             return events;
         }
         self.step_elapsed += real_dt;
+        // A snap still due from the last stop comes before the world moves again.
+        self.armies_snap();
+        let (mut walked, mut waited) = (false, false);
+        self.snapped = false;
         while self.step_elapsed >= STEP_SECONDS && (self.moving() || self.wait_ticks > 0) {
             self.step_elapsed -= STEP_SECONDS;
             self.since_step = 0.0;
             let go = if self.moving() {
+                walked = true;
                 self.hero_step(&mut events)
             } else {
+                waited = true;
                 match self.endless_wait.as_mut() {
                     // The endless wait's end test is off: its one tick never runs out.
                     Some(done) => *done += 1,
@@ -998,6 +1015,14 @@ impl Game {
                 break;
             }
         }
+        // The hero stopped: the end of a walk (0x4ae5d8, then 0x4ad8a0 at the frame's end),
+        // an event or an AI army's attack or greeting stopping it (0x4ade3c), or the end of a
+        // wait, also one an event cut short (0x4ae24c, 0x4ae42f); not a run into an army or a
+        // garrison in the middle of a step (0x4ad94c snaps them without the idle draws), nor
+        // the endless wait going on under an event's dialog (0xc2782b).
+        if (walked && !self.moving() && !self.snapped) || (waited && self.wait_ticks == 0) {
+            self.snap_due = true;
+        }
         if !self.moving() && self.wait_ticks == 0 {
             self.step_elapsed = 0.0;
             self.endless_wait = None;
@@ -1021,6 +1046,7 @@ impl Game {
         let from = self.tile();
         match self.step_contact(next) {
             Some(StepContact::Army(i)) => {
+                self.snapped = true;
                 self.path.clear();
                 self.goal = None;
                 self.talk_to = None;
@@ -1032,6 +1058,7 @@ impl Game {
                 return false;
             }
             Some(StepContact::Garrison(l)) => {
+                self.snapped = true;
                 self.path.clear();
                 self.goal = None;
                 self.talk_to = None;
@@ -1062,9 +1089,17 @@ impl Game {
         self.pass_time_walking(minutes, from, events);
         if let Some(e) = self.ai_contact() {
             let attack = matches!(e, Event::Encounter(_));
+            // The stop snaps the armies (0x4ad8a0) before an attack's events run, after a
+            // greeting's and before their window opens (0x4ade3c).
+            if attack {
+                self.snap_now();
+            }
             // The events run with the army as the met army; a greeting stops the walk only
             // when one of them fired (0x4ade3c), an attack always.
             if self.meet(e, events) || attack {
+                if !attack {
+                    self.snap_now();
+                }
                 self.path.clear();
                 self.goal = None;
                 self.talk_to = None;
@@ -1172,6 +1207,8 @@ impl Game {
                 break;
             }
         }
+        self.snap_due = true;
+        self.armies_snap();
         events
     }
 
@@ -1417,6 +1454,8 @@ impl Game {
     /// makes the player the attacker (the building's extra defence helps the garrison); an
     /// army that catches the player attacks.
     pub fn start_battle(&mut self) -> Battle {
+        // A stop's snap still due comes first (0x4ad8a0 runs before the battle opens).
+        self.armies_snap();
         // An army fights with its items worn (`ai::army_units`).
         // The beaten army's experience correction scales the player's XP, 0 as it is (no XP,
         // the original's); a garrison's record is cleared and given 100 (4c55b9).

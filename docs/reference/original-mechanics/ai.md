@@ -577,6 +577,7 @@ after the parity pass.
 | Noon | At its first arrival after 12:00; its base income, its castles' and forts' stock and its linked villages'; today's income with the castles' income; feudal wages (the player's Rear Service too); others all paid | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14) | Matches |
 | Midnight | Medic 10% (with the economy's midnight), village average, every building rescored | Medic armies heal 10%; armies rescore buildings (§14) | Matches |
 | Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
+| Idle draws at the hero's stop | Every army it steers with a next step on its path (the original's direction below 8), a patrol radius above 0 and no building under it draws `Random(3000)` once per stop, after the windows the stop opened (`Game::armies_snap`) | 0x4ad8a0 (world.md §2.2.1) | Matches |
 | Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
 
 Left out for now: what an army beaten in its own arrival then does to the hero (an attack

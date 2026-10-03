@@ -402,6 +402,11 @@ impl App {
                 audio::cue(Cue::Panel);
             }
         }
+        // A stop's snap of the armies and its idle draws, after the chords of the windows the
+        // stop opened (0x4ad8a0).
+        if let Some(g) = self.game.as_mut() {
+            g.armies_snap();
+        }
         // N: music on/off (not while typing or answering a question: there any key answers).
         if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
             self.audio.settings.music_muted = !self.audio.settings.music_muted;

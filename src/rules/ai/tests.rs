@@ -1585,3 +1585,96 @@ fn a_respawned_army_arrives_at_once_its_first_step_free() {
     assert_eq!((a.mind.idle, a.mind.just_respawned, a.mind.free_step), (1, false, false));
     assert_eq!(g.ai_stats.paths, plans + 1, "it planned");
 }
+
+// ----------------------------------------------------------------------------------------
+// The hero's stop (0x4ad8a0)
+// ----------------------------------------------------------------------------------------
+
+/// The `Random(3000)` idle draws since the trace started.
+fn idle_draws() -> usize {
+    crate::rules::rng::trace::take().iter().filter(|d| d.n == crate::rules::rng::ARMY_IDLE_DRAW).count()
+}
+
+#[test]
+fn the_stop_draws_an_idle_offset_for_each_patroller_facing_a_step_outside_buildings() {
+    // 0x4ad8a0: in id order, an army on the map with a direction below 8, a patrol radius
+    // above 0 and no building under it draws Random(3000); the others draw nothing.
+    let mut s = map();
+    s.armies = (1..=5).map(|id| army(id, (10 + 5 * id as u16, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])).collect();
+    let mut g = start(&s);
+    for (k, a) in g.world.armies.iter_mut().enumerate() {
+        (a.patrols, a.patrol_radius, a.mind.facing_none, a.mind.standing) = (true, 3, false, None);
+        match k {
+            1 => a.mind.facing_none = true,
+            2 => a.patrol_radius = 0,
+            3 => a.mind.standing = Some(0),
+            4 => a.patrols = false,
+            _ => {}
+        }
+    }
+    let before = g.rng.state();
+    g.armies_snap();
+    assert_eq!(g.rng.state(), before, "no stop, no snap");
+    g.snap_due = true;
+    g.armies_snap();
+    let mut want = Rng::new(before);
+    want.random(3000);
+    want.random(3000);
+    assert_eq!(g.rng.state(), want.state(), "armies 1 and 5 (a roamer with a radius counts too)");
+    g.armies_snap();
+    assert_eq!(g.rng.state(), want.state(), "once per stop");
+}
+
+#[test]
+fn the_step_clock_faces_the_next_step_and_none_at_the_paths_end() {
+    // 0x4a399c: after a step the direction is the next step's, 8 when the path has no next
+    // cell; 0x4a1ff0 gives a stationary guard 8 and leaves the others the load's 5.
+    let mut s = map();
+    let mut guard = army(2, (40, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    guard.patrols = 1;
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]), guard];
+    let mut g = start(&s);
+    assert_eq!((g.world.armies[0].mind.facing_none, g.world.armies[1].mind.facing_none), (false, true));
+    let uid = g.world.armies[0].uid;
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    g.world.armies[0].mind.scripted = true;
+    g.world.armies[0].path = vec![(31, 10), (32, 10)];
+    g.world.armies[0].budget = 25.0;
+    g.ai_walk(uid, &hero);
+    assert!(!g.world.armies[0].mind.facing_none, "one cell left");
+    g.world.armies[0].budget = 25.0;
+    g.ai_walk(uid, &hero);
+    assert!(g.world.armies[0].path.is_empty());
+    assert!(g.world.armies[0].mind.facing_none, "the path's end");
+}
+
+#[test]
+fn a_wait_ends_with_the_snap_but_a_run_into_a_garrison_has_none() {
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    s.buildings = vec![building(BuildingType::Ruins, 3, 0, (1, 1))];
+    let mut g = start(&s);
+    g.world.locations[0].garrison = g.world.armies[0].troops.clone();
+    let a = &mut g.world.armies[0];
+    (a.patrols, a.patrol_radius, a.mind.scripted) = (true, 5, true);
+    crate::rules::rng::trace::start();
+    // A wait: its end snaps the armies, after the windows it opened.
+    g.begin_wait(1);
+    while g.waiting() {
+        g.tick(crate::rules::game::STEP_SECONDS);
+    }
+    assert!(g.snap_due);
+    g.world.armies[0].mind.facing_none = false;
+    g.armies_snap();
+    assert_eq!(idle_draws(), 1, "the wait's end");
+    // A walk that runs into the ruins' garrison: no snap.
+    assert!(g.set_destination((3, 0)));
+    while g.moving() {
+        g.tick(crate::rules::game::STEP_SECONDS);
+    }
+    assert!(g.foe.is_some(), "the garrison's fight");
+    assert!(!g.snap_due);
+    g.armies_snap();
+    assert_eq!(idle_draws(), 0);
+    crate::rules::rng::trace::stop();
+}

@@ -277,3 +277,31 @@ fn rk1_battle_by_actions() {
     }
     assert!(struck, "some enemy card takes a strike");
 }
+
+/// The original's generator after each step of `tools/difftest/rk1-day1.jsonl` (the diff
+/// test's run `rk1-day1`, read from the running Discord Times).
+const RK1_DAY1_ORIGINAL_RNG: [u32; 44] = [
+    10044473, 10044473, 2785918235, 120733505, 120733505, 18883840, 18883840, 2739985274, 2739985274, 775978695, 325516910, 325516910, 108516897, 108516897, 1831002011, 1831002011, 172678701, 172678701, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517,
+    2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2849548517, 2317907988, 2317907988, 3523995438, 3523995438, 2816094272, 2816094272, 2416142925, 2416142925,
+];
+
+/// `rk1-day1.jsonl` replayed step-locally (each step from the original's generator): the
+/// steps whose generator ends as the original's.
+fn rk1_day1_equal_steps(dt: &DtInstall) -> Vec<usize> {
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    assert_eq!(actions.len(), RK1_DAY1_ORIGINAL_RNG.len());
+    let r = replay_traced(Source::Install(dt), &actions, Some(&RK1_DAY1_ORIGINAL_RNG)).unwrap();
+    r.states.iter().enumerate().filter(|(i, s)| s.rng == RK1_DAY1_ORIGINAL_RNG[*i]).map(|(i, _)| i).collect()
+}
+
+/// FINDINGS.md §1: the stops of the first day (the wait of step 5, the walk of step 7, the
+/// event of step 9, the wait of step 12) draw the idle offsets the original draws.
+#[test]
+fn rk1_day1_the_stops_draw_as_the_original() {
+    let Some(dt) = install() else { return };
+    let equal = rk1_day1_equal_steps(&dt);
+    println!("rk1-day1, steps equal to the original's: {equal:?}");
+    for step in [4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
+        assert!(equal.contains(&step), "step {step}: {equal:?}");
+    }
+}

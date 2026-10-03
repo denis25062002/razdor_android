@@ -211,6 +211,37 @@ on its cost.
   since the **walk** started (not since the step), so the 4 frames cycle over two steps
   (0x4ae8f2, 0x4ad314). At sea the ship figure cycles 8 frames by real time (ms div 100).
 
+### 2.2.1 The stop: the armies' snap and their idle draws (0x4ad8a0)
+
+When the hero stops, every AI army 1..N on the map, in index order, ends a step under way (its
+remaining play time is set to 0, so it arrives at the next call of the step clock) and, when
+all three hold, restarts its idle animation with a **`Random(3000)`** ms offset (the time is
+stored with it; it only paces the sprite, but the draw shifts every later roll):
+- its direction of the next step (+0x1710) is below 8: the step clock writes there the
+  direction of the next step of its path after every call that starts or ends a step, 8 when
+  the path has no next cell (a path of one cell, or its end); the map load writes 5 and the
+  AI's setup 8 for a stationary guard (0x4a399c, 0x4a1ff0);
+- its patrol radius (+0x16bc) is above 0 (the patrol flag is not read);
+- it stands in no building (+0x3788 = 0).
+
+The stops that snap, each once, in the frame that stops (code; the draw order confirmed in the
+running game with the diff test's trace):
+- the end of a walk (0x4ae5d8, then 0x4ad8a0 at the end of the walk frame, 0x4af2bc): after
+  the AI's advance, the event scan and, with no event, the village's offer rolls (0x4bbc84,
+  economy.md §3); after an event's window has opened (its chord, 0x4ac3b4);
+- an AI army's attack on the hero during a walk (0x4ade3c): before the attack's event scan and
+  the battle; a greeting whose events fired: after the scan, before the event's window;
+- the end of a wait, or a wait an event ended (0x4ae24c sets the flag, 0x4ae42f / Community
+  0xc27802 / 0xc2782b call 0x4ad8a0 after the AI's advance, the scan and the event's window);
+  the Community endless wait going on under an event's dialog does not snap;
+- the hero's next cell found blocked at a step boundary (0x4ad94c from 0x4ae776, then
+  0x4ae784): only when no frame fell inside the step before (a frame longer than WalkDelay;
+  the walk's timer is stamped with the time it starts, so a walk at a steady frame rate never
+  takes this path).
+A run into an army or a garrison found in the first frame of the step (0x4ad94c from 0x4aeab7,
+the case at a steady frame rate) snaps the armies' sprites (0x4ad660) but makes no idle
+draws, nor does the battle or meeting that follows.
+
 ### 2.3 Ships
 
 No separate speed: at sea the hero uses the MIXED map, so coastal water costs 5 min and

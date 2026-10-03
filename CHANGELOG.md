@@ -461,6 +461,10 @@ old id, and their versions give both.
   restart or campaign map is played with it, as in the original.
 - Restart on a campaign map starts it again with what the map before carried over (army,
   gold, mana, book, pack, flags), as the original's restart snapshot, which saves keep.
+- When the hero stops (a walk's or a wait's end, an event or an AI army stopping him), every
+  AI army facing a next step with a patrol radius, outside buildings, draws its idle offset
+  from the game's generator as in the original, after the windows the stop opened; a run
+  into an army or a garrison draws none.
 
 ## 0.2.2 — 2026-10-01
 

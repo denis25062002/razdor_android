@@ -181,7 +181,7 @@ All 43 call sites in the exe (none in the Community code). "When" says what trig
 | 0x483344 | 16 (one of two sites, by row parity), then 11 | plant x and y offsets (§3.3) | map load, save load |
 | 0x4cfb24 | 1000 | plant sway phase | same |
 | 0x4b4b43, 0x4b8691 | 3000 | idle-animation offset of each AI army (ms) | map load, save load |
-| 0x4ad8a0 | 3000 | the same for every idle patroller | each time the hero stops |
+| 0x4ad8a0 | 3000 | the same for every AI army on the map facing a next step (direction < 8), with a patrol radius above 0, in no building | each time the hero stops: a walk's or a wait's end, an event or an AI army stopping him; not a run into an army or a garrison (world.md §2.2.1) |
 | 0x4be178 | 5, 5, 3, k+1, k+1 | market goods: max price +1 when 0; the town's extra potion (4 of 5 cases); the healing potion 98 + r; biased item pick; candidate pick (economy.md §2) | every midnight per building whose restock time is set and due; map load (market buildings only) |
 | 0x4a1998 | D div max | barracks slot +1 when the result is 0 (D = MaxDayCountForNewUnit) | every midnight |
 | 0x4bba40 | 2, 3, 6, 6, 6 | village offer rolls: innkeeper, priest, blessing, furs, witch (economy.md §3); the draws stop at the first roll that picks an offer, and each `Random(6)` after the first is drawn only when the previous one did not pick | entering a village with stock |

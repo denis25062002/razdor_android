@@ -227,6 +227,12 @@ pub struct AiMind {
     /// Its stored step cost is 0 (a respawn or an activation sets it so): its next step costs
     /// nothing, so it arrives at once (0x4a399c charges the stored cost).
     pub free_step: bool,
+    /// The original's direction of its next step (+0x1710) is 8, "none": its path has no
+    /// next cell. The map load writes 5 there (so false), the AI's setup 8 for a stationary
+    /// guard, and the step clock the next step's direction (8 with no next cell) after every
+    /// call that starts or ends a step (0x4a399c). Only the stop's idle draw reads it
+    /// ([`Game::armies_snap`]).
+    pub facing_none: bool,
     /// Healing keeps it standing until this minute.
     pub busy_until: f64,
     /// Game minute of its next noon.
@@ -1261,6 +1267,10 @@ impl Game {
                 m.income = a.ai.extra_income;
                 m.village_avg = 50;
                 m.village_today = 50;
+                // A stationary guard faces no direction (0x4a1ff0).
+                if stationary(a) {
+                    a.mind.facing_none = true;
+                }
             }
         }
         // The armies waiting off the map get their records set up too (a building score is 0
@@ -1277,7 +1287,7 @@ impl Game {
                 if noon < now {
                     noon += day;
                 }
-                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, ..AiMind::default() };
+                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, facing_none: stationary(a), ..AiMind::default() };
             }
         }
         let incomes: Vec<(u8, i32)> = self.world.locations.iter().filter(|l| l.kind.capturable()).filter_map(|l| match l.owner {
@@ -1327,6 +1337,32 @@ impl Game {
     // ------------------------------------------------------------------------------------
     // The driver and the step clock
     // ------------------------------------------------------------------------------------
+
+    /// The armies as the hero stops (0x4ad8a0), once the stop has opened its windows (the
+    /// interface calls it after their chords; a battle's start and the next tick do too):
+    /// every army the AI steers, in id order, ends a step under way (Razdor has none: its
+    /// steps end as they start) and, when it faces a next step (direction below 8), has a
+    /// patrol radius above 0 and stands in no building, restarts its idle animation at a
+    /// `Random(3000)` ms offset. The offset only times the sprite; the draw is what counts.
+    pub fn armies_snap(&mut self) {
+        if !std::mem::take(&mut self.snap_due) {
+            return;
+        }
+        for k in 0..self.world.armies.len() {
+            let a = &self.world.armies[k];
+            if managed(a) && !a.mind.facing_none && a.patrol_radius > 0 && a.mind.standing.is_none() {
+                let _idle_offset_ms = self.rng.random(super::rng::ARMY_IDLE_DRAW);
+            }
+        }
+    }
+
+    /// The snap of a stop that comes before the stop's windows (an AI army's attack or
+    /// greeting, 0x4ade3c); the stop has no other.
+    pub(crate) fn snap_now(&mut self) {
+        self.snap_due = true;
+        self.armies_snap();
+        self.snapped = true;
+    }
 
     /// The AI's part of a slice of `minutes` (0x4ade3c): beaten armies whose time has come
     /// return, then every army the AI steers, in order, banks the minutes and takes the steps
@@ -1512,6 +1548,10 @@ impl Game {
         if replan {
             self.ai_plan(i, &dist, hero);
         }
+        // The step clock ends by setting the direction of the next step from the path, 8
+        // when it has no next cell (0x4a399c), before the arrival rules run (0x4ade3c).
+        let a = &mut self.world.armies[i];
+        a.mind.facing_none = a.path.is_empty();
         if let Some(c) = self.ai_arrive(uid) {
             if let Some(i) = self.army_by_uid(uid) {
                 self.world.armies[i].mind.contact = Some(c);
