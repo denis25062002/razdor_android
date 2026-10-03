@@ -125,6 +125,19 @@ experience.md §3: the units' strengths scaled by their HP, by rows) at the star
 checked in the running game (Проклятое озеро, army 9 of five units with 240 HP: A0 = 296;
 FINDINGS.md §11).
 
+**The unit strengths are the army's cached ones.** A battle side copies each unit's strength
+from its army record (+0x1ae, 49855c), which only the army's recount (0x4a16d4) writes, with
+the building defence (+0x378c) the army has at that moment. The recount runs at its arrival
+in a building other than a bridge (the end of the arrival rules, 0x4a79c5), when it arrives
+outside after standing in one (+0x378c cleared first), after each of its AI battles
+(0x4a4c68), at a respawn (0x4a28d0) and at a save load; not on its arrivals in the open.
+The map load's set-up (0x4a1ff0) recounts **before** it writes +0x378c, so an army that
+starts in a building is counted without its defence until its next recount, while its
+battles get the defence (the side's +0x844 reads +0x378c). Checked in the running game
+(Проклятое озеро: army 2 starts in a building of defence 15: its side strength is 877 at the
+load, 1764 after its first arrival there; FINDINGS.md §12). Garrisons are recounted with
+their defence at the load (0x4b2504), so theirs always count it.
+
 **Score of army A against army C** (computed for A, cached per pair, §7.1):
 1. If nothing happened (A1 = A0 and B1 = B0) or the battle ran to `BattleEndTurn`: score 0.
 2. Aggression g (A's byte 69, in percent) shifts both results: `B1 −= Round(g·B0/100)` (not
@@ -577,6 +590,7 @@ after the parity pass.
 | Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
 | Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
 | Simulated battle results | the sides' strengths at the start and the end (`simulate`) | side strengths +0x7ec / +0x7e8 (483ecc) | Matches (Razdor counted hit points until 2026-10-03) |
+| Cached unit strengths | an army's sides count its units with the defence of its last recount (`AiMind::strength_bd`): 0 from the map load, the building's after an arrival in it, an AI battle or a respawn | +0x1ae per unit, written by 0x4a16d4 only | Matches |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
 | Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
 | Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |

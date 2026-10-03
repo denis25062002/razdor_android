@@ -551,6 +551,10 @@ pub struct Battle {
     /// whoever attacks, so this is for information only.
     pub attacker: Team,
     building_defence: [i32; 2],
+    /// The building defence the sides' unit strengths were worked out with, when it is not
+    /// [`Battle::building_defence`]: an AI army's cached strengths (+0x1ae) keep the defence
+    /// of its last recount (0x4a16d4), which the battle side copies as they are (49855c).
+    strength_defence: [Option<i32>; 2],
     /// A side whose army's first unit is of the Knight type (49855c): it takes
     /// [`KNIGHT_PERCENT`] of physical damage, an AI lord's army as well as the player's.
     knight: [bool; 2],
@@ -693,6 +697,7 @@ impl Battle {
             log: Vec::new(),
             attacker,
             building_defence: [0; 2],
+            strength_defence: [None; 2],
             knight,
             cells,
             mean_initiative: [1.0; 2],
@@ -905,6 +910,13 @@ impl Battle {
         self.building_defence[team.index()] = defence;
     }
 
+    /// The building defence `team`'s unit strengths count (an AI army's last recount, see
+    /// [`Battle::strength_defence`]); by default its [`Battle::building_defence`]. Set before
+    /// [`Battle::begin`].
+    pub fn set_strength_defence(&mut self, team: Team, defence: i32) {
+        self.strength_defence[team.index()] = Some(defence);
+    }
+
     pub fn is_deploying(&self) -> bool {
         self.deploying
     }
@@ -953,7 +965,8 @@ impl Battle {
         // Strength at the start, from the stats the units bring (items, spells) and the
         // building they stand in.
         for f in &mut self.fighters {
-            f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.building_defence[f.team.index()]);
+            let t = f.team.index();
+            f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.strength_defence[t].unwrap_or(self.building_defence[t]));
             f.role = experience::role(&f.base);
         }
         for team in Team::BOTH {

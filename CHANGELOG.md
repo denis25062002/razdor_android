@@ -487,6 +487,9 @@ old id, and their versions give both.
   it (the direction the map load gives every army), as in the original.
 - The AI judges the battles it simulates by the sides' strengths, as the original does, not
   by their hit points: its fears and targets among armies and buildings change accordingly.
+- An AI army that starts the map in a building is counted, in the battles it simulates,
+  without that building's defence until it next arrives in a building or fights, as in the
+  original (its units' strengths are recounted only then).
 
 ## 0.2.2 — 2026-10-01
 

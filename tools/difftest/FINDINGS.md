@@ -196,6 +196,26 @@ midnight restock of market 5 (step 16) starts from another state.
 - After the fix B0 agrees with the original for every pair the traces show (877, 2536, 402,
   212, 4035, 1764); A0 needs §12, and the wait's first 415 draws agree.
 
+## 12. An army's unit strengths keep the defence of their last recount
+
+**Status: fixed** (`AiMind::strength_bd`, `Battle::set_strength_defence`; ai.md §4).
+Candidate C1003-174927, third part.
+
+- After §11 the side strengths still differed: army 9's A0 296 in the original, 312 in
+  Razdor; army 2's B0 at the load 877 in the original, 1378 in Razdor (1764 on both sides
+  later).
+- Frida on the sims' set-up (0x48b75c, the battle units' +0x64 strengths, rows and the
+  sides' +0x844 defence): army 2's units had strengths 299, 63, 63, 40, 84, 156 at the load
+  and 486, 96, 96, 56, 84, 220 at t = 1620, the same units at full HP. The battle unit's
+  strength is the army record's cached +0x1ae, which only the recount 0x4a16d4 writes,
+  with the army's building defence (+0x378c) at that moment; the map load's set-up
+  (0x4a1ff0) recounts before it writes +0x378c. Army 2 starts in a building of defence 15
+  and army 9 on one of defence 2: both were counted with 0 until a recount (army 2's first
+  arrival in its building; army 9 still counted 296 at t = 1620 after arriving on its cell
+  again, an arrival that ends the rules before the recount, as on a bridge). Razdor worked
+  out every strength afresh with the current defence.
+- After the fix A0 and B0 agree with every value the traces show.
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

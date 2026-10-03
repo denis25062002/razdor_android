@@ -1162,7 +1162,7 @@ fn an_ai_battle_beats_a_side_whose_end_strength_is_0() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(20, 0, 2)]), army(2, (31, 10), 2, ALLY, 0, &[troop(20, 0, 1)])];
     let mut g = start_with(&s, c);
     let cc = g.content.clone();
-    let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0 };
+    let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
     let bt = fight(&cc, &side(&g, 0), &side(&g, 1), true);
     assert!(bt.fighters.iter().all(|f| f.alive()));
     assert_eq!(bt.strength_now(Team::Enemy), 0);
@@ -1789,11 +1789,37 @@ fn a_simulated_battle_counts_side_strengths_not_hit_points() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
     let g = start(&s);
     let cc = g.content.clone();
-    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0 };
+    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
     let r = simulate(&cc, &side(0), &side(1));
     let bt = fight(&cc, &side(0), &side(1), false);
     assert_eq!((r.own, r.theirs), (bt.start_of(Team::Player).strength, bt.start_of(Team::Enemy).strength));
     assert_eq!((r.own_left, r.theirs_left), (bt.strength_now(Team::Player), bt.strength_now(Team::Enemy)));
     assert_ne!(r.own, 120, "not the warrior's hit points");
     assert_eq!(r.own, crate::rules::experience::tactical(&cc, UnitId(6), &army_units(&cc, &g.world.armies[0])[0].stats(&cc), 0) as i64);
+}
+
+#[test]
+fn an_armys_strengths_keep_the_defence_of_their_last_recount() {
+    // 0x4a1ff0 recounts an army's units (0x4a16d4) before it writes the defence of the
+    // building it stands in (+0x378c): its battle sides copy those strengths (49855c), so
+    // until its next recount it fights with the fort's defence but is counted without it.
+    let mut s = map();
+    let mut fort = building(BuildingType::Fort, 30, 10, (1, 1));
+    (fort.owner_army, fort.garrison_extra_defence) = (1, 10);
+    s.buildings = vec![fort];
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (40, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    let m = &g.world.armies[0].mind;
+    assert_eq!((m.defence, m.strength_bd), (10, 0));
+    let (side, _) = g.army_side(0, true);
+    assert_eq!((side.defence, side.strength_defence), (10, 0));
+    let cc = g.content.clone();
+    let foe = Side { units: army_units(&cc, &g.world.armies[1]), defence: 0, strength_defence: 0 };
+    let stale = simulate(&cc, &side, &foe).own;
+    let fresh = simulate(&cc, &Side { strength_defence: 10, ..g.army_side(0, true).0 }, &foe).own;
+    assert!(stale < fresh, "{stale} {fresh}");
+    // Its next arrival in the fort recounts them with the defence.
+    let uid = g.world.armies[0].uid;
+    g.ai_in_building(uid, 0, g.clock.total_minutes(), &mut None);
+    assert_eq!(g.world.armies[0].mind.strength_bd, 10);
 }

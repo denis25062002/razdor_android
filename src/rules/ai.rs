@@ -239,6 +239,13 @@ pub struct AiMind {
     /// so a fresh record's first step in place is followed by the cell south of it; every
     /// arrival sets it from its path (none with no next cell), and a respawn keeps it.
     pub stand_facing: Option<Tile>,
+    /// The building defence its units' cached strengths (+0x1ae) were last worked out with:
+    /// the recount (0x4a16d4) runs at its arrivals in a building (not a bridge), on leaving
+    /// one, after its AI battles and at a respawn, with the defence (+0x378c) of that moment.
+    /// The map load recounts before it writes the defence (0x4a1ff0), so an army standing
+    /// in a building at the start scores with 0 until its next recount. Its battle sides
+    /// copy those strengths (49855c), so its simulated battles and its XP pools count them.
+    pub strength_bd: i32,
     /// The step weights its path buffer holds, node by node (the original's direction field
     /// of each path point read through the table 0x4ecfd4): a path read writes the weight of
     /// every step out of a node but the last, whose entry keeps what an earlier, longer path
@@ -671,6 +678,9 @@ pub struct SimResult {
 pub struct Side {
     pub units: Vec<Unit>,
     pub defence: i32,
+    /// The defence its unit strengths count (an army's last recount, [`AiMind::strength_bd`];
+    /// a garrison's and the hero's are their defence).
+    pub strength_defence: i32,
 }
 
 /// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
@@ -689,6 +699,8 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     if b.defence > 0 {
         bt.set_building_defence(Team::Enemy, b.defence);
     }
+    bt.set_strength_defence(Team::Player, a.strength_defence);
+    bt.set_strength_defence(Team::Enemy, b.strength_defence);
     bt.auto_arrange(Team::Player);
     bt.auto_arrange(Team::Enemy);
     bt.begin();
@@ -1005,13 +1017,14 @@ impl Game {
         let a = &self.world.armies[i];
         let fought: Vec<usize> = (0..a.troops.len()).filter(|&k| a.troops[k].alive() && (!attacking || !a.troops[k].unpaid)).collect();
         let units = fought.iter().map(|&k| troop_unit(c, &a.troops[k])).collect();
-        (Side { units, defence: a.mind.defence }, fought)
+        (Side { units, defence: a.mind.defence, strength_defence: a.mind.strength_bd }, fought)
     }
 
     /// The hero's side as a target: all his living units.
     fn hero_side(&self) -> Side {
         let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
-        Side { units, defence: self.hero_defence() }
+        let defence = self.hero_defence();
+        Side { units, defence, strength_defence: defence }
     }
 
     // ------------------------------------------------------------------------------------
@@ -1231,7 +1244,7 @@ impl Game {
         let loc = &self.world.locations[l];
         let mut units: Vec<Unit> = loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect();
         units.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
-        Side { units, defence: loc.garrison_defence }
+        Side { units, defence: loc.garrison_defence, strength_defence: loc.garrison_defence }
     }
 
     /// Army `i` scores every building afresh.
@@ -1283,6 +1296,9 @@ impl Game {
                 let m = &mut self.world.armies[i].mind;
                 m.standing = standing;
                 m.clean.clear();
+                // The recount comes before the defence is written (0x4a1ff0): a fresh record
+                // counts none; a save's its loaded one.
+                m.strength_bd = if from_save { m.defence } else { 0 };
                 if !from_save {
                     m.income = 0;
                     m.village_avg = 0;
@@ -2023,6 +2039,7 @@ impl Game {
             if m.standing.is_some() {
                 m.standing = None;
                 m.defence = 0;
+                m.strength_bd = 0;
             }
             return result;
         };
@@ -2156,7 +2173,10 @@ impl Game {
         if changed {
             self.mark_dirty(uid);
         }
-        self.world.armies[i].mind.countdown = 0;
+        // Its strengths are recounted with the defence it has here now (0x4a79c5).
+        let m = &mut self.world.armies[i].mind;
+        m.strength_bd = m.defence;
+        m.countdown = 0;
         self.set_stored_building(i, l, 0);
     }
 }
@@ -2942,6 +2962,17 @@ impl Game {
                 }
             }
         }
+        // Both records are recounted (0x4a4c68 → 0x4a16d4), with the defence each has now.
+        for i in [Some(att), match def {
+            Defender::Army(j) => Some(j),
+            Defender::Garrison(_) => None,
+        }]
+        .into_iter()
+        .flatten()
+        {
+            let m = &mut self.world.armies[i].mind;
+            m.strength_bd = m.defence;
+        }
         // Reports, and the beaten leave the map.
         let a_name = army_name(&self.world.armies[att]);
         let tile = self.world.armies[att].tile(&self.world.map);
@@ -3098,6 +3129,8 @@ impl Game {
             m.wander = [(0, 0); WANDER_POINTS];
             m.wander[0] = army.post;
             m.just_respawned = true;
+            // Recounted with the defence its record kept (0x4a28d0).
+            m.strength_bd = m.defence;
             m.walked = 0;
             m.no_path = true;
             m.free_step = true;
