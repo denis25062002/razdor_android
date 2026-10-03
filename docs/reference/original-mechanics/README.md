@@ -53,6 +53,15 @@ rules code with the original's bugs fixed and Razdor's extras on top. That makes
   ("same", "deviation kept") and do match; the engine and interface gaps are mostly
   presentation (animation frames, cursors, fonts, music fades), left out on purpose.
 
+**Frame noise (accepted, 2026-10-04).** The original moves AI armies by its frame clock: an
+army arrives at most once per frame and drops the rest of that frame's time (ai.md §2,
+world.md §5). So the order of AI arrivals, and every random draw that follows from it, depends
+on the frame rate of the machine running it: seven recorded runs of the same РК1 replay under
+Wine gave three different midnight market restocks. Razdor plays the order a steady, fast frame
+rate gives, which matched the recorded runs best. A difference that starts at an AI arrival is
+therefore not a bug by itself; the diff test (tools/difftest, FINDINGS §5) checks it against
+several recorded runs of the original before calling it one.
+
 **To pick up later:** go through the unmarked world, experience and interface rows and sort the
 ones that change gameplay from presentation; then compare by hand, map by map, with the
 original under Wine.
