@@ -474,6 +474,10 @@ old id, and their versions give both.
 - The ruins' garrison wears the ruins' goods, as in the original: each of the first five goes
   to the unit it helps most (else into the garrison's pack), so the guards fight with them;
   beating them yields what they wore, then the pack.
+- AI armies arrive at the end of each step's play time, as the original's step clock plays
+  it, and their arrivals, with the wander points and plans they draw, come in the order of
+  their times, not army by army; a midnight inside a wait tick comes between them at its
+  moment, and a hero's step is one tick however long.
 
 ## 0.2.2 — 2026-10-01
 

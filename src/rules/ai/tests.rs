@@ -1727,3 +1727,30 @@ fn the_ruins_garrison_wears_the_ruins_goods_and_gives_them_back_as_loot() {
         r => panic!("{r:?}"),
     }
 }
+
+#[test]
+fn arrivals_come_in_the_order_of_their_play_times_not_of_the_armies() {
+    // 0x4a399c / 0x4ade3c: army 1's bank pays one step but not the one after, so it plays
+    // over the whole window and arrives at the tick's end; army 2's bank covers its steps, so
+    // each plays its share (cost × tick / bank) and arrives early. Its path's end, and the
+    // wander points it draws there, come before army 1's though it moves second.
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]), army(2, (40, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
+    let mut g = start(&s);
+    for (k, (path, radius, budget)) in [(vec![(31, 10)], 2, 0.0), (vec![(41, 10), (42, 10)], 3, 70.0)].into_iter().enumerate() {
+        let a = &mut g.world.armies[k];
+        (a.patrols, a.patrol_radius, a.budget, a.path) = (true, radius, budget, path);
+        (a.mind.scripted, a.mind.countdown, a.mind.free_step) = (true, 100, false);
+    }
+    crate::rules::rng::trace::start();
+    let mut events = Vec::new();
+    g.pass_time(30.0, &mut events);
+    let boxes: Vec<i32> = crate::rules::rng::trace::take().iter().map(|d| d.n).filter(|&n| n == 5 || n == 7).collect();
+    crate::rules::rng::trace::stop();
+    // Army 2: its path's end at 15 minutes, a step in place at 22.5; then at 30 both, in
+    // army order: army 1's arrival, and army 2's last step in place, which its bank paid but
+    // could not follow, so it played over the rest of the window.
+    let (two, one) = ([7; 8], [5; 8]);
+    assert_eq!(boxes, [two, two, one, two].concat());
+    assert_eq!(g.world.armies[0].tile(&g.world.map), (31, 10));
+}

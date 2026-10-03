@@ -1307,6 +1307,12 @@ impl Game {
     /// 12:00, world.md §6), spells run out, armies move with the minutes banked, the
     /// scenario's events run.
     pub(crate) fn pass_time(&mut self, minutes: f32, events: &mut Vec<Event>) {
+        self.pass_time_as(minutes, WAIT_TICK_MINUTES, events);
+    }
+
+    /// [`Game::pass_time`] in slices of at most `slice` minutes: each is a tick of the AI's
+    /// step clock (a hero's step is one, however long: the original banks it at once).
+    fn pass_time_as(&mut self, minutes: f32, slice: f32, events: &mut Vec<Event>) {
         let mut left = minutes.max(0.0);
         // A new stretch for drawing: the steps of this time play in the next window.
         for a in &mut self.world.armies {
@@ -1318,7 +1324,7 @@ impl Game {
             a.mind.contact = None;
         }
         loop {
-            let slice = left.min(WAIT_TICK_MINUTES);
+            let slice = left.min(slice);
             left -= slice;
             self.pass_slice(slice, events);
             if left <= 0.0 {
@@ -1331,7 +1337,7 @@ impl Game {
     /// off both his cells (world.md §5).
     fn pass_time_walking(&mut self, minutes: f32, from: Tile, events: &mut Vec<Event>) {
         self.step_from = Some(from);
-        self.pass_time(minutes, events);
+        self.pass_time_as(minutes, minutes.max(WAIT_TICK_MINUTES), events);
         self.step_from = None;
     }
 
@@ -1341,12 +1347,18 @@ impl Game {
     /// later scan. His first noon is the day after the start, even after a morning start
     /// (0x4b4388); the AI's armies keep theirs.
     fn pass_slice(&mut self, minutes: f32, events: &mut Vec<Event>) {
+        let start = self.clock.total_minutes();
         let ticks = self.clock.advance(minutes as f64);
         self.expire_spells();
-        self.move_armies(minutes, events);
+        // A midnight comes among the AI's arrivals, at its moment (`Game::ai_move`).
+        let midnights: Vec<f64> = ticks.iter().filter_map(|t| match t {
+            Tick::Midnight(day) => Some((day * super::clock::MINUTES_PER_DAY) as f64),
+            Tick::Noon(_) => None,
+        }).collect();
+        self.move_armies(minutes, start, &midnights, events);
         for tick in ticks {
             match tick {
-                Tick::Midnight(_) => self.midnight(),
+                Tick::Midnight(_) => {}
                 Tick::Noon(day) => {
                     // AI armies run their noon at their first arrival after it (`rules::ai`).
                     if day >= self.noon_from.unwrap_or(self.start_day + 1) {
@@ -1375,7 +1387,7 @@ impl Game {
 
     /// 00:00 (world.md §6): villages refill (slower as they fill), barracks may gain a unit,
     /// garrisons heal `GarrisonAutoHeal`% — the player's and the AI's.
-    fn midnight(&mut self) {
+    pub(crate) fn midnight(&mut self) {
         // Village refill, barracks growth, market redraw and garrison/medic healing
         // (economy.md), then the AI's night (world.md §6).
         self.economy_midnight();
@@ -1413,7 +1425,7 @@ impl Game {
     /// arrival rules (`rules::ai`); the demo's gangs bank the minutes (up to
     /// [`AI_BUDGET_CAP`]), chase a nearby hostile hero or patrol, and take the steps they
     /// cover.
-    fn move_armies(&mut self, minutes: f32, events: &mut Vec<Event>) {
+    fn move_armies(&mut self, minutes: f32, start: f64, midnights: &[f64], events: &mut Vec<Event>) {
         let now = self.clock.total_minutes();
         let hero_tile = self.tile();
         // The hero's cells: where he stands and, while he steps, the cell he left; standing,
@@ -1421,7 +1433,7 @@ impl Game {
         // cell plus his direction, which a stop does not clear: 0x4a399c).
         let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
         let hero = HeroCells { cells: [Some(hero_tile), self.step_from.or(ahead)], at: hero_tile };
-        self.ai_move(minutes, &hero);
+        let later = self.ai_move(minutes, &hero, start, midnights);
         events.append(&mut self.ai_events);
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;
@@ -1457,6 +1469,12 @@ impl Game {
             step_army(map, a, &|t| map.cost(t), &hero);
         }
         self.world.armies = armies;
+        let end = self.clock.total_minutes();
+        for m in later {
+            self.clock.set_total_minutes(m);
+            self.midnight();
+        }
+        self.clock.set_total_minutes(end);
     }
 
     /// Price to hire unit type `kind`: its `Cost` (in mana for elementals).

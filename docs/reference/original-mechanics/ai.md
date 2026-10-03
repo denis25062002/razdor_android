@@ -60,7 +60,15 @@ Every frame of game time, armies 1..N in index order:
    If the next cell is the player's cell or the player's next cell, the step's time is spent
    but the army stays where it is.
 3. When the step ends on a cell ("arrival"), the army may **re-plan** (§7) and then runs its
-   **arrival** rules (§8–9).
+   **arrival** rules (§8–9). A step arrives when its play time runs out (world.md §5): the
+   arrivals of all the armies, and the draws they make, come in the order of their times, the
+   armies' order only for arrivals in the same frame; an army's next step starts in the frame
+   after its arrival. The play time of a step whose bank does not cover the step after it is
+   the rest of the window, so it arrives at the tick's end; the step after is charged on the
+   cell this step enters, times the weight of the direction stored with that path point,
+   which for the path's last point is whatever an earlier, longer path left in the army's
+   path buffer (zeroed at a map or save load: direction 0, weight 3; 0x482fe8 never writes
+   the last point's direction).
 
 Details of the step clock that matter for the AI:
 - **Stationary guards do nothing at all**: no banking, no steps, no planning, no arrival rules,
@@ -577,14 +585,17 @@ after the parity pass.
 | Noon | At its first arrival after 12:00; its base income, its castles' and forts' stock and its linked villages'; today's income with the castles' income; feudal wages (the player's Rear Service too); others all paid | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14) | Matches |
 | Midnight | Medic 10% (with the economy's midnight), village average, every building rescored | Medic armies heal 10%; armies rescore buildings (§14) | Matches |
 | Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
+| Arrival order | Each tick (a hero's whole step, or a wait tick) the armies bank and step by the step clock's play time; every arrival at the end of its play time, arrivals in time order (army order at the same moment), a midnight among them at its moment (`Game::ai_move`) | Frame by frame (world.md §5): at most one arrival per call, the next step at the next frame, the frame rate deciding ties | Matches the limit of short frames; frame effects of the original are not modelled |
 | Idle draws at the hero's stop | Every army it steers with a next step on its path (the original's direction below 8), a patrol radius above 0 and no building under it draws `Random(3000)` once per stop, after the windows the stop opened (`Game::armies_snap`) | 0x4ad8a0 (world.md §2.2.1) | Matches |
 | Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
 
 Left out for now: what an army beaten in its own arrival then does to the hero (an attack
 or a greeting) is dropped, where the original would open a battle or a meeting with the
 beaten army; the Community's mana bill taken from the player's mana at every AI noon, and its
-short-mana flag (economy.md §1); an army takes all the steps of a slice before the next one
-moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
+short-mana flag (economy.md §1); the frame effects of the step clock (world.md §5: a step
+lost to coarse frames, two arrivals sharing a frame); an AI army's attack on the hero comes
+after his whole step, where the original stops him in the frame of the arrival. An AI
+army's noon takes its castles'
 and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,
 "Stock growth").
 

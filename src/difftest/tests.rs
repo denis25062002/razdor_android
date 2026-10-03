@@ -345,3 +345,16 @@ fn rk1_day1_the_ruins_garrison_wears_their_goods() {
     assert_eq!((b.sides[1][0].kind, b.sides[1][0].hp), (66, 57));
     assert_eq!(r.states[0].buildings[7].goods, [51], "the building's goods words stay");
 }
+
+/// FINDINGS.md §5: in the waits of steps 14 and 16 the armies' arrivals come in the order of
+/// their play times (army 9's mid-tick arrival draws before army 1's at the tick's end) and
+/// the midnight's restock after the arrivals before it, so the generator ends each wait as
+/// the original's.
+#[test]
+fn rk1_day1_arrivals_come_in_the_order_of_their_times() {
+    let Some(dt) = install() else { return };
+    let equal = rk1_day1_equal_steps(&dt);
+    for step in [14, 15, 16, 17] {
+        assert!(equal.contains(&step), "step {step}: {equal:?}");
+    }
+}

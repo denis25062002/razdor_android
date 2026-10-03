@@ -233,6 +233,13 @@ pub struct AiMind {
     /// call that starts or ends a step (0x4a399c). Only the stop's idle draw reads it
     /// ([`Game::armies_snap`]).
     pub facing_none: bool,
+    /// The step weights its path buffer holds, node by node (the original's direction field
+    /// of each path point read through the table 0x4ecfd4): a path read writes the weight of
+    /// every step out of a node but the last, whose entry keeps what an earlier, longer path
+    /// left there (0 = direction 0, weight 3, in the zeroed buffer of a fresh record). Only
+    /// the step clock's play time reads it ([`Game::ai_start`]).
+    #[serde(skip)]
+    pub path_weights: Vec<u8>,
     /// Healing keeps it standing until this minute.
     pub busy_until: f64,
     /// Game minute of its next noon.
@@ -264,6 +271,19 @@ pub struct AiMind {
     #[cfg(test)]
     #[serde(skip)]
     pub scripted: bool,
+}
+
+/// A step the step clock started, arriving at the end of its play time.
+struct Pending {
+    uid: u32,
+    next: Option<Tile>,
+    moves: bool,
+    minutes: f32,
+}
+
+/// Game minutes in the original's centi-minutes.
+fn cmin(minutes: f32) -> i64 {
+    (minutes as f64 * 100.0).round() as i64
 }
 
 /// What an AI army's arrival does to the hero.
@@ -1370,61 +1390,154 @@ impl Game {
         self.snapped = true;
     }
 
-    /// The AI's part of a slice of `minutes` (0x4ade3c): beaten armies whose time has come
-    /// return, then every army the AI steers, in order, banks the minutes and takes the steps
-    /// they cover; a stationary guard does nothing at all and a healing one stands still.
-    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells) {
-        let now = self.clock.total_minutes();
-        self.ai_respawns(now);
+    /// The AI's part of a tick of `minutes` (0x4ade3c, called every frame): beaten armies
+    /// whose time has come return, then every army the AI steers banks the tick (a stationary
+    /// guard does nothing at all, a healing one stands still) and walks by the step clock
+    /// (0x4a399c, [`Game::ai_start`]): a step starts when the bank covers it and arrives at
+    /// the end of its play time, the next step starting only after the arrival. The arrivals
+    /// of all the armies come in the order of their times; arrivals at the same moment (the
+    /// same frame) in army order. This is the original's order at a steady frame rate as the
+    /// frames get short: each frame runs the armies in order, a call makes at most one
+    /// arrival, and the next step starts at the next frame. A midnight inside the tick comes
+    /// after the arrivals up to its moment (0x4a1998 ends the frame's advance); the clock
+    /// reads each arrival's moment. `start` is the tick's first minute, `midnights` the
+    /// midnights in it; the ones after the last arrival are returned.
+    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells, start: f64, midnights: &[f64]) -> Vec<f64> {
+        let end = self.clock.total_minutes();
+        self.ai_respawns(end);
+        let tick = cmin(minutes);
+        // The tick's start: every army banks it, the step clock's window opens.
+        let mut queue: BTreeSet<(i64, u32, u8, u32)> = BTreeSet::new();
+        let mut totals: BTreeMap<u32, i64> = BTreeMap::new();
         let uids: Vec<u32> = self.world.armies.iter().filter(|a| managed(a)).map(|a| a.uid).collect();
         for uid in uids {
             let Some(i) = self.army_by_uid(uid) else { continue };
             let a = &mut self.world.armies[i];
-            if stationary(a) || now <= a.mind.busy_until {
+            if stationary(a) || end <= a.mind.busy_until {
                 continue;
             }
             a.budget = (a.budget + minutes).min(super::world::AI_BUDGET_CAP);
+            totals.insert(uid, cmin(a.budget));
+            let id = a.id;
             if self.is_foe(i) {
                 continue;
             }
-            self.ai_walk(uid, hero);
+            queue.insert((0, 0, id, uid));
+        }
+        let mut pending: BTreeMap<u32, Pending> = BTreeMap::new();
+        let mut midnights: Vec<f64> = midnights.to_vec();
+        while let Some((t, seq, id, uid)) = queue.pop_first() {
+            let at = start + t as f64 / 100.0;
+            // A midnight comes after the calls of the moment it falls in (0x4a1998).
+            while midnights.first().is_some_and(|&m| m < at) {
+                let m = midnights.remove(0);
+                self.clock.set_total_minutes(m);
+                self.midnight();
+            }
+            self.clock.set_total_minutes(at);
+            let goes_on = |g: &Game| t < tick && g.army_by_uid(uid).is_some_and(|i| !g.is_foe(i));
+            if let Some(p) = pending.remove(&uid) {
+                // The arrival, as its play time runs out; the next step starts at the next
+                // frame, within this tick only.
+                self.ai_finish(&p, hero);
+                if goes_on(self) {
+                    queue.insert((t, seq + 1, id, uid));
+                }
+                continue;
+            }
+            let total = totals.get(&uid).copied().unwrap_or(0);
+            let Some((p, play)) = self.ai_start(uid, hero, tick, total, tick - t) else { continue };
+            if play < 1 {
+                // A play time under one centi-minute runs out in the call that starts it. A
+                // step of no cost that took no time steps no further this tick: the original
+                // takes one such step per frame *(Razdor has no frames: it stops there)*.
+                self.ai_finish(&p, hero);
+                if p.minutes > 0.0 && goes_on(self) {
+                    queue.insert((t, seq + 1, id, uid));
+                }
+                continue;
+            }
+            pending.insert(uid, p);
+            queue.insert((t + play, 0, id, uid));
+        }
+        self.clock.set_total_minutes(end);
+        midnights
+    }
+
+    /// Army `uid` takes, one after another, every step its bank covers (tests: the steps of
+    /// one army alone, each arriving at once).
+    #[cfg(test)]
+    pub(crate) fn ai_walk(&mut self, uid: u32, hero: &HeroCells) {
+        loop {
+            let Some((p, _)) = self.ai_start(uid, hero, 3000, 3000, 3000) else { return };
+            self.ai_finish(&p, hero);
+            // A cell of no cost would step forever: once.
+            if p.minutes <= 0.0 || self.army_by_uid(uid).is_none_or(|i| self.is_foe(i)) {
+                return;
+            }
         }
     }
 
-    /// Army `uid` takes the steps its bank covers (0x4a399c, ai.md §2): a step costs
-    /// `cost(cell left) × speed` minutes, ×1.5 diagonally; with no path it steps in place on
-    /// its own cell's cost. A step into one of the hero's cells spends its time but the army
-    /// stays where it is. Every step, taken or not, is an arrival ([`Game::ai_arrival`]).
-    fn ai_walk(&mut self, uid: u32, hero: &HeroCells) {
-        loop {
-            let Some(i) = self.army_by_uid(uid) else { return };
-            let (need, next, moves) = {
-                let w = &self.world;
-                let a = &w.armies[i];
-                let map = &w.map;
-                let here = a.tile(map);
-                let next = a.path.first().copied();
-                let to = next.unwrap_or(here);
-                let left = self.ai_cost(a, here);
-                let need = match next {
-                    _ if a.mind.free_step => 0.0,
-                    Some(t) => step_minutes(map.grid, here, t, left, a.speed.max(1)),
-                    None => left as f32 * a.speed.max(1) as f32,
-                };
-                (need, next, !hero.cells.contains(&Some(to)))
+    /// The start of army `uid`'s next step by the step clock (0x4a399c), when its bank
+    /// covers it: `cost(cell left) × speed` minutes, ×1.5 diagonally; with no path it steps
+    /// in place on its own cell's cost (no diagonal factor); after a respawn or an activation
+    /// the stored cost is 0. The bank pays it. Whether a step into one of the hero's cells
+    /// moves is decided now. Its play time (centi-minutes): the cost scaled by the tick over
+    /// the bank as the tick began (`total`) when what is left in the bank also covers the
+    /// step after it, else the rest of the tick's `window`; never more than the window. The
+    /// step after is charged on the cell this step enters, times the weight its path buffer
+    /// holds for that node when the path goes on from it, raw when it does not.
+    fn ai_start(&mut self, uid: u32, hero: &HeroCells, tick: i64, total: i64, window: i64) -> Option<(Pending, i64)> {
+        let i = self.army_by_uid(uid)?;
+        let (need, next, moves, after) = {
+            let w = &self.world;
+            let a = &w.armies[i];
+            let map = &w.map;
+            let here = a.tile(map);
+            let next = a.path.first().copied();
+            let to = next.unwrap_or(here);
+            let left = self.ai_cost(a, here);
+            let speed = a.speed.max(1);
+            let need = match next {
+                _ if a.mind.free_step => 0.0,
+                Some(t) => step_minutes(map.grid, here, t, left, speed),
+                None => left as f32 * speed as f32,
             };
-            if self.world.armies[i].budget < need {
-                return;
-            }
-            self.world.armies[i].budget -= need;
-            self.world.armies[i].mind.free_step = false;
-            self.ai_stepped(i, next, moves, need);
-            self.ai_arrival(uid, hero);
-            // A cell of no cost would step forever: once per slice.
-            if need <= 0.0 || self.army_by_uid(uid).is_none_or(|i| self.is_foe(i)) {
-                return;
-            }
+            let raw = self.ai_cost(a, to) as i64 * speed as i64 * 100;
+            let after = match (next, a.path.get(1)) {
+                // The path goes on from the cell it enters: that step's weight.
+                (Some(t), Some(&u)) => raw * map.grid.weight(t, u) as i64 / 2,
+                // It enters the path's last cell: whatever weight the buffer holds there.
+                (Some(_), None) => {
+                    let weight = a.mind.path_weights.get(a.mind.walked.max(0) as usize + 1).copied().unwrap_or(0);
+                    let weight = if weight == 0 { map.grid.direction_weight(0) as i64 } else { weight as i64 };
+                    raw * weight / 2
+                }
+                (None, _) => raw,
+            };
+            (need, next, !hero.cells.contains(&Some(to)), after)
+        };
+        let a = &mut self.world.armies[i];
+        if a.budget < need {
+            return None;
         }
+        a.budget -= need;
+        a.mind.free_step = false;
+        let cost = cmin(need);
+        let play = if cmin(a.budget) >= after {
+            if total > 0 { cost * tick / total } else { 0 }
+        } else {
+            window
+        };
+        Some((Pending { uid, next, moves, minutes: need }, play.min(window)))
+    }
+
+    /// The arrival of a step [`Game::ai_start`] began: the step clock's bookkeeping, the
+    /// re-plan and the arrival rules ([`Game::ai_stepped`], [`Game::ai_arrival`]).
+    fn ai_finish(&mut self, p: &Pending, hero: &HeroCells) {
+        let Some(i) = self.army_by_uid(p.uid) else { return };
+        self.ai_stepped(i, p.next, p.moves, p.minutes);
+        self.ai_arrival(p.uid, hero);
     }
 
     /// Cost units of cell `t` on army `a`'s map: LAND, or SHIP for a ship army (0 closed).
@@ -1723,6 +1836,16 @@ impl Game {
         a.mind.no_path = false;
         match path {
             Some(path) => {
+                let grid = self.world.map.grid;
+                let w = &mut a.mind.path_weights;
+                if w.len() < path.len() + 1 {
+                    w.resize(path.len() + 1, 0);
+                }
+                let mut from = here;
+                for (k, &t) in path.iter().enumerate() {
+                    w[k] = grid.weight(from, t) as u8;
+                    from = t;
+                }
                 a.path = path;
                 a.mind.countdown = reach;
                 a.mind.walked = 0;

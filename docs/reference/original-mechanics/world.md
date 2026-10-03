@@ -377,6 +377,28 @@ What the world needs:
   otherwise the rest of the window, never longer than what is left of the window; when the
   play time runs out the army arrives and may take the next step. Stationary guards (patrol
   flag with radius 0) are skipped entirely.
+- **Frames, arrivals and their order** (0x4a399c, 0x4ade3c; checked in the running game with
+  the diff test's trace): every frame runs the armies 1..N in order, each one call of the
+  step clock with the frame's game time `dt`. A call first starts a step when the army is
+  ready (the window and the bank as they stand at the frame's start), then takes `dt` off
+  the window and the play time; the army arrives when its play time drops below 1
+  centi-minute, the rest of the frame's time is dropped, and its next step can start only at
+  the next frame. So a call makes at most one arrival, a play time that the frame already
+  covers arrives in the call that starts it, and the arrivals of a tick come in the order of
+  the frames their play times end in, army by army within a frame. The draws an arrival
+  makes (wander points, plans, the arrival rules) follow that order. A midnight comes at the
+  end of the frame it falls in, after that frame's arrivals (0x4a1998 ends the advance).
+  The tick of a hero's step is that whole step (one bank, one window), however long.
+- **The frame rate decides the details**: there is no frame cap but the display's vertical
+  sync, and a tick plays over WalkDelay of real time, so a tick has WalkDelay ÷ frame time
+  frames (about 9 at 60 Hz with the shipped WalkSpeed; about 17 under the diff test's
+  display). Each step's arrival waits for the end of a frame and its successor for the next
+  frame, so with coarse frames an army may fit one step fewer into a tick, two arrivals may
+  fall into one frame (then they come in army order), and a midnight may fall before or after
+  a tick's last arrivals: runs of the same actions differ there (FINDINGS.md §5). The frames
+  are an effect of the machine, not a rule; Razdor plays the order the frames converge to as
+  they get short: every arrival at the exact end of its play time, the next step starting at
+  that moment, arrivals of the same moment and a midnight's place in army order as above.
 - **The hero's cells are never entered**: if an AI step would go onto the hero's cell or the
   cell he is stepping to, the army spends the time but stays put (and is then in contact).
   The test is his cell plus his direction (0x75c050), which only a step writes: while he
