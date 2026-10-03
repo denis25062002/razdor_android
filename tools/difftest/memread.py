@@ -345,6 +345,9 @@ DRAW_SITES = [
     (0x4BE178, "market restock"), (0x4A1998, "barracks"), (0x4BBA40, "village offer roll"),
     (0x4ACA80, "village offer build"), (0x4A2550, "AI wander points"),
     (0x4A4A7C, "AI promotion"), (0x4A548C, "AI hire XP"), (0x4AB150, "anti-cheat"),
+    # Deep inside the arrival rules 0x4a548c (far past its first 0x400 bytes): the XP of a
+    # unit an AI army hires (return 0x4a6b74) or buys for its garrison (return 0x4a7017).
+    (0x4A6B74, "AI hire XP"), (0x4A7017, "AI hire XP (garrison)"),
     (0x4D1282, "window chord"), (0x4D155F, "window chord"), (0x4D165E, "window chord"),
     (0x49D774, "music"), (0x49D7F8, "music"), (0x486237, "battle AI noise"),
 ]

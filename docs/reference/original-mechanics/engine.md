@@ -188,7 +188,7 @@ All 43 call sites in the exe (none in the Community code). "When" says what trig
 | 0x4aca80 | 5, 5 | village spell `3 + 2r`; witch mana `300 + 50r` | building the village offer |
 | 0x4a2550 | W, H (free) or the box widths (patrol) | 4 wander points of an AI army (below) | AI goal refresh |
 | 0x4a4a7c | 3 (repeated) | AI promotion option (below) | AI XP gain |
-| 0x4a548c | X | the XP of a hired AI unit: `Random(X) + X div 2` | AI hiring |
+| 0x4a548c | X | the XP of a hired AI unit: `Random(X) + X div 2` (the calls return to 0x4a6b74 for a unit the army hires, 0x4a7017 for one it buys for its garrison) | AI hiring |
 | 0x4ab150 | 20 | anti-cheat: gold becomes `5 + Random(20)` | only when the gold seal is broken |
 | 0x4d1282, 0x4d155f, 0x4d165e | 3 | which of the three event sounds plays | opening the village, shipyard or event window; the event window also shows the victory box of the player's battle, which draws it too (FINDINGS.md §14) |
 | 0x49d774, 0x49d7f8 | 8; 50 000 / 60 000 / 90 000 | music rotation (§9) | real time |

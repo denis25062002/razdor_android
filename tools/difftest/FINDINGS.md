@@ -125,6 +125,25 @@ midnight restock of market 5 (step 16) starts from another state.
   the following step, else the rest of the window); it and ai.md §2 do not say that the step
   clock makes at most one arrival per call and frame and drops the rest of the frame's time.
 
+## 6. Battle XP at the video's rate: 33 in Razdor, 16 in the original
+
+**Status: deliberate, not changed** (Razdor's `content::PLAYER_XP_MODIFICATOR`, the user's
+choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes it `known:6`.
+
+- rk1-day1 step 36 (the ruins' battle won): `hero.units[k].xp` Razdor 33, 33, 33, 25;
+  original 16, 16, 16, 12.
+- Frida on 0x48bb10 (the battle's end with the flag) and its sides 0x669df8 / 0x66a64c: the
+  awards (+0xa0 of the battle units) are 33, 33, 33, 25 in the original too, from the same
+  pool (132: predicted loss 69, lost 67, the enemy's start strength 410, largest turn loss
+  41) and the same useful / taken / left counts. The pre-battle prediction (0x48b75c) gave
+  69 and 205 for the two sides and drew nothing.
+- The payout (0x4c50ec, Community hook c2518f) multiplies by `HeroExpirienceModificator`
+  (0x4ed3f0 = 50, the install's `_Global.ini`), the difficulty factor F (0x68e784 = 100) and
+  the correction 100, over 10⁶: 33 × 0.5 = 16.5 → 16, 25 × 0.5 = 12.5 → 12 (halves to even).
+  Razdor plays with 100 whatever the install says, by the user's choice after the gameplay
+  video showed shares paid in full. Everything else in the XP chain matches; to match the
+  Community Update's install, the constant would follow `_Global.ini` instead.
+
 ## 7. The battle is written back into the armies after every action
 
 **Status: fixed** (`Game::battle_write_back`; battle.md §11).
@@ -264,6 +283,12 @@ C1003-174927, fourth part: with it the candidate is resolved.
 - After the fix steps 36-39 of rk1-day1 are equal step-local.
 
 ## Not differences
+
+- **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):
+  arriving at (22,41) fires events 4 and 5; the original shows event 4's window and fires
+  event 5 when it is closed (its window next), Razdor counts both at once. With three `ok`
+  after it the run is equal at every step, generator included (run `r2-c174531-ext`): only
+  window timing. `known.py` classes such an `events_done` difference `timing`.
 
 - **Events done** and **event results while the window is up**: the original counts an event
   and applies its finishing results (an army switched off: step 9 `armies[id 14].active`)

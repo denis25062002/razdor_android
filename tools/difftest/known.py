@@ -8,7 +8,9 @@ run (each Razdor step starts from the original's generator state) is given a cla
 - `noise`        the original's frame noise (FINDINGS.md §5, first part): an AI army one cell
                  off while the generator agrees;
 - `timing`       a result of the event the original shows that it applies only at OK
-                 (FINDINGS.md "Not differences"), when the run ends before the OK;
+                 (FINDINGS.md "Not differences"), when the run ends before the OK; also the
+                 events Razdor counts as done that the original fires only when the window
+                 on screen is closed (queued behind it; candidate C1003-174531);
 - `harness`      one side has no state at that step (the original's harness stopped);
 - `new`          none of the above: a candidate for a human to look at.
 
@@ -28,6 +30,9 @@ The rules, by FINDINGS.md entry:
    order and the draws include the AI's wander points: arrivals within a tick come in another
    order. Taints the armies, the buildings' goods, gold and owners, and later generator
    differences whose draws involve the AI.
+6. `hero.units[k].xp` (or `.level`) higher in Razdor: it pays battle XP at the gameplay
+   video's rate, `HeroExpirienceModificator` 100 where the install has 50 (deliberate, the
+   user's choice of 2026-09-29). Taints the hero's units (levels and their HP follow).
 
 Desync: when one side skips an action (it needs another screen) that the other applies, the
 sides are on different screens and everything after differs: `screen` is classed downstream
@@ -190,6 +195,14 @@ def classify(rows, ctx):
                     r"hero\.(gold|mana|units)|buildings\[|armies\[id \d+\]\.(active|alive)", p):
                 cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original, which "
                                       "applies its results at OK (FINDINGS 'Not differences')")
+            if cls is None and p == "events_done" and ctx.event_window(step) and \
+                    isinstance(a, list) and isinstance(b, list) and set(b) <= set(a):
+                cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original; the "
+                                      "events after it fire when it is closed (FINDINGS 'Not differences')")
+            if cls is None and re.match(r"hero\.units\[\d+\]\.(xp|level)$", p) and \
+                    isinstance(a, int) and isinstance(b, int) and a > b:
+                cls, why = "known:6", "battle XP at the video's rate (HeroExpirienceModificator 100, not 50)"
+                taint.append((r"hero\.units\[", 6))
             if cls is None and p == "rng":
                 e = rng_rule(ctx, step)
                 if e == 5 and taint and any(en == 5 for _, en in taint):

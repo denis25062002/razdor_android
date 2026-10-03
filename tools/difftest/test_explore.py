@@ -85,6 +85,23 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 0, "diffs": [["hero.gold", 490, 500], ["clock", 1, 2]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["new", "timing"])
 
+    def test_events_queued_behind_the_window(self):
+        # C1003-174531: event 4 on screen, event 5 fired with it in Razdor, in the original
+        # when event 4's window closes.
+        c = known.Context([{"op": "click_map", "x": 1, "y": 1}], {},
+                          [{"step": 0, "events_done": [1, 2, 3, 4, 5]}], [],
+                          [{"step": 0, "meta": {"screen": "event", "dialog_event": 3, "event_count": 22}}],
+                          [{"step": 0}])
+        per = known.classify([{"step": 0, "diffs": [["events_done", [1, 2, 3, 4, 5], [1, 2, 3, 4]]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["timing"])
+
+    def test_xp_rate_taints_the_hero_units(self):
+        c = ctx([{"op": "battle_act"}, {"op": "wait", "hours": 4}], [{"step": 0}, {"step": 1}], [{"step": 0}, {"step": 1}])
+        per = known.classify([{"step": 0, "diffs": [["hero.units[0].xp", 33, 16]]},
+                              {"step": 1, "diffs": [["hero.units[0].xp", 33, 16], ["hero.units[1].hp", 50, 49]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["known:6"])
+        self.assertEqual([e["class"] for e in per[1]], ["known:6", "downstream:6"])
+
     def test_paths(self):
         st = {"armies": [{"id": 3, "x": 7}], "battle": {"sides": [[], [{"hp": 5}]]}}
         self.assertEqual(explore.get_path(st, "armies[id 3].x"), 7)
