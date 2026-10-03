@@ -295,3 +295,76 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   C1003-235033: an army's wander box.
 - **Explained** with C1003-235033 (the same armies 1 and 9 of РК1; FINDINGS §5, third part).
 
+# Fourth round: after fix round 3 (2026-10-04 03:45, all maps, 0.76 h, 5 episodes)
+
+The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§19: 5 episodes,
+309 actions, 3 NEW. Triage below each.
+
+## C1004-035744: ДС1-С чего все начиналось, step 16 `click_map 97 7`
+
+- Found 2026-10-04 by explore.py (hero 1); unconfirmed.
+- Repro: 17 actions (shrunk from 17, 4 tries): `~/.cache/razdor-difftest/explore/C1004-035744/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `clock`: 2666 / 2936
+  - `hero.units[0].hp`: 40 / 80
+  - `hero.x`: 87 / 97
+  - `hero.y`: 19 / 7
+- rng: the original is 233 draw(s) ahead of Razdor
+- rng: draws this step: Razdor 0, original 233; the n agree for the first 0
+- rng: original from there: Random(89) AI wander points 0x4a2594, Random(80) AI wander points 0x4a25d8, Random(89) AI wander points 0x4a2594, Random(80) AI wander points 0x4a25d8, Random(89) AI wander points 0x4a2594, Random(80) AI wander points 0x4a25d8, Random(89) AI wander points 0x4a2594, Random(80) AI wander points 0x4a25d8 ...
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-035744/`.
+- Reading (not traced to a cause): step-local, the generator equal before the step; at its
+  start army 1 (the bandits, 4 units) stands at (91,17), the hero at (85,19) alone. In Razdor
+  the army comes to (88,19) and attacks after two of his steps (40 minutes, no AI draw before
+  the battle); in the original it ends at (92,13), draws wander points (`Random(89)/(80)`) and
+  the hero walks on to (97,7) unattacked. The `ai` part of `trace-around.jsonl` does not
+  show army 1's records at this step (the indices there do not match the state's id 1):
+  A third run with `--trace random,ai:1` (`r3-c035744`) parted already at step 9 (the
+  original's frames), so it says nothing about step 16; it needs a repro that stays in step
+  up to there.
+
+## C1004-041105: Другой берег, step 17 `click_map 81 77`
+
+- Found 2026-10-04 by explore.py (hero 2); unconfirmed.
+- Repro: 18 actions (shrunk from 29, 4 tries): `~/.cache/razdor-difftest/explore/C1004-041105/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `rng`: 3113229542 / 2044507713
+  - `armies[id 10].x`: 162 / 158
+  - `armies[id 11].x`: 10 / 8
+  - `armies[id 11].y`: 14 / 11
+  - `armies[id 13].y`: 61 / 60
+  - `armies[id 14].x`: 30 / 31
+  - `armies[id 14].y`: 70 / 69
+  - `armies[id 15].x`: 191 / 187
+  - ... 40 more
+- rng: Razdor is 15 draw(s) ahead of the original
+- rng: draws this step: Razdor 191, original 176; the n agree for the first 153
+- rng: original from there: Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933, Random(3000) patroller idle offset 0x4ad933 ...
+- rng: Razdor from there: Random(55) rules/ai.rs:1686, Random(55) rules/ai.rs:1687, Random(55) rules/ai.rs:1686, Random(55) rules/ai.rs:1687, Random(55) rules/ai.rs:1686, Random(55) rules/ai.rs:1687, Random(55) rules/ai.rs:1686, Random(55) rules/ai.rs:1687 ...
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-041105/`.
+- Reading (not traced): the original's walk stops and draws the stop's idle offsets where
+  Razdor's armies go on (army wander points, `Random(55)`), so the walk ends earlier in the
+  original (`clock`); the first 153 draws agree. Possibly a stop by an army met on the way
+  (FINDINGS §18's kind) or §5's frames; next, the `ai,events` trace of the step.
+
+## C1004-042357: Обучающий1, step 17 `click_map 20 28`
+
+- Found 2026-10-04 by explore.py (hero 3); unconfirmed.
+- Repro: 18 actions (shrunk from 58, 4 tries): `~/.cache/razdor-difftest/explore/C1004-042357/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `events_done`: [1, 2, 3, 4, 5, 9] / [1, 2, 3, 4, 5, 6, 9]
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-042357/`.
+- **Harness, not a difference**: event 6 is a yes/no question on both sides at the step
+  (Razdor's screen `question`, event 6); the differ counts the original's shown event as
+  done, Razdor counts a question only once it is answered. `known.py` classes it `timing`
+  now.
+
+## lake-gang.jsonl step 3 (`click_map 19 18`): army 7 seven cells off, generator equal
+
+- Found 2026-10-04 in the gang-gold run (`r3-gold-lake17`), again in `r3-army7` (`ai:7`).
+- Step-local: `armies[id 7]` (46,85) in Razdor, (39,92) in the original; nothing else differs.
+- Reading: **§5 frames**. Army 7 arrives at (45,92) at 22300 centi-minutes in Razdor, at
+  22400 in the original (the frame's end, 100 later); its plan there reads a flood whose
+  seeds (other armies' cells) differ by that minute, and turns north toward a friendly army
+  at (49,82) in Razdor, west toward (34,84) in the original. No draw in between, so the
+  generator stays equal. Larger than the one-cell `noise` `known.py` knows; not fixed.

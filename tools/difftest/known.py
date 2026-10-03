@@ -149,6 +149,14 @@ class Context:
             return None
         return ev + 1 if ev + 1 in self.r.get(step, {}).get("events_done", []) else None
 
+    def shown_event(self, step):
+        """The map event (1-based) the original's event window shows at `step`, else None."""
+        meta = self.orun.get(step, {}).get("meta") or {}
+        ev = meta.get("dialog_event", -1)
+        if meta.get("screen") != "event" or ev is None or not 0 <= ev < meta.get("event_count", 1 << 30):
+            return None
+        return ev + 1
+
     def screen(self, step):
         return (self.orun.get(step, {}).get("meta") or {}).get("screen")
 
@@ -246,6 +254,10 @@ def classify(rows, ctx):
             if cls is None and ctx.screen(step) == "village" and re.match(r"hero\.(gold|mana)$|buildings\[id \d+\]\.(gold|mana)$", p):
                 cls, why = "timing", ("the original's village window is open: it pays the tribute when the "
                                       "window closes, Razdor on entering (FINDINGS 'Not differences')")
+            if cls is None and p == "events_done" and isinstance(a, list) and isinstance(b, list) and \
+                    set(b) - set(a) and set(b) - set(a) == {ctx.shown_event(step)}:
+                cls, why = "timing", (f"event {ctx.shown_event(step)} is on screen in the original, which the "
+                                      "differ counts as done; Razdor counts a question only once it is answered")
             if cls is None and p == "events_done" and ctx.event_window(step) and \
                     isinstance(a, list) and isinstance(b, list) and set(b) <= set(a):
                 cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original; the "

@@ -158,6 +158,15 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 0, "diffs": [["events_done", [1, 2, 3, 4, 5], [1, 2, 3, 4]]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["timing"])
 
+    def test_a_question_on_screen_is_not_done_in_razdor_yet(self):
+        # C1004-042357: event 6 is a question in both; the differ counts the original's shown
+        # event as done, Razdor counts it once answered.
+        c = known.Context([{"op": "click_map", "x": 20, "y": 28}], {}, [], [],
+                          [{"step": 0, "meta": {"screen": "event", "dialog_event": 5, "event_count": 22}}],
+                          [{"step": 0}])
+        per = known.classify([{"step": 0, "diffs": [["events_done", [1, 5, 9], [1, 5, 6, 9]]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["timing"])
+
     def test_tribute_while_the_village_window_is_open(self):
         c = known.Context([{"op": "click_map", "x": 96, "y": 18}], {}, [], [],
                           [{"step": 0, "meta": {"screen": "village"}}], [{"step": 0}])
