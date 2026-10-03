@@ -29,8 +29,15 @@ The rules, by FINDINGS.md entry:
    draws) is the original's frame noise (class `noise`).
 5. second part, `rng` where both sides drew the same `n` (Random(3000) aside) but in another
    order and the draws include the AI's wander points: arrivals within a tick come in another
-   order. Taints the armies, the buildings' goods, gold and owners, and later generator
-   differences whose draws involve the AI.
+   order. Only when the AI's draws at the first difference are each drawn by the other side
+   too in that step: a wander call's pair of ranges (its box) and an AI hire's XP range. A
+   range only one side draws (a wander box or area of its own) is `new`. Also a midnight's
+   draws (barracks, market restock) against the AI's or another building's midnight draws:
+   the midnight runs at the end of the original's frame, after that frame's arrivals, and at
+   the frame's minute, which decides whether a market whose timer falls a minute after the
+   midnight restocks (FINDINGS §5, third part). Taints the armies,
+   the buildings' goods, gold and owners, and later generator differences whose draws involve
+   the AI.
 6. `hero.units[k].xp` (or `.level`) higher in Razdor: it pays battle XP at the gameplay
    video's rate, `HeroExpirienceModificator` 100 where the install has 50 (deliberate, the
    user's choice of 2026-09-29). Taints the hero's units (levels and their HP follow).
@@ -47,7 +54,44 @@ difference that simply stays).
 import re
 
 PATROL_IDLE = 3000
-AI_SITES = ("AI wander points", "ai.rs")
+AI_SITES = ("AI wander points", "AI hire XP", "ai.rs")
+WANDER_DRAWS = 8   # four points, x then y (0x4a2550)
+MIDNIGHT_SITES = ("barracks", "market restock", "economy.rs")
+
+
+def _ai(site):
+    return any(s in site for s in AI_SITES)
+
+
+def wander_calls(seq):
+    """{start index: (x range, y range)} of the wander calls in a step's draws `seq` [(n,
+    site)]: eight AI draws alternating two ranges (Razdor's sites are only file:line)."""
+    out, j = {}, 0
+    while j + WANDER_DRAWS <= len(seq):
+        run = seq[j:j + WANDER_DRAWS]
+        ns = [n for n, _ in run]
+        if all(_ai(site) for _, site in run) and ns[0::2] == [ns[0]] * 4 and ns[1::2] == [ns[1]] * 4:
+            for k in range(WANDER_DRAWS):
+                out[j + k] = (ns[0], ns[1])
+            j += WANDER_DRAWS
+        else:
+            j += 1
+    return out
+
+
+def same_ai_draws(o, r, i):
+    """Whether the AI draws at the first difference `i` of `o` and `r` are each drawn by the
+    other side too in the step: the same wander box (pair of ranges), the same hire range."""
+    wo, wr = wander_calls(o), wander_calls(r)
+    for mine, theirs, wmine, wtheirs in ((o, r, wo, wr), (r, o, wr, wo)):
+        if i >= len(mine):
+            continue
+        if i in wmine:
+            if wmine[i] not in wtheirs.values():
+                return False
+        elif mine[i][0] not in [n for n, _ in theirs]:
+            return False
+    return True
 
 
 def norm_path(p):
@@ -141,12 +185,14 @@ def rng_rule(ctx, step):
     # the AI's (wander points): the armies' draws came in another order (§5), and other
     # wander points then lead to other draws.
     o_rest_sites = [(n, site) for n, site in o if not (n == PATROL_IDLE and "patroller" in site)]
-    ai = lambda site: any(s in site for s in AI_SITES)
     i = 0
     while i < min(len(o_rest_sites), len(r)) and o_rest_sites[i][0] == r[i][0]:
         i += 1
     at = [site for seq in (o_rest_sites, r) if i < len(seq) for site in [seq[i][1]]]
-    if at and all(ai(site) for site in at):
+    if at and all(_ai(site) for site in at) and same_ai_draws(o_rest_sites, r, i):
+        return 5
+    midnight = lambda site: any(s in site for s in MIDNIGHT_SITES)
+    if len(at) == 2 and any(midnight(site) for site in at) and all(midnight(site) or _ai(site) for site in at):
         return 5
     return None
 
@@ -213,11 +259,11 @@ def classify(rows, ctx):
                         rng_diff = False   # only the stop's Random(3000): no effect on the armies
                     cls, why = f"known:{e}", {1: "extra Random(3000) per idle patroller at the stop",
                                               2: "village offer rolled at arrival, not after the event",
-                                              5: "the AI's draws differ (wander points; arrivals in another order)"}[e]
+                                              5: "the AI's or the midnight's draws in another order (arrivals, the midnight's place in the frame)"}[e]
                     if e == 5:
                         taint += [(r"armies\[", 5), (r"buildings\[id \d+\]\.(goods|gold|owner|mana)", 5)]
                 elif any(e2 == 5 for _, e2 in taint) and \
-                        any(any(s in site for s in AI_SITES) for _, site in ctx.o_draws(step) + ctx.r_draws(step)):
+                        any(_ai(site) for _, site in ctx.o_draws(step) + ctx.r_draws(step)):
                     cls, why = "downstream:5", "the AI's draws after an arrival-order difference"
             if cls is None and p.startswith("battle.sides[0]") and re.search(r"\.(row|col|type)$|\.len$", p):
                 cls, why = "known:3", "the hero's starting formation (auto-arranged at load in the original)"

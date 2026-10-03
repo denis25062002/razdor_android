@@ -70,14 +70,52 @@ class Matcher(unittest.TestCase):
         self.assertEqual(per[0][0]["class"], "known:1")
 
     def test_ai_order_taints_armies(self):
+        w = lambda a, b, site: [[a if k % 2 == 0 else b, 0, site] for k in range(8)]
+        o9, o1 = [d[:2] + ["0x4a2594", "AI wander points"] for d in w(40, 40, "")], \
+            [d[:2] + ["0x4a2594", "AI wander points"] for d in w(17, 14, "")]
         c = ctx([{"op": "wait", "hours": 4}] * 2,
-                [{"step": 0, "draws": [[7, 0, "0x1", "x"], [40, 0, "0x4a2594", "AI wander points"]]},
-                 {"step": 1, "draws": []}],
-                [{"step": 0, "draws": [[7, 0, "x"], [17, 0, "src/rules/ai.rs:1465"]]}, {"step": 1, "draws": []}])
+                [{"step": 0, "draws": [[7, 0, "0x1", "x"]] + o9 + o1}, {"step": 1, "draws": []}],
+                [{"step": 0, "draws": [[7, 0, "x"]] + w(17, 14, "src/rules/ai.rs:1668") + w(40, 40, "src/rules/ai.rs:1668")},
+                 {"step": 1, "draws": []}])
         per = known.classify([{"step": 0, "diffs": [["armies[id 1].x", 4, 9], ["rng", 1, 2]]},
                               {"step": 1, "diffs": [["armies[id 1].y", 4, 9], ["hero.x", 1, 2]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["known:5", "downstream:5"])
         self.assertEqual([e["class"] for e in per[1]], ["downstream:5", "new"])
+
+    def test_a_wander_box_of_its_own_is_new(self):
+        # Random(50)/Random(50) in the original where Razdor draws Random(40)/Random(40) and
+        # neither side draws the other's ranges: an area difference, not an order one.
+        w = lambda a, b, site: [[a if k % 2 == 0 else b, 0, site, "AI wander points"] for k in range(8)]
+        c = ctx([{"op": "wait", "hours": 4}],
+                [{"step": 0, "draws": w(50, 50, "0x4a2624")}],
+                [{"step": 0, "draws": [d[:3] for d in w(40, 40, "src/rules/ai.rs:1668")]}])
+        per = known.classify([{"step": 0, "diffs": [["rng", 1, 2]]}], c)
+        self.assertEqual(per[0][0]["class"], "new")
+
+    def test_a_hire_in_another_order_is_ai_order(self):
+        # C1003-234059: the original's army 2 hires (Random(54)) before army 26's wander
+        # points in the same frame; Razdor after them, by their exact times.
+        w = [[11, 0, "0x4a2594", "AI wander points"], [12, 0, "0x4a25d8", "AI wander points"]] * 4
+        c = ctx([{"op": "click_map", "x": 6, "y": 6}],
+                [{"step": 0, "draws": [[54, 0, "0x4a6b74", "AI hire XP"]] + w}],
+                [{"step": 0, "draws": [d[:2] + ["src/rules/ai.rs:1668"] for d in w] + [[54, 0, "src/rules/ai.rs:2385"]]}])
+        per = known.classify([{"step": 0, "diffs": [["rng", 1, 2]]}], c)
+        self.assertEqual(per[0][0]["class"], "known:5")
+
+    def test_a_midnight_restock_against_wander_points_is_ai_order(self):
+        # rk1-day1 step 16: Razdor's midnight restocks market 5 where the original first
+        # draws army 9's wander points (its midnight runs at the end of the frame).
+        c = ctx([{"op": "wait", "hours": 4}],
+                [{"step": 0, "draws": [[1, 0, "0x1", "barracks"], [40, 0, "0x4a2594", "AI wander points"]]}],
+                [{"step": 0, "draws": [[1, 0, "src/rules/economy.rs:447"], [5, 0, "src/rules/economy.rs:567"]]}])
+        per = known.classify([{"step": 0, "diffs": [["rng", 1, 2]]}], c)
+        self.assertEqual(per[0][0]["class"], "known:5")
+        # A midnight against a battle draw is not.
+        c = ctx([{"op": "wait", "hours": 4}],
+                [{"step": 0, "draws": [[5, 0, "0x4be2a4", "market restock"]]}],
+                [{"step": 0, "draws": [[100, 0, "src/rules/battle.rs:10"]]}])
+        per = known.classify([{"step": 0, "diffs": [["rng", 1, 2]]}], c)
+        self.assertEqual(per[0][0]["class"], "new")
 
     def test_formation_taints_all(self):
         c = ctx([{"op": "click_map", "x": 1, "y": 1}], [{"step": 0}], [{"step": 0}])

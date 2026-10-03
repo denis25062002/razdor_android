@@ -127,6 +127,40 @@ midnight restock of market 5 (step 16) starts from another state.
   the following step, else the rest of the window); it and ai.md §2 do not say that the step
   clock makes at most one arrival per call and frame and drops the rest of the frame's time.
 
+**Third part (third round): frames during a walk are long, and so are their effects.**
+Three candidates of the explorer came down to §5's frames, not to a rule:
+- *C1003-234059* (Проклятое озеро step 4, "an AI hire Razdor does not make"): Razdor makes the
+  same hire (army 2 at its castle, a militia, `Random(54)` for its XP at 0x4a6b74 as in the
+  original). In the original the arrival came in a frame of 360 centi-minutes (Frida `ai`
+  preset: the step clock's `dt`) together with armies 8, 17 and 26, run in index order;
+  Razdor runs them by their exact times (army 26 at 29416, army 2 at 29437), so army 26's
+  wander points come first. While the hero walks, a frame is the step's time over the frames
+  of `WalkDelay` (150 ms), some 140-1400 centi-minutes here: arrivals within it come in index
+  order, and each arrival waits for the frame's end and drops the rest of it, so an army
+  falls minutes behind the exact times (on РК1 army 9 reached (22,34) at 532 minutes in the
+  original, 522.6 in Razdor).
+- *C1003-235033 and C1004-005736* (РК1, the messenger; "wander areas differ"): the areas are
+  the same on both sides: the patrol boxes and the whole-map ranges of armies 1 (17 × 14),
+  9 (40 × 40) and 14 (the whole 50 × 50 map) agree draw for draw (run `r3-c235033`, the `ai`
+  preset; ai.md §7.2: 0x4a2594 / 0x4a25d8 are the box's draws, 0x4a2624 / 0x4a264d the
+  map's). The first differing draws are two different armies' wander points (army 1's box
+  against army 9's), drawn in another order because of the frames above; the messenger's
+  meeting then comes at another moment.
+- *Проклятое озеро, the first midnight's market restock* (ep1003-232858 step 7): the load's
+  stocking sets the timer to its clock + 720 with the clock `time div 100 + start`, the start
+  being the header's + 1 (0x4b5549), so on a map that starts at noon the timer falls one
+  minute after the first midnight. The midnight (0x4a1998) gets the minute of the frame it
+  comes in: 72000 centi-minutes into the map in that run, a minute past it, so the market
+  restocked. Razdor runs the midnight at its own minute, where the timer is not yet due (the
+  limit of short frames). A frame landing in the midnight's own minute gives Razdor's
+  result; economy.md §2. The "second order" noted with it (the restock before the barracks)
+  is the original's too: 0x4a1998 restocks each building (0x4be178) before its barracks.
+Not fixed: they follow the frame rate of the machine running the original. `known.py` now
+classes a midnight's draws against the AI's (or another midnight's) as §5, and an AI draw
+order difference as §5 only when the ranges at the first difference (a wander call's box, a
+hire's XP range) are drawn by the other side too in that step; a range only one side draws
+(a wander area of its own) stays `new`.
+
 ## 6. Battle XP at the video's rate: 33 in Razdor, 16 in the original
 
 **Status: fixed** (2026-10-04, the user's decision: the original's rate). Razdor had kept the

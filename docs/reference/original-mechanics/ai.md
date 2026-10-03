@@ -270,8 +270,11 @@ Seeds are (cell, value) pairs; values are capped at 32766.
    row): the army's four wander points, each with `Random[model]`.
 
 **Wander points** (0x4a2550): four points; for a patrolling army `x0 + Rand(x1 − x0 + 1)` then
-`y0 + Rand(y1 − y0 + 1)` inside its box, otherwise `Rand(width)` then `Rand(height)` anywhere on
-the map; a point equal to the army's cell is dropped, and a point in column 0, or on a cell the
+`y0 + Rand(y1 − y0 + 1)` inside its box (draws returning to 0x4a2594 / 0x4a25d8), otherwise
+`Rand(width)` then `Rand(height)` anywhere on the map (0x4a2624 / 0x4a264d; the width and height
+are the planner's, +0x376a / +0x376e, the map's size); the box is the one the loader writes
+(+0x16c0..+0x16cc: the start cell ± radius, clamped to the map), checked in the running game on
+РК1 (17 × 14, 40 × 40 and the whole 50 × 50 map for armies 1, 9 and 14, the same as Razdor's); a point equal to the army's cell is dropped, and a point in column 0, or on a cell the
 obstacle pass of §7.3 has closed, is not seeded.
 New points are drawn when a path ends or is blocked, after a meeting, and at respawn (then
 cleared and the first one set to the army's start cell).

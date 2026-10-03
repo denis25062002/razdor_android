@@ -135,6 +135,11 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   XP of a unit an AI army hires on arriving in a building (inside the arrival rules
   0x4a548c), where Razdor goes on with wander points. An AI hire that Razdor does not make
   at that arrival (or makes without the XP roll); every army's plan after it differs.
+- **Explained, frame order** (third fix round, run `r3-c234059`; FINDINGS §5, third part):
+  Razdor makes the same hire and the same `Random(54)` (army 2, a militia at its castle);
+  the original runs the arrivals of one long frame (360 centi-minutes) in index order, Razdor
+  by their exact times, so army 26's wander points come first in Razdor. `known.py` classes
+  it §5 now.
 
 ## C1003-235033: РК1-Начало пути, step 7 `click_map 31 43`
 
@@ -154,6 +159,10 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   elsewhere and the hero walks on for 285 minutes. The two sides' first draws of the step
   are already wander points of different ranges (`Random(50)` against `Random(40)`): an
   army's wander box differs, so its plan, and the meeting, part.
+- **Explained, frame order** (third fix round, run `r3-c235033` with the `ai` preset;
+  FINDINGS §5, third part): the boxes agree on both sides (army 1 17 × 14, army 9 40 × 40,
+  army 14 the whole map); the first differing draws are army 1's box against army 9's, in
+  another order because the original's long frames during the walk delay the arrivals.
 
 ## Обучающий1 and Другой берег (ranger): the first step is priced at the knight's speed
 
@@ -199,6 +208,12 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   restocks again at the first midnight, so the load's stocking seems not to set the timer.
   Razdor's midnight also restocks a building's market before its barracks, the original's
   draws show the barracks first: a second order to check.
+- **Confirmed, frame-dependent** (third fix round, run `r3-ep232858`; FINDINGS §5, third
+  part; economy.md §2): the load sets the timer to start + 1 + 720, one minute after the first
+  midnight of a map that starts at noon; the original's midnight ran in a frame a minute past
+  it and restocked, Razdor's runs at the midnight's minute. The second order is not one: the
+  original restocks each building before its barracks (0x4a1998), as Razdor does; the draws
+  before it were the earlier buildings' barracks.
 
 ## Not differences found on the way
 
@@ -210,6 +225,9 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   `Random(100)` in Razdor): the matcher classes it FINDINGS §5 (arrival order); the ranges
   say an army wanders a patrol box in the original and the whole map in Razdor. Not
   followed up; the same kind of reading as C1003-235033.
+  Third round: as C1003-235033, most likely two armies' draws in another order (one with a
+  box, one with the whole map), not one army's area; `known.py` now classes such a step
+  §5 only when each side's ranges are drawn by the other side too.
 
 # Third round, second run: service goals only (2026-10-04 00:29, ДС1 and РК1, 0.47 h)
 
@@ -275,4 +293,5 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   Razdor and not yet in the original; the step's first draws are wander points of other
   ranges on each side (`Random(17)/Random(14)` against `Random(40)`). Same family as
   C1003-235033: an army's wander box.
+- **Explained** with C1003-235033 (the same armies 1 and 9 of РК1; FINDINGS §5, third part).
 

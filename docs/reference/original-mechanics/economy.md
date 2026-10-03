@@ -214,6 +214,13 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
   goods keeps them until bought; its timer stays at 1, so the routine still runs every midnight,
   and a **town** with no random goods and 1–4 fixed goods gets one new healing potion each
   midnight (step 3 edge; the previous one is dropped as a random good).
+- **The first midnight**: the load's stocking passes the clock as `time div 100 + start`
+  (0x4b5549), where `start` is the header's start minute **+ 1**, so its timer is the start
+  + 721; a midnight passes the minute of the AI driver's frame in which it comes (0x4a1998).
+  On a map that starts at noon the timer falls one minute after the first midnight: the market
+  restocks there when that frame's minute is past the midnight's, and not when it is the
+  midnight's own minute. The length of the frame decides (FINDINGS.md §5); from the second
+  midnight on the timer is always due.
 - **Steps**:
   1. Random goods (positive ids) are dropped. R = byte 295 minus the fixed goods still there.
   2. Price window: MX = min(word 335, 5000), plus 1 with chance 1/5 (`Rand(5) = 0`); MN = max(word
