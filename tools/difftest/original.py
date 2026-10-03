@@ -5,7 +5,8 @@
 For every action of the list (action list v1, see README.md) the harness performs it with
 XTest mouse clicks and keys, waits until the game settles, then writes
 `<out>/state-NNNN.json` (state schema v1, read from memory by memread.py) and
-`<out>/shot-NNNN.png`. `<out>/run.jsonl` logs each step with its action and some facts that
+`<out>/shot-NNNN.png`; `<out>/original.jsonl` holds the same states one per line (like
+Razdor's `razdor.jsonl`). `<out>/run.jsonl` logs each step with its action and some facts that
 are not part of the schema (screen, camera, music timer).
 
 The game runs from a private copy of the install (`--work`, default
@@ -102,7 +103,24 @@ class Original:
         self.game = None
 
     # --- lifecycle ------------------------------------------------------------------------
-    def start(self, timeout=90):
+    def start(self, timeout=90, tries=2):
+        """Start everything and wait for the main menu. A start that hangs (seen once in
+        many runs: the game never left its loader) is stopped and tried again."""
+        for i in range(tries):
+            try:
+                return self._start(timeout)
+            except HarnessError as e:
+                try:
+                    self.screenshot(os.path.join(self.work, f"start-fail-{i}.png"))
+                except Exception:
+                    pass
+                if i == tries - 1:
+                    raise
+                self.log(f"start failed ({e}); trying again")
+                self.stop()
+                self.pid = self.game = None
+
+    def _start(self, timeout):
         self.dir = prepare_install(self.src, self.work)
         n = self.display_num if self.display_num is not None else free_display()
         self.display = f":{n}"
@@ -188,8 +206,12 @@ class Original:
             except subprocess.TimeoutExpired:
                 self.wine.kill()
         if self.started_wineserver:
-            subprocess.run(["wineserver", "-k"], env=self.env, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+            for args in (["wineserver", "-k"], ["wineserver", "-w"]):  # kill, then wait for it
+                try:
+                    subprocess.run(args, env=self.env, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, timeout=20)
+                except subprocess.TimeoutExpired:
+                    pass
         if self.d:
             self.d.close()
             self.d = None
@@ -278,7 +300,7 @@ class Original:
         self.wait_screen("new_game")
         time.sleep(0.3)
         entries = self.game.map_list()
-        want = [e for e in entries if e[1].lower() == os.path.basename(map_name).lower()]
+        want = match_map(entries, map_name)
         if not want:
             raise HarnessError(f"{map_name} is not in the scenario list: {[e[1] for e in entries]}")
         idx, _, kind = want[0]
@@ -452,6 +474,8 @@ class Original:
         st = self.game.state(step, self.map_name())
         with open(os.path.join(out, f"state-{step:04d}.json"), "w") as f:
             json.dump(st, f, ensure_ascii=False)
+        with open(os.path.join(out, "original.jsonl"), "a") as f:
+            f.write(json.dumps(st, ensure_ascii=False) + "\n")
         self.screenshot(os.path.join(out, f"shot-{step:04d}.png"))
         line = {"step": step, "action": act, "meta": self.game.meta(),
                 "now_ms": self.game.m.u32(0x4F1C34)}
@@ -460,6 +484,16 @@ class Original:
         with open(os.path.join(out, "run.jsonl"), "a") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
         return st
+
+
+def match_map(entries, name):
+    """List entries for `name`: the file name, with or without `.DTm`, or a unique prefix."""
+    name = os.path.basename(name).lower()
+    exact = [e for e in entries if e[1].lower() in (name, name + ".dtm")]
+    if exact:
+        return exact
+    pre = [e for e in entries if e[1].lower().startswith(name)]
+    return pre if len(pre) == 1 else []
 
 
 def read_actions(path):
@@ -491,7 +525,8 @@ def main(argv=None):
     if not acts:
         ap.error("nothing to do: give --map and/or --actions")
     os.makedirs(a.out, exist_ok=True)
-    open(os.path.join(a.out, "run.jsonl"), "w").close()
+    for name in ("run.jsonl", "original.jsonl"):
+        open(os.path.join(a.out, name), "w").close()
 
     o = Original(a.install, a.work, a.display, a.wineprefix)
     rc = 0
@@ -507,7 +542,7 @@ def main(argv=None):
                 o.settle(quiet=0.3)
             o.record(a.out, step, act, note)
             if a.check and act.get("op") == "new_game":
-                path = os.path.join(o.dir, "Maps_Rus", act["map"])
+                path = os.path.join(o.dir, "Maps_Rus", o.map_name())
                 res = memread.check_against_map(o.game, path)
                 bad = [r for r in res if not r[1]]
                 for name, ok, detail in bad:
