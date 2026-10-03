@@ -59,7 +59,7 @@ BUY_ROW, SELL_ROW = 0x671258, 0x671254           # selected row of the goods / s
 SPELL_LIST, SPELL_ROWS = 0x671334, 6
 HIRE_BTN, CURE_BTN, BTN_STRIDE = 0x66EFB0, 0x66DE64, 0x171   # 6 by barracks slot, 12 by card
 # Bottom panel and side windows.
-ARMY_BUTTON, BOOK_BUTTON = (800, 714), (888, 714)
+ARMY_BUTTON, BOOK_BUTTON, MINIMAP_BUTTON = (800, 714), (888, 714), (967, 714)
 BOOK_CELLS, CELL_STRIDE = 0x66C2FC, 0x4B          # 15 spell cells, book entry k
 PACK_CELL0, PACK_PITCH = (338, 58), 55            # 5x5 pack cells of the army window
 WORN_CELLS = [(74, 58), (74, 113), (265, 58), (265, 113)]   # worn slots 0-3 (55x55)
@@ -410,8 +410,21 @@ class Original:
 
     def scroll_to(self, x, y):
         """Scroll with the arrow keys (one at a time, as the game reads only the last key)
-        until cell (x, y) is in the clickable part of the view."""
+        until cell (x, y) is in the clickable part of the view. A cell the minimap covers
+        at the map's edge (the view cannot scroll further) is reached by hiding the minimap
+        with its panel button (it only draws; nothing of the game state changes)."""
+        try:
+            return self._scroll_to(x, y)
+        except HarnessError:
+            if not self.game.minimap():
+                raise
+            self.click(*MINIMAP_BUTTON)
+            self.settle(quiet=0.3)
+            return self._scroll_to(x, y)
+
+    def _scroll_to(self, x, y):
         self.move(512, 340)
+        stuck = set()   # directions the view could not move in (clamped at the map's edge)
         for _ in range(80):
             px, py = self.cell_pixel(x, y)
             if self._in_safe(px, py):
@@ -419,20 +432,28 @@ class Original:
             before = self.game.camera()
             x0, y0, x1, y1 = SAFE
             mm = self.game.minimap()
+            want = []
             if px < x0 + 100:
-                k, d = "Left", (x0 + 200 - px) / 2.0
+                want.append(("Left", (x0 + 200 - px) / 2.0))
             elif px > x1 - 100 or (mm and py <= mm[1] + mm[2] + 16 and px >= mm[0] - 16):
-                k, d = "Right", (px - (x1 - 200 if not mm else mm[0] - 200)) / 2.0
-            elif py < y0 + 80:
-                k, d = "Up", (y0 + 160 - py) / 1.375
-            else:
-                k, d = "Down", (py - (y1 - 160)) / 1.375
+                want.append(("Right", (px - (x1 - 200 if not mm else mm[0] - 200)) / 2.0))
+            if py < y0 + 80:
+                want.append(("Up", (y0 + 160 - py) / 1.375))
+            elif py > y1 - 80:
+                want.append(("Down", (py - (y1 - 160)) / 1.375))
+            want = [w for w in want if w[0] not in stuck]
+            if not want:
+                # Clamped every way it needs: accept any on-view position the minimap does
+                # not cover.
+                under = mm and mm[0] - 16 <= px <= mm[0] + mm[2] + 16 and py <= mm[1] + mm[2] + 16
+                if 5 < px < VIEW_W - 5 and 5 < py < VIEW_H - 5 and not under:
+                    return px, py
+                break
+            k, d = want[0]
             self.key(k, hold=min(0.4, max(0.03, d / 1000.0)))
             time.sleep(0.1)
             if self.game.camera() == before:
-                # Clamped: the view cannot move further; accept any on-view position.
-                if 5 < px < VIEW_W - 5 and 5 < py < VIEW_H - 5:
-                    return px, py
+                stuck.add(k)
         raise HarnessError(f"could not bring cell {(x, y)} into view")
 
     def click_map(self, x, y):

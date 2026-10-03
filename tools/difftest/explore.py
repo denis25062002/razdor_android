@@ -905,10 +905,12 @@ def get_path(state, path):
     return cur
 
 
-def signature(entries, ctx, step):
+def signature(entries, ctx, step, map_stem=""):
+    """The map, the action's op and the fields (ids left out): one candidate per signature.
+    The map is part of it: the same fields on another map are often another cause."""
     paths = sorted({known.norm_path(e["path"]) for e in entries})
     op = ctx.actions[step].get("op") if step < len(ctx.actions) else "?"
-    return f"{op}:" + ",".join(paths)
+    return f"{map_stem}:{op}:" + ",".join(paths)
 
 
 def new_at(per_step, paths):
@@ -1029,7 +1031,7 @@ def save_signatures(sigs):
 def investigate(name, actions, info, hero, per, diff, ctx, razdor, exe, shrink_budget, sigs, logf):
     """Handle the first NEW difference of an episode. Returns a result dict."""
     step, entries = known.first_of(per, "new")
-    sig = signature(entries, ctx, step)
+    sig = signature(entries, ctx, step, info.stem)
     res = {"step": step, "signature": sig, "fields": [e["path"] for e in entries]}
     if sig in sigs:
         res["class"] = "seen"
