@@ -1779,3 +1779,21 @@ fn the_first_step_in_place_prices_the_step_after_south_of_the_army() {
     assert_eq!(play(&mut g, Some((0, 1))), 2000);
     assert_eq!(play(&mut g, None), 3000, "with no direction its own marsh: the whole window");
 }
+
+#[test]
+fn a_simulated_battle_counts_side_strengths_not_hit_points() {
+    // 0x4a08f8 reads the sides' strengths after 0x4a0710 (+0x7ec at the start, +0x7e8 at the
+    // end, 483ecc), not their hit points: a strong warrior of 120 HP is worth its tactical
+    // strength, and a lone weak warrior is worth its own.
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
+    let g = start(&s);
+    let cc = g.content.clone();
+    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0 };
+    let r = simulate(&cc, &side(0), &side(1));
+    let bt = fight(&cc, &side(0), &side(1), false);
+    assert_eq!((r.own, r.theirs), (bt.start_of(Team::Player).strength, bt.start_of(Team::Enemy).strength));
+    assert_eq!((r.own_left, r.theirs_left), (bt.strength_now(Team::Player), bt.strength_now(Team::Enemy)));
+    assert_ne!(r.own, 120, "not the warrior's hit points");
+    assert_eq!(r.own, crate::rules::experience::tactical(&cc, UnitId(6), &army_units(&cc, &g.world.armies[0])[0].stats(&cc), 0) as i64);
+}

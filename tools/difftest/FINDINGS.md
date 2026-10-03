@@ -180,6 +180,22 @@ midnight restock of market 5 (step 16) starts from another state.
   Razdor priced its own cell.
 - After the fix the wait's first 367 draws agree (§11-§13 explain the rest).
 
+## 11. The AI's simulated battles count side strengths, not hit points
+
+**Status: fixed** (`ai::simulate`; ai.md §4). Candidate C1003-174927, second part.
+
+- After §10, Проклятое озеро step 2: army 9 re-plans at t = 9000 from (20,58); the
+  original's path turns through (17,59), Razdor's through (17,58).
+- Frida on the flood (0x482a58) of that plan: the multiplier map has the repulsion cone of
+  army 2, a danger of strength 17 in the original; and on 0x4a08f8 (the army score) with
+  0xc08998 / 0xc08994 / 0xc091ec / 0xc091e8 read at its end: army 9 against army 2 at the
+  load, A0 = 296, B0 = 877. Army 9 has 240 HP (five units), army 2 322: these are the side
+  strengths (+0x7ec of the sides 0xc081ac / 0xc08a00, written by 483ecc in the end's
+  0x48bb10), not hit points. Razdor's `simulate` returned HP totals, so its scores, the
+  cones and the seeds were off.
+- After the fix B0 agrees with the original for every pair the traces show (877, 2536, 402,
+  212, 4035, 1764); A0 needs §12, and the wait's first 415 draws agree.
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

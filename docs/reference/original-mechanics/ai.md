@@ -118,8 +118,12 @@ this function (§6, §9.1).
 **Simulation.** The scoring army fights the other side with the full battle engine, the AI
 playing both sides, to the end. The scoring side takes only its **living, paid** units; the
 other side all its living units. Each side keeps its building defence bonus (the defence of
-the building it stands in, §9.1). The result is the HP total of each side before (A0, B0) and
-after (A1, B1, each capped at its start value), and the turn the battle ended on.
+the building it stands in, §9.1). The result is each side's **strength** (483ecc,
+experience.md §3: the units' strengths scaled by their HP, by rows) at the start (A0, B0: side
++0x7ec, from the battle's set-up) and at the end (A1, B1: +0x7e8, recounted by the end
+0x48bb10; each capped at its start value), and the turn the battle ended on. Not hit points:
+checked in the running game (Проклятое озеро, army 9 of five units with 240 HP: A0 = 296;
+FINDINGS.md §11).
 
 **Score of army A against army C** (computed for A, cached per pair, §7.1):
 1. If nothing happened (A1 = A0 and B1 = B0) or the battle ran to `BattleEndTurn`: score 0.
@@ -182,8 +186,8 @@ church, smithy or obelisk (types 5, 7, 8, 15). Then:
 - Otherwise a simulated fight against the garrison (with its defence). Unless nothing
   happened or it timed out (then base stays): a feudal army counts as winning when
   `A1 + Round(g·A0/100)` is still ≥ 1 (always ÷100 here, never the ÷1000 variant of §4; the
-  garrison's result is not compared); a rogue when the garrison's HP left is at most
-  `B0 div 2`. No win → −100000 (forbidden). A win adds
+  garrison's result is not compared); a rogue when the garrison's strength left is at
+  most `B0 div 2`. No win → −100000 (forbidden). A win adds
   `Round(((1 − A1/A0) + B1/B0) × 30·ZeroDensity + 1)` (unshifted results), at least 1.
 - A building with no income and an empty garrison: ×50.
 - A stationary guard (any army, the player included) standing in the building that A cannot
@@ -572,6 +576,7 @@ after the parity pass.
 | Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
 | Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
 | Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
+| Simulated battle results | the sides' strengths at the start and the end (`simulate`) | side strengths +0x7ec / +0x7e8 (483ecc) | Matches (Razdor counted hit points until 2026-10-03) |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
 | Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
 | Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |

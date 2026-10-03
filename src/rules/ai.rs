@@ -700,20 +700,24 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     bt
 }
 
-/// The HP totals of a played battle (each side's start and end, the end capped at the
-/// start) and its last turn.
-fn sim_result(bt: &Battle, na: usize, a: &[Unit], b: &[Unit]) -> SimResult {
-    let left = |fs: &[super::battle::Fighter]| -> i64 { fs.iter().map(|f| f.hp.max(0) as i64).sum() };
-    let hp = |us: &[Unit]| -> i64 { us.iter().map(|u| u.hp.max(0) as i64).sum() };
-    let (own, theirs) = (hp(a), hp(b));
-    let na = na.min(bt.fighters.len());
-    SimResult { own, own_left: left(&bt.fighters[..na]).min(own), theirs, theirs_left: left(&bt.fighters[na..]).min(theirs), turn: bt.round }
+/// The side strengths of a played battle (483ecc, experience.md §3): each side's at the
+/// start (+0x7ec, as the battle's set-up worked it out) and at the end (+0x7e8, the end's
+/// recount, 48bb10), and its last turn. The score's caps (end at most start) are the
+/// reader's.
+fn sim_result(bt: &Battle) -> SimResult {
+    SimResult {
+        own: bt.start_of(Team::Player).strength,
+        own_left: bt.strength_now(Team::Player),
+        theirs: bt.start_of(Team::Enemy).strength,
+        theirs_left: bt.strength_now(Team::Enemy),
+        turn: bt.round,
+    }
 }
 
-/// Plays a simulated battle (the AI's scoring) and returns its HP totals.
+/// Plays a simulated battle (the AI's scoring, 0x4a0710) and returns its side strengths.
 pub fn simulate(c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
     let bt = fight(c, a, b, false);
-    sim_result(&bt, a.units.len(), &a.units, &b.units)
+    sim_result(&bt)
 }
 
 /// What a simulated battle depends on: each side's units (type, level, HP, worn items),

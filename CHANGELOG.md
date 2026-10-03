@@ -485,6 +485,8 @@ old id, and their versions give both.
   map that starts him at sea) takes no time.
 - An AI army's first step in place after the map load times its play by the cell south of
   it (the direction the map load gives every army), as in the original.
+- The AI judges the battles it simulates by the sides' strengths, as the original does, not
+  by their hit points: its fears and targets among armies and buildings change accordingly.
 
 ## 0.2.2 — 2026-10-01
 
