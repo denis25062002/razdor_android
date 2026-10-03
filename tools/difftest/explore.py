@@ -8,7 +8,7 @@ Per episode:
    install) and a hero class are picked in turn, and a goal from a rotating list that pushes
    toward paths not tested yet (every building type, accept and decline offers, friendly
    armies, a weak army, noon and midnight, a long walk...);
-2. an Ollama model (default qwen3.6) chooses the next few actions from a short text summary
+2. an Ollama model (default Qwen3-Coder-30B-A3B) chooses the next few actions from a short text summary
    of Razdor's replay state (`razdor --replay` of the actions so far: the hero, the nearest
    buildings and armies with their cells, the window on screen and the text of the event
    that opened it, the actions valid there). Its JSON is repaired and checked; an action
@@ -1105,7 +1105,7 @@ def main(argv=None):
     ap.add_argument("--maps", help="comma-separated map name prefixes (default: every startable map)")
     ap.add_argument("--install", default=DEFAULT_INSTALL)
     ap.add_argument("--ollama", default=os.environ.get("OLLAMA_HOST", "http://localhost:11434"))
-    ap.add_argument("--model", default="qwen3.6:latest")
+    ap.add_argument("--model", default="huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:latest")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--shrink-budget", type=int, default=4, help="original runs spent on shrinking a NEW one")
     ap.add_argument("--no-build", action="store_true")

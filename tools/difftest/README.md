@@ -370,7 +370,7 @@ A local model plays episodes and the diff test looks for divergences in them:
     ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --episodes 1 --maps РК1 --len 30
     ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --episodes 3 --play-only   # no diff
 
-Needs Ollama (`--ollama`, default `http://localhost:11434`, model `--model qwen3.6:latest`;
+Needs Ollama (`--ollama`, default `http://localhost:11434`, model `--model huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:latest`, the winner of a benchmark on 2026-10-04: same seeded episodes, 1 % invalid actions and 3.1 s a call fully on the GPUs, against 13 % and 4.3 s for qwen3.6, 9 % for gemma4:26b, 50 % for gemma4 and no usable JSON from qwen3-vl:8b;
 it is asked a few times and the run gives up if it does not answer). Per episode: a map New
 game can start (standalone maps and campaign first maps, from the install's `Maps_Rus`) and
 the next hero class (each episode the next one, so with 7 maps every map meets every class
