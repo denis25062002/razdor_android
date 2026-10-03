@@ -118,6 +118,45 @@ back row 7-10, reserve 6 and 11 (`memread.WIDE_PLACES`), the card widgets at 0x6
 and 0x66b224 (own) + place × 0x4b. The run log also gets the units' attack, defence and
 initiative fields (`battle_raw`) on both sides.
 
+## Services (action list and state, v1 extension)
+
+    {"op":"buy","slot":n}   {"op":"sell","slot":n}     the market tab: row n of the goods / of the sell list
+    {"op":"hire","slot":n}                             the hire tab: barracks slot n (the building record's)
+    {"op":"heal","unit":i}  {"op":"resurrect","unit":i}  the hire tab: unit i of the hero's army
+    {"op":"learn","slot":n}                            the sanctuary tab: row n of its spells
+    {"op":"cast","slot":k[,"army":id]}                 on the map: book entry k (on army id for a spell on enemies)
+    {"op":"equip","slot":n,"unit":i}                   the army window: pack item n on unit i
+
+Rows, slots and units count from 0; a pack item's number counts the pack's items in pack order,
+empty places left out. The building ops need the building window open (the hero stands in
+the building); `cast` and `equip` close it first, as opening a side window does in the
+original. A village's offer is a yes/no question in the original's event window: `answer`
+takes it (Razdor asks it the same way; no gives the village window). There is no hero spell
+in battle in the original (the book is a world window), so `cast` is a map action only.
+
+The state's hero gets `pack` (item numbers in pack order, empty places left out: 0x68dce0),
+`book` (the spell book: 0x68e0e8, count 0x68e4e8) and per unit `items` (the four worn slots,
+0 empty: unit +0xcd).
+
+How the original's side presses them (`original.py`; widgets found by listing the screen's
+child widgets, each with its rectangle at +0x11.. and its enabled flag at +0xd): a tab is
+chosen by pressing the tab buttons from the top until the window's tab (0x68dc88: 0 hall, 1
+hire, 2 garrison, 3 market, 4 sanctuary) is the one wanted; the market list (widget 0x670688,
+first shown row at +0x6b, 7 rows of 28 px) is scrolled by a long press near the end of its
+scroll bar, the row is clicked and checked against the selected row (0x671258 goods, 0x671254
+sell list), then Buy/Sell (0x6709bc) is pressed; the list switch buttons are "Inventory"
+(0x670b30, the sell list) and "Trade shop" (0x670ca4, the goods). Hire: the six buttons
+0x66efb0 + k·0x171 by barracks slot; heal and resurrect: the twelve buttons 0x66de64 +
+p·0x171 by the unit's card place p (its cell in the army grid at army +0x1630 + r·0x18 + c·4,
+then the place table of the battle cards). Learn: the spell list 0x671334 (6 rows) and the
+same button. Cast: the panel's book button, the cell 0x66c2fc + k·0x4b; a spell on enemies
+then waits for a click on the target army's cell. Equip: the panel's army button, the pack
+cell (5×5 from (338, 58), 55 px), then for the hero the lowest empty worn slot of the window,
+for another unit its card (0x667f3c + place·0x4b). Each op checks that something changed
+(pack, gold, army, book, worn items) and notes it when nothing did. Checked live on ДС1
+(hire, buy, sell, learn, equip: every step equal), РК1 (heal after the ruins' battle) and
+Проклятое озеро (two casts: clock and generator equal).
+
 ## Razdor side (script mode)
 
 Razdor plays an action list (v1) without a window and writes the state (schema v1) after
@@ -129,7 +168,10 @@ every action:
 
 The install comes from `RAZDOR_DT_DIR` (or `.env`); a list on `"map":"demo"` needs none.
 `--rng-from original.jsonl` sets the generator before each step to the state that file
-has for the step before. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
+has for the step before. `--look` adds to each state line a `look` object (not part of the
+schema): Razdor's screen (`map`, `building`, `dialog`, `question`, `offer`, `battle`,
+`ended`), the book and the pack, and in a building window its tabs, goods, sell list,
+barracks, heal/raise prices and spells with the row numbers the service ops take. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
 prefix). States go to `out/razdor.jsonl`, one line per action (`step` = the action's index,
 0-based), or to the standard output without `--out`. Actions that do not apply at that
 moment (an `ok` with nothing open, a click on a cell that is no target) are skipped and
@@ -146,6 +188,8 @@ How the actions are applied (`src/difftest.rs`):
 - `battle_auto`: the battle AI plays both sides to the end and the result box is closed.
 - `battle_act`, `battle_pass`: see "Battles" above.
 - `key`: `Escape`, `1`, `4`, `Return`/`space`; others are noted and skipped.
+- services (`buy`, `sell`, `hire`, `heal`, `resurrect`, `learn`, `cast`, `equip`): see
+  "Services" above; a refusal (no money, no such row) is a note.
 - The generator gets the interface's draws: `Random(3)` as an event, village or shipyard
   window opens, and the music change when the first dialog after a won battle closes. The
   map music's real-time rotation is not played (it has no fixed place in a script).
@@ -275,7 +319,8 @@ A local model plays episodes and the diff test looks for divergences in them:
 Needs Ollama (`--ollama`, default `http://localhost:11434`, model `--model qwen3.6:latest`;
 it is asked a few times and the run gives up if it does not answer). Per episode: a map New
 game can start (standalone maps and campaign first maps, from the install's `Maps_Rus`) and
-a hero class in turn, an episode length (`--len`, default 40-80 actions) and goals from a
+the next hero class (each episode the next one, so with 7 maps every map meets every class
+within 21 episodes), an episode length (`--len`, default 40-80 actions) and goals from a
 rotating list (every building type, accept and decline offers, friendly armies, a weak
 army, noon and midnight, a long walk, magic, trade, hiring, quests; a new goal every 20
 actions). The model gets a text summary of Razdor's replay state (the hero; the nearest
@@ -309,7 +354,25 @@ goal, length, the model's calls, invalid actions by kind, the classes found, tim
 `<episode>-actions.jsonl`, `<episode>-chat.jsonl` (the model's replies), `runs/` (the
 run.py folders).
 
-Known limits: the vocabulary has no buying, selling, hiring or casting, so those goals only
-lead to the buildings; the model plans on Razdor's state, so when the original shows a
-window Razdor does not (a desync), the rest of the episode only skips in the original;
-every battle meets FINDINGS §3 first, so what follows a battle is not compared.
+Since the second version:
+- **Services.** The model also gets the building window's content from Razdor's `--look`
+  (goods, sell list, barracks, heal prices, spells), the book and the pack, and may answer
+  with the service ops; goals push toward each of them.
+- **The original plays along** (`LiveOriginal`, off with `--no-live`): each accepted action
+  is played at once in the original as well (recorded as `original.py` records a run, Frida
+  `random` trace on), so the explorer sees the original's screen; when it differs from
+  Razdor's the prompt says what the original shows, and a window only one side shows is
+  closed with `ok` / `answer no` (a resync step; the other side notes it and skips it). The
+  diff then reuses that recording (`run.py --reuse-original`) instead of playing the
+  original a second time.
+- **Fights.** A click on a hostile army whose hit points pass the hero's army's by 1.3 is
+  refused (`too_strong`). A battle lost (the game ends) is rewound: the actions from the one
+  that opened the battle are dropped (the script's "reload of the last point before the
+  battle"), that army's cell is avoided, and the episode goes on (at most 3 rewinds; the
+  live original is restarted and replays the shorter list).
+- `log.jsonl` also counts per op what Razdor applied (`ops_razdor`) and what the original
+  applied without a note (`ops_original`), the rewinds, resyncs and screen mismatches.
+
+Known limits: the model plans on Razdor's state; a resync keeps the two sides on the same
+screen but the step it fixes is still a difference (classified as usual); a rewind restarts
+the original and replays the list (a minute or two).

@@ -74,6 +74,12 @@ GOALS = [
     "Trade: visit markets, towns and villages (places that buy and sell goods).",
     "Hire troops: visit castles, forts, towns and taverns (places with barracks).",
     "Quests: read the event messages, answer YES to quests, and go where the messages point.",
+    "Shop: in a market tab buy an item you can afford (buy), later sell one (sell).",
+    "Recruit: in a building with barracks hire units you can afford (hire).",
+    "Care: after a fight heal wounded units (heal) or raise dead ones (resurrect) where offered.",
+    "Magic: learn a spell in a sanctuary (learn), then cast spells from your book (cast).",
+    "Gear: put items from your pack on your units (equip), the hero first.",
+    "Villages: visit villages and answer YES to what the villagers offer.",
 ]
 
 SYSTEM = """You are a game tester playing the fantasy strategy game Discord Times, through a tiny
@@ -88,7 +94,17 @@ Actions (use only the ones listed as valid for the current screen):
   {"op":"battle_act","side":2,"row":R,"col":C}   in battle: act on that card (side 2 = enemy,
                                     side 1 = own); rows 1 front, 2 back, 3 reserve; cols 1-6
   {"op":"battle_pass"}              in battle: skip the turn of the unit that acts
-Coordinates are map cells. Prefer cells listed in the state (buildings, armies)."""
+In a building window (rows and units as listed in the state, 0-based):
+  {"op":"buy","slot":N}  {"op":"sell","slot":N}   buy row N of the goods / sell row N of the sell list
+  {"op":"hire","slot":N}                          hire a unit of barracks slot N
+  {"op":"heal","unit":N}  {"op":"resurrect","unit":N}   heal / raise unit N of your army
+  {"op":"learn","slot":N}                         learn the spell of row N
+On the map (also from a building window):
+  {"op":"cast","slot":N}  or  {"op":"cast","slot":N,"army":ID}   cast book entry N (ID: target army
+                                    for a spell on enemies)
+  {"op":"equip","slot":N,"unit":U}  put pack item N on unit U (0 = the hero)
+Coordinates are map cells. Prefer cells listed in the state (buildings, armies). Do not attack
+armies much stronger than yours."""
 
 
 # --- the map file: names, factions, events ------------------------------------------------------
@@ -156,14 +172,14 @@ class Razdor:
         self.work = work
         os.makedirs(work, exist_ok=True)
 
-    def replay(self, actions):
+    def replay(self, actions, look=False):
         """(states, notes by step, ok)."""
         fd, path = tempfile.mkstemp(suffix=".jsonl", dir=self.work)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             for a in actions:
                 f.write(json.dumps(a, ensure_ascii=False) + "\n")
         try:
-            res = subprocess.run([self.exe, "--replay", path], cwd=REPO, stdout=subprocess.PIPE,
+            res = subprocess.run([self.exe, "--replay", path] + (["--look"] if look else []), cwd=REPO, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True, timeout=120)
         finally:
             os.unlink(path)
@@ -176,25 +192,17 @@ class Razdor:
         return states, notes, res.returncode == 0
 
     def look(self, actions):
-        """The state after `actions` and what is on screen: 'battle', 'question', 'dialog'
-        (a message that only OK closes), 'building' (a building window), 'map' or 'ended'.
-        Found by replaying the list with one more action and reading Razdor's notes on it."""
+        """(state, screen, look) after `actions`: Razdor's own account of its screen
+        (`--look`): 'map', 'building', 'dialog' (a message OK closes), 'question', 'offer' (a
+        village's yes/no question), 'battle' or 'ended'; `look` also lists what the building
+        window, the book and the pack offer."""
         n = len(actions)
-        st_ok, notes_ok, ok = self.replay(actions + [{"op": "ok"}])
-        if not ok or len(st_ok) < n:
-            return None, "ended"
-        state = st_ok[n - 1]
-        if state.get("battle"):
-            return state, "battle"
-        okn = " ".join(notes_ok.get(n, []))
-        if "question" in okn:
-            return state, "question"
-        _, notes_w, _ = self.replay(actions + [{"op": "wait", "hours": 1}])
-        waited = not notes_w.get(n)
-        if "nothing to close" in okn:
-            return state, "map" if waited else "ended"
-        return state, "building" if waited else "dialog"
-
+        states, _, ok = self.replay(actions, look=True)
+        if not ok or len(states) < n:
+            return None, "ended", {}
+        st = states[n - 1]
+        lk = st.pop("look", {}) or {}
+        return st, lk.get("screen", "map"), lk
 
     def reachable(self, actions, cells, workers=8):
         """The cells of `cells` a click_map accepts now (explored, a way there)."""
@@ -225,8 +233,38 @@ def sample_cells(info, hp):
 
 
 VALID = {"map": ("click_map", "wait"), "building": ("ok", "click_map", "wait"),
-         "dialog": ("ok",), "question": ("answer",), "battle": ("battle_act", "battle_pass"),
-         "ended": ()}
+         "dialog": ("ok",), "question": ("answer",), "offer": ("answer",),
+         "battle": ("battle_act", "battle_pass"), "ended": ()}
+SERVICE_OPS = ("buy", "sell", "hire", "heal", "resurrect", "learn", "cast", "equip")
+
+
+def valid_ops(screen, look):
+    """The ops that make sense on `screen` with what Razdor's `look` lists."""
+    ops = list(VALID[screen])
+    if screen in ("map", "building"):
+        if look.get("book"):
+            ops.append("cast")
+        if look.get("pack"):
+            ops.append("equip")
+    if screen == "building":
+        if look.get("goods"):
+            ops.append("buy")
+        if look.get("sell"):
+            ops.append("sell")
+        if look.get("recruits"):
+            ops.append("hire")
+        if any(x["op"] == "heal" for x in look.get("services", [])):
+            ops.append("heal")
+        if any(x["op"] == "resurrect" for x in look.get("services", [])):
+            ops.append("resurrect")
+        if any(not x["known"] for x in look.get("spells", [])):
+            ops.append("learn")
+    return tuple(ops)
+
+
+def strength(units):
+    """A rough army strength: the hit points of its living units."""
+    return sum(max(0, u.get("hp", 0)) for u in units or [])
 
 
 # --- the summary for the model -------------------------------------------------------------------
@@ -239,8 +277,12 @@ def clock_text(clock):
     return f"day {day % 365 + 1}, {mins // 60:02d}:{mins % 60:02d}"
 
 
-def summarise(info, state, screen, goal, visited_types, history, new_events, rejected, reach=None):
-    """`reach`: (set of cells click_map accepts, {sample cell: direction}) or None."""
+def summarise(info, state, screen, goal, visited_types, history, new_events, rejected, reach=None,
+              look=None, orig_view=None):
+    """`reach`: (set of cells click_map accepts, {sample cell: direction}) or None; `look`:
+    Razdor's account of the screen (`--look`); `orig_view`: what the original shows when it
+    differs from Razdor's screen."""
+    look = look or {}
     hero = state["hero"]
     hp = (hero["x"], hero["y"])
     L = [f"Map {info.stem} ({info.m.width}x{info.m.height} cells). {clock_text(state['clock'])}.",
@@ -254,8 +296,31 @@ def summarise(info, state, screen, goal, visited_types, history, new_events, rej
             L.append(f"Event {e} ({kind}) just fired: \"{(ev['ask'] or ev['text'])[:300]}\"")
     desc = {"map": "the world map", "building": "a building window (ok closes it; click_map/wait also close it)",
             "dialog": "a message (ok closes it)", "question": "a YES/NO question (answer it)",
+            "offer": "a village's offer, a YES/NO question (answer it)",
             "battle": "a BATTLE", "ended": "the game is over"}[screen]
-    L.append(f"Screen: {desc}. Valid ops now: {', '.join(VALID[screen])}.")
+    L.append(f"Screen: {desc}. Valid ops now: {', '.join(valid_ops(screen, look))}.")
+    if orig_view:
+        L.append(f"WARNING: the original game shows {orig_view} while Razdor shows {screen}: "
+                 "prefer actions that close windows (ok / answer) until both agree.")
+    if screen == "building":
+        b = look.get("building") or {}
+        L.append(f"Building {b.get('id')} ({b.get('kind')}), tabs: {', '.join(look.get('tabs', []))}.")
+        if look.get("goods"):
+            L.append("  goods (buy slot): " + "; ".join(f"{g['slot']}: {g['name']} {g['price']}g" for g in look["goods"][:12]))
+        if look.get("sell"):
+            L.append("  sell list (sell slot): " + "; ".join(f"{g['slot']}: item {g['id']} for {g['price']}g" for g in look["sell"][:12]))
+        if look.get("recruits"):
+            L.append("  barracks (hire slot): " + "; ".join(f"{r['slot']}: {r['name']} {r['price']}" for r in look["recruits"]))
+        if look.get("services"):
+            L.append("  services: " + "; ".join(f"{x['op']} unit {x['unit']} for {x['price']}" for x in look["services"]))
+        if look.get("spells"):
+            L.append("  spells (learn slot): " + "; ".join(f"{x['slot']}: {x['name']} {x['price']}g" + (" (known)" if x["known"] else "") for x in look["spells"]))
+    if screen in ("map", "building"):
+        if look.get("book"):
+            L.append("Spell book (cast slot): " + "; ".join(f"{x['slot']}: {x['name']} {x['mana']} mana" + (" (needs army)" if x["enemy"] else "") for x in look["book"]))
+        if look.get("pack"):
+            L.append("Pack (equip slot): " + "; ".join(f"{x['slot']}: {x['name']}" for x in look["pack"][:12]))
+        L.append("Your units: " + "; ".join(f"{i}: type {u['type']} hp {u['hp']}" for i, u in enumerate(hero["units"])))
     if screen == "battle":
         b = state["battle"]
         L.append(f"Battle turn {b.get('turn')}, acting card: {b.get('actor')} (side,row,col).")
@@ -287,11 +352,14 @@ def summarise(info, state, screen, goal, visited_types, history, new_events, rej
         arm.sort(key=lambda a: dist(hp, (a["x"], a["y"])))
         if arm:
             L.append("Armies on the map (nearest first; click their cell to meet them):")
+        mine = strength(hero["units"])
         for a in arm[:8]:
             us = a.get("units", [])
+            st_ = strength(us)
+            risk = " TOO STRONG, avoid" if st_ > mine * STRONGER else ""
             L.append(f"  army {a['id']} {FACTIONS.get(info.army_faction.get(a['id']), '?')} at "
                      f"({a['x']},{a['y']}), distance {dist(hp, (a['x'], a['y']))}, {len(us)} units, "
-                     f"total HP {sum(u.get('hp', 0) for u in us)}" + tag((a["x"], a["y"])))
+                     f"total HP {st_}{risk}" + tag((a["x"], a["y"])))
         types = {b.type for b in info.m.buildings} - visited_types.get("types", set()) - {13, 14}
         if types:
             L.append("Building types not visited yet: " + ", ".join(sorted(BUILDING_TYPES.get(t, str(t)) for t in types)))
@@ -301,6 +369,10 @@ def summarise(info, state, screen, goal, visited_types, history, new_events, rej
         L.append("REJECTED (not possible now, do not repeat): " + "; ".join(rejected[-4:]))
     L.append('Reply with JSON {"actions":[...],"why":"..."}.')
     return "\n".join(L)
+
+
+# A hostile army whose hit points pass the hero's by this factor is not attacked.
+STRONGER = 1.3
 
 
 # --- the model ------------------------------------------------------------------------------------
@@ -351,7 +423,9 @@ OP_ALIASES = {"click": "click_map", "move": "click_map", "walk": "click_map", "g
               "goto": "click_map", "move_to": "click_map", "attack": "click_map", "visit": "click_map",
               "enter": "click_map", "rest": "wait", "close": "ok", "confirm": "ok", "continue": "ok",
               "act": "battle_act", "strike": "battle_act", "shoot": "battle_act", "pass": "battle_pass",
-              "skip": "battle_pass", "accept": "answer", "decline": "answer", "yes": "answer", "no": "answer"}
+              "skip": "battle_pass", "accept": "answer", "decline": "answer", "yes": "answer", "no": "answer",
+              "purchase": "buy", "recruit": "hire", "cure": "heal", "raise": "resurrect", "revive": "resurrect",
+              "study": "learn", "spell": "cast", "wear": "equip", "use": "equip"}
 
 
 def _to_int(v):
@@ -439,6 +513,21 @@ def normalise_action(a):
         return {"op": "battle_act", "side": side, "row": row, "col": col}
     if op == "battle_pass":
         return {"op": "battle_pass"}
+    if op in ("buy", "sell", "hire", "learn"):
+        k = _to_int(a.get("slot", a.get("row", a.get("index"))))
+        return None if k is None or k < 0 else {"op": op, "slot": k}
+    if op in ("heal", "resurrect"):
+        k = _to_int(a.get("unit", a.get("slot")))
+        return None if k is None or k < 0 else {"op": op, "unit": k}
+    if op == "cast":
+        k = _to_int(a.get("slot", a.get("spell")))
+        if k is None or k < 0:
+            return None
+        army = _to_int(a.get("army", a.get("target")))
+        return {"op": "cast", "slot": k} | ({"army": army} if army is not None else {})
+    if op == "equip":
+        k, u = _to_int(a.get("slot", a.get("item"))), _to_int(a.get("unit", 0))
+        return None if k is None or k < 0 or u is None or u < 0 else {"op": "equip", "slot": k, "unit": u}
     return None  # new_game, battle_auto (a no-op in the original), keys, unknown ops
 
 
@@ -465,11 +554,11 @@ def act_text(a):
     return a["op"] + (" " + rest if rest else "")
 
 
-def fallback(info, state, screen, rnd, visited, razdor=None, acts=None):
+def fallback(info, state, screen, rnd, visited, razdor=None, acts=None, avoid=()):
     """An action when the model gave nothing usable."""
     if screen in ("dialog", "building"):
         return {"op": "ok"}
-    if screen == "question":
+    if screen in ("question", "offer"):
         return {"op": "answer", "yes": rnd.random() < 0.5}
     if screen == "battle":
         b = state["battle"]
@@ -480,7 +569,7 @@ def fallback(info, state, screen, rnd, visited, razdor=None, acts=None):
         return {"op": "battle_pass"}
     hp = (state["hero"]["x"], state["hero"]["y"])
     bs = [(b.x, b.y) for b in info.m.buildings if b.id not in visited.get("ids", ())]
-    cells = bs + list(sample_cells(info, hp))
+    cells = [c for c in bs + list(sample_cells(info, hp)) if c not in avoid]
     ok = sorted(razdor.reachable(acts, cells)) if razdor else []
     if ok:
         good_b = [c for c in ok if c in bs]
@@ -489,23 +578,199 @@ def fallback(info, state, screen, rnd, visited, razdor=None, acts=None):
     return {"op": "wait", "hours": 1}
 
 
-def play_episode(info, hero, goals, razdor, model, length, rnd, log):
+# --- the original, played along -------------------------------------------------------------
+ORIGINAL_SCREENS = {"world": "map", "building": "building", "village": "building", "shipyard": "building",
+                    "event": "dialog", "question": "question", "battle": "battle", "exit_battle": "battle",
+                    "main_menu": "ended"}
+
+
+class LiveOriginal:
+    """The original played along with the episode, action by action, recorded as
+    `original.py` records a run (states, shots, run log, Frida `random` trace), so that the
+    explorer sees its screen and `run.py --reuse-original` diffs the episode without playing
+    the original again."""
+
+    def __init__(self, out, trace="random"):
+        self.out, self.trace = out, trace
+        self.o = None
+        self.failed = None
+        self.n = 0
+
+    def start(self):
+        from . import original
+        os.makedirs(self.out, exist_ok=True)
+        for name in ("run.jsonl", "original.jsonl", "trace.jsonl"):
+            open(os.path.join(self.out, name), "w").close()
+        self.o = original.Original(trace=True, hold_music=True, frida=self.trace,
+                                   log=lambda *a: print("  original:", *a, file=sys.stderr))
+        self.o.start()
+        self.n = 0
+
+    def do(self, act):
+        """Plays `act` as step self.n. Returns its note (None: applied)."""
+        from . import original
+        if self.failed:
+            return "harness down"
+        o = self.o
+        try:
+            if o.tracer:
+                o.tracer.set_step(self.n)
+            try:
+                note = o.perform(act)
+            except original.NotApplicable as e:
+                note = f"skipped: {e}"
+                o.settle(quiet=0.3)
+            o.record(self.out, self.n, act, note)
+        except Exception as e:  # HarnessError, a dead process...
+            self.failed = f"step {self.n}: {e}"
+            print(f"  original failed at {self.failed}", file=sys.stderr)
+            self.stop()
+            return "harness down"
+        self.n += 1
+        return note
+
+    def view(self, info):
+        """(screen in the explorer's words, a description) of what the original shows."""
+        if self.failed or not self.o:
+            return None, ""
+        g = self.o.game
+        try:
+            scr = g.screen()
+            mine = ORIGINAL_SCREENS.get(scr, scr)
+            text = scr
+            if scr == "event":
+                from . import memread
+                hidden, *_rest = g.widget(memread.EVENT_YES)
+                w = g.widget(memread.EVENT_YES)[3]
+                if not hidden and w > 0:
+                    mine = "question"
+                ev = g.dialog_event() + 1
+                e = info.events.get(ev)
+                text = f"an event window (event {ev}" + (f", {e['title'][:60]}" if e else "") + ")"
+                if ev > len(info.events):
+                    text = "an event window (a report or a village offer)"
+            return mine, text
+        except Exception as e:
+            return None, f"unreadable ({e})"
+
+    def replay(self, acts):
+        """Starts again and plays `acts` (a rewind to an earlier point of the episode)."""
+        self.stop()
+        self.failed = None
+        try:
+            self.start()
+        except Exception as e:
+            self.failed = f"restart: {e}"
+            return
+        for a in acts:
+            self.do(a)
+
+    def stop(self):
+        if self.o:
+            try:
+                self.o.stop()
+            except Exception:
+                pass
+            self.o = None
+
+
+def battle_start(screens, upto):
+    """The index of the action that opened the battle going on at `upto` (screens[i] is the
+    screen after action i)."""
+    i = upto
+    while i > 0 and screens[i - 1] == "battle":
+        i -= 1
+    return i
+
+
+def play_episode(info, hero, goals, razdor, model, length, rnd, log, live=None, max_rewinds=3):
     acts = [{"op": "new_game", "map": info.stem, "hero": hero}]
     st = {"model_calls": 0, "proposed": 0, "repaired_json": 0, "unparsed": 0, "dropped": 0,
-          "wrong_screen": 0, "rejected": 0, "fallbacks": 0, "auto_ok": 0, "accepted_from_model": 0}
+          "wrong_screen": 0, "rejected": 0, "too_strong": 0, "fallbacks": 0, "auto_ok": 0,
+          "accepted_from_model": 0, "rewinds": 0, "resyncs": 0, "screen_mismatch": 0,
+          "ops_razdor": {}, "ops_original": {}}
     visited = {"types": set(), "ids": set()}
     history, rejected, empty_rounds = [], [], 0
     seen_events = set()
     new_events = []
-    state, screen = razdor.look(acts)
+    avoid = set()          # cells of armies that beat the hero (rewound)
+    state, screen, look = razdor.look(acts)
     if state is None:
         return acts, st, "razdor could not start the map"
+    screens = [screen]
+    if live:
+        try:
+            live.start()
+            live.do(acts[0])
+        except Exception as e:
+            live.failed = f"start: {e}"
     seen_events |= set(state.get("events_done", []))
     goal_i = 0
+
+    def count(a, o_note):
+        st["ops_razdor"][a["op"]] = st["ops_razdor"].get(a["op"], 0) + 1
+        if live and not live.failed and o_note is None:
+            st["ops_original"][a["op"]] = st["ops_original"].get(a["op"], 0) + 1
+
+    def push(a, tag=""):
+        """Plays `a` on both sides; returns the original's note."""
+        nonlocal state, screen, look, new_events
+        acts.append(a)
+        o_note = live.do(a) if live else None
+        count(a, o_note)
+        state, screen, look = razdor.look(acts)
+        if state is None:
+            screen = "ended"
+            screens.append(screen)
+            return o_note
+        screens.append(screen)
+        done = set(state.get("events_done", []))
+        fresh = sorted(done - seen_events)
+        seen_events.update(done)
+        new_events = fresh
+        history.append(act_text(a) + tag + (f" -> events {fresh}" if fresh else "") + f" -> {screen}"
+                       + (f" (original: {o_note})" if o_note else ""))
+        return o_note
+
     while len(acts) < length:
         goal = goals[(goal_i + (len(acts) // 20)) % len(goals)]
         if screen == "ended":
+            # The game ended in a battle (lost): rewind the script to before the action that
+            # opened it, as a reload of the last point before the battle, and go on elsewhere.
+            if len(screens) > 1 and screens[-2] == "battle" and st["rewinds"] < max_rewinds:
+                k = battle_start(screens, len(screens) - 2)
+                opener = acts[k] if k < len(acts) else {}
+                if opener.get("op") == "click_map":
+                    avoid.add((opener["x"], opener["y"]))
+                del acts[k:]
+                del screens[k:]
+                st["rewinds"] += 1
+                state, screen, look = razdor.look(acts)
+                if live:
+                    live.replay(acts)
+                history.append(f"(rewound to before the lost battle of step {k})")
+                rejected.append(f"click_map {opener.get('x')} {opener.get('y')}: that army beat you, avoid it")
+                continue
             break
+        # The original's view, when it shows another screen.
+        o_screen, o_text = live.view(info) if live else (None, "")
+        orig_view = None
+        if o_screen and o_screen != screen and not (o_screen == "dialog" and screen == "question"):
+            st["screen_mismatch"] += 1
+            orig_view = f"{o_text} (screen {o_screen})"
+            # A window only the original shows: close it (Razdor notes the step and skips it).
+            if o_screen in ("dialog",) and screen in ("map", "building") and st["resyncs"] < 40:
+                st["resyncs"] += 1
+                push({"op": "ok"}, " (resync)")
+                continue
+            if o_screen == "question" and screen in ("map", "building") and st["resyncs"] < 40:
+                st["resyncs"] += 1
+                push({"op": "answer", "yes": False}, " (resync)")
+                continue
+            if o_screen in ("map", "building") and screen == "dialog" and st["resyncs"] < 40:
+                st["resyncs"] += 1
+                push({"op": "ok"}, " (resync)")
+                continue
         if screen == "dialog":
             cand_list = [{"op": "ok"}]
             st["auto_ok"] += 1
@@ -519,7 +784,8 @@ def play_episode(info, hero, goals, razdor, model, length, rnd, log):
                     [(x["x"], x["y"]) for x in state.get("armies", []) if "x" in x and x.get("active", True)
                      and x.get("alive", True) and dist(hp, (x["x"], x["y"])) <= 30][:10]
                 reach = (razdor.reachable(acts, cells), samples)
-            prompt = summarise(info, state, screen, goal, visited, history, new_events, rejected, reach)
+            prompt = summarise(info, state, screen, goal, visited, history, new_events, rejected, reach,
+                               look, orig_view)
             text = model.ask(prompt)
             st["model_calls"] += 1
             cand_list, fix = repair(text)
@@ -528,20 +794,29 @@ def play_episode(info, hero, goals, razdor, model, length, rnd, log):
             st["dropped"] += fix["dropped"]
             st["proposed"] += len(cand_list) + fix["dropped"]
             from_model = True
-            log({"prompt_screen": screen, "reply": text[:400]})
+            log({"prompt_screen": screen, "orig_view": orig_view, "reply": text[:400]})
         took = 0
         for a in cand_list:
-            if a["op"] not in VALID[screen]:
+            if a["op"] not in valid_ops(screen, look):
                 st["wrong_screen"] += 1
                 rejected.append(f"{act_text(a)} (not valid on {screen})")
                 break
+            if a["op"] == "click_map":
+                c = (a["x"], a["y"])
+                foe = next((x for x in state.get("armies", []) if (x.get("x"), x.get("y")) == c
+                            and x.get("active", True) and x.get("alive", True)), None)
+                mine = strength(state["hero"]["units"])
+                friendly = foe and info.army_faction.get(foe["id"]) in (1, 2)
+                if c in avoid or (foe and not friendly and strength(foe.get("units")) > mine * STRONGER):
+                    st["too_strong"] += 1
+                    rejected.append(f"{act_text(a)}: that army is too strong for you")
+                    break
             _, notes, _ = razdor.replay(acts + [a])
             n = notes.get(len(acts))
             if n:
                 st["rejected"] += 1
                 rejected.append(f"{act_text(a)}: {n[0].split(': ', 1)[-1]}")
                 break
-            acts.append(a)
             took += 1
             if from_model:
                 st["accepted_from_model"] += 1
@@ -550,34 +825,22 @@ def play_episode(info, hero, goals, razdor, model, length, rnd, log):
                 if b:
                     visited["types"].add(b.type)
                     visited["ids"].add(b.id)
-            state, screen = razdor.look(acts)
-            if state is None:
-                screen = "ended"
-                break
-            done = set(state.get("events_done", []))
-            fresh = sorted(done - seen_events)
-            seen_events |= done
-            new_events = fresh
-            history.append(act_text(a) + (f" -> events {fresh}" if fresh else "") + f" -> {screen}")
+            push(a)
             if screen != "map" or len(acts) >= length:
                 break  # the screen changed: ask again with the new state
         if took == 0:
             empty_rounds += 1
             if empty_rounds >= 3:
-                a = fallback(info, state, screen, rnd, visited, razdor, acts)
+                a = fallback(info, state, screen, rnd, visited, razdor, acts, avoid)
                 _, notes, _ = razdor.replay(acts + [a])
                 if notes.get(len(acts)):
                     a = {"op": "wait", "hours": 1} if screen == "map" else {"op": "ok"}
                     _, notes, _ = razdor.replay(acts + [a])
                     if notes.get(len(acts)):
                         return acts, st, f"stuck on {screen}"
-                acts.append(a)
                 st["fallbacks"] += 1
                 empty_rounds = 0
-                state, screen = razdor.look(acts)
-                if state is None:
-                    break
-                history.append(act_text(a) + " (fallback)")
+                push(a, " (fallback)")
         else:
             empty_rounds = 0
             rejected = rejected[-2:]
@@ -585,8 +848,9 @@ def play_episode(info, hero, goals, razdor, model, length, rnd, log):
 
 
 # --- diffing and classifying ---------------------------------------------------------------------
-def run_both(actions, name, trace="random", shots=False):
-    """run.py on `actions` into RUNS/<name>; returns the run folder."""
+def run_both(actions, name, trace="random", shots=False, reuse=None):
+    """run.py on `actions` into RUNS/<name>; returns the run folder. `reuse`: an original's
+    run folder recorded along the episode (`LiveOriginal`)."""
     os.makedirs(RUNS, exist_ok=True)
     path = os.path.join(RUNS, name + ".jsonl")
     with open(path, "w", encoding="utf-8") as f:
@@ -596,6 +860,8 @@ def run_both(actions, name, trace="random", shots=False):
            "--no-build", "--trace", trace]
     if not shots:
         cmd.append("--no-shots")
+    if reuse:
+        cmd += ["--reuse-original", reuse]
     t0 = time.time()
     with open(os.path.join(RUNS, name + ".log"), "w") as logf:
         subprocess.run(cmd, cwd=REPO, stdout=logf, stderr=subprocess.STDOUT)
@@ -816,6 +1082,8 @@ def main(argv=None):
     ap.add_argument("--shrink-budget", type=int, default=4, help="original runs spent on shrinking a NEW one")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--play-only", action="store_true", help="play episodes in Razdor only, no diff")
+    ap.add_argument("--no-live", action="store_true",
+                    help="do not play the original along (it is then played once after the episode)")
     a = ap.parse_args(argv)
 
     rnd = random.Random(a.seed)
@@ -849,7 +1117,8 @@ def main(argv=None):
             break
         info = maps[episode % len(maps)]
         heroes = [h for h in info.heroes() if (info.stem, h) not in skip] or [1]
-        hero = heroes[(episode // len(maps)) % len(heroes)]
+        # Each episode the next class (7 maps and 3 classes: every pair within 21 episodes).
+        hero = heroes[episode % len(heroes)]
         length = rnd.randint(lo, hi)
         name = "ep" + datetime.datetime.now().strftime("%m%d-%H%M%S")
         goal_list = goals[episode % len(goals):] + goals[: episode % len(goals)]
@@ -859,7 +1128,12 @@ def main(argv=None):
         calls0, secs0 = model.calls, model.seconds
         chat = open(os.path.join(EXPLORE, name + "-chat.jsonl"), "w", encoding="utf-8")
         logf = lambda rec: chat.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        acts, st, why = play_episode(info, hero, goal_list, razdor, model, length, rnd, logf)
+        live = None if a.play_only or a.no_live else LiveOriginal(os.path.join(RUNS, name + "-live"))
+        try:
+            acts, st, why = play_episode(info, hero, goal_list, razdor, model, length, rnd, logf, live)
+        finally:
+            if live:
+                live.stop()
         chat.close()
         with open(os.path.join(EXPLORE, name + "-actions.jsonl"), "w", encoding="utf-8") as f:
             f.write("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in acts))
@@ -868,11 +1142,16 @@ def main(argv=None):
                "length": len(acts), "target": length, "end": why, "play_s": round(t_play),
                "model_s": round(model.seconds - secs0), **st}
         print(f"  played {len(acts)} actions in {t_play:.0f}s ({why}); model calls {st['model_calls']}, "
-              f"invalid: wrong screen {st['wrong_screen']}, rejected {st['rejected']}, "
-              f"dropped {st['dropped']}, repaired JSON {st['repaired_json']}", file=sys.stderr)
+              f"invalid: wrong screen {st['wrong_screen']}, rejected {st['rejected']}, too strong "
+              f"{st['too_strong']}, dropped {st['dropped']}, repaired JSON {st['repaired_json']}; "
+              f"rewinds {st['rewinds']}, resyncs {st['resyncs']}; ops {st['ops_razdor']} / original "
+              f"{st['ops_original']}", file=sys.stderr)
+        if live:
+            rec["live_original"] = live.failed or "ok"
         if not a.play_only and len(acts) > 1:
             t1 = time.time()
-            d = run_both(acts, name, shots=True)
+            reuse = live.out if live and not live.failed and live.n == len(acts) else None
+            d = run_both(acts, name, shots=True, reuse=reuse)
             per, diff, ctx = classify_run(d, info)
             if per is None:
                 rec["result"] = {"class": "harness", "why": "no diff.json"}

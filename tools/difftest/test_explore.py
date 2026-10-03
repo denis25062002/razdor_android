@@ -26,6 +26,23 @@ class Repair(unittest.TestCase):
         self.assertEqual(acts, [{"op": "wait", "hours": 4}, {"op": "answer", "yes": False}])
         self.assertEqual(st["dropped"], 3)
 
+    def test_services(self):
+        acts, st = explore.repair('{"actions":[{"op":"purchase","slot":"2"},{"op":"cast","slot":0,"army":7},'
+                                  '{"op":"equip","item":1},{"op":"cure","unit":3},{"op":"learn"}]}')
+        self.assertEqual(acts, [{"op": "buy", "slot": 2}, {"op": "cast", "slot": 0, "army": 7},
+                                {"op": "equip", "slot": 1, "unit": 0}, {"op": "heal", "unit": 3}])
+        self.assertEqual(st["dropped"], 1)
+
+    def test_valid_ops(self):
+        look = {"goods": [{}], "book": [{}], "services": [{"op": "heal"}], "spells": [{"known": True}]}
+        self.assertEqual(explore.valid_ops("building", look),
+                         ("ok", "click_map", "wait", "cast", "buy", "heal"))
+        self.assertEqual(explore.valid_ops("offer", look), ("answer",))
+
+    def test_battle_start(self):
+        screens = ["map", "map", "battle", "battle", "battle", "ended"]
+        self.assertEqual(explore.battle_start(screens, 4), 2)
+
     def test_garbage(self):
         acts, st = explore.repair("I would walk north.")
         self.assertEqual(acts, [])

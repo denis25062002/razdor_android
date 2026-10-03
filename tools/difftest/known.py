@@ -88,7 +88,8 @@ class Context:
         r_notes = self.rrun.get(step, {}).get("notes") or []
         o_skip = o_note.startswith("skipped")
         r_skip = any(("takes no input" in n or "no battle" in n or "no question" in n
-                      or "a question is shown" in n or "not the player's turn" in n) for n in r_notes)
+                      or "a question is shown" in n or "not the player's turn" in n
+                      or "no building window" in n) for n in r_notes)
         if o_skip and not r_notes:
             return f"razdor applied / original {o_note}"
         if r_skip and not o_note:
