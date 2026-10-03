@@ -35,6 +35,12 @@ fn single_instance() {
 fn single_instance() {}
 
 fn conf() -> Conf {
+    // `--replay <actions.jsonl>`: the diff test's script mode, played without a window
+    // (`razdor::difftest`). `conf` runs before the window opens, so it ends here.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = razdor::difftest::cli(&args) {
+        std::process::exit(code);
+    }
     // The log of this start (`razdor.log`, see `razdor::diag`), before anything can fail.
     razdor::diag::init();
     // `RAZDOR_DT_DIR` and the other settings may come from a `.env` file.
