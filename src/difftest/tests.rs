@@ -398,6 +398,25 @@ fn quiet_harbour_the_first_step_at_sea_takes_no_time() {
     assert_eq!(states[3].clock - states[2].clock, 30);
 }
 
+/// FINDINGS.md §16: the map load sets the ranger's speed before it puts him on his cell, so
+/// his first step is priced at 4 too. Обучающий1, the original: 306 minutes to (18,42).
+#[test]
+fn tutorial_the_rangers_first_step_takes_his_speed() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Обучающий1","hero":3}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":18,"y":42}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert_eq!((states[4].hero.x, states[4].hero.y), (18, 42), "{notes:?}");
+    assert_eq!(states[4].clock - states[3].clock, 306);
+    assert_eq!(states[4].rng, 1_158_257_644);
+}
+
 /// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
 /// moves 28 AI armies through 509 draws. With the first step in place priced south of each
 /// army (§10), the simulated battles counted in side strengths (§11) from the strengths of

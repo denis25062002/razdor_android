@@ -306,6 +306,23 @@ C1003-174927, fourth part: with it the candidate is resolved.
 - After the fix rk1-day1 steps 40-43 equal those of the recorded original `fix1`
   step-local (only §6's XP differs).
 
+## 16. The ranger's first step was priced at the knight's speed
+
+**Status: fixed** (`Game::unstarted`; world.md §2.1). Candidates "the ranger's first step"
+(Обучающий1, Другой берег) and C1004-005130 (ДС1). Third round (runs `r3-*`).
+
+- Обучающий1, hero 3, step 4 (`click_map 18 42`): `clock` Razdor 313 minutes after the
+  start, the original 306; Другой берег (hero 3, `click_map 10 10`): the event that fires by
+  time stops Razdor's walk a cell earlier; ДС1 (hero 3, `click_map 97 7`): `clock` 64
+  against 61 and army 3 a step behind. Every time the start cell's cost × 1.
+- The map load sets the class values (0x4b4300: speed 0x68dcd8 = 4 for the ranger, copied to
+  the hero's +0x1694 at 0x75bfd4) before it puts the hero on his cell (0x4b5913 →
+  0x497c68), which sets his first step's time from that speed. Razdor set the first step's
+  base (FINDINGS §9) before it set the class, so `hero_speed()` still gave the knight's 5.
+- After the fix: `cand-ranger-ghost` (Обучающий1) 9 of 9 steps equal, C1004-005130 6 of 6,
+  Другой берег with the windows closed after it 8 of 8 (`r3-ranger`, `r3-c005130`,
+  `r3-shore2`).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

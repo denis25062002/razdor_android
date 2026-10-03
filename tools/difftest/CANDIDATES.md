@@ -167,6 +167,9 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   (`land_step_base(start)`, cost × speed, FINDINGS §9) before `archetype` is set, so
   `hero_speed()` still answers the knight's 5 for a ranger (4): the first step costs
   cost × 5 instead of cost × 4 (7 minutes here, a start cell of cost 7).
+- **Resolved** by FINDINGS §16 (third fix round): the cause confirmed in the exe (0x4b4300
+  sets the speed before 0x4b5913 puts him on his cell); Обучающий1 9 of 9 steps equal,
+  Другой берег 8 of 8, C1004-005130 6 of 6.
 
 ## Проклятое озеро: a village offer's roll is drawn when the offer opens, not at the answer
 
@@ -250,6 +253,7 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-005130/`.
 - **The ranger's first step** above (hero 3; `clock` 3 minutes more in Razdor, a start
   cell of cost 3); the AI army 3 one step behind follows from the later stop.
+- **Resolved** by FINDINGS §16: 6 of 6 steps equal (run `r3-c005130`).
 
 ## C1004-005736: РК1-Начало пути, step 20 `click_map 40 32`
 

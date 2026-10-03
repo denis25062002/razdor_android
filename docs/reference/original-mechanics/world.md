@@ -184,7 +184,9 @@ closed or unreachable the chase ends and **the hero stops** on the cell he has r
   1000 centi-minutes for each shallow step after; FINDINGS.md §9).
 - Speed by class (0x4b4300): **knight 5, archmage 5, ranger 4** → the ranger's steps take 80%
   of the time. Minutes per orthogonal grass step: 25 (ranger 20).
-- The class values (sight, speed, cast divisor) are set when the map is started (0x4b4300).
+- The class values (sight, speed, cast divisor) are set when the map is started (0x4b4300),
+  before the map load puts the hero on his cell (0x4b5913 → 0x497c68): his first step is
+  priced at his class's speed (a ranger's at 4).
   The save writes and reads class, sight and speed (0x4b66d8 / 0x4b771c); the cast divisor is
   not saved but recomputed from the loaded class (archmage 2, others 1; 0x4b78b2). No event
   result changes the class, so a changed hero unit does not change these values.

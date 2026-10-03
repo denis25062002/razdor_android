@@ -577,15 +577,16 @@ impl Game {
         squad.extend(start.troops.iter().map(|t| troop_unit(&content, t)));
         let mut g = Game::with_world(content, world, squad, start.tile);
         g.arrange_at_load();
-        // The map load puts him on his cell (0x4b2504 → 0x497c68) before he is at sea: his
-        // first step is priced on LAND, 0 on the water.
+        // The class's speed is set first (0x4b4300: 0x68dcd8, copied to the hero's +0x1694),
+        // then the map load puts him on his cell (0x4b5913 → 0x497c68), before he is at sea:
+        // his first step is priced at his class's speed, on LAND, 0 on the water.
+        g.archetype = archetype_of(hero);
         g.step_base = Some(g.land_step_base(start.tile));
         // A preset on the water ("Тихая пристань") puts him there, at sea: aboard a ship
         // *(guess: the original plans on its MIXED map while he is on water)*.
         if g.world.is_sea(start.tile) {
             g.ship = Some(Ship { tile: start.tile, aboard: true });
         }
-        g.archetype = archetype_of(hero);
         g.fog = fog::for_scenario(&g.world.map, Some(scenario), true);
         g.look_around();
         g.gold = start.gold;
@@ -3520,6 +3521,23 @@ mod tests {
         let r = Game::from_scenario(Arc::new(tk::content()), &s, HeroClass::Ranger);
         assert_eq!((r.hero_speed(), r.step_time((4, 2), (5, 2)), r.step_time((4, 2), (5, 3))), (4, 20.0, 30.0));
         assert_eq!(r.sight_radius(), 10);
+    }
+
+    /// The map load sets the class's speed (0x4b4300) before it puts the hero on his cell
+    /// (0x4b5913 → 0x497c68), so the ranger's first step is priced at his speed 4 too.
+    #[test]
+    fn the_rangers_first_step_is_priced_at_his_speed() {
+        let mut s = strip();
+        s.header.heroes[2] = s.header.heroes[0].clone();
+        let mut r = Game::from_scenario(Arc::new(tk::content()), &s, HeroClass::Ranger);
+        r.world.armies.clear();
+        r.pending.clear();
+        let cost = u32::from(r.world.map.cost((2, 2)).unwrap());
+        assert_eq!(r.step_base, Some(cost * 4));
+        assert!(r.set_destination((3, 2)));
+        let t0 = r.clock.total_minutes();
+        walk_until_stopped(&mut r);
+        assert_eq!(r.clock.total_minutes() - t0, f64::from(cost * 4));
     }
 
     #[test]

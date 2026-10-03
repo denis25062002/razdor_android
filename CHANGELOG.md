@@ -504,6 +504,8 @@ old id, and their versions give both.
   numbers, as in the original.
 - The noon report ends a wait, as an event's message does, and opens with the event
   window's chord, as in the original; closing it no longer resumes the wait.
+- The ranger's first step on a new map takes his own speed, not the knight's, as in the
+  original (it was priced before his class was set: a few minutes too long).
 
 ## 0.2.2 — 2026-10-01
 
