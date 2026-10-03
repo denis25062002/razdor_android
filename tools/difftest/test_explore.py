@@ -56,8 +56,9 @@ class Matcher(unittest.TestCase):
 
     def test_formation_taints_all(self):
         c = ctx([{"op": "click_map", "x": 1, "y": 1}], [{"step": 0}], [{"step": 0}])
-        per = known.classify([{"step": 0, "diffs": [["battle.actor", 1, 2], ["battle.sides[0][0].row", 3, 1]]}], c)
-        self.assertEqual([e["class"] for e in per[0]], ["known:3", "downstream:3"])
+        per = known.classify([{"step": 0, "diffs": [["battle.actor", 1, 2], ["battle.sides[0][0].hp", 80, 48],
+                                                          ["battle.sides[0][0].row", 3, 1]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["known:3", "downstream:3", "downstream:3"])
 
     def test_desync_after_known(self):
         c = ctx([{"op": "click_map", "x": 1, "y": 1}, {"op": "click_map", "x": 5, "y": 5}],
@@ -75,6 +76,14 @@ class Matcher(unittest.TestCase):
                           [{"step": 0, "draws": []}])
         per = known.classify([{"step": 0, "diffs": [["armies[id 9].y", 24, 25], ["rng", 1, 2]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["known:1", "noise"])
+
+    def test_event_results_at_ok(self):
+        c = known.Context([{"op": "click_map", "x": 1, "y": 1}], {},
+                          [{"step": 0, "events_done": [1, 161]}], [],
+                          [{"step": 0, "meta": {"screen": "event", "dialog_event": 160, "event_count": 269}}],
+                          [{"step": 0}])
+        per = known.classify([{"step": 0, "diffs": [["hero.gold", 490, 500], ["clock", 1, 2]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["new", "timing"])
 
     def test_paths(self):
         st = {"armies": [{"id": 3, "x": 7}], "battle": {"sides": [[], [{"hp": 5}]]}}

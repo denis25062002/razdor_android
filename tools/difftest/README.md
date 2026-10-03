@@ -293,7 +293,8 @@ Then `run.py` plays the list on both sides (Frida `random` trace) and `known.py`
 differences of the step-local run: `known:N` (FINDINGS.md entry N, by field and context;
 the rules are in its docstring), `downstream:N` (a field entry N already threw off, or
 everything after a battle-formation difference or a screen desync), `noise` (an AI army one
-cell off with the generator in step: §5's frame noise), `harness`, or `new`. For the first
+cell off with the generator in step: §5's frame noise), `timing` (a result of the event the
+original still shows, which it applies at OK), `harness`, or `new`. For the first
 `new` one the original runs once more on the prefix up to it (trace `random,ai,events`): if
 it gives other values for those fields it was noise; else the prefix is shrunk by dropping
 chunks of actions while the field still differs as `new` (`--shrink-budget` original runs),

@@ -7,6 +7,8 @@ run (each Razdor step starts from the original's generator state) is given a cla
 - `downstream:N` a field a known finding has already thrown off earlier in the run (taint);
 - `noise`        the original's frame noise (FINDINGS.md §5, first part): an AI army one cell
                  off while the generator agrees;
+- `timing`       a result of the event the original shows that it applies only at OK
+                 (FINDINGS.md "Not differences"), when the run ends before the OK;
 - `harness`      one side has no state at that step (the original's harness stopped);
 - `new`          none of the above: a candidate for a human to look at.
 
@@ -88,6 +90,14 @@ class Context:
             return f"razdor {r_notes[0].split(': ', 1)[-1]} / original applied"
         return None
 
+    def event_window(self, step):
+        """The map event (1-based) the original shows at `step` when Razdor has fired it."""
+        meta = self.orun.get(step, {}).get("meta") or {}
+        ev = meta.get("dialog_event", -1)
+        if meta.get("screen") != "event" or ev is None or not 0 <= ev < meta.get("event_count", 1 << 30):
+            return None
+        return ev + 1 if ev + 1 in self.r.get(step, {}).get("events_done", []) else None
+
     def screen(self, step):
         return (self.orun.get(step, {}).get("meta") or {}).get("screen")
 
@@ -159,7 +169,8 @@ def classify(rows, ctx):
             res.append({"path": "screen", "razdor": desync.split(" / ")[0],
                         "original": desync.split(" / ")[-1], "class": cls, "why": why})
             taint_all = near[1] if near else "desync"
-        order = lambda d: (d[0] != "rng", not d[0].startswith("battle.sides"), d[0])
+        # The generator first, then the battle formation (its rule taints all the rest).
+        order = lambda d: (d[0] != "rng", not re.match(r"battle\.sides\[0\].*\.(row|col|type|len)$", d[0]), d[0])
         diffs = sorted(row.get("diffs", []), key=order)
         rng_diff = any(p == "rng" for p, _, _ in diffs)   # cleared below when only §1's draws
         for p, a, b in diffs:
@@ -175,6 +186,10 @@ def classify(rows, ctx):
                     if re.match(rx, p):
                         cls, why = f"downstream:{entry}", f"a field FINDINGS §{entry} threw off earlier"
                         break
+            if cls is None and ctx.event_window(step) and re.match(
+                    r"hero\.(gold|mana|units)|buildings\[|armies\[id \d+\]\.(active|alive)", p):
+                cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original, which "
+                                      "applies its results at OK (FINDINGS 'Not differences')")
             if cls is None and p == "rng":
                 e = rng_rule(ctx, step)
                 if e == 5 and taint and any(en == 5 for _, en in taint):
