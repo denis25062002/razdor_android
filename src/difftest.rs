@@ -63,6 +63,31 @@ pub enum Action {
     BattlePass,
     /// Nothing: only the state is written.
     Snapshot,
+    /// In the window of the building the hero stands in (its market tab): buys the good of
+    /// row `slot` (0-based) of the goods list as the window shows it.
+    Buy { slot: usize },
+    /// The market tab's sell list (the pack's items worth more than 1, in pack order): sells
+    /// the item of row `slot`.
+    Sell { slot: usize },
+    /// The hire tab: hires one unit of barracks slot `slot` (0-based, the building record's
+    /// slot order).
+    Hire { slot: usize },
+    /// The hire tab: heals unit `unit` of the hero's army (0-based, record order) for its price.
+    Heal { unit: usize },
+    /// The hire tab of a town or church: raises the dead unit `unit` of the hero's army.
+    Resurrect { unit: usize },
+    /// The sanctuary tab: learns the spell of row `slot` of its list.
+    Learn { slot: usize },
+    /// On the map: casts the spell of book entry `slot` (0-based) on the hero's army, or, for
+    /// a spell on an enemy, on the army with map id `army`. A building window is closed first.
+    Cast {
+        slot: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        army: Option<i32>,
+    },
+    /// The army window: puts pack item `slot` (0-based in pack order, empty places left out)
+    /// on unit `unit` of the hero's army. A building window is closed first.
+    Equip { slot: usize, unit: usize },
 }
 
 /// A unit of the hero's army.
@@ -73,6 +98,9 @@ pub struct HeroUnit {
     pub level: i32,
     pub hp: i32,
     pub xp: i32,
+    /// The four worn item slots (item `GlobalIndex`, 0 empty), unit +0xcd.
+    #[serde(default)]
+    pub items: Vec<i32>,
 }
 
 /// A unit of an AI army.
@@ -91,6 +119,12 @@ pub struct HeroState {
     pub gold: i32,
     pub mana: i32,
     pub units: Vec<HeroUnit>,
+    /// The pack's items (`GlobalIndex`) in pack order, empty places left out (0x68dce0).
+    #[serde(default)]
+    pub pack: Vec<i32>,
+    /// The spell book (1-based spell numbers) in book order (0x68e0e8).
+    #[serde(default)]
+    pub book: Vec<i32>,
 }
 
 /// An army record. Fields Razdor no longer has for an army it dropped are left out.
@@ -192,6 +226,14 @@ struct Dialog {
     event: bool,
     question: bool,
     cued: bool,
+    /// A village's offer: the original asks it in the event window (slot N + 2, 0x4aca80).
+    offer: bool,
+}
+
+impl Dialog {
+    fn message() -> Self {
+        Dialog { event: true, question: false, cued: false, offer: false }
+    }
 }
 
 /// Where the game's content comes from.
@@ -314,6 +356,14 @@ impl<'a> Runner<'a> {
             Action::BattleAct { side, row, col } => self.battle_act(*side, *row, *col),
             Action::BattlePass => self.battle_pass(),
             Action::Snapshot => {}
+            Action::Buy { slot } => self.buy(*slot),
+            Action::Sell { slot } => self.sell(*slot),
+            Action::Hire { slot } => self.hire(*slot),
+            Action::Heal { unit } => self.heal(*unit, false),
+            Action::Resurrect { unit } => self.heal(*unit, true),
+            Action::Learn { slot } => self.learn(*slot),
+            Action::Cast { slot, army } => self.cast(*slot, *army),
+            Action::Equip { slot, unit } => self.equip(*slot, *unit),
         }
         self.settle();
         Ok(())
@@ -467,10 +517,211 @@ impl<'a> Runner<'a> {
             self.note("answer: no question shown".into());
             return;
         }
+        if self.dialogs.front().is_some_and(|d| d.offer) {
+            self.close_dialog();
+            let g = self.g();
+            if yes {
+                // Yes: the offer's results, the village emptied, no window (0x4ab966).
+                g.accept_offer();
+            } else {
+                // No: the village is entered again with no offer (0x4c2378): its window.
+                g.decline_offer();
+                self.screen = Screen::Building;
+            }
+            self.enter_waiting();
+            return;
+        }
         self.close_dialog();
         let events = self.g().answer_question(yes);
         self.handle(events);
         self.enter_waiting();
+    }
+
+    /// The building window is open and takes input (no dialog over it).
+    fn in_building(&mut self, op: &str) -> bool {
+        if matches!(self.screen, Screen::Building) && self.dialogs.is_empty() {
+            return true;
+        }
+        self.note(format!("{op}: no building window open"));
+        false
+    }
+
+    fn buy(&mut self, slot: usize) {
+        if !self.in_building("buy") {
+            return;
+        }
+        if let Err(e) = self.g().buy(slot) {
+            self.note(format!("buy {slot}: {e:?}"));
+        }
+    }
+
+    /// The pack index of row `slot` of the market's sell list (items worth more than 1).
+    fn sell_row(g: &Game, slot: usize) -> Option<usize> {
+        (0..g.pack.len()).filter(|&k| g.can_sell(g.pack[k])).nth(slot)
+    }
+
+    fn sell(&mut self, slot: usize) {
+        if !self.in_building("sell") {
+            return;
+        }
+        let g = self.g();
+        let r = match Self::sell_row(g, slot) {
+            Some(k) => g.sell(k).map(|_| ()).map_err(|e| format!("{e:?}")),
+            None => Err("no such row".into()),
+        };
+        if let Err(e) = r {
+            self.note(format!("sell {slot}: {e}"));
+        }
+    }
+
+    fn hire(&mut self, slot: usize) {
+        if !self.in_building("hire") {
+            return;
+        }
+        let g = self.g();
+        let kind = g.location.and_then(|l| g.world.locations[l].recruits.iter().find(|r| r.slot as usize == slot).map(|r| r.unit));
+        let r = match kind {
+            Some(k) => g.hire(k).map_err(|e| format!("{e:?}")),
+            None => Err("no such barracks slot".into()),
+        };
+        if let Err(e) = r {
+            self.note(format!("hire {slot}: {e}"));
+        }
+    }
+
+    fn heal(&mut self, unit: usize, raise: bool) {
+        let op = if raise { "resurrect" } else { "heal" };
+        if !self.in_building(op) {
+            return;
+        }
+        let g = self.g();
+        let r = if raise { g.resurrect(unit) } else { g.heal(unit) };
+        match r {
+            Ok(events) => self.handle(events),
+            Err(e) => self.note(format!("{op} {unit}: {e:?}")),
+        }
+    }
+
+    fn learn(&mut self, slot: usize) {
+        if !self.in_building("learn") {
+            return;
+        }
+        let g = self.g();
+        let id = g.spells_here().get(slot).map(|s| s.id);
+        let r = match id {
+            Some(id) => g.learn_spell(id).map_err(|e| format!("{e:?}")),
+            None => Err("no such row".into()),
+        };
+        if let Err(e) = r {
+            self.note(format!("learn {slot}: {e}"));
+        }
+    }
+
+    /// The map takes a window's input: a building window is closed first (opening a side
+    /// window closes the open one, interface.md §9).
+    fn map_window(&mut self, op: &str) -> bool {
+        self.close_building();
+        if self.map_idle() && self.game.as_ref().is_some_and(|g| g.foe.is_none()) {
+            return true;
+        }
+        self.note(format!("{op}: the map takes no input now"));
+        false
+    }
+
+    fn cast(&mut self, slot: usize, army: Option<i32>) {
+        use crate::rules::magic::{targets_enemy, CastTarget};
+        if !self.map_window("cast") {
+            return;
+        }
+        let g = self.g();
+        let Some(spell) = g.spells.get(slot).and_then(|&id| g.spell(id as u32)).cloned() else {
+            self.note(format!("cast {slot}: no such book entry"));
+            return;
+        };
+        let target = if targets_enemy(&spell) {
+            match army.and_then(|id| g.world.armies.iter().find(|a| a.id as i32 == id)) {
+                Some(a) => CastTarget::Army(a.uid),
+                None => {
+                    self.note(format!("cast {slot}: the spell needs a target army on the map"));
+                    return;
+                }
+            }
+        } else {
+            CastTarget::Own
+        };
+        match g.begin_cast(spell.id, target) {
+            Ok(_) => {}
+            Err(e) => self.note(format!("cast {slot}: {e:?}")),
+        }
+    }
+
+    fn equip(&mut self, slot: usize, unit: usize) {
+        if !self.map_window("equip") {
+            return;
+        }
+        if let Err(e) = self.g().equip(unit, slot) {
+            self.note(format!("equip {slot} on {unit}: {e:?}"));
+        }
+    }
+
+    /// What the screen shows, for the explorer (`--look`): the screen, the open dialog, and
+    /// in a building window what its tabs offer, with the row numbers the actions take.
+    pub fn look(&self) -> serde_json::Value {
+        use serde_json::json;
+        let Some(g) = self.game.as_ref() else { return serde_json::Value::Null };
+        let c = &g.content;
+        let screen = match (&self.screen, self.dialogs.front()) {
+            (Screen::Ended, _) => "ended",
+            (_, Some(d)) if d.offer => "offer",
+            (_, Some(d)) if d.question => "question",
+            (_, Some(_)) => "dialog",
+            (Screen::Battle(_), None) => "battle",
+            (Screen::Building, None) => "building",
+            (Screen::Map, None) => "map",
+        };
+        let mut out = json!({"screen": screen});
+        let book: Vec<_> = g
+            .spells
+            .iter()
+            .enumerate()
+            .filter_map(|(k, &id)| g.spell(id as u32).map(|s| (k, s)))
+            .map(|(k, s)| json!({"slot": k, "id": s.id, "name": s.name, "mana": g.cast_cost(s).mana, "enemy": crate::rules::magic::targets_enemy(s)}))
+            .collect();
+        out["book"] = json!(book);
+        let pack: Vec<_> = g.pack.iter().enumerate().map(|(k, &i)| json!({"slot": k, "id": i.0, "name": c.try_item(i).map_or("", |d| d.name.as_str())})).collect();
+        out["pack"] = json!(pack);
+        if let Some(o) = g.village_offer() {
+            out["offer"] = json!(format!("{o:?}"));
+        }
+        if screen == "building" {
+            if let Some(l) = g.location {
+                let loc = &g.world.locations[l];
+                out["building"] = json!({"id": loc.id, "kind": format!("{:?}", loc.kind)});
+                out["tabs"] = json!(g.tabs_here().iter().map(|t| format!("{t:?}")).collect::<Vec<_>>());
+                if let Some(goods) = g.market_here() {
+                    out["goods"] = json!(goods.iter().enumerate().map(|(k, &i)| json!({"slot": k, "id": i.0, "name": c.try_item(i).map_or("", |d| d.name.as_str()), "price": g.buy_price(i)})).collect::<Vec<_>>());
+                    let sell: Vec<_> = (0..g.pack.len()).filter(|&k| g.can_sell(g.pack[k])).enumerate().map(|(row, k)| json!({"slot": row, "id": g.pack[k].0, "price": g.sell_price(g.pack[k])})).collect();
+                    out["sell"] = json!(sell);
+                }
+                if g.heals_here() {
+                    out["recruits"] = json!(loc.recruits.iter().filter(|r| r.stock != Some(0)).map(|r| json!({"slot": r.slot, "type": r.unit.0, "name": c.unit(r.unit).name, "price": g.hire_price(r.unit).amount})).collect::<Vec<_>>());
+                    let mut heal = Vec::new();
+                    for i in 0..g.squad.len() {
+                        if let Some(p) = g.heal_price(i) {
+                            heal.push(json!({"unit": i, "op": "heal", "price": p.amount}));
+                        } else if let Some(p) = g.resurrect_price(i).filter(|_| g.resurrects_here()) {
+                            heal.push(json!({"unit": i, "op": "resurrect", "price": p.amount}));
+                        }
+                    }
+                    out["services"] = json!(heal);
+                }
+                let spells: Vec<_> = g.spells_here().iter().enumerate().map(|(k, s)| json!({"slot": k, "id": s.id, "name": s.name, "price": s.cost_gold, "known": g.knows_spell(s.id)})).collect();
+                if !spells.is_empty() {
+                    out["spells"] = json!(spells);
+                }
+            }
+        }
+        out
     }
 
     fn battle_auto(&mut self) {
@@ -579,7 +830,7 @@ impl<'a> Runner<'a> {
             BattleResult::Defeat => self.screen = Screen::Ended,
             BattleResult::Victory { .. } if g.won() => self.screen = Screen::Ended,
             // The victory box is the event window: it opens with its chord (0x4d165e).
-            BattleResult::Victory { .. } => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
+            BattleResult::Victory { .. } => self.dialogs.push_back(Dialog::message()),
             BattleResult::Withdrew { .. } => {}
         }
     }
@@ -590,14 +841,17 @@ impl<'a> Runner<'a> {
             match e {
                 Event::Arrived(l) => {
                     let g = self.game.as_ref().expect("a game");
-                    if g.foe.is_none() && crate::rules::town::first_tab(&g.world.locations[l], &g.content).is_some() {
+                    if g.foe.is_none() && g.village_offer().is_some() {
+                        // The offer is a question in the event window, before any village window.
+                        self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: true });
+                    } else if g.foe.is_none() && crate::rules::town::first_tab(&g.world.locations[l], &g.content).is_some() {
                         self.screen = Screen::Building;
                     }
                 }
                 // The noon report is the event window too: it opens with the chord.
-                Event::NewDay(_) => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
-                Event::Script(EventOutcome::Fired { message: true, .. }) => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
-                Event::Script(EventOutcome::Question(_)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false }),
+                Event::NewDay(_) => self.dialogs.push_back(Dialog::message()),
+                Event::Script(EventOutcome::Fired { message: true, .. }) => self.dialogs.push_back(Dialog::message()),
+                Event::Script(EventOutcome::Question(_)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: false }),
                 _ => {}
             }
         }
@@ -675,7 +929,10 @@ impl<'a> Runner<'a> {
         let g = self.game.as_ref()?;
         let c = &g.content;
         let (x, y) = g.tile();
-        let hero = HeroState { x, y, gold: g.gold, mana: g.mana, units: g.squad.iter().map(|u| HeroUnit { kind: u.def.0 as i32, level: u.level - 1, hp: u.hp.max(0), xp: u.xp }).collect() };
+        let units = g.squad.iter().map(|u| HeroUnit { kind: u.def.0 as i32, level: u.level - 1, hp: u.hp.max(0), xp: u.xp, items: u.items.iter().map(|i| i.map_or(0, |i| i.0 as i32)).collect() }).collect();
+        let pack = g.pack.iter().map(|i| i.0 as i32).collect();
+        let book = g.spells.iter().map(|&s| i32::from(s)).collect();
+        let hero = HeroState { x, y, gold: g.gold, mana: g.mana, units, pack, book };
         let w = &g.world;
         let army = |a: &Army, active: bool, alive: bool| {
             let (x, y) = a.tile(&w.map);
@@ -796,6 +1053,8 @@ pub struct Replay {
     pub draws: Vec<Vec<crate::rules::rng::trace::Draw>>,
     /// Facts outside the schema after each step (the battle units' stats), for the run log.
     pub raw: Vec<serde_json::Value>,
+    /// What the screen shows after each step ([`Runner::look`]), for the explorer.
+    pub looks: Vec<serde_json::Value>,
 }
 
 /// [`replay`] with the generator's draws recorded step by step. With `rng_from`, each
@@ -804,7 +1063,7 @@ pub struct Replay {
 pub fn replay_traced(source: Source<'_>, actions: &[Action], rng_from: Option<&[u32]>) -> Result<Replay, String> {
     use crate::rules::rng::trace;
     let mut r = Runner::new(source);
-    let mut out = Replay { states: Vec::new(), notes: Vec::new(), draws: Vec::new(), raw: Vec::new() };
+    let mut out = Replay { states: Vec::new(), notes: Vec::new(), draws: Vec::new(), raw: Vec::new(), looks: Vec::new() };
     trace::start();
     for (i, a) in actions.iter().enumerate() {
         if let Some(&state) = i.checked_sub(1).and_then(|k| rng_from?.get(k)) {
@@ -821,13 +1080,14 @@ pub fn replay_traced(source: Source<'_>, actions: &[Action], rng_from: Option<&[
             out.states.push(s);
         }
         out.raw.push(r.raw());
+        out.looks.push(r.look());
     }
     trace::stop();
     Ok(out)
 }
 
 /// The command line: `razdor --replay <actions.jsonl> [--map <file> --hero <1|2|3>] [--out
-/// <dir>]`. Returns `None` when `--replay` is not given (the game starts as usual), else the
+/// <dir>] [--rng-from <original.jsonl>] [--look]`. Returns `None` when `--replay` is not given (the game starts as usual), else the
 /// exit code. `--map` puts a `new_game` before the list; the states go to
 /// `<dir>/razdor.jsonl` (one line per step) or to the standard output.
 pub fn cli(args: &[String]) -> Option<i32> {
@@ -837,7 +1097,8 @@ pub fn cli(args: &[String]) -> Option<i32> {
         eprintln!("--replay needs an action list");
         return Some(2);
     };
-    match run_cli(Path::new(list), value("--map"), value("--hero"), value("--out").map(PathBuf::from), value("--rng-from").map(PathBuf::from)) {
+    let look = args.iter().any(|a| a == "--look");
+    match run_cli(Path::new(list), value("--map"), value("--hero"), value("--out").map(PathBuf::from), value("--rng-from").map(PathBuf::from), look) {
         Ok(()) => Some(0),
         Err(e) => {
             eprintln!("replay: {e}");
@@ -873,7 +1134,7 @@ pub fn read_action_list(list: &Path, map: Option<String>, hero: Option<String>) 
     Ok(actions)
 }
 
-fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<PathBuf>, rng_from: Option<PathBuf>) -> Result<(), String> {
+fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<PathBuf>, rng_from: Option<PathBuf>, look: bool) -> Result<(), String> {
     let actions = read_action_list(list, map, hero)?;
     let rng_from = rng_from.as_deref().map(rng_states).transpose()?;
     let needs_install = actions.iter().any(|a| matches!(a, Action::NewGame { map, .. } if map.trim() != "demo"));
@@ -885,13 +1146,18 @@ fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<P
         None
     };
     let source = dt.as_ref().map_or(Source::Demo, Source::Install);
-    let Replay { states, notes, draws, raw } = replay_traced(source, &actions, rng_from.as_deref())?;
+    let Replay { states, notes, draws, raw, looks } = replay_traced(source, &actions, rng_from.as_deref())?;
     for n in &notes {
         eprintln!("note: {n}");
     }
     let mut text = String::new();
     for s in &states {
-        text.push_str(&serde_json::to_string(s).map_err(|e| e.to_string())?);
+        let mut v = serde_json::to_value(s).map_err(|e| e.to_string())?;
+        // `--look`: what the screen shows, for the explorer (not part of the schema).
+        if let Some(l) = looks.get(s.step).filter(|_| look) {
+            v["look"] = l.clone();
+        }
+        text.push_str(&v.to_string());
         text.push('\n');
     }
     match out {

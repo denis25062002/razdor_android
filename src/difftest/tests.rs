@@ -461,3 +461,81 @@ fn rk1_day1_the_noon_report_ends_the_wait() {
     let equal = rk1_day1_equal_steps(&dt);
     assert!(equal.contains(&43), "{equal:?}");
 }
+
+#[test]
+fn service_actions_parse() {
+    let text = r#"{"op":"buy","slot":2}
+{"op":"sell","slot":0}
+{"op":"hire","slot":1}
+{"op":"heal","unit":3}
+{"op":"resurrect","unit":2}
+{"op":"learn","slot":0}
+{"op":"cast","slot":1}
+{"op":"cast","slot":0,"army":7}
+{"op":"equip","slot":0,"unit":0}"#;
+    let a = parse_actions(text).unwrap();
+    assert_eq!(a[0], Action::Buy { slot: 2 });
+    assert_eq!(a[3], Action::Heal { unit: 3 });
+    assert_eq!(a[6], Action::Cast { slot: 1, army: None });
+    assert_eq!(a[7], Action::Cast { slot: 0, army: Some(7) });
+    assert_eq!(a[8], Action::Equip { slot: 0, unit: 0 });
+    assert_eq!(serde_json::to_string(&a[6]).unwrap(), r#"{"op":"cast","slot":1}"#);
+}
+
+/// The services as played in the original on ДС1 (run of 2026-10-03, every step equal but the
+/// village's window timing): a hire in the castle, then in the church a purchase, a sale, a
+/// spell learnt, a second purchase and the item worn by the hero. Pack, book and worn items
+/// follow the original's: the sale price 6, the hero's HP 80 → 65 with the relics on.
+#[test]
+fn ds1_services_as_the_original() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":97,"y":7}
+{"op":"hire","slot":0}
+{"op":"click_map","x":96,"y":18}
+{"op":"ok"}
+{"op":"click_map","x":87,"y":19}
+{"op":"buy","slot":8}
+{"op":"sell","slot":0}
+{"op":"learn","slot":0}
+{"op":"buy","slot":2}
+{"op":"equip","slot":0,"unit":0}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let gold: Vec<i32> = states.iter().map(|s| s.hero.gold).collect();
+    assert_eq!(gold[5..], [1000, 950, 1000, 1000, 1000, 975, 981, 861, 711, 711]);
+    assert_eq!(states[6].hero.units.iter().map(|u| u.kind).collect::<Vec<_>>(), [1, 4]);
+    assert_eq!(states[10].hero.pack, [100]);
+    assert!(states[11].hero.pack.is_empty());
+    assert_eq!(states[12].hero.book, [5, 9]);
+    assert_eq!(states[13].hero.pack, [75]);
+    let s = &states[14];
+    assert!(s.hero.pack.is_empty());
+    assert_eq!((s.hero.units[0].items.clone(), s.hero.units[0].hp), (vec![75, 0, 0, 0], 65));
+}
+
+/// Casting from the book on Проклятое озеро as the archmage, as in the original: the armour
+/// spell reads 3 hours for 150 mana, the healing 2 hours for 100; clock and generator agree
+/// with the original's run step by step.
+#[test]
+fn cursed_lake_casts_as_the_original() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Проклятое озеро","hero":2}
+{"op":"ok"}
+{"op":"cast","slot":1}
+{"op":"cast","slot":0}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let got: Vec<(u64, u32, i32)> = states.iter().map(|s| (s.clock, s.rng, s.hero.mana)).collect();
+    assert_eq!(got[2..], [(592_229_701, 1_410_398_721, 350), (592_229_821, 558_336_172, 250)]);
+}
