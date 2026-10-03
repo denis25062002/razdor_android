@@ -828,7 +828,12 @@ with the same engine and no screen. **code**
 ## 11. End of battle
 
 **During the battle** the screen syncs the sides back after every action (48bb10 without the
-wrap-up). **code**
+wrap-up) **and writes them into the army records** (4988c0 for both sides, as at the end, step
+3 below): after the player's action (0x4c4f8c), after each of the enemy's (0x4c57bc) and
+when a card's move ends (0x4b0284). So the armies' units carry their battle HP as the battle
+goes on (a fallen unit 0), and their grids the battle's cells. **code**; checked in the
+running game (rk1-day1: the knight's army record read 63 HP right after the blow of step 22;
+FINDINGS.md §7).
 
 **Wrap-up** (48bb10 with the flag, from 4c50ec). **code**
 1. Both side strengths are recomputed and the XP shares are rolled (experience.md §3).
@@ -906,6 +911,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
 | 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units); at map start the hero's army is then auto-arranged (`Game::arrange_at_load`), as the load's round trip does. The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
 | 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first, columns in plain order (`Formation::after_battle_slot`) | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
+| 48a | Armies during the battle | every fighting unit's HP written into its army record after each action (`Game::battle_write_back`, called by the battle screen and the replay); the grid only at the end | sides written into both armies after every action (0x4c4f8c, 0x4c57bc → 48bb10, 4988c0): HP and grid | 11 | HP matches; the grid at the end only (no reader during the battle) |
 
 ## Unknowns and open points
 - **Wide-row quirks on screen.** What the screen shows when the player's side uses a cell that is

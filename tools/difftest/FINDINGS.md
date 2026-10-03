@@ -125,6 +125,23 @@ midnight restock of market 5 (step 16) starts from another state.
   the following step, else the rest of the window); it and ai.md §2 do not say that the step
   clock makes at most one arrival per call and frame and drops the rest of the frame's time.
 
+## 7. The battle is written back into the armies after every action
+
+**Status: fixed** (`Game::battle_write_back`; battle.md §11).
+
+- rk1-day1 steps 22-35 (the ruins' battle), step-local: `hero.units[0].hp` Razdor 80,
+  original 63 at step 22 (51 at 24, 50 at 28, 49 at 34); `hero.units[1].hp` 50 against 38.
+  The battle's own cards (`battle.sides`) agree on both sides; only the army record differs,
+  and from step 36 (the battle's end) on it agrees again.
+- The original's battle screen copies the sides out (0x48bb10 with flag 0) and writes them
+  into both army records (0x4988c0) after every action: the player's (0x4c4f8c), each of the
+  enemy's (0x4c57bc) and the end of a card's move (0x4b0284). The army record's unit HP
+  (+0x20) follows the battle; the memory reader reads it there. Razdor wrote the battle back
+  only at its end.
+- Razdor now writes every fighter's HP into its army after each action (the hero's squad,
+  and the enemy army's or garrison's troop records). The grid is still written at the end
+  only: nothing reads it during the battle.
+
 ## 8. A village crossed on the way stopped Razdor's walk
 
 **Status: fixed** (the capture window removed: `ui/world_view.rs`, `difftest.rs`; world.md

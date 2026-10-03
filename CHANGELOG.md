@@ -492,6 +492,8 @@ old id, and their versions give both.
   original (its units' strengths are recounted only then).
 - A cautious AI army (negative aggression) discounts its own losses to a tenth only when it
   lost no unit in the battle it simulates, as in the original.
+- During a battle the armies' units carry their battle HP after every action, as in the
+  original (the army record follows the battle, a fallen unit at 0), not only at its end.
 
 ## 0.2.2 — 2026-10-01
 

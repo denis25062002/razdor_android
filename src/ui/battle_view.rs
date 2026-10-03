@@ -319,6 +319,9 @@ impl BattleView {
             }
         }
 
+        // Every action is written back into the armies as it is taken (0x4c4f8c after the
+        // player's, 0x4c57bc after each of the enemy's).
+        game.battle_write_back(&self.battle);
         let outcome = self.battle.outcome();
         let over = outcome != Outcome::Ongoing && self.fx.is_none();
         if over && self.xp.is_none() {

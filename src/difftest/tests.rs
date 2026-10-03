@@ -418,3 +418,18 @@ fn cursed_lake_the_first_wait_moves_the_armies_as_the_original() {
     let at = |id: i32| s.armies.iter().find(|a| a.id == id).map(|a| (a.x.unwrap(), a.y.unwrap()));
     assert_eq!([2, 9, 10, 13].map(at), [Some((10, 45)), Some((16, 59)), Some((74, 39)), Some((9, 68))]);
 }
+
+/// FINDINGS.md §7: in the ruins' battle of rk1-day1 the original writes the battle back into
+/// the armies after every action (0x4c4f8c, 0x4c57bc → 0x48bb10, 0x4988c0), so the hero's
+/// army record shows the wounds at once: after the garrison's blows of step 22 the knight
+/// has 63 HP and the militia 38, as read in the original.
+#[test]
+fn rk1_day1_the_battle_is_written_back_after_every_action() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions[..23], Some(&RK1_DAY1_ORIGINAL_RNG)).unwrap();
+    let b = r.states[22].battle.clone().expect("the ruins' battle");
+    let hp: Vec<i32> = r.states[22].hero.units.iter().map(|u| u.hp).collect();
+    assert_eq!(hp[..2], [63, 38]);
+    assert_eq!(hp, b.sides[0].iter().map(|u| u.hp).collect::<Vec<_>>(), "the record follows the battle");
+}

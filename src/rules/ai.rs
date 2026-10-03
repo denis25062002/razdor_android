@@ -3289,7 +3289,7 @@ impl Game {
 /// Writes a fighter's end HP `hp` into troop `t`: dead (the time of death now, unless it was
 /// already dead or keeps one from an earlier death: 0x4a4c68 sets it only when it is 0), or
 /// the HP it lacks against its maximum.
-fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
+pub(crate) fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     if hp <= 0 {
         if t.died_at.is_none() {
             t.died_at = Some(t.kept_death.take().unwrap_or(now));

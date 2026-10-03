@@ -302,6 +302,10 @@ pub struct Game {
     /// While the hero steps: the cell he left, which AI armies keep off too.
     #[serde(skip)]
     pub(crate) step_from: Option<Tile>,
+    /// The battle under way: the enemy's troop records its fighters came from, in their
+    /// order (its living troops at the start), for [`Game::battle_write_back`].
+    #[serde(skip)]
+    pub(crate) battle_troops: Vec<usize>,
     /// The offset of the hero's last step: the original keeps his direction after a walk
     /// (0x75c050), and AI armies keep off the cell it points to (0x4a399c). `None` before
     /// his first step.
@@ -483,6 +487,7 @@ impl Game {
             speed_set: None,
             step_base: None,
             step_from: None,
+            battle_troops: Vec::new(),
             facing: None,
             noon_from: None,
             click_buildings: (None, None),
@@ -1568,6 +1573,11 @@ impl Game {
             Some(Foe::Army(i)) => self.world.armies[i].ai.exp_correction,
             _ => 100,
         };
+        self.battle_troops = match self.foe {
+            Some(Foe::Garrison(l)) => (0..self.world.locations[l].garrison.len()).filter(|&k| self.world.locations[l].garrison[k].alive()).collect(),
+            Some(Foe::Army(i)) => (0..self.world.armies[i].troops.len()).filter(|&k| self.world.armies[i].troops[k].alive()).collect(),
+            None => Vec::new(),
+        };
         let (enemies, attacker, defence) = match self.foe {
             Some(Foe::Garrison(l)) => {
                 let loc = &self.world.locations[l];
@@ -1674,6 +1684,39 @@ impl Game {
         let after = self.run_script();
         self.pending.extend(after);
         result
+    }
+
+    /// The battle under way written back into both armies, as the original does after every
+    /// action of the player's battle (0x4c4f8c after the player's, 0x4c57bc after each of the
+    /// enemy's: 0x48bb10 copies the sides out, 0x4988c0 writes them into the army records):
+    /// every unit that fights has the HP it has now, 0 when it fell. The interface calls it
+    /// after each action; the battle's end writes the rest ([`Game::resolve_battle`]).
+    pub fn battle_write_back(&mut self, battle: &Battle) {
+        let now = self.clock.total_minutes() as u64;
+        let c = self.content.clone();
+        let mut enemy = 0;
+        for f in &battle.fighters {
+            match (f.team, f.squad_index) {
+                (Team::Player, Some(i)) => {
+                    if let Some(u) = self.squad.get_mut(i) {
+                        u.hp = f.hp.max(0);
+                    }
+                }
+                (Team::Enemy, _) => {
+                    let k = self.battle_troops.get(enemy).copied();
+                    enemy += 1;
+                    let troop = match (self.foe, k) {
+                        (Some(Foe::Army(a)), Some(k)) => self.world.armies.get_mut(a).and_then(|a| a.troops.get_mut(k)),
+                        (Some(Foe::Garrison(l)), Some(k)) => self.world.locations.get_mut(l).and_then(|l| l.garrison.get_mut(k)),
+                        _ => None,
+                    };
+                    if let Some(t) = troop {
+                        super::ai::write_hp(&c, t, f.hp, now);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn settle_battle(&mut self, battle: &Battle) -> BattleResult {

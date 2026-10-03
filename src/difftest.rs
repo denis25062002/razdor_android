@@ -543,7 +543,10 @@ impl<'a> Runner<'a> {
     /// is then resolved).
     fn battle_play_ai(&mut self) {
         let Screen::Battle(b) = &mut self.screen else { return };
+        let game = self.game.as_mut().expect("a game");
         for _ in 0..10_000 {
+            // Every action is written back into the armies (0x4c4f8c, 0x4c57bc).
+            game.battle_write_back(b);
             if b.outcome() != Outcome::Ongoing {
                 break;
             }
