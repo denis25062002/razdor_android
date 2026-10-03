@@ -572,3 +572,26 @@ fn rk3_carry_over_flags_open_the_large_reward() {
     assert!(s.events_done.contains(&11) && !s.events_done.contains(&13), "{:?}", s.events_done);
     assert!(s.hero.pack.is_empty());
 }
+
+/// A click on the village the hero stands in, its window open: the original's harness closes
+/// the window (Esc) and the click opens it again, a new window with its chord (one draw;
+/// explorer run of 2026-10-03, ДС1 step 21). No time passes.
+#[test]
+fn ds1_a_village_opened_again_draws_its_chord() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":96,"y":18}
+{"op":"click_map","x":96,"y":18}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    let mut r = Rng::new(states[5].rng);
+    r.random(3);
+    assert_eq!((states[6].rng, states[6].clock), (r.state(), states[5].clock));
+}

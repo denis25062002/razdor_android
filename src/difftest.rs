@@ -532,6 +532,9 @@ impl<'a> Runner<'a> {
     fn close_building(&mut self) {
         if matches!(self.screen, Screen::Building) && self.dialogs.is_empty() {
             self.screen = Screen::Map;
+            // Closed now: opening it again (a click on the building he stands in) is a new
+            // window, with its chord.
+            self.last_screen_building = false;
         }
     }
 
