@@ -1,0 +1,25 @@
+{"op": "new_game", "map": "Проклятое озеро", "hero": 2}
+{"op": "ok"}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "answer", "yes": false}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "ok"}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "ok"}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "ok"}
+{"op": "click_map", "x": 62, "y": 87}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "hire", "slot": 0}
+{"op": "hire", "slot": 1}
+{"op": "cast", "slot": 0, "army": 0}
+{"op": "click_map", "x": 56, "y": 91}
+{"op": "cast", "slot": 0}

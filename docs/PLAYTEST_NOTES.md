@@ -39,6 +39,10 @@ was seen on and what to check.
    shot, spell, hit, death) and the level-up effect, from the install's art (Graphics/Battle,
    Graphics/Spells) and interface.md / engine.md (animation timings). Presentation was left out
    of the parity pass on purpose, so this is open work, not a regression.
+   Measured (tools/difftest/AV.md): the original has no animated unit figures; its battle
+   effects match Razdor's one for one except the counterblow's slide back and effect, and the
+   level-up shows only in the won battle's 2.5 s hold (experience cards) and the promotion
+   screen; the hold is missing in Razdor.
 
 4. **No ranged defence (Защита стрелковая) on the back row.** Seen in battle: units in the back
    row show or get no ranged defence. The spec says the original adds Row2Def (+5 in the
