@@ -6,7 +6,8 @@ the spec reference. These are reports: Razdor's rules are not changed here.
 
 Run: `tools/difftest/rk1-day1.jsonl` (РК1, knight; the first day, then the ruins' garrison
 fought by explicit actions), `python -m tools.difftest.run --actions
-tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw trace on.
+tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw trace on;
+§5 from a second run with the Frida trace (`--name rk1-frida --trace random,ai,events,damage`).
 "Step-local" is the run where each Razdor step starts from the original's generator state.
 
 ## 1. No draw for the idle patrollers when the hero stops
@@ -67,19 +68,46 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
 - Spec: economy.md §3 "Loot after the player's win", ruins ("their first 5 goods become
   garrison items, worn or packed").
 
-## 5. An AI army one cell further on after a stop (open)
+## 5. AI armies arrive by play time and by frame, not as soon as the bank covers a step
 
-- Step 9 (`click_map 36,23`, the walk stopped by event 7), step-local: `armies[id 1].x`
-  Razdor 6, original 7 (y 10, same game time); still so at steps 10 and 11, equal again at
-  step 12. From step 14 on (step-local) the AI's goal refreshes come in another order and
-  number (original: one `Random(40)` set, then two `Random(17)/Random(14)` sets; Razdor: one
-  17/14 set, two 40 sets, one 17/14, one 40) and the armies drift apart; the midnight
-  restock of market 5 (step 16) then starts from another state and stocks other goods.
-- Not pinned down: the draws of steps 9-12 agree in number and values, so the cause is in
-  how far the army gets by the stop. The original moves the AI by the smooth game time
-  between ticks (0x4ae42f) and snaps unfinished steps when the hero stops (0x4ad8a0, §1);
-  Razdor steps whole cells on its ticks. Needs a finer trace of army 1 (+0x1718 step state).
-- Spec: world.md §2 (AI movement budget), engine.md §3.4 (0x4a2550 wander points).
+Traced with the Frida trace (`--trace random,ai,events`, run `rk1-frida`; README.md
+"Runtime trace"). Two parts.
+
+**Step 9, army 1 one cell off: frame noise of the original, not a rule.** The `x` 6 (Razdor)
+against 7 (original) of the first run does not come back: the original gives 6 in the full
+run `rk1-frida`, in four more runs of steps 0-11 and in two earlier runs, the same state as
+Razdor. Between `rk1-day1` and `rk1-frida` the original's states differ only in
+`armies[id 1].x` at steps 9-11 (7 / 6) and `armies[id 9].x` at steps 14-15 (16 / 15); the
+generator agrees at every one of the 44 steps. The trace of army 1 at step 9: the step clock
+(0x4a399c) arrives at (7,10) at t=38340 with 660 centi-minutes of the hero's step left; the
+next call (t=39000, dt 165, the step's last frame) starts the step to (6,10) with the rest of
+the window as its play time and arrives; then event 7 opens and the stop snaps the armies.
+The step clock runs once per frame per army (World_AdvanceAI 0x4ade3c with the frame's
+time); a call makes at most one arrival, the next step can only start at the next call, and
+an arrival drops the rest of the frame's time (play time clamps to 0). So the cells an army
+covers in a hero step depend on how the step's time falls into frames: when the arrival at
+(7,10) lands in the last frame, the step to (6,10) waits for the next action (`rk1-day1`),
+and as the minutes stay in the bank the army catches up later (step 12 equal again).
+Reproduced: with a 25 ms or 60 ms sleep per frame (a hook on 0x4ade3c) army 1 stops at
+x = 9 at step 9 and the generator then differs. Razdor's whole-minute model matches the
+original at its normal pace; a one-cell difference at a stop can be this noise, and a run of
+the original that is slowed (heavy hooks, a loaded machine) can show it.
+
+**Step 14 on: arrivals within a tick come in another order.** Step-local, both sides start
+step 14 from the state 108516897. Original: army 9's wander points (`Random(40)` ×8) at
+t=67260, army 1's (`Random(17)/Random(14)`) at 69000 and again at 78000; Razdor: army 1's
+first, then army 9's twice. The trace: army 1 stands at (6,6), bank 1250; its next step is
+diagonal, 5250 (3500 × 1.5). First wait tick: bank 4250, no step. Second tick (t=66180):
+bank 7250, the step starts, the 2000 left do not cover the following step, so its play
+time is the rest of the window and it arrives at the end of the tick (69000), where its path
+ends and it draws wander points. Army 9 arrives in the middle of that tick (67260) and draws
+first. Razdor moves an army as soon as its bank covers a step, at the start of the slice and
+army by army in index order (`rules/ai.rs` `ai_walk`), so army 1 arrives at 66000 and draws
+first. The other draw order gives other wander points, the armies drift apart, and the
+midnight restock of market 5 (step 16) starts from another state.
+- Spec: world.md §5 (the play time: the cost scaled by tick / bank when the bank also covers
+  the following step, else the rest of the window); it and ai.md §2 do not say that the step
+  clock makes at most one arrival per call and frame and drops the rest of the frame's time.
 
 ## Not differences
 
