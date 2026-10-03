@@ -1692,3 +1692,38 @@ fn the_heros_starting_army_is_auto_arranged_at_the_map_load() {
     assert!(g.squad.iter().all(|u| u.slot.row != Row::Reserve), "{:?}", g.squad.iter().map(|u| u.slot).collect::<Vec<_>>());
     assert_eq!(g.squad.iter().filter(|u| u.slot.row == Row::Front).count(), 3, "the other warriors in front");
 }
+
+#[test]
+fn the_ruins_garrison_wears_the_ruins_goods_and_gives_them_back_as_loot() {
+    // 0x4b2504 (0x4b554e): the ruins' first 5 goods go to their garrison, each to the unit
+    // it helps most (0x4a273c), else into its pack; with no garrison units, all into the pack.
+    // The building's goods words stay. A win takes the worn items, then the pack (0x4c50ec).
+    let mut s = map();
+    let mut ruins = building(BuildingType::Ruins, 10, 10, (1, 1));
+    ruins.artifact_slots[0] = 9; // a potion: nobody wears it
+    ruins.artifact_slots[1] = 11; // a ring of +10 attack
+    ruins.artifact_slots[5] = 12; // past the first 5
+    ruins.relations = [-3, 0, 0, 0];
+    ruins.garrison[0] = troop(4, 0, 2);
+    let mut empty = ruins.clone();
+    empty.garrison[0] = troop(0, 0, 0);
+    empty.x = 20;
+    s.buildings = vec![ruins, empty];
+    let mut g = start(&s);
+    let r = &g.world.locations[0];
+    assert_eq!(r.garrison[0].worn.iter().flatten().copied().collect::<Vec<_>>(), [ItemId(11)], "the first of equal units");
+    assert!(r.garrison[1].worn.iter().all(Option::is_none));
+    assert_eq!((r.treasure.clone(), r.map_goods.clone()), (vec![ItemId(9)], vec![9, 11, 12]));
+    assert_eq!(g.world.locations[1].treasure, [ItemId(9), ItemId(11)], "no units: the pack");
+
+    g.foe = Some(Foe::Garrison(0));
+    let mut b = g.start_battle();
+    b.begin();
+    for f in b.fighters.iter_mut().filter(|f| f.team == Team::Enemy) {
+        f.hp = 0;
+    }
+    match g.resolve_battle(&b) {
+        crate::rules::game::BattleResult::Victory { loot, .. } => assert_eq!(loot, [ItemId(11), ItemId(9)], "worn first, then the pack"),
+        r => panic!("{r:?}"),
+    }
+}

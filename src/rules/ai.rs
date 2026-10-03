@@ -561,8 +561,14 @@ fn gain_with(c: &Content, t: &Troop, item: ItemId, bd: i32) -> Option<i32> {
 /// gain it raises most (strictly above 0, the first of equals), else into the pack (lost
 /// when the pack is full).
 pub fn give_item(c: &Content, a: &mut Army, item: ItemId) {
+    give_item_to(c, &mut a.troops, &mut a.items, item);
+}
+
+/// [`give_item`] for any record, an army's or a garrison's (0x4a273c takes either): its
+/// troops and its pack.
+pub fn give_item_to(c: &Content, troops: &mut [Troop], pack: &mut Vec<ItemId>, item: ItemId) {
     let mut best: Option<(usize, i32)> = None;
-    for (k, t) in a.troops.iter().enumerate() {
+    for (k, t) in troops.iter().enumerate() {
         if let Some(v) = gain_with(c, t, item, 0) {
             if v > best.map_or(0, |b| b.1) {
                 best = Some((k, v));
@@ -571,9 +577,9 @@ pub fn give_item(c: &Content, a: &mut Army, item: ItemId) {
     }
     match best {
         Some((k, _)) => {
-            wear(c, &mut a.troops[k], item);
+            wear(c, &mut troops[k], item);
         }
-        None if a.items.len() < MAX_ARMY_ITEMS => a.items.push(item),
+        None if pack.len() < MAX_ARMY_ITEMS => pack.push(item),
         None => {}
     }
 }

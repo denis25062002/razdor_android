@@ -471,6 +471,9 @@ old id, and their versions give both.
 - A new map starts the hero's army in the formation the battle's auto-arrange gives it (the
   best warrior in front, the shooters and mages behind), as the original's map load does,
   not with the preset troops in the reserve.
+- The ruins' garrison wears the ruins' goods, as in the original: each of the first five goes
+  to the unit it helps most (else into the garrison's pack), so the guards fight with them;
+  beating them yields what they wore, then the pack.
 
 ## 0.2.2 — 2026-10-01
 

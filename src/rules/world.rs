@@ -448,7 +448,12 @@ pub struct Location {
     pub shop: Option<Shop>,
     /// Ruins: treasure gold and items; the demo's camps: reward and loot rolls.
     pub treasure_gold: i32,
+    /// Ruins: the garrison's pack (its worn items are on its troops).
     pub treasure: Vec<ItemId>,
+    /// Ruins: the goods words of the building record, which the original keeps as the map
+    /// has them (only the diff test's state reads them).
+    #[serde(skip)]
+    pub map_goods: Vec<i32>,
     pub loot_rolls: u32,
     /// Spells taught here (1-based spell index).
     pub spells: Vec<u8>,
@@ -491,6 +496,7 @@ impl Location {
             shop: None,
             treasure_gold: 0,
             treasure: Vec::new(),
+            map_goods: Vec::new(),
             loot_rolls: 0,
             spells: Vec::new(),
             events: Vec::new(),
@@ -993,8 +999,19 @@ impl World {
             let goods = |n: usize| artifact_ids(content, b.artifact_slots[..n].iter().filter(|&&x| x != 0).map(|&x| u32::from(x)));
             let market = matches!(kind, LocationKind::Town | LocationKind::Market | LocationKind::Church);
             if kind == LocationKind::Ruins {
-                l.treasure = goods(5);
+                // The garrison's gold, and its items: with units, each of the first 5 goods
+                // goes to the unit it helps most, else into the garrison's pack (0x4a273c);
+                // with none, all into the pack (0x4b554e). The building's goods words stay as
+                // the map has them.
                 l.treasure_gold = b.price_max as i32;
+                l.map_goods = b.artifact_slots[..MARKET_PLACES].iter().filter(|&&x| x != 0).map(|&x| (x as i16).unsigned_abs() as i32).collect();
+                if l.garrison.is_empty() {
+                    l.treasure = goods(5);
+                } else {
+                    for item in goods(5) {
+                        super::ai::give_item_to(content, &mut l.garrison, &mut l.treasure, item);
+                    }
+                }
             } else if market && (!goods(MARKET_PLACES).is_empty() || b.random_artifacts_for_sale > 0) {
                 let places = b.artifact_slots[..MARKET_PLACES].iter().map(|&x| Some(ItemId(u32::from(x))).filter(|&i| x != 0 && content.try_item(i).is_some())).collect();
                 l.shop = Some(Shop::from_map(places, b.random_artifacts_for_sale as usize, (b.price_min as i32, b.price_max as i32), content.dearest_item()));
@@ -1258,6 +1275,7 @@ impl World {
             l.owner_name.clone_from(&f.owner_name);
             l.description.clone_from(&f.description);
             l.services = f.services;
+            l.map_goods.clone_from(&f.map_goods);
             for (r, fr) in l.recruits.iter_mut().zip(&f.recruits) {
                 r.slot = fr.slot;
             }

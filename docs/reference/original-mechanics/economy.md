@@ -404,8 +404,14 @@ is the event's gold result (events.md).
   - Gold = the building's gold stock + the garrison's gold + **one day's income** (word 282); no
     division. The stock is reset.
   - The building becomes the player's; faction and attitudes are copied from him.
+  - Items: as for an army, every item the garrison's units wore (unit by unit, slot by slot),
+    then its 12-item pack (0x4c50ec reads the beaten record whichever it is).
   - Ruins: at load their treasure gold (word 335) becomes the garrison's gold, and their **first 5**
-    goods become garrison items (worn or packed, 0x4b554e), so both come back through this rule.
+    goods become garrison items (0x4b554e): with garrison units, each good in turn goes to the
+    unit whose tactical value (mode 2) it raises most, the first of equals, else into the pack
+    (0x4a273c, as an AI army's starting items); with no units, all five go straight into the
+    pack. So the garrison fights wearing them, and both come back through this rule. The
+    building's own goods words are not cleared (ruins keep them as the map has them).
 - Mana: the battle code's value (0x66ae44); not traced here (battle owner).
 
 **AI-vs-AI loot** (code, 0x4a4c68):
@@ -536,6 +542,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Market display | Prices as charged; the sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test; opens on the goods when there are some | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Matches |
 | Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
 | Village tribute | No attitude test | No attitude test (entering captures the village) | Matches |
+| Ruins' goods | The first 5 go to the garrison at load, worn by the unit they help most or packed (`ai::give_item_to`); a win loots the worn items, then the pack | 0x4b554e, 0x4a273c; loot 0x4c50ec | Matches |
 | Village under an event's window | A walk that ends in the clicked village as an event opens enters it when the windows are read (`Game::enter_waiting_building`): offer rolls, window and tribute then; the tribute is taken as the window opens | Entered after the event's OK (0x4ed42c, 0x4bbc84); the stock is paid when the village window closes (0x4c6000) | Order matches; the tribute's moment within the window differs (no draw in between) |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
 | AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |

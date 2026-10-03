@@ -1709,6 +1709,9 @@ impl Game {
             (Outcome::Victory, Some(Foe::Garrison(l))) => {
                 let loc = &mut self.world.locations[l];
                 loc.cleared = true;
+                // Every item its units wore, in their order, then its pack (0x4c50ec, as for
+                // an army): the ruins' goods its units put on at the load come back so.
+                let worn: Vec<ItemId> = loc.garrison.iter_mut().flat_map(|t| t.worn.iter_mut().filter_map(Option::take)).collect();
                 loc.garrison.clear();
                 // The garrison's gold (ruins: their treasure), the building's stock and one
                 // day's income; no division.
@@ -1722,7 +1725,8 @@ impl Game {
                     self.world.give_to_player(l);
                 }
                 self.gold += reward;
-                let mut found = treasure;
+                let mut found = worn;
+                found.extend(treasure);
                 found.extend((0..rolls).filter_map(|_| self.roll_item(Source::Loot)));
                 let (loot, left_behind) = self.take_items(found);
                 dropped_left += left_behind;

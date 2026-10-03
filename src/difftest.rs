@@ -719,7 +719,7 @@ impl<'a> Runner<'a> {
                 // wipes the goods of every other building.
                 goods: match &l.shop {
                     Some(s) => s.goods().iter().map(|i| i.0 as i32).collect(),
-                    None if l.kind == LocationKind::Ruins => l.treasure.iter().map(|i| i.0 as i32).collect(),
+                    None if l.kind == LocationKind::Ruins => l.map_goods.clone(),
                     None => Vec::new(),
                 },
             })
