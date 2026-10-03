@@ -384,7 +384,10 @@ that window (world.md §7.2): the offer rolls below come after the event's OK.
     after an empty visit. Army size counts the dead.
 - What each gives: 1 casts spell 3 + 2·Rand(5) (3, 5, 7, 9 or 11) with the long event duration;
   2 casts spell 1; 3 gives item 135 (furs; Cost 1000, so it sells for 250 with F = 100); 4 gives
-  300 + 50·Rand(5) mana; 5 marks every unit paid with last paid = now.
+  300 + 50·Rand(5) mana; 5 marks every unit paid with last paid = now. **Both `Rand(5)` are drawn
+  when the offer is made**, as its question is built (0x4aca80: 0x4acb89, 0x4acd76), right after
+  the chooser's rolls and before the event window's chord; the answer draws nothing. The
+  blessing's spell is 3 + 2·Rand(5) whatever spells the install has.
 - **Every option is a Yes/No question.** Yes applies it and **empties both stocks without paying
   them**. No re-enters the village, which (being the village of the last offer) opens the plain
   window, where the stocks can be taken.

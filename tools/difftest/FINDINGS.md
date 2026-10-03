@@ -323,6 +323,24 @@ C1003-174927, fourth part: with it the candidate is resolved.
   Другой берег with the windows closed after it 8 of 8 (`r3-ranger`, `r3-c005130`,
   `r3-shore2`).
 
+## 17. A village offer's roll is drawn when the offer opens, not at the yes
+
+**Status: fixed** (`Game::visit_village`, `Game::accept_offer`; economy.md §3). Candidates
+"a village offer's roll" (Проклятое озеро) and C1004-004157 (РК1).
+
+- Проклятое озеро (hero 1, `ok`, `click_map 5 15`, `answer yes`): at step 2 the original
+  draws `Random(5)` at 0x4acb89, then the event window's chord; Razdor only the chord. At
+  step 3 (yes) Razdor drew its `Random(5)` in `accept_offer`, the original nothing. The same
+  on РК1 (the village at (40,32), a blessing; C1004-004157 step 13).
+- The building's entry runs the chooser (0x4bba40) and, when it offers something, builds the
+  offer's question at once (VillageOffer_Build 0x4aca80): the blessing's spell `3 + 2·Rand(5)`
+  (0x4acb89) and the witch's mana `300 + 50·Rand(5)` (0x4acd76) are written into the event
+  record there, before 0x4a8ae8 opens the window (its chord). The yes (Event_Finish 0x4ab1ec)
+  applies the record. Razdor also drew the blessing over the blessing spells the install
+  has; the original takes spell 3 + 2·r whatever the install has.
+- After the fix the lake repro (with two `ok` after) is 6 of 6 steps equal, C1004-004157
+  15 of 15 (`r3-lake-offer`, `r3-c004157`).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

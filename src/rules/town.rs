@@ -1103,11 +1103,37 @@ mod tests {
     #[test]
     fn the_village_blessing_lasts_ten_times_its_time() {
         use crate::rules::economy::{OfferResult, VillageOffer};
-        let mut g = (0..80).map(|seed| visit_village(40, 5, seed, &|_| {})).find(|g| g.village_offer() == Some(VillageOffer::Blessing)).unwrap();
+        let blessing = |seed| visit_village(40, 5, seed, &|_| {});
+        let mut g = (0..400).map(blessing).find(|g| g.village_offer() == Some(VillageOffer::Blessing) && g.offer_roll == 0).unwrap();
         let now = g.clock.total_minutes() as u64;
-        assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "the only one of 3/5/7/9/11 the content has");
+        assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "spell 3 + 2·0");
         // TimeWork 4 h × 10.
         assert_eq!(g.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, now + 40 * 60)]);
+    }
+
+    /// The blessing's spell and the witch's mana are rolled as the offer's window is built
+    /// (0x4aca80: `Random(5)` before the window's chord), not at the answer: a yes draws
+    /// nothing. The blessing is spell 3 + 2·r even when the install lacks it (not cast then).
+    #[test]
+    fn the_offers_roll_is_drawn_as_it_opens() {
+        use crate::rules::economy::{OfferResult, VillageOffer};
+        let learned = |g: &mut Game| g.spells = vec![1, 2, 3];
+        for (kind, setup) in [(VillageOffer::Witch, &learned as &dyn Fn(&mut Game)), (VillageOffer::Blessing, &|_: &mut Game| {})] {
+            let mut g = (0..400).map(|seed| visit_village(40, 5, seed, setup)).find(|g| g.village_offer() == Some(kind) && g.offer_roll > 0).unwrap();
+            let r = g.offer_roll;
+            let state = g.rng.state();
+            let mana = g.mana;
+            let result = g.accept_offer();
+            assert_eq!(g.rng.state(), state, "the yes draws nothing");
+            match result {
+                Some(OfferResult::Mana(m)) => assert_eq!((m, g.mana), (300 + 50 * r, mana + m)),
+                Some(OfferResult::Blessing(id)) => {
+                    assert_eq!(id, 3 + 2 * r as u32);
+                    assert!(g.active_spells().is_empty(), "spell {id} is not in the test content");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

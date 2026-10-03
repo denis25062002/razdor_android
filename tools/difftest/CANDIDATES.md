@@ -184,6 +184,8 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   (spell 3 + 2·Rand(5), mana 300 + 50·Rand(5)) but not their moment; the trace puts it in
   the offer's build (0x4aca80), as the offer opens. (Razdor's blessing also rolls over the
   blessing spells the install has; with all five, `Random(5)` as the original.)
+- **Resolved** by FINDINGS §17 (third fix round): the roll moved to the offer's opening;
+  6 of 6 steps equal (run `r3-lake-offer`).
 
 ## Проклятое озеро: the first midnight restocks a market in the original only
 
@@ -241,6 +243,7 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   original's `Random(5)` at 0x4acb89 in step 12, before the chord; Razdor's at the yes):
   seen on a second map (РК1, the village at (40,32), a blessing). The offer itself played
   equal on both sides (the question, the yes, the blessing).
+- **Resolved** by FINDINGS §17: 15 of 15 steps equal (run `r3-c004157`).
 
 ## C1004-005130: ДС1-С чего все начиналось, step 5 `click_map 97 7`
 

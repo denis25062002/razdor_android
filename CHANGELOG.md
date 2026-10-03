@@ -506,6 +506,9 @@ old id, and their versions give both.
   window's chord, as in the original; closing it no longer resumes the wait.
 - The ranger's first step on a new map takes his own speed, not the knight's, as in the
   original (it was priced before his class was set: a few minutes too long).
+- A village's blessing or witch rolls its spell or mana as the offer is made, before the
+  question's chord, as in the original, not when it is accepted; the blessing is any of the
+  five blessing spells, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

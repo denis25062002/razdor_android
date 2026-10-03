@@ -417,6 +417,23 @@ fn tutorial_the_rangers_first_step_takes_his_speed() {
     assert_eq!(states[4].rng, 1_158_257_644);
 }
 
+/// FINDINGS.md §17: a village offer's `Random(5)` (the blessing's spell, the witch's mana) is
+/// drawn as the offer's window is built (0x4aca80), before its chord; the yes draws nothing.
+/// Проклятое озеро, the village at (5,15): the original's generator after each step.
+#[test]
+fn cursed_lake_the_village_offer_rolls_as_it_opens() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Проклятое озеро","hero":1}
+{"op":"ok"}
+{"op":"click_map","x":5,"y":15}
+{"op":"answer","yes":true}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert_eq!((states[2].rng, states[3].rng), (3_728_805_967, 3_728_805_967), "{notes:?}");
+}
+
 /// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
 /// moves 28 AI armies through 509 draws. With the first step in place priced south of each
 /// army (§10), the simulated battles counted in side strengths (§11) from the strengths of

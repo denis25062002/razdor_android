@@ -333,6 +333,10 @@ pub struct Game {
     /// The offer of the village the hero stands in, made on entering (`rules::economy`).
     #[serde(default)]
     pub(crate) offer: Option<(usize, VillageOffer)>,
+    /// The offer's `Random(5)`, drawn as its window is built (0x4aca80): the blessing's spell
+    /// `3 + 2·r`, the witch's mana `300 + 50·r`.
+    #[serde(default)]
+    pub(crate) offer_roll: i32,
     /// The village that made the last offer (cleared when its tribute is taken) and what
     /// was offered.
     #[serde(default)]
@@ -495,6 +499,7 @@ impl Game {
             hero_name: None,
             journal: History::default(),
             offer: None,
+            offer_roll: 0,
             offered_at: None,
             last_offer: None,
             stored_income: 0,

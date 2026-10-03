@@ -788,7 +788,8 @@ impl Game {
                 let missing: i32 = living.iter().map(|u| u.max_hp(c) - u.hp).sum();
                 self.spell(PRIEST_SPELL).is_some() && missing > 50 && living.len() >= n / 2
             }
-            VillageOffer::Blessing => BLESSING_SPELLS.iter().any(|&s| self.spell(s).is_some()) && self.good_spells_on_units() <= n,
+            // Whatever spells the install has (0x4bba40 does not look; 0x4aca80 takes 3 + 2·r).
+            VillageOffer::Blessing => self.good_spells_on_units() <= n,
             VillageOffer::Furs => {
                 let furs = ItemId(FURS_ITEM);
                 c.try_item(furs).is_some() && self.pack.len() < 25 && self.pack.iter().filter(|&&i| i == furs).count() <= 2
@@ -821,6 +822,12 @@ impl Game {
         if let Some(o) = picked {
             self.offer = Some((l, o));
             self.offered_at = Some(l);
+            // The offer's window is built at once (0x4aca80), and the blessing's spell and the
+            // witch's mana are rolled there, before its chord (0x4acb89, 0x4acd76).
+            self.offer_roll = match o {
+                Blessing | Witch => self.rng.random(5),
+                _ => 0,
+            };
         }
     }
 
@@ -862,10 +869,12 @@ impl Game {
                 OfferResult::Healed(self.apply_spell_to_army_ext(&spell, true))
             }
             VillageOffer::Blessing => {
-                let known: Vec<u32> = BLESSING_SPELLS.into_iter().filter(|&s| self.spell(s).is_some()).collect();
-                let id = known[self.rng.random(known.len() as i32) as usize];
-                let spell = self.spell(id)?.clone();
-                self.apply_spell_to_army_ext(&spell, true);
+                // Spell 3 + 2·r of the roll made as the offer opened (0x4aca80): 3, 5, 7, 9 or
+                // 11 whether or not the install has it; one it lacks is not cast.
+                let id = BLESSING_SPELLS[self.offer_roll.clamp(0, 4) as usize];
+                if let Some(spell) = self.spell(id).cloned() {
+                    self.apply_spell_to_army_ext(&spell, true);
+                }
                 OfferResult::Blessing(id)
             }
             VillageOffer::Furs => {
@@ -873,7 +882,7 @@ impl Game {
                 OfferResult::Furs(ItemId(FURS_ITEM))
             }
             VillageOffer::Witch => {
-                let mana = 300 + 50 * self.rng.random(5);
+                let mana = 300 + 50 * self.offer_roll;
                 self.mana += mana;
                 OfferResult::Mana(mana)
             }
