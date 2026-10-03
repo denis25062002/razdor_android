@@ -317,11 +317,36 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
   start army 1 (the bandits, 4 units) stands at (91,17), the hero at (85,19) alone. In Razdor
   the army comes to (88,19) and attacks after two of his steps (40 minutes, no AI draw before
   the battle); in the original it ends at (92,13), draws wander points (`Random(89)/(80)`) and
-  the hero walks on to (97,7) unattacked. The `ai` part of `trace-around.jsonl` does not
-  show army 1's records at this step (the indices there do not match the state's id 1):
-  A third run with `--trace random,ai:1` (`r3-c035744`) parted already at step 9 (the
-  original's frames), so it says nothing about step 16; it needs a repro that stays in step
-  up to there.
+  the hero walks on to (97,7) unattacked.
+- **Cause (fifth round, traced): a Razdor rule bug, the hero's cell the AI sees during his
+  step.** Step 16 is downstream: army 1 already stands elsewhere since step 10 (`click_map 86
+  13`; the step-local run starts each step from Razdor's own armies, only the generator is
+  the original's), where the original is 48 draws ahead (the first 230 agree, then the
+  original draws army 1's wander points `Random(31)/Random(21)` at 159750 and Razdor army
+  16's). At 137545 army 1 re-plans at (70,5) (both sides, same time within a frame). Its patrol box is
+  x 65..95, y 0..20 (`+0x16c0..`, read live). The hero walks (98,1) → (86,13); his step
+  (96,3) → (95,4) runs 1353.5–1421 minutes. A Frida hook on the planner 0x4a2d88 (army 1)
+  reads the hero's record cell (`army(0)+0x1724`) = **(96,3)**, the cell he leaves, outside
+  the box, so the original seeds no hero (score[1][0] = 5, clean) and keeps its path to the
+  wander point (65,3). Razdor's planner takes the hero at **(95,4)**, the cell he steps to,
+  inside the box, seeds him (score 5, the cheapest seed) and turns army 1 east toward him;
+  from there army 1 hunts him and at step 16 attacks him.
+  - The rule (world.md §5, ai.md §7.5): during a hero step his *logical* cell is the cell he
+    leaves; it becomes the new cell only in the frame the step ends (0x4ae8cc), before the
+    armies advance. So everything the AI computes from "the hero's cell" between a step's
+    start and its end uses the cell left: the distances of `ai_arrival` (the replan within
+    `AIGetPathDistance`, the talk counts), the rescoring range, the seed cell and the
+    patrol-box test of `ai_plan`, the erase of his cell. At the tick's end (an army arriving
+    in the step's last frame, `hero_end`) it is the new cell (as commit 4a41d9e has it).
+  - Where: `src/rules/ai.rs` `Game::cell_of` (`Party::Hero => self.tile()`), called by
+    `ai_arrival` and `ai_plan`; `move_armies` (`src/rules/game.rs`) moves the hero to the
+    new tile before `ai_move`, and `HeroCells` already carries `step_from` (`cells[1]`
+    while stepping) and the end-of-tick cells (`hero_end`). Check `ai_arrive_rules` too
+    (adjacency for attacks and greetings reads the same logical cell; the "cell plus
+    direction" entry test is already handled through `HeroCells`).
+  - Checked with a throw-away instrumented build (not committed): with the hero's cell taken
+    as `step_from` in the AI's arrivals of a step (not at the tick's end), step 10 of this
+    run comes out equal (generator 2236314233, army 1 at (68,5) on both sides).
 
 ## C1004-041105: Другой берег, step 17 `click_map 81 77`
 
@@ -344,8 +369,38 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
 - The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-041105/`.
 - Reading (not traced): the original's walk stops and draws the stop's idle offsets where
   Razdor's armies go on (army wander points, `Random(55)`), so the walk ends earlier in the
-  original (`clock`); the first 153 draws agree. Possibly a stop by an army met on the way
-  (FINDINGS §18's kind) or §5's frames; next, the `ai,events` trace of the step.
+  original (`clock`); the first 153 draws agree.
+- **Cause (fifth round, traced): a Razdor rule bug, the hero's side strength in an AI army's
+  score.** The click (81,77) is on army 36 ("Беглые крестьяне #1"), so the hero chases it;
+  both sides end the chase when the army steps into the dark (an empty re-plan), the
+  original at (78,66) (585 min), Razdor at (80,68) (646). Army 36 walks another way: in the
+  original (84,72) → (84,73) → (85,74) → (86,75), in Razdor (84,72) → (85,73) → (85,74) →
+  (86,75), later. Its plan at 40500 rescored the hero: original −17, Razdor −16 (a danger,
+  so a stronger repulsion cone in the original). A Frida hook on AI_ArmyTargetScore
+  0x4a08f8 (army 36 against 0) reads A0 531 on both sides but **B0 = 928** (the hero's side)
+  against Razdor's 624.
+  - The rule (ai.md §4 "the unit strengths are the army's cached ones", now for the
+    player): the hero's side copies each unit's cached strength `+0x1ae` from army record 0,
+    which only the recount 0x4a16d4 writes, with the building defence `army(0)+0x378c` of
+    that moment. The hero's recounts here run through 0x497240 (return 0x497256) and the
+    hire (0x4bd5e7), all inside the town (defence 15): the units' `+0x1ae` = 413, 134, 96,
+    220, 96, 220 (without defence, `+0x1aa`: 294, 86, 63, 156, 63, 156). Walking out clears
+    `+0x378c` to 0 but does not recount, so at 40500 in the open his side still counts the
+    town's defence 15.
+  - Where: `src/rules/ai.rs` `Game::hero_side` builds `Side { units, defence,
+    strength_defence: defence }` with `defence = hero_defence()` (the building he stands in
+    now). `strength_defence` should be the defence of the hero's last recount (the same idea
+    as `AiMind::strength_bd` for the AI armies): set where the original calls 0x4a16d4 for
+    army 0 (0x497240's call sites: his battles, his noon, an event that took effect, a
+    building window 0x4ba854; the hire 0x4bd5e7; the load), not cleared when he walks out.
+    The battle's own `defence` stays the current one.
+  - Checked with a throw-away instrumented build (not committed): with the hero's
+    `strength_defence` forced to 15 the step comes out equal (clock 586, hero (78,66),
+    generator 2044507713 as the original).
+  - Not the cause here but seen on the way: the chase re-plans whenever the chased army has
+    arrived since the hero's last step in Razdor, while the original re-plans only when the
+    army ends a step in the frame where the hero ends one (world.md §1.3). With equal army
+    steps it gave the same targets here.
 
 ## C1004-042357: Обучающий1, step 17 `click_map 20 28`
 
