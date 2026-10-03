@@ -1,8 +1,9 @@
 """Read the game state of a running DiscordTimes.exe (under Wine) from /proc/<pid>/mem.
 
-Nothing is injected and nothing is written: the reader only looks at the globals of the
-original (image base 0x400000, BSS 0x4ee000-0xc0a891). Addresses and record layouts come from
-the reverse-engineering notes (docs/reference/original-mechanics/*.md give the public subset);
+The reader only looks at the globals of the original (image base 0x400000, BSS
+0x4ee000-0xc0a891). Two writes exist, both off unless asked for: the draw trace's hook
+(`DrawTrace`) and the music timer (`Game.hold_music`). Addresses and record layouts come
+from the reverse-engineering notes (docs/reference/original-mechanics/*.md give the public subset);
 each one used here was checked against a live game (see README.md, "Original side").
 
     python -m tools.difftest.memread                 # print the state (schema v1) as JSON
@@ -30,6 +31,9 @@ DIALOG_EVENT = 0x68DC70   # i32 event shown in the event window, -1 none
 SCREEN = 0x4ECDC4         # ptr current screen (window) object
 MINIMAP_SHOWN = 0x68DC64  # u8
 NEXT_MUSIC = 0xAE123C     # i32 time (ms) of the next music change, which draws the RNG
+NOW_MS = 0x4F1C34         # u32 the frame clock (ms) the music timer is compared with
+INPUT_ON = 0x68DC63       # u8 1 while the battle window takes the player's input
+FORMATION_COLS = 0x4ED044 # i32 6 (Community wide row) or 4 (vanilla)
 
 STRIDE_X = 0x68ECC0       # i32 cell-row stride (map width + 8)
 BUILDING_COUNT = 0x68ECD0
@@ -48,6 +52,23 @@ EVENT_SIZE = 0xAB
 
 # Event window buttons (widgets: +4 hidden, +0x11 x, +0x15 y, +0x19 w, +0x1d h).
 EVENT_YES, EVENT_NO, EVENT_OK = 0x672B40, 0x672CB4, 0x672E28
+
+# Battle (battle.md): the battle object, its two sides and their unit records.
+BATTLE = 0x668CF8         # +0xd turn, +0x12 cursor side, +0x16 cursor index, +0x22 over
+SIDE_STRIDE = 0x851       # side s header at BATTLE + s*0x851 - 0x82e; +0 unit count
+BUNIT = 0xA5              # unit u (1-based) at header + 0x28 + (u-1)*0xa5
+# Battle cards (widgets, as the event buttons): 12 enemy cards, 12 own cards, by screen place.
+ENEMY_CARDS, OWN_CARDS, CARD_STRIDE = 0x66AEA0, 0x66B224, 0x4B
+# Screen place of a grid cell (row, col) in the 6-column formation (Formation_CellToSlot
+# 0x492940): the front row is places 0-5, the back row 7-10, the reserve the ends 6 and 11.
+WIDE_PLACES = {(1, c): c - 1 for c in range(1, 7)}
+WIDE_PLACES.update({(2, c): c + 5 for c in range(2, 6)})
+WIDE_PLACES.update({(3, 3): 6, (3, 4): 11})
+
+# A trace of the generator's draws (optional, see DrawTrace): a hook on Random (0x4832fc)
+# that logs each call into a ring in unused space at the end of the Community's .mod section.
+RANDOM = 0x4832FC
+TRACE_CAVE, TRACE_COUNT, TRACE_RING, TRACE_SLOTS = 0xC2B000, 0xC2B100, 0xC2B200, 512
 
 # New-game window.
 MAP_LIST = 0xAE1C1C       # ptr to map-list entries (0x158 each)
@@ -97,6 +118,13 @@ class Memory:
     def read(self, addr, n):
         self.f.seek(addr)
         return self.f.read(n)
+
+    def write(self, addr, data):
+        """Writes into the process (only the draw trace and the music timer do this)."""
+        if not hasattr(self, "w"):
+            self.w = open(f"/proc/{self.pid}/mem", "r+b", buffering=0)
+        self.w.seek(addr)
+        self.w.write(data)
 
     def u8(self, a):
         return self.read(a, 1)[0]
@@ -190,10 +218,63 @@ class Game:
         n = self.m.i32(EVENT_COUNT)
         return [i + 1 for i in range(n) if self.m.i16(base + i * EVENT_SIZE + 0xA0) > 0]
 
+    def battle(self):
+        """The battle on screen (schema v1 `battle`): turn, the acting unit while the player
+        has the input, and both sides' unit records in list order."""
+        b = BATTLE
+        sides = []
+        for s in (1, 2):
+            h = b + s * SIDE_STRIDE - 0x82E
+            units = []
+            for u in range(max(0, min(self.m.i32(h), 12))):
+                r = h + 0x28 + u * BUNIT
+                units.append({"type": self.m.i32(r + 0x23), "row": self.m.i32(r + 0x75),
+                              "col": self.m.i32(r + 0x79), "hp": self.m.i32(r + 0x7D),
+                              "actions": self.m.i32(r + 0x91)})
+            sides.append(units)
+        out = {"turn": self.m.i32(b + 0xD), "sides": sides}
+        cs, ci = self.m.i32(b + 0x12), self.m.i32(b + 0x16)
+        if self.m.u8(INPUT_ON) and not self.m.u8(b + 0x22) and cs in (1, 2) and \
+                1 <= ci <= len(sides[cs - 1]):
+            u = sides[cs - 1][ci - 1]
+            out["actor"] = [cs, u["row"], u["col"]]
+        return out
+
+    def battle_raw(self):
+        """Facts of the battle units outside the schema, for the run log: per side, per unit
+        (record order) its attack/defence/initiative fields and this turn's modifiers."""
+        names = {"ab": 0x2C, "as": 0x30, "mp": 0x34, "db": 0x38, "ds": 0x3C, "maxhp": 0x4C,
+                 "manevres": 0x50, "init": 0x54, "atk_mod": 0x81, "def_mod": 0x85,
+                 "init_mod": 0x89, "bld_def": 0x8D, "cur_init": 0x95}
+        out = []
+        for s in (1, 2):
+            h = BATTLE + s * SIDE_STRIDE - 0x82E
+            side = []
+            for u in range(max(0, min(self.m.i32(h), 12))):
+                r = h + 0x28 + u * BUNIT
+                side.append({k: self.m.i32(r + o) for k, o in names.items()} |
+                            {"bonus": self.m.u8(r + 0x62), "role": self.m.u8(r + 0x68)})
+            out.append(side)
+        return {"sides": out, "threshold": self.m.i32(BATTLE + 0x1A)}
+
+    def card(self, side, row, col):
+        """(x, y, w, h) of the battle card of grid cell (row, col) of side 1 (the player's) or
+        2, or None when the cell has no place on screen."""
+        if self.m.i32(FORMATION_COLS) != 6:
+            return None  # the vanilla 3x4 place table (jump table 0x492ab1) is not mapped here
+        place = WIDE_PLACES.get((row, col))
+        if place is None:
+            return None
+        hidden, x, y, w, h = self.widget((OWN_CARDS if side == 1 else ENEMY_CARDS) + place * CARD_STRIDE)
+        return None if w <= 0 or h <= 0 else (x, y, w, h)
+
     def state(self, step, map_name):
-        return {"step": step, "map": map_name, "clock": self.clock(), "rng": self.rng(),
-                "hero": self.hero(), "armies": self.armies(), "buildings": self.buildings(),
-                "events_done": self.events_done()}
+        st = {"step": step, "map": map_name, "clock": self.clock(), "rng": self.rng(),
+              "hero": self.hero(), "armies": self.armies(), "buildings": self.buildings(),
+              "events_done": self.events_done()}
+        if self.screen() == "battle":
+            st["battle"] = self.battle()
+        return st
 
     # --- harness helpers ---
     def map_file(self):
@@ -246,7 +327,78 @@ class Game:
         """Extra facts for the run log (not part of the schema)."""
         return {"screen": self.screen(), "idle": self.idle(), "dialog_event": self.dialog_event(),
                 "camera": list(self.camera()), "time_cs": self.m.i32(TIME_CS),
-                "hero_class": self.m.i32(HERO_CLASS), "next_music_ms": self.m.i32(NEXT_MUSIC)}
+                "hero_class": self.m.i32(HERO_CLASS), "next_music_ms": self.m.i32(NEXT_MUSIC),
+                "now_ms": self.m.u32(NOW_MS), "event_count": self.m.i32(EVENT_COUNT)} | \
+            ({"battle_raw": self.battle_raw()} if self.screen() == "battle" else {})
+
+    def hold_music(self, ahead_ms=3_600_000):
+        """Puts the next timed music change an hour ahead: the rotation draws the generator
+        in real time (engine.md §3.4), which a replay cannot place."""
+        self.m.write(NEXT_MUSIC, struct.pack("<i", (self.m.u32(NOW_MS) + ahead_ms) & 0x7FFFFFFF))
+
+
+# Sites of the generator's callers (engine.md §3.4), for naming a traced draw by its
+# return address: the nearest site at or below it.
+DRAW_SITES = [
+    (0x483344, "plant offset"), (0x4CFB24, "plant sway"), (0x4B4B43, "army idle offset"),
+    (0x4B8691, "army idle offset (save load)"), (0x4AD8A0, "patroller idle offset"),
+    (0x4BE178, "market restock"), (0x4A1998, "barracks"), (0x4BBA40, "village offer roll"),
+    (0x4ACA80, "village offer build"), (0x4A2550, "AI wander points"),
+    (0x4A4A7C, "AI promotion"), (0x4A548C, "AI hire XP"), (0x4AB150, "anti-cheat"),
+    (0x4D1282, "window chord"), (0x4D155F, "window chord"), (0x4D165E, "window chord"),
+    (0x49D774, "music"), (0x49D7F8, "music"), (0x486237, "battle AI noise"),
+]
+
+
+def draw_site(ret):
+    best = None
+    for addr, name in DRAW_SITES:
+        if addr <= ret < addr + 0x400 and (best is None or addr > best[0]):
+            best = (addr, name)
+    return best[1] if best else "?"
+
+
+class DrawTrace:
+    """Logs every Random(n) of the original: a jump at the top of Random (0x4832fc) into a
+    stub in unused, zero space at the end of the Community's .mod section (RWX), which stores
+    (return address, n, state before, game time) into a 512-slot ring and counts the calls.
+    The game's behaviour is unchanged (the displaced prologue runs in the stub)."""
+
+    PATCH = b"\xe9" + struct.pack("<i", TRACE_CAVE - (RANDOM + 5)) + b"\x90"  # jmp stub; nop
+    STUB = bytes.fromhex(
+        "53518b1d00b1c20081e3ff010000c1e3048b4c2408898b00b2c200898304b2c2008b0d5491650089"
+        "8b08b2c2008b0db8dc6800898b0cb2c200ff0500b1c200595b558bec83c4f8e9b68285ff")
+    PROLOGUE = bytes.fromhex("558bec83c4f8")  # push ebp; mov ebp, esp; add esp, -8
+
+    def __init__(self, mem):
+        self.m = mem
+        self.seen = 0
+
+    def install(self):
+        head = self.m.read(RANDOM, 6)
+        if head == self.PATCH:
+            self.seen = self.m.u32(TRACE_COUNT)
+            return
+        if head != self.PROLOGUE:
+            raise RuntimeError(f"Random does not start as expected: {head.hex()}")
+        if any(self.m.read(TRACE_CAVE, TRACE_RING + TRACE_SLOTS * 16 - TRACE_CAVE)):
+            raise RuntimeError("the trace area is not free")
+        self.m.write(TRACE_CAVE, self.STUB)
+        self.m.write(RANDOM, self.PATCH)
+        self.seen = 0
+
+    def poll(self):
+        """The draws since the last poll: [(n, state before, return address, time_cs)], and
+        how many were lost to the ring wrapping."""
+        count = self.m.u32(TRACE_COUNT)
+        new = count - self.seen
+        lost = max(0, new - TRACE_SLOTS)
+        out = []
+        for k in range(self.seen + lost, count):
+            ret, n, before, t = struct.unpack("<IiIi", self.m.read(TRACE_RING + (k % TRACE_SLOTS) * 16, 16))
+            out.append((n, before, ret, t))
+        self.seen = count
+        return out, lost
 
 
 # --- validation against the map file -------------------------------------------------------

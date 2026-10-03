@@ -90,7 +90,7 @@ def prepare_install(src, work):
 
 class Original:
     def __init__(self, install=DEFAULT_INSTALL, work=DEFAULT_WORK, display=None,
-                 wineprefix=None, log=None):
+                 wineprefix=None, log=None, trace=False, hold_music=False):
         self.src = install
         self.work = work
         self.display_num = display
@@ -101,6 +101,9 @@ class Original:
         self.pid = None
         self.d = None
         self.game = None
+        self.trace_on, self.hold_music = trace, hold_music
+        self.trace = None
+        self.draws, self.draws_lost = [], 0
 
     # --- lifecycle ------------------------------------------------------------------------
     def start(self, timeout=90, tries=2):
@@ -160,7 +163,25 @@ class Original:
         self.game = memread.Game(memread.Memory(self.pid))
         self.wait_screen("main_menu", timeout - (time.time() - t0))
         time.sleep(1.0)  # menu fade-in
+        if self.trace_on:
+            self.trace = memread.DrawTrace(self.game.m)
+            self.trace.install()
         self.log(f"game pid {self.pid}: main menu")
+
+    def tick(self):
+        """Collects the traced draws and keeps the timed music change away."""
+        if self.trace:
+            got, lost = self.trace.poll()
+            self.draws += got
+            self.draws_lost += lost
+        if self.hold_music:
+            self.game.hold_music()
+
+    def take_draws(self):
+        self.tick()
+        out, lost = self.draws, self.draws_lost
+        self.draws, self.draws_lost = [], 0
+        return out, lost
 
     def _null_alsa(self):
         path = os.path.join(self.work, "asound-null.conf")
@@ -277,10 +298,17 @@ class Original:
         g = self.game
         last, since, t0 = None, time.time(), time.time()
         while time.time() - t0 < timeout:
+            self.tick()
             scr = g.screen()
             sig = (scr, g.idle(), g.m.i32(memread.TIME_CS), g.rng(), g.dialog_event(),
                    g.m.i32(memread.ARMIES + 0x1724), g.m.i32(memread.ARMIES + 0x1728))
-            at_rest = (scr != "world") or g.idle()
+            if scr == "battle":
+                # In battle: at rest when the player has the input, the AI's moves and the
+                # animations done (after a victory the window stays 2.5 s without input).
+                sig += (g.m.u8(memread.INPUT_ON), g.m.read(memread.BATTLE, 0x23))
+                at_rest = g.m.u8(memread.INPUT_ON) == 1
+            else:
+                at_rest = (scr != "world") or g.idle()
             if sig != last:
                 last, since = sig, time.time()
             elif at_rest and time.time() - since >= quiet:
@@ -441,6 +469,32 @@ class Original:
             self.key("Return")
         self.settle()
 
+    def battle_act(self, side, row, col):
+        """A press on the battle card of grid cell (row, col) of side 1 (own) or 2 (enemy)."""
+        self.require("battle")
+        if not self.game.m.u8(memread.INPUT_ON):
+            raise NotApplicable("the battle takes no input now")
+        rect = self.game.card(side, row, col)
+        if rect is None:
+            raise NotApplicable(f"no card for side {side} cell {(row, col)}")
+        x, y, w, h = rect
+        before = self.game.m.read(memread.BATTLE, 0x23 + 2 * memread.SIDE_STRIDE)
+        self.click(x + w // 2, y + h // 2)
+        time.sleep(0.3)
+        self.settle()
+        if self.game.screen() == "battle" and \
+                self.game.m.read(memread.BATTLE, 0x23 + 2 * memread.SIDE_STRIDE) == before:
+            return "no action on that card"
+        return None
+
+    def battle_pass(self):
+        self.require("battle")
+        if not self.game.m.u8(memread.INPUT_ON):
+            raise NotApplicable("the battle takes no input now")
+        self.key("space")
+        time.sleep(0.3)
+        self.settle()
+
     def battle_auto(self):
         # The original has no auto battle (battle.md, interface.md §12): nothing to press.
         return "unsupported: the original has no auto battle"
@@ -461,6 +515,10 @@ class Original:
             self.ok()
         elif op == "battle_auto":
             return self.battle_auto()
+        elif op == "battle_act":
+            return self.battle_act(int(act["side"]), int(act["row"]), int(act["col"]))
+        elif op == "battle_pass":
+            self.battle_pass()
         elif op == "snapshot":
             self.settle(quiet=0.3)
         else:
@@ -478,9 +536,14 @@ class Original:
             f.write(json.dumps(st, ensure_ascii=False) + "\n")
         self.screenshot(os.path.join(out, f"shot-{step:04d}.png"))
         line = {"step": step, "action": act, "meta": self.game.meta(),
-                "now_ms": self.game.m.u32(0x4F1C34)}
+                "now_ms": self.game.m.u32(memread.NOW_MS)}
         if note:
             line["note"] = note
+        if self.trace:
+            draws, lost = self.take_draws()
+            line["draws"] = [[n, before, hex(ret), memread.draw_site(ret), t]
+                             for n, before, ret, t in draws]
+            line["draws_lost"] = lost
         with open(os.path.join(out, "run.jsonl"), "a") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
         return st
@@ -515,6 +578,10 @@ def main(argv=None):
     ap.add_argument("--work", default=DEFAULT_WORK, help="private copy of the install and logs")
     ap.add_argument("--display", type=int, help="X display number (default: first free from 77)")
     ap.add_argument("--wineprefix", help="default: Wine's own (~/.wine)")
+    ap.add_argument("--trace-draws", action="store_true",
+                    help="log every draw of the generator (a hook on Random; see memread.DrawTrace)")
+    ap.add_argument("--hold-music", action="store_true",
+                    help="keep the timed music change (a real-time draw) from happening")
     ap.add_argument("--check", action="store_true",
                     help="after the new game, compare memory with the map file and stop")
     a = ap.parse_args(argv)
@@ -528,7 +595,8 @@ def main(argv=None):
     for name in ("run.jsonl", "original.jsonl"):
         open(os.path.join(a.out, name), "w").close()
 
-    o = Original(a.install, a.work, a.display, a.wineprefix)
+    o = Original(a.install, a.work, a.display, a.wineprefix,
+                 trace=a.trace_draws, hold_music=a.hold_music)
     rc = 0
     try:
         o.start()
