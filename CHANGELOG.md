@@ -13,6 +13,8 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The view stays while you choose a route:** a click on the map with the hero off screen
+  no longer brings the view back to him; it follows him once he sets off, as in the original.
 - **The back row's ranged defence is shown:** a unit in the back row shows the `Row2Def`
   bonus (+5) on its card ("D: 0/5") and on its panel ("0 + 5", with a building's defence
   when there is one), as the original's card and panel do; the damage already counted it.

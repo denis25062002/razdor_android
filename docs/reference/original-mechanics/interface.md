@@ -380,6 +380,13 @@ checks test the held key, not a latched press. **code** (c26ae3–c26bfc, c277d2
   Between
   steps it moves with his sprite. Any manual scrolling is overridden while he walks. **code**
   (4ae8a8, 4aea50)
+- **A click on the map moves no camera.** The planning click (§7.3) leaves the view where the
+  player scrolled it, the hero off screen included, so the second click can be made on the
+  same place; the view goes back to the hero only when he sets off, by the walk lock above.
+  The click handler writes the camera only for a minimap drag and the arrow keys
+  (4ccf5a-4cd00f). **code**; checked under Wine on РК1 (view scrolled 400 px away from the
+  hero: the first click left the camera at (210, 440) with the route drawn, the second set
+  him off and the camera jumped to (608, 440)). Razdor: the same.
 - **Glides** (4af96c): the view moves to the same placement as the walk lock (target
   `(x × 32 − 448, y × 22 − 352)`, the same numbers as above) in 900 ms on a cosine ease: progress
   `e = round(900 × (1 − cos(π t / 900)) / 2)`, position `start + (target − start) × e / 900`

@@ -1297,6 +1297,17 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
     (next, pressed == Some(BarButton::Map))
 }
 
+/// Where the camera looks (`None`: on the hero) after this frame's input: the walk locks it
+/// on the hero (0x4ae8a8) unless an event's places are being shown; otherwise it stays where
+/// the player put it, a planning click included (the original's click moves no camera).
+fn camera_look(look: Option<(f32, f32)>, walking: bool, showing: bool) -> Option<(f32, f32)> {
+    if walking && !showing {
+        None
+    } else {
+        look
+    }
+}
+
 /// What a left click on a target cell of the idle map does (interface.md §7.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MapClick {
@@ -1374,9 +1385,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         scroll(game, view, dt_ms);
     }
     // While he walks the view is locked on him (interface.md §8).
-    if game.moving() && view.shows.is_empty() {
-        view.look = None;
-    }
+    view.look = camera_look(view.look, game.moving(), !view.shows.is_empty());
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
     let hovered = cam.tile_under_mouse().filter(|_| !on_minimap);
@@ -1413,7 +1422,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
                     MapClick::Planned | MapClick::Nothing => {}
                 }
             }
-            view.look = None;
+            // The view stays where it is while the route is chosen; it goes back to the
+            // hero once he sets off (below), as the original's click (0x4cc3ad-0x4cca39)
+            // leaves the camera alone and only the walk locks it (0x4ae8a8).
         }
     }
     // A planned route belongs to where the hero stood: the end of a walk forgets it
@@ -1562,6 +1573,17 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A planning click keeps the view where it was scrolled; the walk brings it back to
+    /// the hero, unless an event's places are being shown.
+    #[test]
+    fn the_view_follows_the_hero_only_while_he_walks() {
+        let away = Some((100.0, 200.0));
+        assert_eq!(camera_look(away, false, false), away);
+        assert_eq!(camera_look(away, true, false), None);
+        assert_eq!(camera_look(away, true, true), away);
+        assert_eq!(camera_look(None, false, false), None);
+    }
 
     #[test]
     fn the_scroll_step_follows_the_scroll_speed() {

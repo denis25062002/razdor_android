@@ -82,6 +82,13 @@ was seen on and what to check.
    follows the hero only while he walks), and in Razdor the camera-follow logic in
    `src/ui/world_view.rs` (the camera following the hero unless moved by the minimap) and the
    route preview's first click.
+   Done (2026-10-04, dt-original): the original does what is wanted. Its click handler writes
+   the camera only for a minimap drag and the arrow keys (0x4ccf5a-0x4cd00f); only the walk
+   locks the view on the hero (0x4ae8a8). Checked under Wine on РК1: with the view scrolled
+   400 px off the hero, the first click drew the route and left the camera at (210, 440); the
+   second set him off and the camera went to (608, 440). Razdor reset the view on every
+   click on a target; now a click leaves it and the walk brings it back (`camera_look`), so
+   this is parity, not a Razdor choice.
 
 7. **Second campaign map: the "send the peasants to the mines" offers.** There are three offers to
    send a group of peasants to the mines. The player accepted two and declined one. The declined
