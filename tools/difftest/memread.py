@@ -34,6 +34,13 @@ NEXT_MUSIC = 0xAE123C     # i32 time (ms) of the next music change, which draws 
 NOW_MS = 0x4F1C34         # u32 the frame clock (ms) the music timer is compared with
 INPUT_ON = 0x68DC63       # u8 1 while the battle window takes the player's input
 FORMATION_COLS = 0x4ED044 # i32 6 (Community wide row) or 4 (vanilla)
+PACK = 0x68DCE0           # i32[256] pack: item GlobalIndex, 0 empty (holes stay)
+PACK_SCROLL = 0x68E0E4    # i32 first shown pack slot of the army / hero window
+BOOK, BOOK_COUNT = 0x68E0E8, 0x68E4E8   # i32[] spell book (1-based spell numbers), count
+HELD = 0x6664A4           # i32 item held on the pointer (army / hero window)
+SPELL_PENDING = 0x66C0B9  # u8 a world spell is being targeted or cast
+TAB = 0x68DC88            # i32 building window tab: 0 hall, 1 hire, 2 garrison, 3 market, 4 sanctuary
+GRID = 0x1630             # army formation: cell (row r, col c) at +0x1630 + r*0x18 + c*4 = unit number
 
 STRIDE_X = 0x68ECC0       # i32 cell-row stride (map width + 8)
 BUILDING_COUNT = 0x68ECD0
@@ -182,6 +189,7 @@ class Game:
             rec = {"type": self.m.i32(u) + 1, "level": self.m.i32(u + 0x10), "hp": hp}
             if xp:
                 rec["xp"] = self.m.i32(u + 4)
+                rec["items"] = list(struct.unpack("<4i", self.m.read(u + 0xCD, 16)))
             out.append(rec)
         return out
 
@@ -189,7 +197,29 @@ class Game:
         a = self.army(0)
         return {"x": self.m.i32(a + 0x1724), "y": self.m.i32(a + 0x1728),
                 "gold": self.m.i32(GOLD), "mana": self.m.i32(MANA),
-                "units": self.units(0, xp=True)}
+                "units": self.units(0, xp=True), "pack": [i for i in self.pack() if i],
+                "book": self.book()}
+
+    def pack(self):
+        """The 256 pack slots (0 = empty; a sale leaves a hole that the next item fills)."""
+        return list(struct.unpack("<256i", self.m.read(PACK, 1024)))
+
+    def book(self):
+        n = max(0, min(self.m.i32(BOOK_COUNT), 256))
+        return list(struct.unpack(f"<{n}i", self.m.read(BOOK, 4 * n)))
+
+    def unit_cell(self, k, i):
+        """(row, col) of unit i (0-based, record order) in army k's formation, or None."""
+        a = self.army(k)
+        for r in (1, 2, 3):
+            for c in range(1, 7):
+                if self.m.i32(a + GRID + r * 0x18 + c * 4) == i + 1:
+                    return r, c
+        return None
+
+    def enabled(self, addr):
+        """A widget's enabled flag (+0xd)."""
+        return self.m.u8(addr + 0xD) != 0
 
     def armies(self):
         out = []

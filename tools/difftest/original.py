@@ -49,6 +49,22 @@ SAFE = (48, 40, 976, 640)                        # clickable part of the map vie
 
 WINDOWS_CLOSED_BY_ESC = ("building", "village", "shipyard")
 
+# Building window (found by listing the screen's child widgets; see README.md "Services").
+TAB_X, TAB_Y0, TAB_STEP = 197, 102, 100          # tab buttons, top to bottom (Exit below)
+MARKET_LIST, MARKET_ROW, MARKET_ROWS = 0x670688, 28, 7   # list widget: +0x6b first shown row
+MARKET_SCROLL = 0x670838                         # its scroll bar
+MARKET_BUTTON = 0x6709BC                         # Buy / Sell (market), Learn (sanctuary)
+SELL_LIST_BTN, GOODS_BTN = 0x670B30, 0x670CA4    # "Inventory" (sell list) / "Trade shop" (goods)
+BUY_ROW, SELL_ROW = 0x671258, 0x671254           # selected row of the goods / sell list
+SPELL_LIST, SPELL_ROWS = 0x671334, 6
+HIRE_BTN, CURE_BTN, BTN_STRIDE = 0x66EFB0, 0x66DE64, 0x171   # 6 by barracks slot, 12 by card
+# Bottom panel and side windows.
+ARMY_BUTTON, BOOK_BUTTON = (800, 714), (888, 714)
+BOOK_CELLS, CELL_STRIDE = 0x66C2FC, 0x4B          # 15 spell cells, book entry k
+PACK_CELL0, PACK_PITCH = (338, 58), 55            # 5x5 pack cells of the army window
+WORN_CELLS = [(74, 58), (74, 113), (265, 58), (265, 113)]   # worn slots 0-3 (55x55)
+ARMY_CARDS = 0x667F3C                             # 12 unit cards by place
+
 KEY_ALIASES = {"esc": "Escape", "escape": "Escape", "enter": "Return", "return": "Return",
                "space": "space", "tab": "Tab", "left": "Left", "right": "Right", "up": "Up",
                "down": "Down", "backspace": "BackSpace"}
@@ -514,6 +530,198 @@ class Original:
         # The original has no auto battle (battle.md, interface.md §12): nothing to press.
         return "unsupported: the original has no auto battle"
 
+    # --- services (action list v1 extension) -----------------------------------------
+    def _rect_click(self, addr, what):
+        hidden, x, y, w, h = self.game.widget(addr)
+        if w <= 0 or h <= 0 or (x, y) == (0, 0):
+            raise NotApplicable(f"{what} is not shown")
+        if not self.game.enabled(addr):
+            raise NotApplicable(f"{what} is disabled")
+        self.click(x + w // 2, y + h // 2)
+
+    def open_tab(self, tab, what):
+        """Switches the building window to tab `tab` (memread.TAB numbers) by pressing its
+        tab buttons from the top until the window shows it."""
+        if self.game.screen() != "building":
+            raise NotApplicable(f"{what}: no building window ({self.game.screen()})")
+        g = self.game
+        for i in range(5):
+            if g.m.i32(memread.TAB) == tab:
+                return
+            self.click(TAB_X, TAB_Y0 + i * TAB_STEP)
+            self.settle(quiet=0.3)
+            if g.screen() != "building":
+                raise HarnessError("a tab press left the building window")
+        if g.m.i32(memread.TAB) != tab:
+            raise NotApplicable(f"{what}: the building has no such tab")
+
+    def _press_hold(self, x, y, hold=0.6):
+        self.move(x, y)
+        time.sleep(0.15)
+        xtest.fake_input(self.d, X.ButtonPress, 1)
+        self.d.sync()
+        time.sleep(hold)
+        xtest.fake_input(self.d, X.ButtonRelease, 1)
+        self.d.sync()
+        self.settle(quiet=0.3)
+
+    def _market_row(self, row, sel_addr):
+        """Selects row `row` of the market list (scrolling it as needed)."""
+        g = self.game
+        _, lx, ly, lw, lh = g.widget(MARKET_LIST)
+        _, sx, sy, sw, sh = g.widget(MARKET_SCROLL)
+        top = g.m.u8(MARKET_LIST + 0x6B)
+        if not top <= row < top + MARKET_ROWS:
+            # A long press near the end of the track scrolls to that end.
+            self._press_hold(sx + sw // 2, sy + (sh - 18 if row >= MARKET_ROWS else 18))
+            top = g.m.u8(MARKET_LIST + 0x6B)
+        if not top <= row < top + MARKET_ROWS:
+            raise NotApplicable(f"row {row} cannot be scrolled into view (top {top})")
+        self.click(lx + lw // 2, ly + MARKET_ROW * (row - top) + MARKET_ROW // 2)
+        self.settle(quiet=0.3)
+        if g.m.i32(sel_addr) != row:
+            raise NotApplicable(f"row {row} not selected (the list has fewer rows?)")
+
+    def trade(self, row, sell):
+        what = "sell" if sell else "buy"
+        self.open_tab(3, what)
+        g = self.game
+        want_btn, other = (SELL_LIST_BTN, GOODS_BTN) if sell else (GOODS_BTN, SELL_LIST_BTN)
+        if g.enabled(want_btn):   # the other list is shown: switch
+            self._rect_click(want_btn, "the list switch")
+            self.settle(quiet=0.3)
+        before = (g.pack(), g.m.i32(memread.GOLD))
+        self._market_row(row, SELL_ROW if sell else BUY_ROW)
+        self._rect_click(MARKET_BUTTON, f"the {what} button")
+        self.settle()
+        if (g.pack(), g.m.i32(memread.GOLD)) == before:
+            return f"{what} {row}: nothing changed"
+        return None
+
+    def hire(self, slot):
+        self.open_tab(1, "hire")
+        n = self.game.m.i32(self.game.army(0))
+        self._rect_click(HIRE_BTN + slot * BTN_STRIDE, f"the hire button of slot {slot}")
+        self.settle()
+        if self.game.m.i32(self.game.army(0)) == n:
+            return f"hire {slot}: nothing changed"
+        return None
+
+    def heal(self, unit, raise_):
+        what = "resurrect" if raise_ else "heal"
+        self.open_tab(1, what)
+        g = self.game
+        cell = g.unit_cell(0, unit)
+        place = memread.WIDE_PLACES.get(cell) if cell else None
+        if place is None:
+            raise NotApplicable(f"{what}: unit {unit} has no card")
+        before = g.units(0)
+        self._rect_click(CURE_BTN + place * BTN_STRIDE, f"the {what} button of unit {unit}")
+        time.sleep(0.6)   # the 350-420 ms animation
+        self.settle()
+        if g.units(0) == before:
+            return f"{what} {unit}: nothing changed"
+        return None
+
+    def learn(self, row):
+        self.open_tab(4, "learn")
+        g = self.game
+        _, lx, ly, lw, lh = g.widget(SPELL_LIST)
+        if not 0 <= row < SPELL_ROWS:
+            raise NotApplicable(f"learn: no row {row}")
+        self.click(lx + lw // 2, ly + int(lh / SPELL_ROWS * (row + 0.5)))
+        self.settle(quiet=0.3)
+        before = g.book()
+        self._rect_click(MARKET_BUTTON, "the learn button")
+        self.settle()
+        if g.book() == before:
+            return f"learn {row}: nothing changed"
+        return None
+
+    def _side_window(self, button, screen):
+        if self.game.screen() in WINDOWS_CLOSED_BY_ESC:
+            self.key("Escape")
+            self.settle(quiet=0.3)
+        self.require("world")
+        self.settle(quiet=0.3)
+        if not self.game.idle():
+            raise NotApplicable("the map takes no input now")
+        self.click(*button)
+        self.settle(quiet=0.3)
+        if self.game.screen() != screen:
+            raise NotApplicable(f"the {screen} did not open ({self.game.screen()})")
+
+    def cast(self, slot, army=None):
+        g = self.game
+        if not 0 <= slot < min(15, len(g.book())):
+            raise NotApplicable(f"cast: no book entry {slot}")
+        self._side_window(BOOK_BUTTON, "spell_book")
+        mana = g.m.i32(memread.MANA)
+        self._rect_click(BOOK_CELLS + slot * CELL_STRIDE, f"book cell {slot}")
+        time.sleep(0.3)
+        if g.screen() == "spell_book":   # not enough mana: the book stays
+            self.key("Escape")
+            self.settle(quiet=0.3)
+            return f"cast {slot}: refused (mana {mana})"
+        if g.m.u8(memread.SPELL_PENDING) and g.idle():
+            # Targeting mode: a click on the target army's cell.
+            if army is None:
+                self.key("Escape")
+                self.settle(quiet=0.3)
+                return f"cast {slot}: the spell needs a target army"
+            a = next((x for x in g.armies() if x["id"] == army), None)
+            if not a or not a["active"]:
+                self.key("Escape")
+                self.settle(quiet=0.3)
+                return f"cast {slot}: army {army} is not on the map"
+            px, py = self.scroll_to(a["x"], a["y"])
+            self.click(px, py)
+        self.settle()
+        return None
+
+    def equip(self, slot, unit):
+        g = self.game
+        pack = g.pack()
+        used = [k for k, i in enumerate(pack) if i]
+        if slot >= len(used):
+            raise NotApplicable(f"equip: no pack item {slot}")
+        k = used[slot]
+        self._side_window(ARMY_BUTTON, "army_window")
+        try:
+            first = g.m.i32(memread.PACK_SCROLL)
+            if not first <= k < first + 25:
+                return f"equip: pack slot {k} is out of view (not scrolled)"
+            c = k - first
+            self.click(PACK_CELL0[0] + PACK_PITCH * (c % 5) + 27, PACK_CELL0[1] + PACK_PITCH * (c // 5) + 27)
+            self.settle(quiet=0.3)
+            if not g.m.i32(memread.HELD):
+                return f"equip: pack slot {k} was not picked up"
+            worn = lambda: g.units(0, xp=True)[unit]["items"] if unit < len(g.units(0)) else None
+            before = worn()
+            if before is None:
+                return f"equip: no unit {unit}"
+            if unit == 0:
+                # The hero's worn slots are on the window: the lowest empty one.
+                free = [s for s in range(4) if not before[s]]
+                if not free:
+                    return "equip: the hero has no free slot"
+                x, y = WORN_CELLS[free[0]]
+                self.click(x + 27, y + 27)
+            else:
+                cell = g.unit_cell(0, unit)
+                place = memread.WIDE_PLACES.get(cell) if cell else None
+                if place is None:
+                    return f"equip: unit {unit} has no card"
+                _, x, y, w, h = g.widget(ARMY_CARDS + place * CELL_STRIDE)
+                self.click(x + w // 2, y + h // 2)
+            self.settle(quiet=0.3)
+            if worn() == before:
+                return f"equip {slot} on {unit}: refused"
+            return None
+        finally:
+            self.key("Escape")   # closes the window (a held item goes back to the pack)
+            self.settle(quiet=0.3)
+
     def perform(self, act):
         op = act.get("op")
         if op == "new_game":
@@ -536,6 +744,18 @@ class Original:
             self.battle_pass()
         elif op == "snapshot":
             self.settle(quiet=0.3)
+        elif op in ("buy", "sell"):
+            return self.trade(int(act["slot"]), op == "sell")
+        elif op == "hire":
+            return self.hire(int(act["slot"]))
+        elif op in ("heal", "resurrect"):
+            return self.heal(int(act["unit"]), op == "resurrect")
+        elif op == "learn":
+            return self.learn(int(act["slot"]))
+        elif op == "cast":
+            return self.cast(int(act["slot"]), act.get("army"))
+        elif op == "equip":
+            return self.equip(int(act["slot"]), int(act["unit"]))
         else:
             raise NotApplicable(f"unknown op {op!r}")
         return None
