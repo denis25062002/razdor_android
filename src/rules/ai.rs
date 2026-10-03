@@ -1440,7 +1440,11 @@ impl Game {
     /// after the arrivals up to its moment (0x4a1998 ends the frame's advance); the clock
     /// reads each arrival's moment. `start` is the tick's first minute, `midnights` the
     /// midnights in it; the ones after the last arrival are returned.
-    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells, start: f64, midnights: &[f64]) -> Vec<f64> {
+    /// `hero` are the hero's cells while the tick plays, `hero_end` those once his step has
+    /// ended: the arrivals at the tick's very end come in the frame where the walk timer has
+    /// already ended his step (0x4ae8cc), so they see him on his new cell, facing the step he
+    /// took (0x4ae8e0), before the AI's advance of that frame (0x4ade3c).
+    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells, hero_end: &HeroCells, start: f64, midnights: &[f64]) -> Vec<f64> {
         let end = self.clock.total_minutes();
         self.ai_respawns(end);
         let tick = cmin(minutes);
@@ -1477,7 +1481,7 @@ impl Game {
             if let Some(p) = pending.remove(&uid) {
                 // The arrival, as its play time runs out; the next step starts at the next
                 // frame, within this tick only.
-                self.ai_finish(&p, hero);
+                self.ai_finish(&p, if t >= tick { hero_end } else { hero });
                 if goes_on(self) {
                     queue.insert((t, seq + 1, id, uid));
                 }

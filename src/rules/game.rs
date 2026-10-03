@@ -1479,7 +1479,9 @@ impl Game {
         // cell plus his direction, which a stop does not clear: 0x4a399c).
         let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
         let hero = HeroCells { cells: [Some(hero_tile), self.step_from.or(ahead)], at: hero_tile };
-        let later = self.ai_move(minutes, &hero, start, midnights);
+        // At the tick's end his step has ended: his cell and the one ahead of him.
+        let hero_end = HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile };
+        let later = self.ai_move(minutes, &hero, &hero_end, start, midnights);
         events.append(&mut self.ai_events);
         let mut armies = std::mem::take(&mut self.world.armies);
         let world = &self.world;

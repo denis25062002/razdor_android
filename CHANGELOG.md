@@ -532,6 +532,9 @@ old id, and their versions give both.
 - A village's blessing or witch rolls its spell or mana as the offer is made, before the
   question's chord, as in the original, not when it is accepted; the blessing is any of the
   five blessing spells, as in the original.
+- An AI army arriving just as the hero finishes a step sees him on his new cell, facing his
+  step, as in the original: one standing right ahead of him stays put instead of walking off,
+  and the idle draws of the hero's stop count it as the original does.
 
 ## 0.2.2 — 2026-10-01
 

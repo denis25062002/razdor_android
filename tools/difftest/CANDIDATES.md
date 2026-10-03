@@ -228,6 +228,8 @@ Differences the LLM explorer (`explore.py`) found that `known.py` could not matc
   (FINDINGS §1) and then the event window's chord, but Razdor draws one `Random(3000)`
   more: it counts one more idle patroller at that stop than the original. Which army is
   not traced yet (the `ai` preset of `trace.py` at the step names the armies).
+- **Resolved** by FINDINGS §18 (third fix round): army 5, arriving at the end of the hero's
+  step, sees him arrived and stands in the original; 16 of 16 steps equal (`r3-c003724`).
 
 ## C1004-004157: РК1-Начало пути, step 13 `answer true`
 

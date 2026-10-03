@@ -341,6 +341,29 @@ C1003-174927, fourth part: with it the candidate is resolved.
 - After the fix the lake repro (with two `ok` after) is 6 of 6 steps equal, C1004-004157
   15 of 15 (`r3-lake-offer`, `r3-c004157`).
 
+## 18. An army arriving at the end of the hero's step saw him still stepping
+
+**Status: fixed** (`Game::ai_move`, `Game::move_armies`; world.md §5, ai.md §7). Candidate
+C1004-003724 (ДС1).
+
+- ДС1 step 15 (`click_map 83 27`): the walk stops at (85,23) for a meeting (army 5, event
+  24); both sides draw the stop's idle offsets, Razdor eight, the original seven (then the
+  chord). Razdor's eighth: army 5, which had planned a path of five cells; the original's
+  army 5 planned a one-cell path at its arrival (Frida, `ai` preset: AiPlan at t = 111750
+  gives [[85,24]]), so its direction is 8 and the snap (0x4ad8a0) skips it.
+- Army 5 arrived at (85,24) at the very end of the hero's step from (85,22) to (85,23). In
+  the frame of a step's end the walk timer first ends the hero's step: his logical cell
+  becomes (85,23) (0x4ae8cc → 0x497c68) and his direction the step just taken, south
+  (0x4ae8e0: the path entry's direction). Then the armies advance (0x4ade3c). The planner
+  (0x4a2d88) erases every party's cell and cell + direction within `AIGetPathDistance`: for
+  the hero (85,23) and (85,24), army 5's own cell, so the path read (0x482fe8: best =
+  distance[own cell] = 0) finds nothing lower and the army stands. Razdor gave the whole tick
+  the hero's cells of the step under way, his new cell and the cell he left (85,22), so army
+  5 found a path.
+- Razdor now gives the arrivals at the tick's end the cells after the step (his cell and the
+  one ahead). After the fix the repro is 16 of 16 steps equal (`r3-c003724`); the recorded
+  repros of rounds 2-3 replay as before.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

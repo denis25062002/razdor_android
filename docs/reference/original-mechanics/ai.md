@@ -318,7 +318,9 @@ army routes around armies it cannot beat instead of avoiding them as a goal.
   overwrites the cell's value (0x482984, an off-by-one); the earlier, lower seed still expands
   from its own value, so only the seed cell's own value ends 1 higher.
 - Then every cell of an army (or the player) within `AIGetPathDistance` cells, and the cell
-  that army steps to next, is erased from the flood, so the path never steps onto them.
+  that army steps to next, is erased from the flood, so the path never steps onto them
+  (for the player: his logical cell and that cell plus his direction, world.md §5; an erase
+  of the planning army's own cell leaves it nothing lower to step to, so it stands).
 - **Path**: from the army's cell, repeatedly step to the neighbour with the smallest non-zero
   flood value below the current one (direction order 0..7, the first of equals wins), until
   none is lower. No seed reachable → a one-cell path (the army stays and counts idle plans).

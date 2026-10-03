@@ -419,6 +419,13 @@ What the world needs:
   cell he is stepping to, the army spends the time but stays put (and is then in contact).
   The test is his cell plus his direction (0x75c050), which only a step writes: while he
   stands after a walk, the cell ahead of him in his last step's direction stays closed too.
+  His cell is his *logical* cell: during a step the cell he leaves (plus the direction: the
+  cell he steps to); in the frame where the step ends the walk timer first moves it to the new
+  cell and sets the direction to the step just taken (0x4ae8cc, 0x4ae8e0), and only then do
+  the armies advance (0x4ade3c). So an army arriving at the very end of the hero's step (its
+  play time the rest of the tick) sees him on his new cell with the cell **ahead** of him
+  closed, not the cell he came from; the planner's erase (ai.md §7) reads the same two cells.
+  An army standing right ahead of him then erases its own cell and stays (a one-cell path).
 - AI armies stand at the centre of their home building's footprint `(x0 + sx div 2,
   y0 + sy div 2)` when they respawn.
 - Boarding or leaving the sea (§8) empties the banks and route countdowns of the AI armies on
