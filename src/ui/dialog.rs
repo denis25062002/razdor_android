@@ -60,7 +60,7 @@ pub struct Dialog {
     pub joined: Vec<UnitId>,
     pub left: Vec<UnitId>,
     /// It is shown in the original's event window, which opens with a chord (a draw of the
-    /// game's generator, 0x4d15d0): the events' dialogs and the victory box.
+    /// game's generator, 0x4d15d0): the events' dialogs, the victory box and the noon report.
     pub chord: bool,
     /// Its opening sound has played.
     pub cued: bool,
@@ -95,6 +95,8 @@ impl Dialog {
     /// The 12:00 report: gold, mana, income and wages (video notes §5).
     pub fn day_report(game: &Game, r: &DayReport) -> Dialog {
         let mut d = Dialog::new(tr("Report on resources, income and expenses"));
+        // The original shows it in the event window, which opens with its chord.
+        d.chord = true;
         d.text.push(tr("The report shows your gold, the daily income of your castles and the wages paid to your army.").into());
         d.resources = vec![
             (Resource::Gold, format!("{} = {}", tr("Gold"), r.gold)),

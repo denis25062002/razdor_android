@@ -1047,7 +1047,13 @@ impl Game {
                     None => self.wait_ticks -= 1,
                 }
                 let from = events.len();
-                let go = self.wait_tick(&mut events);
+                let mut go = self.wait_tick(&mut events);
+                // The noon report opens in the event window and the scan counts it as an
+                // event that fired (0x4abfbc): it ends the wait (0x4ae42f → 0xc2782b), not the
+                // endless one.
+                if self.endless_wait.is_none() && events[from..].iter().any(|e| matches!(e, Event::NewDay(_))) {
+                    go = false;
+                }
                 // The reading is done, an event fired (the original pops the wait off its
                 // queue, 0x4ae4f2, and the spell lands at once), or an event set a battle
                 // over his book.

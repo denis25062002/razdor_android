@@ -157,6 +157,10 @@ choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes 
   enemy's (0x4c57bc) and the end of a card's move (0x4b0284). The army record's unit HP
   (+0x20) follows the battle; the memory reader reads it there. Razdor wrote the battle back
   only at its end.
+- Confirmed with Frida in run `r2-final` (hooks on 0x48bb10 and 0x4988c0): every battle
+  step 18-35 copies the sides (flag 0) and writes both back once per action, from 0x4b0118 /
+  0x4b012e (the card's move or strike ends), 0x4afbaf / 0x4afbc5 and 0x4c5863 / 0x4c5879
+  (the enemy's turn); the flag-1 copy at step 36 is the end.
 - Razdor now writes every fighter's HP into its army after each action (the hero's squad,
   and the enemy army's or garrison's troop records). The grid is still written at the end
   only: nothing reads it during the battle.
@@ -281,6 +285,23 @@ C1003-174927, fourth part: with it the candidate is resolved.
   0x4d15d0), which draws its chord as any event's. Razdor drew the chord only for the
   scenario's events.
 - After the fix steps 36-39 of rk1-day1 are equal step-local.
+
+## 15. The noon report ends the wait and draws the event window's chord
+
+**Status: fixed** (`Game::tick`, the replay's and the interface's report dialog; world.md
+§6.1).
+
+- rk1-day1 step 42 (`wait 4`) reaches noon an hour in. The original shows the noon report
+  in the event window (the memory reader's `dialog_event` is the event count + 1) and draws
+  the window's `Random(3)` (0x4d1663) and the stop's two `Random(3000)` (0x4ad933); at step
+  43 its `ok` closes the report and the clock stays. Razdor stopped at the report too but
+  drew neither, and after its `ok` waited the three hours left (`clock` 180 minutes ahead,
+  82 more draws).
+- 0x4abfbc opens the report with 0x4a8ae8(event count + 1) and returns "an event fired"
+  (`local_5 = 1`); the wait handler (0x4ae42f) then ends the wait (0xc2782b) as for any
+  fired event, after which the stop snaps the armies.
+- After the fix rk1-day1 steps 40-43 equal those of the recorded original `fix1`
+  step-local (only §6's XP differs).
 
 ## Not differences
 

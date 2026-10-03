@@ -496,6 +496,8 @@ old id, and their versions give both.
   original (the army record follows the battle, a fallen unit at 0), not only at its end.
 - The victory box opens with the event window's chord, which draws from the game's random
   numbers, as in the original.
+- The noon report ends a wait, as an event's message does, and opens with the event
+  window's chord, as in the original; closing it no longer resumes the wait.
 
 ## 0.2.2 — 2026-10-01
 

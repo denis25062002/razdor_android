@@ -433,7 +433,11 @@ What the world needs:
   the clock runs smoothly (`Round(elapsed / WalkDelay × 3000)` centi-minutes). Starting a wait
   drops the route. Each tick starts a new AI tick of 30 minutes.
 - After each tick the events are scanned (the point under the hero counts); an event that
-  fires ends the wait. Community F4 = endless ticks until F5 (0xc277d2, 0xc27802); in that mode
+  fires ends the wait. So does the noon report: the scan opens it in the event window (with
+  the window's chord) and counts it as a fired event (0x4abfbc), so the wait ends there and
+  its stop draws the idle offsets (§2.2.1); closing the report does not resume it. Checked in
+  the running game (rk1-day1 step 42: the four-hour wait stopped at noon an hour in;
+  FINDINGS.md §15). Community F4 = endless ticks until F5 (0xc277d2, 0xc27802); in that mode
   an event's dialog opens without ending the wait (0xc2782b; whether the modal dialog pauses
   the ticks is **unknown**).
 - Event delays use the same ticks: hours × 2.

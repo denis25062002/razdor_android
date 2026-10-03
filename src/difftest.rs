@@ -186,9 +186,8 @@ enum Screen {
     Ended,
 }
 
-/// A dialog waiting to be read: an event's or the victory box, both in the original's event
-/// window, which draws a chord as it opens (0x4d15d0), or the interface's own (the noon
-/// report).
+/// A dialog waiting to be read: an event's, the victory box or the noon report, all in the
+/// original's event window, which draws a chord as it opens (0x4d15d0).
 struct Dialog {
     event: bool,
     question: bool,
@@ -595,7 +594,8 @@ impl<'a> Runner<'a> {
                         self.screen = Screen::Building;
                     }
                 }
-                Event::NewDay(_) => self.dialogs.push_back(Dialog { event: false, question: false, cued: false }),
+                // The noon report is the event window too: it opens with the chord.
+                Event::NewDay(_) => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
                 Event::Script(EventOutcome::Fired { message: true, .. }) => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
                 Event::Script(EventOutcome::Question(_)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false }),
                 _ => {}

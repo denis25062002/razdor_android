@@ -445,3 +445,19 @@ fn rk1_day1_the_victory_box_draws_the_event_windows_chord() {
         assert!(equal.contains(&step), "step {step}: {equal:?}");
     }
 }
+
+/// FINDINGS.md §15: the wait of step 42 reaches noon; the noon report opens in the event
+/// window (its chord) and ends the wait like a fired event (0x4abfbc, 0x4ae42f), so the
+/// stop's idle draws come with it and the `ok` of step 43 closes the report with no more
+/// waiting, as in the original.
+#[test]
+fn rk1_day1_the_noon_report_ends_the_wait() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions, Some(&RK1_DAY1_ORIGINAL_RNG)).unwrap();
+    // The four-hour wait stops at the noon an hour in; the report's OK waits no more.
+    let clock: Vec<u64> = r.states[41..44].iter().map(|s| s.clock).collect();
+    assert_eq!(clock, [624_298_268, 624_298_328, 624_298_328]);
+    let equal = rk1_day1_equal_steps(&dt);
+    assert!(equal.contains(&43), "{equal:?}");
+}
