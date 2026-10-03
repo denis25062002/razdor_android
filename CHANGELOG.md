@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Battle experience at the install's rate:** XP is paid at the `HeroExpirienceModificator` of
+  your `_Global.ini`, as the original does (50 in the Community Update, half the gameplay
+  video's rate Razdor used before).
 - **Random numbers as in the original**: one generator, the original's (the C runtime's
   `rand()`), started at 1 on every new map, so a fresh map's markets and every roll after
   them come out the same each time. It is no longer saved: loading a save starts it the way

@@ -258,9 +258,11 @@ With the shipped values (50, F 100) an award of 48 gives 24. **code** / **data**
 sorceress and the hero show +25, +24, +26. A pool of exactly 75 means the predicted loss
 was 0 and either nothing was lost or the loss rounded away. So that game paid awards at
 ×1.0 (`HeroExpirienceModificator × F × C / 10⁶ = 1`, e.g. modificator 100 with the
-hardest-difficulty option), while the Community Update's `_Global.ini` has 50 and pays half. **Razdor
-plays with 100 whatever the install says** (`content::PLAYER_XP_MODIFICATOR`, the player's
-choice); the rest of the formula is unchanged. Test: `real_fort_battle_pays_the_videos_xp`.
+hardest-difficulty option), while the Community Update's `_Global.ini` has 50 and pays half.
+Razdor first played with 100 whatever the install said (the player's choice of 2026-09-29);
+since 2026-10-04 it **reads the install's value, as the original does** (the diff test showed
+the original paying 16 where Razdor paid 33, tools/difftest FINDINGS §6). Test:
+`real_fort_battle_pays_the_installs_xp_rate`.
 **data**
 
 **AI armies** gain XP only in battles between AI armies (4a4c68). After the simulated

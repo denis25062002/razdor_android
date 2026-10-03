@@ -95,12 +95,11 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 0, "diffs": [["events_done", [1, 2, 3, 4, 5], [1, 2, 3, 4]]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["timing"])
 
-    def test_xp_rate_taints_the_hero_units(self):
-        c = ctx([{"op": "battle_act"}, {"op": "wait", "hours": 4}], [{"step": 0}, {"step": 1}], [{"step": 0}, {"step": 1}])
-        per = known.classify([{"step": 0, "diffs": [["hero.units[0].xp", 33, 16]]},
-                              {"step": 1, "diffs": [["hero.units[0].xp", 33, 16], ["hero.units[1].hp", 50, 49]]}], c)
-        self.assertEqual([e["class"] for e in per[0]], ["known:6"])
-        self.assertEqual([e["class"] for e in per[1]], ["known:6", "downstream:6"])
+    def test_an_xp_difference_is_new(self):
+        # FINDINGS §6 is fixed: Razdor pays the install's rate, so XP must agree again.
+        c = ctx([{"op": "battle_act"}], [{"step": 0}], [{"step": 0}])
+        per = known.classify([{"step": 0, "diffs": [["hero.units[0].xp", 33, 16]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["new"])
 
     def test_paths(self):
         st = {"armies": [{"id": 3, "x": 7}], "battle": {"sides": [[], [{"hp": 5}]]}}

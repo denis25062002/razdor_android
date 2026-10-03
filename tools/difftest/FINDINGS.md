@@ -129,8 +129,9 @@ midnight restock of market 5 (step 16) starts from another state.
 
 ## 6. Battle XP at the video's rate: 33 in Razdor, 16 in the original
 
-**Status: deliberate, not changed** (Razdor's `content::PLAYER_XP_MODIFICATOR`, the user's
-choice of 2026-09-29; experience.md §3 "The video's rate"). `known.py` classes it `known:6`.
+**Status: fixed** (2026-10-04, the user's decision: the original's rate). Razdor had kept the
+gameplay video's rate 100 on purpose (the choice of 2026-09-29); it now reads the install's
+`HeroExpirienceModificator` (50 in the Community Update), as the original does.
 
 - rk1-day1 step 36 (the ruins' battle won): `hero.units[k].xp` Razdor 33, 33, 33, 25;
   original 16, 16, 16, 12.

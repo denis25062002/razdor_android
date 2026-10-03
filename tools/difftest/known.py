@@ -199,10 +199,6 @@ def classify(rows, ctx):
                     isinstance(a, list) and isinstance(b, list) and set(b) <= set(a):
                 cls, why = "timing", (f"event {ctx.event_window(step)} is on screen in the original; the "
                                       "events after it fire when it is closed (FINDINGS 'Not differences')")
-            if cls is None and re.match(r"hero\.units\[\d+\]\.(xp|level)$", p) and \
-                    isinstance(a, int) and isinstance(b, int) and a > b:
-                cls, why = "known:6", "battle XP at the video's rate (HeroExpirienceModificator 100, not 50)"
-                taint.append((r"hero\.units\[", 6))
             if cls is None and p == "rng":
                 e = rng_rule(ctx, step)
                 if e == 5 and taint and any(en == 5 for _, en in taint):
