@@ -59,6 +59,9 @@ pub struct Dialog {
     /// Units that joined / left the army.
     pub joined: Vec<UnitId>,
     pub left: Vec<UnitId>,
+    /// It is shown in the original's event window, which opens with a chord (a draw of the
+    /// game's generator, 0x4d15d0): the events' dialogs and the victory box.
+    pub chord: bool,
     /// Its opening sound has played.
     pub cued: bool,
 }
@@ -76,6 +79,7 @@ impl Dialog {
             picture: None,
             joined: Vec::new(),
             left: Vec::new(),
+            chord: false,
             cued: false,
         }
     }
@@ -121,6 +125,7 @@ impl Dialog {
             return None;
         };
         let mut d = Dialog::new(tr("Victory over the enemy!"));
+        d.chord = true;
         if let Some(l) = captured {
             let loc = &game.world.locations[*l];
             d.text.push(trf!("You have taken {place}. It pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));

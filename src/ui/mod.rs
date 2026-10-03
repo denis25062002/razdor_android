@@ -395,7 +395,7 @@ impl App {
         self.last_gold = gold;
         if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
             d.cued = true;
-            if d.event.is_some() {
+            if d.event.is_some() || d.chord {
                 let k = self.game.as_mut().map_or(0, |g| g.event_chord());
                 audio::cue(Cue::Event(k as u8));
             } else {

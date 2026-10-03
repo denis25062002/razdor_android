@@ -250,6 +250,19 @@ C1003-174927, fourth part: with it the candidate is resolved.
 - After the fix the wait's 509 draws all agree with the original's and every field of the
   step is equal.
 
+## 14. The victory box draws the event window's chord
+
+**Status: fixed** (the replay's and the interface's victory dialog draw it; engine.md §3.4).
+
+- rk1-day1 step 36 (the blow that ends the ruins' battle), step-local: the original draws
+  one `Random(3)` from 0x4d1663 (the return of the event window's chord call at 0x4d165e);
+  Razdor none. The original's screen shows "Победа над врагом!" in the event window (the
+  memory reader's `screen` is "event").
+- The victory box of the player's battle is the event/reward dialog (0x672618, opened by
+  0x4d15d0), which draws its chord as any event's. Razdor drew the chord only for the
+  scenario's events.
+- After the fix steps 36-39 of rk1-day1 are equal step-local.
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

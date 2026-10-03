@@ -433,3 +433,15 @@ fn rk1_day1_the_battle_is_written_back_after_every_action() {
     assert_eq!(hp[..2], [63, 38]);
     assert_eq!(hp, b.sides[0].iter().map(|u| u.hp).collect::<Vec<_>>(), "the record follows the battle");
 }
+
+/// FINDINGS.md §14: the ruins' battle of rk1-day1 is won at step 36; the victory box is the
+/// original's event window, which draws its chord's `Random(3)` as it opens (0x4d165e), so
+/// the step's generator ends as the original's.
+#[test]
+fn rk1_day1_the_victory_box_draws_the_event_windows_chord() {
+    let Some(dt) = install() else { return };
+    let equal = rk1_day1_equal_steps(&dt);
+    for step in [36, 37, 38, 39] {
+        assert!(equal.contains(&step), "step {step}: {equal:?}");
+    }
+}

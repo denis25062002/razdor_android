@@ -494,6 +494,8 @@ old id, and their versions give both.
   lost no unit in the battle it simulates, as in the original.
 - During a battle the armies' units carry their battle HP after every action, as in the
   original (the army record follows the battle, a fallen unit at 0), not only at its end.
+- The victory box opens with the event window's chord, which draws from the game's random
+  numbers, as in the original.
 
 ## 0.2.2 — 2026-10-01
 

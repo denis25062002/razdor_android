@@ -186,8 +186,9 @@ enum Screen {
     Ended,
 }
 
-/// A dialog waiting to be read: an event's (it drew a chord as it opened) or the
-/// interface's own (the noon report, a capture, a victory).
+/// A dialog waiting to be read: an event's or the victory box, both in the original's event
+/// window, which draws a chord as it opens (0x4d15d0), or the interface's own (the noon
+/// report).
 struct Dialog {
     event: bool,
     question: bool,
@@ -578,7 +579,8 @@ impl<'a> Runner<'a> {
         match result {
             BattleResult::Defeat => self.screen = Screen::Ended,
             BattleResult::Victory { .. } if g.won() => self.screen = Screen::Ended,
-            BattleResult::Victory { .. } => self.dialogs.push_back(Dialog { event: false, question: false, cued: false }),
+            // The victory box is the event window: it opens with its chord (0x4d165e).
+            BattleResult::Victory { .. } => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
             BattleResult::Withdrew { .. } => {}
         }
     }
