@@ -162,13 +162,32 @@ icon in its fourth column by the map header byte 0x120: 1 castle, 2 helm, 3 swor
 5 tutorial (pictures `SI_Castle`, `SI_Helm`, `SI_Swords`, `SI_Skull`, `SI_Tutorial`); 0 gives
 no icon. The icons are set on all rows the first time, then again on the old and the new row
 whenever the selection changes. **code** (4c1968, pictures loaded at 4dc118) Start
-copies the chosen map's header, enables each hero class that the map defines, and opens the
-hero window on the last enabled class (4c1804). Back or Esc returns to the main menu. **code**
+copies the chosen map's header and enables each hero class whose preset has a start cell
+(start x or start y non-zero; gold, troops or a start building alone do not count). It walks
+the classes from the ranger down to the knight and opens the hero window on the last one it
+enables, that is the **first** offered class in knight, archmage, ranger order; with none
+offered it returns to the main menu instead (4c1804). Back or Esc returns to the main menu.
+**code**
 
 **Hero choice** (4d7d30, 4c1458). Three class portraits, a name field (default from the
 interface ini), and three text boxes. Choosing a class redraws the portraits, shows the class
 texts and plays a 200 ms highlight animation that starts with `MainMenuPress` (4b2044).
 Cancel or Esc returns to the **main menu**, not to the scenario list. **code** (4c0fd4, 4c8584)
+
+**A class the map does not offer cannot be picked.** Its portrait is drawn with the second
+greyed copy (`65bce4[i]`) and its enabled byte (portrait widget +0xd, `65bc01 + i·0x4b`) is
+0; the frame's hit test (4743c8) never reports a widget whose enabled byte is 0, so the
+press handlers (4c17c0 / 4c17d4 / 4c17ec, the widgets' +0x2f, which call 4c1458 with no check
+of their own) cannot run for it, and hovering it does nothing. The window's frame (4c8584)
+reads no key but Esc; the name field's keys only edit the name. Start (4c1000) does not check
+the class, but the class (`68dccc`) can only have been set by the opening or by a click on an
+enabled portrait, and the next opening resets it. **code**, checked in the running game
+(Устье Трейна, whose archmage preset has no start cell: the window opens on the knight, a
+click on the archmage and the arrow, Tab, Space, digit, Home and End keys leave the pick
+unchanged, the ranger can be picked and starts on his preset's cell). The only way the
+original plays a class a map does not offer is a campaign: the next map keeps the class the
+campaign was started with and never looks at whether that map offers it (saves-data.md
+§10.4, §15).
 
 **Name field** (47a624–47ae5c). A typed character is accepted only if the font has a glyph
 for it (the 150-glyph sheet order) and the text still fits inside the field less its margins;

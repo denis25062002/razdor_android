@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Only the heroes the map offers:** the new-game hero window offers a class only when the
+  map gives it a start cell, greys the others and opens on the first one offered, as the
+  original does (before, any class could be started on any map).
 - **Battle experience at the install's rate:** XP is paid at the `HeroExpirienceModificator` of
   your `_Global.ini`, as the original does (50 in the Community Update, half the gameplay
   video's rate Razdor used before).

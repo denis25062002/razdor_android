@@ -3,6 +3,21 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-03, dt-original: a hero class the map leaves out
+
+1. **A player's report: "on 'Осмотр владений' I started as the Ranger though only the Knight
+   was meant to be playable."** The original does not allow this in a new game: a class is
+   offered only when its preset has a start cell, its portrait is disabled otherwise and takes
+   no click or key, and the window opens on the first offered class (interface.md §5,
+   saves-data.md §10.4; checked under Wine on Устье Трейна, whose archmage is left out).
+   Razdor's hero window let every class be picked on every map; dt-original now offers only
+   what the original offers. The original's real gap is a campaign: the next map keeps the
+   class without checking that the map offers it, and the hero then starts at cell (0,0) of the
+   empty preset. **When dt-feat merges dt-original, treat that as an original bug to fix:
+   offer only the classes the map defines**, and on a campaign's next map that leaves the
+   class out, do not drop the hero at (0,0) (for example, refuse the map in the editor's
+   checks or start him on the first offered class's cell).
+
 ## 2026-10-03, dt-feat with the Community Update install
 
 1. **Windows open on top of each other.** Several windows fire at once and stack, one over the

@@ -313,8 +313,22 @@ from column 0 and the right column from column W−1.
   added, **skipping unit ids 1–3** (the hero types); the three items (bytes 41–43) go into the
   pack; the six spells (bytes 44–49) are learned; gold is set from the low 16 bits of bytes 8–11
   (signed), mana likewise from bytes 12–15; the hero stands exactly at bytes 37/39.
-- A class can be picked on the new-game screen only when its start x or start y is non-zero
-  (0x4c1804).
+- A class is offered on the new-game screen only when its preset's start x or start y is
+  non-zero (0x4c1804); the other bytes of the preset do not matter. The hero window opens on
+  the first offered class (knight, archmage, ranger order), and with none offered it does not
+  open. A class that is not offered cannot be picked at all: its portrait is disabled and the
+  hit test (0x4743c8) skips it, and the window has no keys for the class (interface.md §5).
+  Checked in the running game on Устье Трейна, the one shipped map with a class left out (the
+  archmage; his preset still names start building 26 and a troop).
+- **The one way round it is a campaign.** Loading the next campaign map (0x4b5b64) keeps the
+  class (`0x68dccc`) and runs the load above with it, without looking at whether that map
+  offers the class. With an empty preset the hero then stands exactly at its cell (0,0) (no
+  search for a free cell), the preset's start building (byte 16) is still given if it is not
+  0, gold and mana are set from the empty preset (0) and its troops, items and spells add
+  nothing, then the carry-over flags bring back gold, mana and the army as usual (§15); the
+  buildings flagged for the class (bytes 353–355) are given and the attitudes come from row 0
+  as always. No shipped campaign leaves a class out of a later map, so this needs a
+  user-made campaign; not checked in the running game.
 
 ### 10.5 Armies — code
 For each 89-byte record, in file order, into slot k = index + 1 (offsets are dtm-format.md §7):
