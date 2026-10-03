@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::dt::dtm::Scenario;
 use crate::dt::install::DtInstall;
-use crate::rules::battle::Battle;
+use crate::rules::battle::{Battle, Outcome, Team};
+use crate::rules::formation::{Row, Slot};
 use crate::rules::content::{Content, HeroClass};
 use crate::rules::events::EventOutcome;
 use crate::rules::game::{BattleResult, Event, Game, STEP_SECONDS};
@@ -51,6 +52,15 @@ pub enum Action {
     /// Plays the battle shown to its end by the battle AI on both sides and closes its
     /// result box.
     BattleAuto,
+    /// In battle, a press on the card at `row`, `col` of `side` (1 the player's, 2 the
+    /// enemy's; rows 1 front, 2 back, 3 reserve and columns 1–6 as the original's grid
+    /// numbers them): the action that cell holds for the unit whose turn it is (a strike, a
+    /// shot or a spell on an enemy, a heal or a blessing on a friend, a pass on its own card),
+    /// or a step to an empty own cell. The enemy's turns then play until the player's next.
+    BattleAct { side: u8, row: i32, col: i32 },
+    /// In battle, the space key: what a press on the acting unit's own card does (a pass,
+    /// or a self-cast when its cell holds one).
+    BattlePass,
     /// Nothing: only the state is written.
     Snapshot,
 }
@@ -136,6 +146,34 @@ pub struct State {
     pub armies: Vec<ArmyState>,
     pub buildings: Vec<BuildingState>,
     pub events_done: Vec<i32>,
+    /// The battle on screen, if any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub battle: Option<BattleState>,
+}
+
+/// The battle on screen (schema v1's `battle`), with the original's encodings (the battle
+/// object at 0x668cf8, battle.md): `turn` the battle turn from 1 (+0xd); `actor` the unit
+/// whose turn it is as `[side, row, col]` (side 1 the player's, 2 the enemy's), none once it
+/// is over; `sides[0]` the player's units, `sides[1]` the enemy's, in their record order
+/// (a dead unit's record is removed, the later ones move up).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BattleState {
+    pub turn: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub actor: Option<[i32; 3]>,
+    pub sides: [Vec<BattleUnit>; 2],
+}
+
+/// A unit's record in battle: `type` 1-based (+0x23), `row` 1–3 and `col` 1–6 (+0x75,
+/// +0x79), `hp` its hit points (+0x7d), `actions` the actions it has left this turn (+0x91).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BattleUnit {
+    #[serde(rename = "type")]
+    pub kind: i32,
+    pub row: i32,
+    pub col: i32,
+    pub hp: i32,
+    pub actions: i32,
 }
 
 /// What is on screen.
@@ -206,6 +244,47 @@ impl<'a> Runner<'a> {
         self.game.as_ref()
     }
 
+    /// What the replay left on screen, for a picture of it (`RAZDOR_SCENE=replay`): the game,
+    /// the battle if one is open, and whether a building window is open. The dialogs waiting
+    /// to be read are not handed over.
+    pub fn into_view(self) -> Option<(Game, Option<Box<Battle>>, bool)> {
+        let game = self.game?;
+        Some(match self.screen {
+            Screen::Battle(b) => (game, Some(b), false),
+            Screen::Building => (game, None, true),
+            Screen::Map | Screen::Ended => (game, None, false),
+        })
+    }
+
+    /// Facts outside the schema (for the run log): the battle units' current stats, as the
+    /// original's records hold them, and the building defence of each side.
+    pub fn raw(&self) -> serde_json::Value {
+        use crate::dt::data::Stat;
+        let Screen::Battle(b) = &self.screen else { return serde_json::Value::Null };
+        let side = |team: Team| -> Vec<serde_json::Value> {
+            b.fighters
+                .iter()
+                .filter(|f| f.team == team && f.listed())
+                .map(|f| {
+                    let st = &f.stats;
+                    serde_json::json!({"ab": st[Stat::AttackBlow], "as": st[Stat::AttackShot], "mp": st[Stat::MagicPower],
+                        "db": st[Stat::DefenceBlow], "ds": st[Stat::DefenceShot], "maxhp": f.max_hp(), "manevres": st[Stat::Manevres],
+                        "init": st[Stat::Initiative], "atk_mod": f.mods.attack, "def_mod": f.mods.defence, "init_mod": f.mods.initiative,
+                        "bld_def": b.building_defence(team)})
+                })
+                .collect()
+        };
+        serde_json::json!({"battle_raw": {"sides": [side(Team::Player), side(Team::Enemy)]}})
+    }
+
+    /// Sets the game's generator (the diff test's step-local mode: each step starts from the
+    /// original's state of the step before).
+    pub fn set_rng(&mut self, state: u32) {
+        if let Some(g) = self.game.as_mut() {
+            g.rng = crate::rules::rng::Rng::new(state);
+        }
+    }
+
     fn note(&mut self, s: String) {
         self.notes.push(s);
     }
@@ -232,6 +311,8 @@ impl<'a> Runner<'a> {
             Action::Answer { yes } => self.answer(*yes),
             Action::Ok => self.ok(),
             Action::BattleAuto => self.battle_auto(),
+            Action::BattleAct { side, row, col } => self.battle_act(*side, *row, *col),
+            Action::BattlePass => self.battle_pass(),
             Action::Snapshot => {}
         }
         self.settle();
@@ -385,8 +466,96 @@ impl<'a> Runner<'a> {
             return;
         };
         b.auto_play_to_end();
+        self.finish_battle(&b);
+    }
+
+    /// A press on a battle card (`Action::BattleAct`), as the battle window takes it.
+    fn battle_act(&mut self, side: u8, row: i32, col: i32) {
+        if let Err(e) = self.press_card(side, row, col) {
+            self.note(format!("battle_act {side} {row} {col}: {e}"));
+        }
+        self.battle_play_ai();
+    }
+
+    fn press_card(&mut self, side: u8, row: i32, col: i32) -> Result<(), &'static str> {
+        let Screen::Battle(b) = &mut self.screen else { return Err("no battle") };
+        let active = b.active().filter(|&a| b.fighters[a].team == Team::Player).ok_or("not the player's turn")?;
+        let team = match side {
+            1 => Team::Player,
+            2 => Team::Enemy,
+            _ => return Err("side is 1 or 2"),
+        };
+        let row = match row {
+            1 => Row::Front,
+            2 => Row::Back,
+            3 => Row::Reserve,
+            _ => return Err("row is 1 to 3"),
+        };
+        let slot = Slot::new(row, u8::try_from(col - 1).map_err(|_| "col is 1 to 6")?);
+        let done = match b.at(team, slot) {
+            Some(t) => match b.options(active, t).first() {
+                Some(&kind) => b.act_with(t, kind).is_ok(),
+                None if t == active => {
+                    b.pass();
+                    true
+                }
+                None => false,
+            },
+            None if team == Team::Player => b.move_active(slot).is_ok(),
+            None => false,
+        };
+        if done {
+            Ok(())
+        } else {
+            Err("no action on that card")
+        }
+    }
+
+    /// The space key in battle: the acting unit's own-card action.
+    fn battle_pass(&mut self) {
+        let ok = match &mut self.screen {
+            Screen::Battle(b) if b.active().is_some_and(|a| b.fighters[a].team == Team::Player) => {
+                b.own_cell();
+                true
+            }
+            _ => false,
+        };
+        if !ok {
+            self.note("battle_pass: not the player's turn in a battle".into());
+        }
+        self.battle_play_ai();
+    }
+
+    /// Plays the enemy's turns until the player's next one, or the end of the battle (which
+    /// is then resolved).
+    fn battle_play_ai(&mut self) {
+        let Screen::Battle(b) = &mut self.screen else { return };
+        for _ in 0..10_000 {
+            if b.outcome() != Outcome::Ongoing {
+                break;
+            }
+            match b.active() {
+                Some(a) if b.fighters[a].team == Team::Player => return,
+                Some(_) => {
+                    // A plan that cannot be carried out still ends the unit's turn.
+                    if b.ai_step().is_none() {
+                        b.skip();
+                    }
+                }
+                None => break,
+            }
+        }
+        if b.outcome() == Outcome::Ongoing {
+            return;
+        }
+        let Screen::Battle(b) = std::mem::replace(&mut self.screen, Screen::Map) else { unreachable!() };
+        self.finish_battle(&b);
+    }
+
+    /// The battle's end: its result applied, the result box or the end of the game.
+    fn finish_battle(&mut self, b: &Battle) {
         let g = self.game.as_mut().expect("a game");
-        let result = g.resolve_battle(&b);
+        let result = g.resolve_battle(b);
         let won = matches!(result, BattleResult::Victory { .. });
         // The won battle's result box starts the triumph.
         self.triumph = won;
@@ -469,6 +638,9 @@ impl<'a> Runner<'a> {
                     b.begin();
                     self.screen = Screen::Battle(Box::new(b));
                     self.last_screen_building = false;
+                    // The enemy's first moves, when it opens the battle.
+                    self.battle_play_ai();
+                    continue;
                 }
             }
             if !any && !ticked {
@@ -541,8 +713,33 @@ impl<'a> Runner<'a> {
             (Some(e), Some(s)) => (1..=s.events.len() as u16).filter(|&id| e.times_fired(id) > 0).map(i32::from).collect(),
             _ => Vec::new(),
         };
-        Some(State { step, map: self.map.clone(), clock: g.clock.total_minutes() as u64, rng: g.rng.state(), hero, armies, buildings, events_done })
+        let battle = match &self.screen {
+            Screen::Battle(b) => Some(battle_state(b)),
+            _ => None,
+        };
+        Some(State { step, map: self.map.clone(), clock: g.clock.total_minutes() as u64, rng: g.rng.state(), hero, armies, buildings, events_done, battle })
     }
+}
+
+/// The battle as the state shows it.
+fn battle_state(b: &Battle) -> BattleState {
+    let cell = |s: Slot| (s.row.number(), s.col as i32 + 1);
+    let side = |team: Team| {
+        b.fighters
+            .iter()
+            .filter(|f| f.team == team && f.listed())
+            .map(|f| {
+                let (row, col) = cell(f.slot);
+                BattleUnit { kind: f.unit.0 as i32, row, col, hp: f.hp.max(0), actions: f.actions }
+            })
+            .collect()
+    };
+    let actor = b.active().map(|a| {
+        let f = &b.fighters[a];
+        let (row, col) = cell(f.slot);
+        [if f.team == Team::Player { 1 } else { 2 }, row, col]
+    });
+    BattleState { turn: b.round, actor, sides: [side(Team::Player), side(Team::Enemy)] }
 }
 
 /// A troop's hit points: its maximum less what it lacks, 0 dead.
@@ -563,17 +760,50 @@ pub fn parse_actions(text: &str) -> Result<Vec<Action>, String> {
         .collect()
 }
 
-/// Plays `actions` and returns the state after each one (step = the action's index).
+/// Plays `actions` and returns the state after each one (step = the action's index) and the
+/// notes on what could not be applied (each starts with its step).
 pub fn replay(source: Source<'_>, actions: &[Action]) -> Result<(Vec<State>, Vec<String>), String> {
+    let r = replay_traced(source, actions, None)?;
+    Ok((r.states, r.notes))
+}
+
+/// What a replay gives.
+pub struct Replay {
+    pub states: Vec<State>,
+    /// What could not be applied, each line starting with `step N:`.
+    pub notes: Vec<String>,
+    /// The generator's draws during each step (`draws[i]` for action `i`).
+    pub draws: Vec<Vec<crate::rules::rng::trace::Draw>>,
+    /// Facts outside the schema after each step (the battle units' stats), for the run log.
+    pub raw: Vec<serde_json::Value>,
+}
+
+/// [`replay`] with the generator's draws recorded step by step. With `rng_from`, each
+/// step after the first starts with the generator set to `rng_from[step − 1]` (the
+/// original's states, so that each step is compared from the same draws).
+pub fn replay_traced(source: Source<'_>, actions: &[Action], rng_from: Option<&[u32]>) -> Result<Replay, String> {
+    use crate::rules::rng::trace;
     let mut r = Runner::new(source);
-    let mut out = Vec::new();
+    let mut out = Replay { states: Vec::new(), notes: Vec::new(), draws: Vec::new(), raw: Vec::new() };
+    trace::start();
     for (i, a) in actions.iter().enumerate() {
-        r.apply(a).map_err(|e| format!("action {i}: {e}"))?;
-        if let Some(s) = r.state(i) {
-            out.push(s);
+        if let Some(&state) = i.checked_sub(1).and_then(|k| rng_from?.get(k)) {
+            r.set_rng(state);
         }
+        let applied = r.apply(a).map_err(|e| format!("action {i}: {e}"));
+        out.draws.push(trace::take());
+        if let Err(e) = applied {
+            trace::stop();
+            return Err(e);
+        }
+        out.notes.extend(r.notes.drain(..).map(|n| format!("step {i}: {n}")));
+        if let Some(s) = r.state(i) {
+            out.states.push(s);
+        }
+        out.raw.push(r.raw());
     }
-    Ok((out, r.notes))
+    trace::stop();
+    Ok(out)
 }
 
 /// The command line: `razdor --replay <actions.jsonl> [--map <file> --hero <1|2|3>] [--out
@@ -587,7 +817,7 @@ pub fn cli(args: &[String]) -> Option<i32> {
         eprintln!("--replay needs an action list");
         return Some(2);
     };
-    match run_cli(Path::new(list), value("--map"), value("--hero"), value("--out").map(PathBuf::from)) {
+    match run_cli(Path::new(list), value("--map"), value("--hero"), value("--out").map(PathBuf::from), value("--rng-from").map(PathBuf::from)) {
         Ok(()) => Some(0),
         Err(e) => {
             eprintln!("replay: {e}");
@@ -596,13 +826,36 @@ pub fn cli(args: &[String]) -> Option<i32> {
     }
 }
 
-fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<PathBuf>) -> Result<(), String> {
+/// The `rng` of each line of a state file (`original.jsonl`), by step.
+fn rng_states(path: &Path) -> Result<Vec<u32>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("{}: line {}: {e}", path.display(), i + 1))?;
+        let step = v["step"].as_u64().ok_or_else(|| format!("{}: line {}: no step", path.display(), i + 1))? as usize;
+        let rng = v["rng"].as_u64().ok_or_else(|| format!("{}: line {}: no rng", path.display(), i + 1))? as u32;
+        if step != out.len() {
+            return Err(format!("{}: line {}: step {step}, expected {}", path.display(), i + 1, out.len()));
+        }
+        out.push(rng);
+    }
+    Ok(out)
+}
+
+/// Reads the action list of the command line (`--map` puts a `new_game` first).
+pub fn read_action_list(list: &Path, map: Option<String>, hero: Option<String>) -> Result<Vec<Action>, String> {
     let text = std::fs::read_to_string(list).map_err(|e| format!("{}: {e}", list.display()))?;
     let mut actions = parse_actions(&text)?;
     if let Some(map) = map {
         let hero = hero.as_deref().unwrap_or("1").parse().map_err(|_| "--hero: 1, 2 or 3".to_string())?;
         actions.insert(0, Action::NewGame { map, hero });
     }
+    Ok(actions)
+}
+
+fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<PathBuf>, rng_from: Option<PathBuf>) -> Result<(), String> {
+    let actions = read_action_list(list, map, hero)?;
+    let rng_from = rng_from.as_deref().map(rng_states).transpose()?;
     let needs_install = actions.iter().any(|a| matches!(a, Action::NewGame { map, .. } if map.trim() != "demo"));
     let dt = if needs_install {
         crate::dt::install::load_dotenv();
@@ -612,7 +865,7 @@ fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<P
         None
     };
     let source = dt.as_ref().map_or(Source::Demo, Source::Install);
-    let (states, notes) = replay(source, &actions)?;
+    let Replay { states, notes, draws, raw } = replay_traced(source, &actions, rng_from.as_deref())?;
     for n in &notes {
         eprintln!("note: {n}");
     }
@@ -626,6 +879,16 @@ fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<P
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
             let path = dir.join("razdor.jsonl");
             std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+            // The notes and the generator's draws, step by step, for the differ.
+            let mut extra = String::new();
+            for (i, d) in draws.iter().enumerate() {
+                let list: Vec<_> = d.iter().map(|d| serde_json::json!([d.n, d.before, format!("{}:{}", d.site.file(), d.site.line())])).collect();
+                let step_notes: Vec<&String> = notes.iter().filter(|n| n.starts_with(&format!("step {i}: "))).collect();
+                extra.push_str(&serde_json::json!({ "step": i, "draws": list, "notes": step_notes, "meta": raw.get(i) }).to_string());
+                extra.push('\n');
+            }
+            let path = dir.join("razdor-run.jsonl");
+            std::fs::write(&path, extra).map_err(|e| format!("{}: {e}", path.display()))?;
         }
         None => {
             let mut o = std::io::stdout().lock();

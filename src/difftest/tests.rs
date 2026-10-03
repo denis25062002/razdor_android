@@ -176,3 +176,104 @@ fn rk1_after_load_matches_the_map_file() {
     }
     assert_eq!(s0.rng, ui.state());
 }
+
+#[test]
+fn battle_actions_parse() {
+    let a = parse_actions(
+        r#"{"op":"battle_act","side":2,"row":1,"col":4}
+{"op":"battle_pass"}"#,
+    )
+    .unwrap();
+    assert_eq!(a, vec![Action::BattleAct { side: 2, row: 1, col: 4 }, Action::BattlePass]);
+}
+
+/// The draw trace: each step's draws, stepped from their first state, end on the state the
+/// step leaves; the step-local mode starts each step from the given states.
+#[test]
+fn draws_are_traced_and_the_generator_can_be_synced() {
+    let actions = demo_walk();
+    let r = replay_traced(Source::Demo, &actions, None).unwrap();
+    assert_eq!(r.draws.len(), actions.len());
+    assert!(!r.draws[0].is_empty(), "the load draws (music)");
+    for (i, d) in r.draws.iter().enumerate() {
+        if let Some(first) = d.first() {
+            let mut g = Rng::new(first.before);
+            for x in d {
+                assert_eq!(g.state(), x.before);
+                g.random(x.n);
+            }
+            assert_eq!(g.state(), r.states[i].rng, "step {i}");
+        }
+    }
+    let wanted: Vec<u32> = (0..actions.len() as u32).map(|k| 1000 + k).collect();
+    let synced = replay_traced(Source::Demo, &actions, Some(&wanted)).unwrap();
+    for (i, d) in synced.draws.iter().enumerate().skip(1) {
+        if let Some(first) = d.first() {
+            assert_eq!(first.before, wanted[i - 1], "step {i} starts from the given state");
+        } else {
+            assert_eq!(synced.states[i].rng, wanted[i - 1], "step {i} draws nothing");
+        }
+    }
+}
+
+/// РК1, knight: the walk to the ruins north of the start ends in the garrison's fight; the
+/// battle shows in the state with the original's cell numbers, a press on an enemy card
+/// strikes it, the space key passes, and the levels read as the map file numbers them.
+#[test]
+fn rk1_battle_by_actions() {
+    let Some(dt) = install() else { return };
+    let head = r#"{"op":"new_game","map":"РК1","hero":1}
+{"op":"ok"}
+{"op":"click_map","x":40,"y":32}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"wait","hours":1}
+{"op":"ok"}
+{"op":"click_map","x":38,"y":28}
+{"op":"ok"}
+{"op":"click_map","x":36,"y":23}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":36,"y":23}"#;
+    let mut actions = parse_actions(head).unwrap();
+    let (states, _) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(states[0].hero.units.iter().all(|u| u.level == 0), "level 0 as in the file");
+    let b = states.last().unwrap().battle.clone().expect("the garrison's battle");
+    assert_eq!(b.turn, 1);
+    assert_eq!(b.sides[1].iter().map(|u| u.kind).collect::<Vec<_>>(), [66, 65, 59, 59]);
+    assert!(b.sides.iter().flatten().all(|u| (1..=3).contains(&u.row) && (1..=6).contains(&u.col)));
+    let actor = b.actor.expect("the player's turn");
+    assert_eq!(actor[0], 1);
+    let acting = |b: &BattleState| b.actor.and_then(|a| b.sides[0].iter().find(|u| [1, u.row, u.col] == a).cloned()).unwrap();
+    let before = acting(&b).actions;
+
+    // The space key: one action of the acting unit.
+    actions.push(Action::BattlePass);
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(notes.iter().all(|n| !n.contains("battle")), "{notes:?}");
+    let b1 = states.last().unwrap().battle.clone().unwrap();
+    if b1.actor == b.actor {
+        assert_eq!(acting(&b1).actions, before - 1);
+    }
+
+    // The novice has no action on an unhurt enemy: she passes her second action too.
+    actions.push(Action::BattlePass);
+    let (states, _) = replay(Source::Install(&dt), &actions).unwrap();
+    let b1 = states.last().unwrap().battle.clone().unwrap();
+
+    // Presses on the enemy's cards until one strikes: an enemy loses hit points.
+    let hp = |b: &BattleState| b.sides[1].iter().map(|u| u.hp).sum::<i32>();
+    let mut struck = false;
+    for u in &b1.sides[1] {
+        let mut a = actions.clone();
+        a.push(Action::BattleAct { side: 2, row: u.row, col: u.col });
+        let (states, notes) = replay(Source::Install(&dt), &a).unwrap();
+        if notes.iter().any(|n| n.starts_with(&format!("step {}:", a.len() - 1))) {
+            continue;
+        }
+        let after = states.last().unwrap();
+        struck = after.battle.as_ref().is_none_or(|b2| hp(b2) < hp(&b1));
+        break;
+    }
+    assert!(struck, "some enemy card takes a strike");
+}
