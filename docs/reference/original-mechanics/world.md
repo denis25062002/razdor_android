@@ -313,7 +313,10 @@ Checked for the cell he is about to enter, before he moves (§2.2):
    garrison record: an empty garrison means the building is **captured** (owner = player,
    the hero's faction and attitudes copied); otherwise the garrison is engaged. An unguarded
    **village is captured** by stepping on any of its cells — also when the route only passes
-   through it.
+   through it. A capture on the way opens no window and does not stop the walk: the owner,
+   attitude and faction are set and the step goes on (0x4ad94c; checked in the running game
+   with the diff test, FINDINGS.md §8). The building's own window opens only if the walk ends
+   in it (§7.2).
 4. No engagement and the hero is at sea: if the cell is land, or a building other than a
    bridge, the route is cut so that he walks onto that cell and stops; he leaves the sea and
    the ship is parked on the water cell he leaves (§8). Bug, code: the "is it land" test reads
@@ -574,7 +577,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Stationary guards' clock | skipped (no bank) | skipped | Matches |
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
 | Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
-| Village crossed on the way | an unguarded village stepped on is his | an unguarded village is captured when crossed | Matches |
+| Village crossed on the way | an unguarded village (or an empty castle, fort or ruins) stepped on is his, with no window; the walk goes on | captured when crossed, no window, the walk goes on | Matches (Razdor showed a capture window that stopped the walk until 2026-10-03) |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
 | Friendly meeting | talk counter per army: +1 per step off his cell, + relation + 1 per step wherever he is (relation ≥ 0), greets above 0, then −500; the events run, and only one that fires stops the walk; the last army in order acts | talk counters, −500 after each meeting, grow per AI step; walk stops only if an event fires | Matches |
 | Sight radii | 9/8/10 cells | same | none |

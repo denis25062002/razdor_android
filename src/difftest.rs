@@ -590,7 +590,7 @@ impl<'a> Runner<'a> {
                         self.screen = Screen::Building;
                     }
                 }
-                Event::NewDay(_) | Event::Captured(_) => self.dialogs.push_back(Dialog { event: false, question: false, cued: false }),
+                Event::NewDay(_) => self.dialogs.push_back(Dialog { event: false, question: false, cued: false }),
                 Event::Script(EventOutcome::Fired { message: true, .. }) => self.dialogs.push_back(Dialog { event: true, question: false, cued: false }),
                 Event::Script(EventOutcome::Question(_)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false }),
                 _ => {}

@@ -125,6 +125,23 @@ midnight restock of market 5 (step 16) starts from another state.
   the following step, else the rest of the window); it and ai.md §2 do not say that the step
   clock makes at most one arrival per call and frame and drops the rest of the frame's time.
 
+## 8. A village crossed on the way stopped Razdor's walk
+
+**Status: fixed** (the capture window removed: `ui/world_view.rs`, `difftest.rs`; world.md
+§4.2). Candidate C1003-173909.
+
+- ДС1, step 5 (`click_map 96 18`), step-local: Razdor's hero stops at (95,15) after 98
+  minutes, the original's walks on to (96,18) (151 minutes) and enters the village (offer
+  rolls, the window's chord, the idle draws).
+- (95,15) is a cell of that village. Stepping on an unguarded village takes it (0x4ad94c:
+  owner, attitude and faction set) and the step goes on; no window opens. A Frida trace of
+  the hero's cell (0x497c68) and his step check (0x4ad94c, which returned 0 at every step)
+  shows the walk through (95,15), (96,16), (96,17) to (96,18) with no stop. Razdor showed
+  its own "a new stronghold" window for every capture on the way, and the window held the
+  walk (in the game and in the replay).
+- After the fix the step's 66 draws all agree with the original's; left is the village's
+  tribute, which the original pays when its window closes (window timing, README).
+
 ## Not differences
 
 - **Events done** and **event results while the window is up**: the original counts an event

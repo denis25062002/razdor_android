@@ -358,3 +358,23 @@ fn rk1_day1_arrivals_come_in_the_order_of_their_times() {
         assert!(equal.contains(&step), "step {step}: {equal:?}");
     }
 }
+
+/// FINDINGS.md §8 (candidate C1003-173909): on ДС1 the walk to the village at (96,18) crosses
+/// its cell (95,15); the village is taken on the way without a window and the walk goes on
+/// (0x4ad94c), so he reaches the village after 150 minutes, as in the original, and enters it.
+#[test]
+fn ds1_a_village_crossed_on_the_way_does_not_stop_the_walk() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":96,"y":18}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[5];
+    assert_eq!((s.hero.x, s.hero.y, s.clock), (96, 18, 151), "{notes:?}");
+}

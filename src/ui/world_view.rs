@@ -1032,8 +1032,9 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
                 }
             }
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
-            Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
-            Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } | Event::SpellCast { .. } => {}
+            // A building taken on the way opens no window and does not stop the walk
+            // (0x4ad94c); the village's own window opens when he ends his walk in it.
+            Event::Captured(_) | Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } | Event::SpellCast { .. } => {}
             Event::LevelUp(..) => cue(Cue::Upgrade),
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }

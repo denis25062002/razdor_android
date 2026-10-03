@@ -115,15 +115,6 @@ impl Dialog {
         d
     }
 
-    /// A castle or fort taken without a fight.
-    pub fn captured(game: &Game, l: usize) -> Dialog {
-        let loc = &game.world.locations[l];
-        let mut d = Dialog::new(tr("A new stronghold"));
-        d.text.push(trf!("Nobody defends {place}. You take it: it pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));
-        d.resources.push((Resource::Income, trf!("Income + {n}", n = game.daily_income())));
-        d
-    }
-
     /// The window after a won battle: gold and mana taken, a captured building, the loot.
     pub fn victory(game: &Game, result: &BattleResult) -> Option<Dialog> {
         let BattleResult::Victory { reward, mana, lost, loot, left_behind, level_ups, captured } = result else {

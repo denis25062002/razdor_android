@@ -478,6 +478,8 @@ old id, and their versions give both.
   it, and their arrivals, with the wander points and plans they draw, come in the order of
   their times, not army by army; a midnight inside a wait tick comes between them at its
   moment, and a hero's step is one tick however long.
+- A village (or an empty castle, fort or ruins) taken on the way opens no window and does
+  not stop the walk, as in the original; its window opens only when the walk ends in it.
 
 ## 0.2.2 — 2026-10-01
 
