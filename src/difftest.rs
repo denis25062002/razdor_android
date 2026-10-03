@@ -31,6 +31,7 @@ use crate::rules::content::{Content, HeroClass};
 use crate::rules::events::EventOutcome;
 use crate::rules::game::{BattleResult, Event, Foe, Game, STEP_SECONDS};
 use crate::rules::script::ScriptEnd;
+use crate::rules::town::Tab;
 use crate::rules::world::{Army, LocationKind, Owner, Troop};
 
 /// One action of the list (action list v1).
@@ -354,10 +355,15 @@ pub struct Runner<'a> {
     /// The sounds, tracks and animations the interface would play (`crate::av`), at the
     /// points where `ui` cues them.
     pub av: AvLog,
-    /// The gold at the last look: a rise plays `Item-Gold` (`App::sounds`).
-    last_gold: Option<i32>,
-    /// Places an event showed, flown to once no dialog is open (`world_view`).
-    shows: Vec<crate::rules::map::Tile>,
+    /// The building window's tab, while one is open (`ui::building_view`).
+    tab: Option<Tab>,
+    /// Its market shows the sell list (the pack) rather than the goods.
+    selling: bool,
+    /// The open village window took the tribute: its close plays `Item-Gold` (0x4c604a).
+    tribute_due: bool,
+    /// Places an event showed, with that event: flown to once its window is closed
+    /// (`world_view`).
+    shows: Vec<(Option<u16>, crate::rules::map::Tile)>,
 }
 
 /// Safety stop for a walk or a wait that does not end.
@@ -379,7 +385,9 @@ impl<'a> Runner<'a> {
             ui_draws: 0,
             notes: Vec::new(),
             av: AvLog::default(),
-            last_gold: None,
+            tab: None,
+            selling: false,
+            tribute_due: false,
             shows: Vec::new(),
         }
     }
@@ -520,11 +528,19 @@ impl<'a> Runner<'a> {
             }
         };
         game.set_hero_name("");
-        // The way there with the mouse (`main_menu`, `new_game`): New game, the scenario's
-        // row, Next, the class portrait, Start.
-        for key in ["MainMenuPress", "InterfaceButtonDown", "MainMenuPress", "InterfaceButtonDown", "MainMenuPress"] {
-            self.av.sfx(key);
+        // The way there with the mouse (`main_menu`, `new_game`): the bell as the pointer
+        // comes onto New game and its press, the scenario's row (silent), Next, the class
+        // portrait when it changes the class (the knight is picked to begin with), Start.
+        self.av.sfx("MainMenuSelect-1");
+        self.av.sfx("MainMenuPress");
+        self.av.sfx("InterfaceButtonDown");
+        if class != HeroClass::Knight {
+            self.av.sfx("MainMenuPress");
         }
+        self.av.sfx("InterfaceButtonDown");
+        // The fog opens around the hero (0x4af83c).
+        let at = game.tile();
+        self.av.anim("reveal", Some(format!("{},{}", at.0, at.1)));
         self.game = Some(game);
         self.screen = Screen::Map;
         self.last_screen_building = false;
@@ -532,7 +548,8 @@ impl<'a> Runner<'a> {
         self.triumph = false;
         self.music_pick = crate::rules::music::WORLD_THEME;
         self.ui_draws = 0;
-        self.last_gold = None;
+        self.tab = None;
+        self.tribute_due = false;
         self.shows.clear();
         self.settle();
         Ok(())
@@ -547,12 +564,60 @@ impl<'a> Runner<'a> {
         self.dialogs.is_empty() && matches!(self.screen, Screen::Map)
     }
 
+    /// Closes the building window (Esc, or the harness's `ok`): the building window's close
+    /// is silent; the village and shipyard windows close with the button sound, and a
+    /// village whose tribute was taken plays `Item-Gold` (0x4c604a).
     fn close_building(&mut self) {
         if matches!(self.screen, Screen::Building) && self.dialogs.is_empty() {
+            if self.chord_window() {
+                self.av.sfx("InterfaceButtonDown");
+                if std::mem::take(&mut self.tribute_due) {
+                    self.av.sfx("Item-Gold");
+                }
+            }
             self.screen = Screen::Map;
             // Closed now: opening it again (a click on the building he stands in) is a new
             // window, with its chord.
             self.last_screen_building = false;
+            self.tab = None;
+        }
+    }
+
+    /// The building he stands in opens the village or shipyard window (with a chord), not
+    /// the building window.
+    fn chord_window(&self) -> bool {
+        let g = self.game.as_ref().expect("a game");
+        g.location.is_some_and(|l| matches!(g.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard))
+    }
+
+    /// Switches the building window to `want` as the harness does (`original.py open_tab`):
+    /// the tab buttons pressed from the top until it shows; each press on another tab than
+    /// the one shown plays `InterfaceCastSpell` (interface.md §9.8).
+    fn open_tab(&mut self, want: Tab) {
+        let tabs = self.g().tabs_here();
+        if !tabs.contains(&want) {
+            return;
+        }
+        for t in tabs {
+            if self.tab == Some(want) {
+                break;
+            }
+            if self.tab != Some(t) {
+                self.av.sfx("InterfaceCastSpell");
+                self.tab = Some(t);
+                if t == Tab::Market {
+                    // The market opens on the goods when it has some.
+                    self.selling = self.g().market_here().is_none_or(|g| g.is_empty());
+                }
+            }
+        }
+    }
+
+    /// The market's list switch, pressed when the other list is shown.
+    fn market_list(&mut self, sell: bool) {
+        if self.selling != sell {
+            self.av.sfx("InterfaceButtonDown");
+            self.selling = sell;
         }
     }
 
@@ -597,6 +662,8 @@ impl<'a> Runner<'a> {
             self.note(format!("wait {hours}: the map takes no input now"));
             return;
         }
+        // The wait button's press (`world_view`: the keys and the time panel).
+        self.av.sfx("InterfaceButtonDown");
         self.g().begin_wait(hours);
         self.av.anim("wait", Some(hours.to_string()));
     }
@@ -632,7 +699,7 @@ impl<'a> Runner<'a> {
                 self.close_dialog();
                 self.enter_waiting();
             }
-            None if matches!(self.screen, Screen::Building) => self.screen = Screen::Map,
+            None if matches!(self.screen, Screen::Building) => self.close_building(),
             None => self.note("ok: nothing to close".into()),
         }
     }
@@ -649,8 +716,11 @@ impl<'a> Runner<'a> {
                 // Yes: the offer's results, the village emptied, no window (0x4ab966).
                 g.accept_offer();
             } else {
-                // No: the village is entered again with no offer (0x4c2378): its window.
-                g.decline_offer();
+                // No: the village is entered again with no offer (0x4c2378): its window,
+                // the tribute taken.
+                if g.decline_offer().is_some() {
+                    self.tribute_due = true;
+                }
                 self.screen = Screen::Building;
             }
             self.enter_waiting();
@@ -675,12 +745,11 @@ impl<'a> Runner<'a> {
         if !self.in_building("buy") {
             return;
         }
+        self.open_tab(Tab::Market);
+        self.market_list(false);
         match self.g().buy(slot) {
-            Ok(item) => {
-                let kind = self.g().content.item(item).kind;
-                self.av.sfx("InterfaceButtonDown");
-                self.av.sfx(av::item_sound(kind));
-            }
+            // The trade button (`building_view::market`).
+            Ok(_) => self.av.sfx("Item-Gold"),
             Err(e) => self.note(format!("buy {slot}: {e:?}")),
         }
     }
@@ -694,13 +763,15 @@ impl<'a> Runner<'a> {
         if !self.in_building("sell") {
             return;
         }
+        self.open_tab(Tab::Market);
+        self.market_list(true);
         let g = self.g();
         let r = match Self::sell_row(g, slot) {
             Some(k) => g.sell(k).map(|_| ()).map_err(|e| format!("{e:?}")),
             None => Err("no such row".into()),
         };
         match r {
-            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            Ok(()) => self.av.sfx("Item-Gold"),
             Err(e) => self.note(format!("sell {slot}: {e}")),
         }
     }
@@ -709,6 +780,7 @@ impl<'a> Runner<'a> {
         if !self.in_building("hire") {
             return;
         }
+        self.open_tab(Tab::Barracks);
         let g = self.g();
         let kind = g.location.and_then(|l| g.world.locations[l].recruits.iter().find(|r| r.slot as usize == slot).map(|r| r.unit));
         let r = match kind {
@@ -716,8 +788,14 @@ impl<'a> Runner<'a> {
             None => Err("no such barracks slot".into()),
         };
         match r {
-            // The hire pill (`chrome::pill_button`).
-            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            // The hire pill (`building_view::barracks`): the gold sound of its two call
+            // sites, then the new card slides into the army with `Card-Move` (0x4b0c04).
+            Ok(()) => {
+                self.av.sfx("Item-Gold");
+                self.av.sfx("Item-Gold");
+                self.av.anim("army_slot_slide", None);
+                self.av.sfx("Card-Move");
+            }
             Err(e) => self.note(format!("hire {slot}: {e}")),
         }
     }
@@ -727,11 +805,15 @@ impl<'a> Runner<'a> {
         if !self.in_building(op) {
             return;
         }
+        self.open_tab(Tab::Barracks);
         let g = self.g();
         let r = if raise { g.resurrect(unit) } else { g.heal(unit) };
         match r {
             Ok(events) => {
-                self.av.sfx("InterfaceButtonDown");
+                // The gold sound of the button, then the cure on the card (0x4b11cc).
+                self.av.sfx("Item-Gold");
+                self.av.anim("unit_action", None);
+                self.av.sfx("Battle-Cure");
                 self.handle(events);
             }
             Err(e) => self.note(format!("{op} {unit}: {e:?}")),
@@ -742,6 +824,7 @@ impl<'a> Runner<'a> {
         if !self.in_building("learn") {
             return;
         }
+        self.open_tab(Tab::Sanctuary);
         let g = self.g();
         let id = g.spells_here().get(slot).map(|s| s.id);
         let r = match id {
@@ -749,7 +832,7 @@ impl<'a> Runner<'a> {
             None => Err("no such row".into()),
         };
         match r {
-            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            Ok(()) => self.av.sfx("Item-Gold"),
             Err(e) => self.note(format!("learn {slot}: {e}")),
         }
     }
@@ -759,8 +842,7 @@ impl<'a> Runner<'a> {
     fn map_window(&mut self, op: &str) -> bool {
         self.close_building();
         if self.map_idle() && self.game.as_ref().is_some_and(|g| g.foe.is_none()) {
-            // The bar's button (`game_bar`), then the window opens (`App::sounds`).
-            self.av.sfx("InterfaceButtonDown");
+            // The bar's panel icon (`game_bar`); the window opens silent.
             self.av.sfx("InterfacePanelDown");
             return true;
         }
@@ -792,14 +874,22 @@ impl<'a> Runner<'a> {
         match g.begin_cast(spell.id, target) {
             Ok(outcome) => {
                 self.av.sfx("InterfaceCastSpell");
-                match outcome {
-                    // A spell that lands at once (no reading) plays its landing now.
-                    Some(crate::rules::magic::CastOutcome::Done { .. }) => {
-                        self.av.sfx(if matches!(target, CastTarget::Own) { "Spell-Good" } else { "Spell-Evil" })
-                    }
+                // The camera goes to the target army (the hero's own for a spell on it) before
+                // the reading, or after it for an enemy (0x4c2e34, 0x4cc148: 0x4afa98).
+                let own = matches!(target, CastTarget::Own);
+                if own {
+                    self.av.anim("look_at_army", None);
+                }
+                if outcome.is_none() {
                     // The hero reads on the map, the clock running as in a wait.
-                    None => self.av.anim("wait", Some("cast".into())),
-                    Some(_) => {}
+                    self.av.anim("wait", Some("cast".into()));
+                }
+                if !own {
+                    self.av.anim("look_at_army", None);
+                }
+                // A spell that lands at once (no reading) plays its landing now.
+                if let Some(o) = outcome {
+                    log_landing(&mut self.av, target, o);
                 }
             }
             Err(e) => self.note(format!("cast {slot}: {e:?}")),
@@ -812,8 +902,10 @@ impl<'a> Runner<'a> {
         }
         let kind = self.game.as_ref().and_then(|g| g.pack.get(slot).map(|&i| g.content.item(i).kind));
         match self.g().equip(unit, slot) {
+            // Its sound as it is taken from the pack, and again as it is worn.
             Ok(()) => {
                 if let Some(kind) = kind {
+                    self.av.sfx(av::item_sound(kind));
                     self.av.sfx(av::item_sound(kind));
                 }
             }
@@ -927,6 +1019,7 @@ impl<'a> Runner<'a> {
                 },
                 None if t == active => {
                     b.pass();
+                    self.av.anim("battle_pass", None);
                     true
                 }
                 None => false,
@@ -952,8 +1045,9 @@ impl<'a> Runner<'a> {
         let ok = match &mut self.screen {
             Screen::Battle(b) if b.active().is_some_and(|a| b.fighters[a].team == Team::Player) => {
                 let actor = b.active().expect("an actor");
-                if let Some(hit) = b.own_cell() {
-                    log_hit(&mut self.av, b, actor, &hit);
+                match b.own_cell() {
+                    Some(hit) => log_hit(&mut self.av, b, actor, &hit),
+                    None => self.av.anim("battle_pass", None),
                 }
                 true
             }
@@ -1002,21 +1096,18 @@ impl<'a> Runner<'a> {
         let g = self.game.as_mut().expect("a game");
         let result = g.resolve_battle(b);
         let won = matches!(result, BattleResult::Victory { .. });
-        // The won battle's result box starts the triumph; its OK resolves the battle, a level
-        // gained plays `Unit-Upgrade` (`battle_view::result_overlay`); a defeat plays its piece.
+        // A win holds the battle screen 2.5 s with the experience on the cards, the triumph
+        // starting at once, then the report follows (`battle_view`, 0x4c56a8); a level
+        // gained has no sound there (`Unit-Upgrade` is the promotion screen's). A defeat
+        // plays its piece; a battle nobody won shows Razdor's result box and its OK.
         self.triumph = won;
-        if won {
-            self.av.music(av::TRIUMPH);
-        }
-        if matches!(result, BattleResult::Defeat) {
-            self.av.music(av::DEFEAT);
-        } else {
-            self.av.sfx("InterfaceButtonDown");
-        }
-        if let BattleResult::Victory { level_ups, .. } = &result {
-            if !level_ups.is_empty() {
-                self.av.sfx("Unit-Upgrade");
+        match result {
+            BattleResult::Victory { .. } => {
+                self.av.anim("battle_end_hold", Some(format!("{}ms", av::BATTLE_END_HOLD_MS)));
+                self.av.music(av::TRIUMPH);
             }
+            BattleResult::Defeat => self.av.music(av::DEFEAT),
+            BattleResult::Withdrew { .. } => self.av.sfx("InterfaceButtonDown"),
         }
         match result {
             BattleResult::Defeat => self.screen = Screen::Ended,
@@ -1040,15 +1131,14 @@ impl<'a> Runner<'a> {
                         self.screen = Screen::Building;
                     }
                 }
+                Event::Tribute { .. } => self.tribute_due = true,
                 // The noon report is the event window too: it opens with the chord.
                 Event::NewDay(_) => self.dialogs.push_back(Dialog::message()),
                 Event::Script(EventOutcome::Fired { message: true, event }) => self.dialogs.push_back(Dialog { id: Some(event), ..Dialog::message() }),
                 Event::Script(EventOutcome::Question(event)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: false, id: Some(event) }),
-                // `world_view::handle_events`: a level gained; a spell read to its end lands.
-                Event::LevelUp(..) => self.av.sfx("Unit-Upgrade"),
-                Event::SpellCast { target, outcome: crate::rules::magic::CastOutcome::Done { .. }, .. } => {
-                    self.av.sfx(if matches!(target, crate::rules::magic::CastTarget::Own) { "Spell-Good" } else { "Spell-Evil" })
-                }
+                // `world_view::handle_events`: a spell read to its end lands (a level gained
+                // from an event is silent: `Unit-Upgrade` is the promotion screen's).
+                Event::SpellCast { target, outcome, .. } => log_landing(&mut self.av, target, outcome),
                 _ => {}
             }
         }
@@ -1066,15 +1156,16 @@ impl<'a> Runner<'a> {
                 self.ui_draws += 1;
                 self.av.sfx(av::chord(k as u32));
             } else {
-                self.av.sfx("InterfacePanelDown");
+                // The building window opens on its first tab, highlighted (interface.md §14).
+                self.av.sfx("InterfaceCastSpell");
             }
+            self.tab = g.location.and_then(|l| crate::rules::town::first_tab(&g.world.locations[l], &g.content));
+            self.selling = false;
+        }
+        if !building && self.last_screen_building {
+            self.tab = None;
         }
         self.last_screen_building = building;
-        // Gold that came in (`App::sounds`).
-        if self.last_gold.is_some_and(|before| g.gold > before) {
-            self.av.sfx("Item-Gold");
-        }
-        self.last_gold = Some(g.gold);
         if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
             d.cued = true;
             if d.event {
@@ -1087,20 +1178,33 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// The places an event showed: once no dialog is open (the windows of the same moment
-    /// included) the camera flies to each and its uncovered cells fade in; after the last one
-    /// it flies back to the hero (`world_view`).
+    /// The places an event showed: once that event's window is closed (before the next
+    /// window opens) the camera flies to each and its uncovered cells fade in; after the
+    /// event's last one it flies back to the hero (`world_view`, 0x4af96c, 0x4af83c).
     fn fly_to_shown(&mut self) {
-        if !self.dialogs.is_empty() || self.shows.is_empty() {
-            return;
+        while let Some(&(event, _)) = self.shows.first() {
+            if !self.free_to_show(event) {
+                return;
+            }
+            let k = self.shows.iter().take_while(|s| s.0 == event).count();
+            for (_, at) in self.shows.drain(..k).collect::<Vec<_>>() {
+                let at = Some(format!("{},{}", at.0, at.1));
+                self.av.anim("camera_glide", at.clone());
+                self.av.anim("reveal", at);
+            }
+            let hero = self.g().tile();
+            self.av.anim("camera_glide", Some(format!("{},{}", hero.0, hero.1)));
         }
-        for at in std::mem::take(&mut self.shows) {
-            let at = Some(format!("{},{}", at.0, at.1));
-            self.av.anim("camera_glide", at.clone());
-            self.av.anim("reveal", at);
+    }
+
+    /// The places of `event` may be shown: its window is closed (a place shown with no
+    /// window waits for the windows before it).
+    fn free_to_show(&self, event: Option<u16>) -> bool {
+        match event {
+            Some(id) if self.dialogs.iter().any(|d| d.id == Some(id)) => false,
+            Some(_) => true,
+            None => self.dialogs.is_empty(),
         }
-        let hero = self.g().tile();
-        self.av.anim("camera_glide", Some(format!("{},{}", hero.0, hero.1)));
     }
 
     /// Plays on until the game waits for input: events are handled, windows open, a pending
@@ -1112,7 +1216,7 @@ impl<'a> Runner<'a> {
             }
             let g = self.game.as_mut().expect("a game");
             // What the interface takes and has no place here.
-            self.shows.extend(std::mem::take(&mut g.shown).into_iter().map(|s| s.at));
+            self.shows.extend(std::mem::take(&mut g.shown).into_iter().map(|s| (s.event, s.at)));
             g.autosave_due = None;
             // A map start or a load starts the world theme (`App::sounds`).
             if g.take_music_wait().is_some() {
@@ -1125,8 +1229,9 @@ impl<'a> Runner<'a> {
             }
             let any = !events.is_empty();
             self.handle(events);
-            self.cue();
+            // The flights of a closed window's event come before the next window opens.
             self.fly_to_shown();
+            self.cue();
             // The stop's snap, after the chords of the windows it opened (0x4ad8a0).
             self.g().armies_snap();
             let g = self.game.as_mut().expect("a game");
@@ -1235,11 +1340,34 @@ impl<'a> Runner<'a> {
 /// The battle as the state shows it.
 /// A battle action as the battle window animates and sounds it (`battle_view`): the actor
 /// lunges at the target (Razdor's stand-in for the original's slide, logged under its name),
-/// the target shows the action's effect, its sound plays. A counterblow shows only its number.
+/// the target shows the action's effect, its sound plays. A counterblow or a preventive
+/// strike adds the target's lunge back and the same effect and sound on the actor; a
+/// `DeathCurse` death of the killer the sorcery effect on it ([`av::echo`]).
 fn log_hit(log: &mut AvLog, b: &Battle, actor: usize, hit: &crate::rules::battle::Hit) {
     log.sfx(BattleSound::of(b, actor, hit.kind).key());
     log.anim("battle_slide", Some(av::card(b, actor)));
     log.anim(format!("battle_effect:{}", av::battle_effect(hit.kind)), Some(av::card(b, hit.target)));
+    match av::echo(b, actor, hit) {
+        Some(av::Echo::Counter) => {
+            log.sfx(BattleSound::of(b, actor, hit.kind).key());
+            log.anim("battle_slide", Some(av::card(b, hit.target)));
+            log.anim(format!("battle_effect:{}", av::battle_effect(hit.kind)), Some(av::card(b, actor)));
+        }
+        Some(av::Echo::Curse) => {
+            log.sfx(BattleSound::Sorcery.key());
+            log.anim("battle_effect:magic", Some(av::card(b, actor)));
+        }
+        None => {}
+    }
+}
+
+/// A world spell lands (0x4af2f8): its effect on the army, and the good or evil sound when
+/// it took effect.
+fn log_landing(log: &mut AvLog, target: crate::rules::magic::CastTarget, outcome: crate::rules::magic::CastOutcome) {
+    if matches!(outcome, crate::rules::magic::CastOutcome::Done { .. }) {
+        log.anim("world_spell", None);
+        log.sfx(if matches!(target, crate::rules::magic::CastTarget::Own) { "Spell-Good" } else { "Spell-Evil" });
+    }
 }
 
 /// A step to another cell: the card slides there with `Card-Move`.

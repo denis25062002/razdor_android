@@ -434,6 +434,38 @@ fn cursed_lake_the_village_offer_rolls_as_it_opens() {
     assert_eq!((states[2].rng, states[3].rng), (3_728_805_967, 3_728_805_967), "{notes:?}");
 }
 
+/// FINDINGS.md §18 (candidate C1004-003724): an army arriving at the very end of the hero's
+/// step plans with him on his new cell, facing the step he took. On ДС1 army 5 then stands
+/// (the cell ahead of him is its own, erased), so the meeting's stop draws seven idle offsets,
+/// not eight: the original's generator after the walk.
+#[test]
+fn ds1_an_army_at_the_end_of_his_step_sees_him_arrived() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":97,"y":7}
+{"op":"ok"}
+{"op":"click_map","x":96,"y":18}
+{"op":"ok"}
+{"op":"wait","hours":4}
+{"op":"wait","hours":1}
+{"op":"wait","hours":4}
+{"op":"click_map","x":87,"y":19}
+{"op":"ok"}
+{"op":"wait","hours":1}
+{"op":"click_map","x":83,"y":27}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[15];
+    assert_eq!((s.hero.x, s.hero.y, s.clock), (85, 23, 1118), "{notes:?}");
+    assert_eq!(s.rng, 1_491_519_599);
+}
+
 /// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
 /// moves 28 AI armies through 509 draws. With the first step in place priced south of each
 /// army (§10), the simulated battles counted in side strengths (§11) from the strengths of
@@ -647,7 +679,24 @@ fn rk1_day1_the_av_log_follows_the_original_where_razdor_plays_the_same() {
         }).collect()
     };
     use crate::av::AvKind::{Anim, Music, Sfx};
+    // The menu's hover bell and presses (the knight is picked to begin with), the fog
+    // opening around the hero.
+    assert_eq!(names(0, Sfx)[..4], ["MainMenuSelect-1", "MainMenuPress", "InterfaceButtonDown", "InterfaceButtonDown"]);
+    assert_eq!(names(0, Anim), ["reveal"]);
     assert_eq!(names(0, Music), ["BkgMap2"]);
+    // The village's tribute sounds as its window closes, not as it opens.
+    assert_eq!(names(3, Sfx), ["InterfaceButtonDown", "Global-Event-1"]);
+    assert_eq!(names(4, Sfx), ["InterfaceButtonDown", "Item-Gold"]);
+    // The wait button; a pass's pause; the counterblow's slide back and effect.
+    assert_eq!(names(12, Sfx), ["InterfaceButtonDown"]);
+    assert_eq!(names(20, Anim), ["battle_pass"]);
+    assert_eq!(names(30, Sfx), ["Battle-Fight", "Battle-Fight"]);
+    assert_eq!(names(30, Anim), ["battle_slide@1:1:3", "battle_effect:melee@2:1:2", "battle_slide@2:1:2", "battle_effect:melee@1:1:3"]);
+    // The won battle's hold, no result box to press.
+    assert_eq!(names(36, Anim).last().map(String::as_str), Some("battle_end_hold@2500ms"));
+    assert!(!names(36, Sfx).contains(&"InterfaceButtonDown".to_string()));
+    // Midnight's income plays nothing.
+    assert!(!names(42, Sfx).contains(&"Item-Gold".to_string()));
     assert_eq!(names(2, Sfx), ["Global-Event-3"]);
     assert_eq!(names(10, Sfx), ["InterfaceButtonDown", "Global-Event-2"]);
     assert_eq!(names(18, Sfx), ["Global-Battle"]);
@@ -663,4 +712,32 @@ fn rk1_day1_the_av_log_follows_the_original_where_razdor_plays_the_same() {
     // Closing the victory box changes the map track at once (its pick is a draw).
     let after = names(38, Music);
     assert!(after.len() == 1 && crate::rules::music::ROTATION.contains(&after[0].as_str()), "{after:?}");
+}
+
+/// The services' sounds on ДС1 (`ds1-services.jsonl`) as the original plays them (run
+/// `av-ds1-services`, AV.md): the building window's tab sounds as the harness presses its tabs
+/// from the top, the gold sound of each money button, the hired card's slide, the item's
+/// sound twice as it is worn; the places of an event shown right after its window.
+#[test]
+fn ds1_services_sound_as_the_original() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/ds1-services.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions, None).unwrap();
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let names = |step: usize| -> Vec<String> {
+        r.av[step].iter().filter(|e| !e.n.starts_with("Global-Event")).map(|e| match &e.t {
+            Some(t) if e.n == "camera_glide" => format!("{}@{t}", e.n),
+            _ => e.n.clone(),
+        }).collect()
+    };
+    assert_eq!(names(1), ["InterfaceButtonDown", "camera_glide@5,50", "reveal", "camera_glide@44,64", "reveal", "camera_glide@27,23", "reveal", "camera_glide@94,9"]);
+    assert_eq!(names(4), ["InterfaceButtonDown"]);
+    assert_eq!(names(6)[..2], ["InterfaceButtonDown", "Item-Gold"]);
+    assert_eq!(names(6).last().map(String::as_str), Some("InterfaceCastSpell"));
+    assert_eq!(names(7), ["InterfaceCastSpell", "InterfaceCastSpell", "Item-Gold"]);
+    assert_eq!(names(8), ["Item-Gold"]);
+    assert_eq!(names(10), ["InterfaceCastSpell", "InterfaceCastSpell", "Item-Gold", "Item-Gold", "army_slot_slide", "Card-Move"]);
+    assert_eq!(names(12), ["InterfaceCastSpell", "InterfaceCastSpell", "InterfaceCastSpell", "InterfaceCastSpell", "Item-Gold"]);
+    assert_eq!(names(13), ["InterfaceCastSpell", "InterfaceCastSpell", "InterfaceCastSpell", "InterfaceButtonDown", "Item-Gold"]);
+    assert_eq!(names(14), ["InterfacePanelDown", "Item-Amulet", "Item-Amulet"]);
 }
