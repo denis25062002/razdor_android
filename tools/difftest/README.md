@@ -386,6 +386,23 @@ Since the second version:
   live original is restarted and replays the shorter list).
 - `log.jsonl` also counts per op what Razdor applied (`ops_razdor`) and what the original
   applied without a note (`ops_original`), the rewinds, resyncs and screen mismatches.
+- **Ollama settings.** Every request asks for the same context, `num_ctx` 16384, with
+  `keep_alive` -1 (the model stays loaded) and `think` false: a request with another
+  context size makes Ollama reload the model (about 80 s) and can push part of it onto the
+  CPU. The prompts stay far below it: a busy one (a church with its goods, barracks and
+  spells, 30 lines of history) is about 6,500 characters with the system prompt, some
+  2,500 tokens; `cap_prompt` cuts a prompt over 24,000 characters from the middle, and
+  `log.jsonl` records each episode's largest (`prompt_chars_max`).
+- `--goals WORDS` keeps only the goals containing one of the comma-separated words (e.g.
+  `--goals "(buy),(hire),(heal)"` for the service goals).
+- A candidate's signature (the dedupe in `signatures.json`) includes the map.
+
+First hour with this version (2026-10-03, all seven startable maps, the three classes in
+turn): 9 episodes, 368 actions (8.5 episodes and 350 actions an hour, about 7 minutes per
+episode, two thirds of it the model); 13% of the model's actions invalid (5 on the wrong
+screen, 53 refused by Razdor, 3 outside the vocabulary; another 20 refused as too strong),
+against 24% before; 6 of 9 episodes reached their length (4 of 13 before); 8 rewinds after
+lost battles, 21 resyncs. Candidates: `CANDIDATES.md`, third round.
 
 Known limits: the model plans on Razdor's state; a resync keeps the two sides on the same
 screen but the step it fixes is still a difference (classified as usual); a rewind restarts

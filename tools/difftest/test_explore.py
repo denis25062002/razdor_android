@@ -43,6 +43,14 @@ class Repair(unittest.TestCase):
         screens = ["map", "map", "battle", "battle", "battle", "ended"]
         self.assertEqual(explore.battle_start(screens, 4), 2)
 
+    def test_prompt_cap(self):
+        text = "\n".join(f"line {i} " + "x" * 200 for i in range(400))
+        out = explore.cap_prompt(text, 5000)
+        self.assertLessEqual(len(out), 5000)
+        self.assertTrue(out.startswith("line 0 ") and out.rstrip().endswith("x"))
+        self.assertIn("line 399 ", out)
+        self.assertEqual(explore.cap_prompt("short"), "short")
+
     def test_garbage(self):
         acts, st = explore.repair("I would walk north.")
         self.assertEqual(acts, [])

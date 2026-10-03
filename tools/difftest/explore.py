@@ -374,6 +374,27 @@ def summarise(info, state, screen, goal, visited_types, history, new_events, rej
 # A hostile army whose hit points pass the hero's by this factor is not attacked.
 STRONGER = 1.3
 
+# Ollama: the context every request asks for (the same in every call, see Model.ask), the
+# model kept loaded for good, and the prompt's cap: well under the context (a token is about
+# 3 characters of these prompts; the system prompt and the reply need room too).
+NUM_CTX = 16384
+KEEP_ALIVE = -1
+MAX_PROMPT_CHARS = 24000
+
+
+def cap_prompt(text, limit=MAX_PROMPT_CHARS):
+    """`text` cut to `limit` characters: lines are dropped from the middle (the head has the
+    goal and the screen, the tail the last actions and the reply format)."""
+    if len(text) <= limit:
+        return text
+    lines = text.split("\n")
+    head, tail = lines[:8], lines[-4:]
+    mid = lines[8:-4]
+    while mid and len("\n".join(head + mid + tail)) > limit - 40:
+        mid.pop(len(mid) // 2)
+    out = "\n".join(head + mid + ["(some lines left out)"] + tail)
+    return out[:limit]
+
 
 # --- the model ------------------------------------------------------------------------------------
 class Model:
@@ -402,8 +423,10 @@ class Model:
         return False
 
     def ask(self, prompt):
+        # One fixed context size for every call and the model kept loaded: a call with another
+        # num_ctx makes Ollama reload the model (80 s) and can push part of it onto the CPU.
         body = {"model": self.model, "stream": False, "think": False, "format": "json",
-                "keep_alive": "2h", "options": {"temperature": self.temperature, "num_ctx": 8192},
+                "keep_alive": KEEP_ALIVE, "options": {"temperature": self.temperature, "num_ctx": NUM_CTX},
                 "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]}
         t0 = time.time()
         for i in range(4):
@@ -786,8 +809,9 @@ def play_episode(info, hero, goals, razdor, model, length, rnd, log, live=None, 
                     [(x["x"], x["y"]) for x in state.get("armies", []) if "x" in x and x.get("active", True)
                      and x.get("alive", True) and dist(hp, (x["x"], x["y"])) <= 30][:10]
                 reach = (razdor.reachable(acts, cells), samples)
-            prompt = summarise(info, state, screen, goal, visited, history, new_events, rejected, reach,
-                               look, orig_view)
+            prompt = cap_prompt(summarise(info, state, screen, goal, visited, history, new_events, rejected,
+                                          reach, look, orig_view))
+            st["prompt_chars_max"] = max(st.get("prompt_chars_max", 0), len(prompt) + len(SYSTEM))
             text = model.ask(prompt)
             st["model_calls"] += 1
             cand_list, fix = repair(text)
@@ -1086,6 +1110,8 @@ def main(argv=None):
     ap.add_argument("--shrink-budget", type=int, default=4, help="original runs spent on shrinking a NEW one")
     ap.add_argument("--no-build", action="store_true")
     ap.add_argument("--play-only", action="store_true", help="play episodes in Razdor only, no diff")
+    ap.add_argument("--goals", help="comma-separated words: only the goals that contain one "
+                    "(e.g. 'buy,hire,heal,learn,equip')")
     ap.add_argument("--no-live", action="store_true",
                     help="do not play the original along (it is then played once after the episode)")
     a = ap.parse_args(argv)
@@ -1113,6 +1139,9 @@ def main(argv=None):
     skip = set()
     log_path = os.path.join(EXPLORE, "log.jsonl")
     goals = GOALS[:]
+    if a.goals:
+        words = [w.strip().lower() for w in a.goals.split(",") if w.strip()]
+        goals = [g for g in goals if any(w in g.lower() for w in words)] or goals
     rnd.shuffle(goals)
     while True:
         if a.episodes and episode >= a.episodes:
