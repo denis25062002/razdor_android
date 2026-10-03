@@ -116,7 +116,8 @@ pub struct BuildingState {
 ///   + 1);
 /// - `rng`: the state of the game's generator (engine.md §3.1);
 /// - hero `x`, `y`: his cell; `gold`, `mana`: the player's;
-/// - unit `type`: the map file's unit number (1-based; the record's +0 is 0-based); `hp`: the
+/// - unit `type`: the map file's unit number (1-based; the record's +0 is 0-based); `level`:
+///   0 for the first, as the map file and the unit record (+0x10) number it; `hp`: the
 ///   hit points it has (the record stores −1 for unhurt, read as its maximum), 0 dead;
 ///   units in record order, corpses included;
 /// - army `id`: its number in the map file; `active`: on the map (+0x16a1); `alive`: not
@@ -482,7 +483,7 @@ impl<'a> Runner<'a> {
         let g = self.game.as_ref()?;
         let c = &g.content;
         let (x, y) = g.tile();
-        let hero = HeroState { x, y, gold: g.gold, mana: g.mana, units: g.squad.iter().map(|u| HeroUnit { kind: u.def.0 as i32, level: u.level, hp: u.hp.max(0), xp: u.xp }).collect() };
+        let hero = HeroState { x, y, gold: g.gold, mana: g.mana, units: g.squad.iter().map(|u| HeroUnit { kind: u.def.0 as i32, level: u.level - 1, hp: u.hp.max(0), xp: u.xp }).collect() };
         let w = &g.world;
         let army = |a: &Army, active: bool, alive: bool| {
             let (x, y) = a.tile(&w.map);
@@ -493,7 +494,7 @@ impl<'a> Runner<'a> {
                 active: Some(active),
                 alive,
                 gold: Some(a.gold),
-                units: Some(a.troops.iter().map(|t| ArmyUnit { kind: t.unit.0 as i32, level: t.level, hp: troop_hp(c, t) }).collect()),
+                units: Some(a.troops.iter().map(|t| ArmyUnit { kind: t.unit.0 as i32, level: t.level - 1, hp: troop_hp(c, t) }).collect()),
             }
         };
         let armies = match &self.scenario {

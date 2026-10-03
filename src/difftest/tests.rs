@@ -149,7 +149,7 @@ fn rk1_after_load_matches_the_map_file() {
         }
     }
     assert!(s0.armies.iter().flat_map(|a| a.units.iter().flatten()).all(|u| u.hp > 0), "every unit unhurt");
-    assert!(s0.hero.units.iter().all(|u| u.hp > 0 && u.level >= 1));
+    assert!(s0.hero.units.iter().all(|u| u.hp > 0 && u.level >= 0));
     // The opening events fired, nothing else.
     let e = r.game().unwrap().script().unwrap();
     assert!(s0.events_done.iter().all(|&id| e.times_fired(id as u16) > 0));
