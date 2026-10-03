@@ -128,15 +128,18 @@ portrait 0x4b2044 only sequence things and are not compared.
 
 Razdor: the replay logs (`razdor-run.jsonl`, `av` per step; `src/av.rs`) what the
 interface would cue at the same points, without a window: the window sounds of
-`App::sounds` (an event, village or shipyard chord, `InterfacePanelDown` for another
-window, `Global-Battle`, `Item-Gold` when the gold rises), the buttons the ops stand for
-(dialog OK/Yes/No, the market, hire, heal and learn buttons, the bar's button before the
-army window or the book; the map clicks and the time panel are silent in Razdor), the new
-game's menu presses, the battle's sounds and effects (`av::BattleSound`, shared with
-`battle_view`; the actor's lunge is logged as `battle_slide`), the result box's OK, the
-level gain, a spell landing, item sounds, the music (map start, battle themes, triumph,
-the track after the victory box, defeat) and the walk, the wait and the flights to places
-an event shows. `AV.md` has the coverage over the runs so far.
+`App::sounds` (an event, village or shipyard chord, `InterfaceCastSpell` for a building
+window, `Global-Battle`), the buttons the ops stand for (dialog OK/Yes/No, the wait button,
+the village window's close with the tribute's `Item-Gold`, the panel icon before the army
+window or the book, the tab presses the harness makes to reach a service's tab, the market's
+list switch, the `Item-Gold` of the money buttons; the map clicks are silent), the new
+game's menu bell and presses, the fog opening at the map start, the battle's sounds and
+effects (`av::BattleSound`, shared with `battle_view`; the actor's lunge is logged as
+`battle_slide`, a counterblow's lunge back and effect after it, `av::echo`), a pass's
+pause, the won battle's hold, the hired card's slide, the cure in a building, the camera to
+a spell's army and the spell's effect, item sounds, the music (map start, battle themes,
+triumph, the track after the victory box, defeat) and the walk, the wait and the flights to
+the places an event shows, after its window. `AV.md` has the coverage over the runs so far.
 
 ## Battles (action list and state, v1 extension)
 

@@ -43,6 +43,11 @@ was seen on and what to check.
    effects match Razdor's one for one except the counterblow's slide back and effect, and the
    level-up shows only in the won battle's 2.5 s hold (experience cards) and the promotion
    screen; the hold is missing in Razdor.
+   Done (2026-10-04, dt-original): the counterblow's lunge back with its effect and sound on
+   the attacker (and the sorcery on a killer a DeathCurse unit takes along), the won battle's
+   2.5 s hold with the experience on the cards and no result box, a pass's 100 ms pause, and
+   no level-up sound outside the promotion screen. The AV runs now match the original's battle
+   sounds and effects step for step (AV.md); unit sprites are not part of the original.
 
 4. **No ranged defence (Защита стрелковая) on the back row.** Seen in battle: units in the back
    row show or get no ranged defence. The spec says the original adds Row2Def (+5 in the

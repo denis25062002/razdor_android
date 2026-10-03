@@ -465,7 +465,7 @@ font picture's own). **code**
 | 9 | Community: bleed, evasion | | see below |
 | 10 | Vampirism (`SVampirizm`) | with "%" | |
 | 11 | Initiative (`SInitiative`) | never below 0 | |
-| 12 | Manevres (`SManevres`) | never below 0 | |
+| 12 | Manevres (`SManevres`) |  0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep; Matches: an event's places right after its window closes, then back to the hero, the next window waiting; the fog opens around the hero at a map start  | |
 | 13 | Wage (`DailyPayment`) | the recruit wage of the type's Cost (4a163c) | in a game only; not for a hero class, a named character, a unit of wage kind 3 (event units) or a unit whose level nature is Undead; bold orange |
 
 In "v + n" the colour still compares only v (the defence without the building) with the level
@@ -1017,8 +1017,8 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 23 | Quick battle (Q) | Plays the battle under way out at once (extra the user asked for; kept) | None | 12 |
 | 24 | Battle input timing | Matches: acts on the press of a card (the hover hint is presentation) | Acts on the press of a card; hover hint predicts the effect | 12 |
 | 25 | AI pacing | 0.45 s delay before each AI action | No delay: the AI acts as soon as the previous animation ends | 12 |
-| 26 | Strike animation | 0.7 s; moves 0.25 s | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
-| 27 | Battle end | Result box at once | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |
+| 26 | Strike animation |  0.7 s lunge and effect; Matches: a counterblow or preventive strike adds the target's lunge back and the effect and sound on the actor, a DeathCurse death of the killer the sorcery on it; pass 0.1 s; moves 0.25 s  | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
+| 27 | Battle end |  Matches: a win holds the screen 2.5 s with the experience on the cards, then the report (no 250 ms gap); a defeat or a battle nobody won shows Razdor's result box  | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |
 | 28 | Music crossfade | No crossfades (presentation, left out); tracks loop until changed | 2000 ms crossfade on screen changes, 4000 ms in the rotation; tracks loop | 13 |
 | 29 | Map music order | Matches: `rules::music::rotate` with the game's generator, timed per pick; checked by the map and its windows, the map waiting while the triumph plays | Uniform pick among eight (the seven map tracks and `BkgAuthors`), never the previous pick, changed on a timer per track (40–122.8 s, see §13) | 13 |
 | 30 | First map track | Matches: `BkgMap2`, its first change from the load's draw (`Game::take_music_wait`) | Always `BkgMap2` | 13 |
@@ -1026,12 +1026,12 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 32 | Triumph | Matches: starts with the result, loops, the world map waits for it; closing a dialog draws the next map track | Starts at the win (during the 2.5 s hold), loops until the report is closed, then a random map track; the world map does not change it meanwhile | 13 |
 | 33 | `BkgAuthors` | Matches: the credits theme and pick 3 of the rotation | The credits theme, and part of the map rotation | 4, 13 |
 | 34 | Event chord | Matches: `Random(3)` of the game's generator (`Game::event_chord`) for event dialogs and the village and shipyard windows, drawn when the dialog comes up (several dialogs of one moment draw after that moment's rolls) | One of three at random (game generator), also for the village and shipyard windows | 14 |
-| 35 | `InterfacePanelDown` | Every window or non-event dialog opening | Only the press of a bottom panel icon | 14 |
-| 36 | `MainMenuPress` | Picking a scenario or a class | Pressing a main-menu item; choosing a class | 14 |
-| 37 | Hover bells | Unused | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
-| 38 | `InterfaceCastSpell` | World spell cast | Spell book cast, building tab switch, load window tab switch | 14 |
+| 35 | `InterfacePanelDown` |  Matches: the press of a bar icon; the side windows open silent (Razdor's own non-event dialogs still play it)  | Only the press of a bottom panel icon | 14 |
+| 36 | `MainMenuPress` |  Matches: pressing a main-menu item; a class portrait that changes the class (Next and Start: the button sound)  | Pressing a main-menu item; choosing a class | 14 |
+| 37 | Hover bells |  Matches: `MainMenuSelect-1` as the pointer comes onto an item  | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
+| 38 | `InterfaceCastSpell` |  Matches: world spell cast, the building window's opening and tab switches (Razdor's load window has no tabs)  | Spell book cast, building tab switch, load window tab switch | 14 |
 | 39 | `InterfaceBarScroll` | Unused | Options slider test sound | 14 |
-| 40 | `Item-Gold` | Whenever gold goes up | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
+| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
 | 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
 | 43 | Options window | Music and sound volume, battle AI | Five sliders and eight checkboxes; slider test sound | 16 |

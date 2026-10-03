@@ -13,6 +13,29 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Counterblows are seen and heard:** a unit that strikes back now lunges at its attacker
+  with the blow's effect and sound on it, after the first blow, as in the original; a unit
+  killed by a cursed victim gets the sorcery's effect.
+- **A won battle ends as in the original:** the battle screen stays 2.5 seconds with each
+  unit's experience on its card, then the victory report opens on the map; no result box to
+  click away. A level gained no longer plays the promotion sound (the original plays it only
+  in the promotion screen). A pass in battle is a short pause.
+- **Building windows sound as the original's:** the window and each tab switch play the
+  original's tab sound; the money buttons (buy, sell, hire, heal, raise, learn, a ship) play the
+  gold sound; a hired unit's card slides from the recruit into your army; healing plays the
+  cure with its effect on the card. A purchase no longer plays the item's sound, and gold
+  coming in (midnight income, a sale) no longer plays the gold sound by itself.
+- **The village's gold sound when you leave:** the tribute's gold sound plays as the village
+  window closes, with the window's button, not as it opens.
+- **World spells show where they land:** the camera glides to the army the spell is for (when
+  it is far) and the spell's effect plays over it.
+- **Places an event shows come right after its window:** the camera flies to them as soon as
+  that event's message is closed and back to the hero, and the next message waits for it; a
+  new map opens the fog around the hero.
+- Smaller sounds as in the original: the wait keys and the time panel click, the main menu
+  rings as the pointer comes onto an item, the scenario list is silent, Next and Start click,
+  choosing another class plays the menu sound, the bar's icons play the panel sound (their
+  windows open silent), and an item sounds as it is picked up and again as it is worn.
 - **Only the heroes the map offers:** the new-game hero window offers a class only when the
   map gives it a start cell, greys the others and opens on the first one offered, as the
   original does (before, any class could be started on any map).
