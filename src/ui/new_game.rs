@@ -253,8 +253,8 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             let cy = r.y + head_h + n as f32 * chapter_h + chapter_h * 0.5 + small * 0.36;
             chrome::shadow_text(&ellipsize(title(&scenarios[c]), r.w - 60.0 * k, small), r.x + 52.0 * k, cy, small, CREAM);
         }
+        // A row is picked silently (the original's list makes no sound).
         if hover && clicked() {
-            cue(Cue::Button);
             if row == picked {
                 next = Some(Screen::ClassSelect { scenario: Some(g.first) });
             }
@@ -329,7 +329,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     }
     let can = !list.is_empty();
     if (win.button(369.0, 116.0, &own("Buttons", "Next", n_("Next")), can) || (can && key(KeyCode::Enter))) && next.is_none() {
-        cue(Cue::MenuPress);
+        cue(Cue::Button);
         next = list.get(picked).map(|g| Screen::ClassSelect { scenario: Some(g.first) });
     }
     if win.button(492.0, 95.0, &own("Buttons", "Cancel", n_("Cancel")), true) || closed || key(KeyCode::Escape) {
@@ -463,8 +463,13 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
         let ink = if i == pick { GOLD } else if offered[i] { CREAM } else { Color::new(0.5, 0.48, 0.44, 1.0) };
         with_face(Face::Title, || chrome::shadow_centered(name, r.center().x, r.y + r.h + 18.0 * k, 16.0 * k, ink));
         if hover && clicked() {
-            cue(Cue::Button);
+            // Choosing another class plays the menu press (interface.md §14); the class
+            // already picked, nothing.
+            let was = pick;
             pick = choose_class(offered, pick, i);
+            if pick != was {
+                cue(Cue::MenuPress);
+            }
         }
     }
     HERO.with(|h| h.set(pick));
@@ -545,7 +550,7 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
         chrome::shadow_text(line, right, y + (j + 1) as f32 * 14.0 * k, small, CREAM);
     }
     if win.button(369.0, 116.0, &own("NewHero", "Start", n_("Start")), true) || key(KeyCode::Enter) {
-        cue(Cue::MenuPress);
+        cue(Cue::Button);
         *game = Some(screens::start_game(demo, Some((e, &content)), hero, &name));
         return leave_hero_window(Screen::WorldMap);
     }

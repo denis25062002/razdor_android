@@ -187,9 +187,10 @@ fn oval(b: BarButton, r: Rect, look: Look) -> bool {
     if hover {
         tooltip(&[(b.hint().to_string(), CREAM)]);
     }
+    // A panel icon's own sound (interface.md §14); the window it opens is silent.
     let pressed = hover && clicked();
     if pressed {
-        super::audio::cue(super::audio::Cue::Button);
+        super::audio::cue(super::audio::Cue::Panel);
     }
     pressed
 }

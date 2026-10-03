@@ -87,6 +87,11 @@ fn logo() {
     }
 }
 
+thread_local! {
+    /// The main menu item under the pointer at the last frame.
+    static HOVERED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// An oval button: the violet swirl, the frame (gold under the mouse) and its word. Returns
 /// true when clicked.
 fn oval(i: usize, label: &str) -> bool {
@@ -95,6 +100,16 @@ fn oval(i: usize, label: &str) -> bool {
     let size = OVAL * k;
     let r = Rect::new(c.x - size.x / 2.0, c.y - size.y / 2.0, size.x, size.y);
     let hover = !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
+    // The bell as the pointer comes onto an item (interface.md §4, 0x4b9b3c); leaving clears
+    // the light.
+    HOVERED.with(|h| {
+        if hover && h.get() != Some(i) {
+            h.set(Some(i));
+            cue(Cue::MenuSelect);
+        } else if !hover && h.get() == Some(i) {
+            h.set(None);
+        }
+    });
     // Fire behind the button (the glow around the column of buttons in the video).
     if let Some(fl) = chrome::win_fx("MenuFlame", Fx::Glow) {
         let f = Rect::new(c.x - 190.0 * k, c.y - 130.0 * k, 380.0 * k, 260.0 * k);

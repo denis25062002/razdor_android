@@ -145,8 +145,6 @@ pub struct App {
     map_music: MapMusic,
     /// The screen of the last frame, to hear windows open and battles begin.
     last_screen: Option<std::mem::Discriminant<Screen>>,
-    /// Gold at the end of the last frame of this game (`None` right after a new game or load).
-    last_gold: Option<i32>,
     /// The play log's last screen and message, to write each change once.
     play_last: (&'static str, Option<String>),
     /// The map editor, kept while a test play runs.
@@ -192,7 +190,6 @@ impl App {
             audio,
             map_music: MapMusic::default(),
             last_screen: None,
-            last_gold: None,
             play_last: ("", None),
             editor: None,
             test_play: false,
@@ -244,8 +241,7 @@ impl App {
                 self.dialogs.clear();
                 self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());
                 self.map_view.reset();
-                self.map_view.forget_shows();
-                self.last_gold = None;
+                self.map_view.open_around_hero(&game);
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "editor test play"));
                 self.game = Some(game);
                 self.test_play = true;
@@ -265,7 +261,6 @@ impl App {
                 self.load_error = None;
                 self.map_view.reset();
                 self.map_view.forget_shows();
-                self.last_gold = None;
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "loaded"));
                 self.dt_content = saves::session_content(self.dt_content.take(), &game);
                 if let Some(q) = game.pending_question() {
@@ -304,11 +299,11 @@ impl App {
                 screens::start_game(&self.demo, None, old.start_class(), &name)
             }
         };
+        self.map_view.open_around_hero(&game);
         self.game = Some(game);
         self.dialogs.clear();
         self.message = None;
         self.map_view.reset();
-        self.last_gold = None;
         self.screen = Screen::WorldMap;
     }
 
@@ -367,33 +362,22 @@ impl App {
                 (Screen::Building(_), Some(g)) => g.location.is_some_and(|l| matches!(g.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard)),
                 _ => false,
             };
+            // The side windows sound only as their panel icon is pressed (`game_bar`).
             match self.screen {
                 Screen::Building(_) if chord_window => {
                     let k = self.game.as_mut().map_or(0, |g| g.event_chord());
                     audio::cue(Cue::Event(k as u8));
                 }
+                // The building window opens on its first tab, highlighted (interface.md §14).
+                Screen::Building(_) => audio::cue(Cue::CastSpell),
                 Screen::Battle(_) => audio::cue(Cue::BattleHorn),
-                Screen::Building(_)
-                | Screen::Squad { .. }
-                | Screen::Journal(_)
-                | Screen::Spellbook { .. }
-                | Screen::Menu(_)
-                | Screen::Settings
-                | Screen::Save(_)
-                | Screen::Load(_) => audio::cue(Cue::Panel),
                 _ => {}
             }
         }
         self.last_screen = Some(now);
-        let new_game = matches!(self.screen, Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. });
-        let gold = self.game.as_ref().filter(|_| !new_game).map(|g| g.gold);
-        if let (Some(before), Some(after)) = (self.last_gold, gold) {
-            if after > before {
-                audio::cue(Cue::Gold);
-            }
-        }
-        self.last_gold = gold;
-        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
+        // A window waits while the camera flies to the places of the event before it.
+        let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
+        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued && !held) {
             d.cued = true;
             if d.event.is_some() || d.chord {
                 let k = self.game.as_mut().map_or(0, |g| g.event_chord());
@@ -650,7 +634,8 @@ impl App {
             self.quick_load();
             return;
         }
-        if let Some(d) = self.dialogs.front() {
+        let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
+        if let Some(d) = self.dialogs.front().filter(|_| !held) {
             if let Some(close) = dialog::draw(d, &self.assets) {
                 let asked = self.dialogs.pop_front().is_some_and(|d| d.question);
                 // Closing a dialog while the triumph plays changes the map track at once
@@ -726,6 +711,10 @@ impl App {
             }
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
+                // A map starts: the fog opens around the hero.
+                if let (Screen::WorldMap, Some(g)) = (&next, self.game.as_ref()) {
+                    self.map_view.open_around_hero(g);
+                }
             }
             self.screen = next;
         }

@@ -256,6 +256,18 @@ pub fn frame(
         match game.begin_cast(s.id, t) {
             Ok(outcome) => {
                 cue(Cue::CastSpell);
+                // The camera goes to the army the spell is for: the hero's own before the
+                // reading, an enemy's after it (0x4c2e34, 0x4cc148); then the effect on it.
+                let own = matches!(t, CastTarget::Own);
+                if own {
+                    world_view::look_at(t);
+                }
+                if let Some(CastOutcome::Done { .. }) = outcome {
+                    if !own {
+                        world_view::look_at(t);
+                    }
+                    world_view::spell_effect(&s, t);
+                }
                 razdor::diag::play(&game.clock.label(), &format!("CAST «{}» on {t:?}: {:.0} min", s.name, game.reading().map_or(0.0, |r| r.1)));
                 // The hero reads on the map; the spell lands when the reading is done.
                 *message = Some(match outcome {

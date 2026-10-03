@@ -29,11 +29,16 @@ use super::jukebox::{self, Change, Jukebox};
 pub enum Cue {
     /// Any button (`InterfaceButtonDown`).
     Button,
-    /// A window or panel opens (`InterfacePanelDown`).
+    /// A bottom panel icon is pressed (`InterfacePanelDown`; only there in the original,
+    /// interface.md §14), or a Razdor window opens without one.
     Panel,
-    /// A scenario or hero class is picked (`MainMenuPress`).
+    /// A main menu item or a hero class is pressed (`MainMenuPress`).
     MenuPress,
-    /// A world spell is cast (`InterfaceCastSpell`), then its effect on the own army
+    /// The pointer comes onto a main menu item (`MainMenuSelect-1`: the original reads only
+    /// that key, for all five, interface.md §4).
+    MenuSelect,
+    /// A world spell is cast, or a building window's tab highlighted (`InterfaceCastSpell`),
+    /// then a spell's effect on the own army
     /// (`Spell-Good`) or on an enemy army (`Spell-Evil`).
     CastSpell,
     SpellGood,
@@ -58,7 +63,8 @@ pub enum Cue {
     Sorcery,
     /// An item of this type bought, equipped or drunk (`Item-<Type>`).
     Item(ArtefactType),
-    /// Gold gained (`Item-Gold`).
+    /// A money button (trade, hire, heal, learn, a ship) or a village's tribute taken
+    /// (`Item-Gold`).
     Gold,
     /// A battle won: the triumph music, looped until the next map track.
     Triumph,
@@ -71,6 +77,7 @@ impl Cue {
             Cue::Button => "InterfaceButtonDown",
             Cue::Panel => "InterfacePanelDown",
             Cue::MenuPress => "MainMenuPress",
+            Cue::MenuSelect => "MainMenuSelect-1",
             Cue::CastSpell => "InterfaceCastSpell",
             Cue::SpellGood => "Spell-Good",
             Cue::SpellEvil => "Spell-Evil",
@@ -491,7 +498,7 @@ mod tests {
             ArtefactType::Potion, ArtefactType::Item,
         ];
         let mut cues = vec![
-            Cue::Button, Cue::Panel, Cue::MenuPress, Cue::CastSpell, Cue::SpellGood, Cue::SpellEvil,
+            Cue::Button, Cue::Panel, Cue::MenuPress, Cue::MenuSelect, Cue::CastSpell, Cue::SpellGood, Cue::SpellEvil,
             Cue::BattleHorn, Cue::CardMove, Cue::Upgrade, Cue::Fight, Cue::Shoot, Cue::Cannon,
             Cue::Cure, Cue::Bless, Cue::Sorcery, Cue::Gold,
         ];
