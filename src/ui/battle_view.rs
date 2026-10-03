@@ -610,7 +610,8 @@ impl BattleView {
         }
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let strip = Rect::new(p.x, p.y + w, w, h - w);
-        unit_sheet::stat_strip(strip, s, base, f.power, f.hp, frame.is_some_and(|(c, _)| c == ACTIVE));
+        let row2 = if f.slot.row == Row::Back { self.battle.content().options.row2_def } else { 0 };
+        unit_sheet::stat_strip(strip, s, base, f.power, f.hp, row2, frame.is_some_and(|(c, _)| c == ACTIVE));
 
         // Badges: blessed / cursed / poisoned in the top-right corner, the hero's mark and
         // the turn order at the top left.

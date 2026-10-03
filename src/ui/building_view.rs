@@ -490,7 +490,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
                 let cost = trf!("Price {price}", price = pr.amount);
                 chrome::shadow_centered(&cost, strip.center().x, pill.y + pill.h + 13.0 * k, 12.0 * k, chrome::GOLD);
             }
-            _ => super::unit_sheet::stat_strip(strip, &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, false),
+            _ => super::unit_sheet::stat_strip(strip, &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, back_row_def(&c, u.slot), false),
         }
         if !u.alive() {
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
@@ -549,6 +549,15 @@ enum Hit {
     Cell(Slot),
 }
 
+/// The ranged defence the back row adds on a card's strip (`Row2Def`; 0 elsewhere).
+pub fn back_row_def(c: &razdor::rules::content::Content, slot: Slot) -> i32 {
+    if slot.row == razdor::rules::formation::Row::Back {
+        c.options.row2_def
+    } else {
+        0
+    }
+}
+
 /// The army screen's cards for `units` in the formation, `rel_y` below the content's top;
 /// `selected` is framed. Returns what the pointer is over.
 fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], selected: Option<usize>) -> Option<Hit> {
@@ -582,7 +591,7 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
         chrome::wounds(sq, u.hp, u.max_hp(c));
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let vs = u.stats(c);
-        super::unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, false);
+        super::unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, back_row_def(c, u.slot), false);
         if !u.alive() {
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
         } else if u.unpaid {

@@ -58,6 +58,13 @@ was seen on and what to check.
    back-row unit in both games.
    First finding: Razdor does apply it in the damage (`src/rules/battle.rs`, `row2_def` added for
    a row-2 target of a shot), so this is most likely the card and panel not showing the bonus.
+   Done (2026-10-04, dt-original): the original adds Row2Def to what it shows of a unit in a
+   back-row place (7-10) on its card strip ("D: m/r", 0x49462c) and on its panel ("v + n", n =
+   building defence + Row2Def, 0x492f24 sets the row flag, 0x491fa4 writes it), in battle and
+   on the army and building screens (not on a recruit offer). Seen under Xvfb in РК1's ruins
+   battle: the novice and the archer of the back row show "D: 0/5", the panel "5 + 3" for a
+   guard in its building. Razdor now shows the same on the card strips (battle, army, building
+   windows) and in the panel's ranged defence line; the damage was already right.
 
 5. **Feature request: a setting for the front row's width.** In the settings, a choice between a
    wide front row (6 cells) and a short one (4 cells). With the short row, the 2 edge cells of the

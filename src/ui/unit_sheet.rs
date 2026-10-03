@@ -134,6 +134,16 @@ fn buff_lines(lines: &mut Vec<Line>, b: Buff, raise: bool) {
     }
 }
 
+/// The ranged defence a unit of the back row gets against shots (`Row2Def`), as the
+/// original's panel and cards add it to the shown value (0 outside the back row).
+pub fn row2_extra(content: &Content, s: &Sheet) -> i32 {
+    if s.back_row {
+        content.options.row2_def
+    } else {
+        0
+    }
+}
+
 /// The stat list of `s`, as the original's panel orders it.
 fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
     let (now, start) = (s.now, s.start);
@@ -156,10 +166,12 @@ fn stat_lines(content: &Content, s: &Sheet) -> Vec<Line> {
         let (v, c) = split(Stat::AttackShot);
         lines.push((label("SAttackShot", n_("Ranged attack")), v, c));
     }
-    // In a building its defence is written apart, "15 + 12", as the original does.
+    // In a building its defence is written apart, "15 + 12", as the original does; the
+    // back row's `Row2Def` joins the building's on the ranged defence (0x491fa4).
     let defence = |st: Stat| -> (String, Color) {
-        if s.building > 0 {
-            (format!("{} + {}", now[st] - s.building, s.building), cmp_color(now[st], start[st]))
+        let extra = s.building + if st == Stat::DefenceShot { row2_extra(content, s) } else { 0 };
+        if extra > 0 {
+            (format!("{} + {}", now[st] - s.building, extra), cmp_color(now[st], start[st]))
         } else {
             split(st)
         }
@@ -234,9 +246,11 @@ fn attack_piece(s: &Stats, base: &Stats, power: i32) -> (String, Color) {
 }
 
 /// The strip under a card's portrait, as the original's: "A: 45  D: 35/40", "Mnvr: 1
-/// Ini: 12", "Hits: 70" (or "Hits: 45/70"). `lit` reddens it (the unit acting, or the one
-/// selected on the army screen).
-pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, lit: bool) {
+/// Ini: 12", "Hits: 70" (or "Hits: 45/70"). `row2` is added to the ranged defence shown
+/// (the back row's `Row2Def`, 0 elsewhere: 0x49462c). `lit` reddens it (the unit acting, or
+/// the one selected on the army screen).
+#[allow(clippy::too_many_arguments)]
+pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, row2: i32, lit: bool) {
     let k = k();
     chrome::surface(strip, chrome::Skin::Strip);
     if lit {
@@ -248,7 +262,7 @@ pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, l
     let (x0, x1) = (strip.x + 3.0 * k, strip.x + strip.w - 3.0 * k);
     let (att, ac) = attack_piece(now, base, power);
     shadow_text(&att, x0, strip.y + lh - 2.0 * k, fs, ac);
-    let d = razdor::trf!("D: {blow}/{shot}", blow = now[Stat::DefenceBlow], shot = now[Stat::DefenceShot]);
+    let d = razdor::trf!("D: {blow}/{shot}", blow = now[Stat::DefenceBlow], shot = now[Stat::DefenceShot] + row2);
     let dc = strip_color(now[Stat::DefenceBlow] + now[Stat::DefenceShot], base[Stat::DefenceBlow] + base[Stat::DefenceShot]);
     shadow_right(&d, x1, strip.y + lh - 2.0 * k, fs, dc);
     let (mn, ini) = (now[Stat::Manevres], now[Stat::Initiative]);
@@ -417,4 +431,50 @@ pub fn draw(assets: &Assets, content: &Content, r: Rect, s: &Sheet, slots: bool,
     }
     let _ = measure;
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ranged_defence(content: &Content, back_row: bool, building: i32) -> String {
+        let kind = UnitId(content.units[0].id);
+        let mut now = Stats::of_level(content, kind, 0);
+        now[Stat::DefenceBlow] += building;
+        now[Stat::DefenceShot] += building;
+        let sheet = Sheet {
+            kind,
+            name: "",
+            level: 0,
+            xp: 0,
+            need: 0,
+            hp: now.max_hp(),
+            now: &now,
+            start: &now,
+            power: 0,
+            wage: 0,
+            items: [None; 4],
+            back_row,
+            building,
+            hero: None,
+            status: Vec::new(),
+            battle: true,
+        };
+        let label = label("SDefenceShot", "Ranged defence");
+        stat_lines(content, &sheet).into_iter().find(|l| l.0 == label).map(|l| l.1).unwrap()
+    }
+
+    /// The panel adds the back row's `Row2Def` to the ranged defence as "v + n", with the
+    /// building's defence when there is one, as the original's card does (0x491fa4).
+    #[test]
+    fn back_row_shows_row2_def_on_ranged_defence() {
+        let content = Content::builtin();
+        let base = Stats::of_level(&content, UnitId(content.units[0].id), 0)[Stat::DefenceShot];
+        let r2 = content.options.row2_def;
+        assert!(r2 > 0);
+        assert_eq!(ranged_defence(&content, false, 0), base.to_string());
+        assert_eq!(ranged_defence(&content, true, 0), format!("{base} + {r2}"));
+        assert_eq!(ranged_defence(&content, true, 3), format!("{base} + {}", 3 + r2));
+        assert_eq!(ranged_defence(&content, false, 3), format!("{base} + 3"));
+    }
 }

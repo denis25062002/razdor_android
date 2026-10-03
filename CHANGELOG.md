@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The back row's ranged defence is shown:** a unit in the back row shows the `Row2Def`
+  bonus (+5) on its card ("D: 0/5") and on its panel ("0 + 5", with a building's defence
+  when there is one), as the original's card and panel do; the damage already counted it.
 - **Counterblows are seen and heard:** a unit that strikes back now lunges at its attacker
   with the blow's effect and sound on it, after the first blow, as in the original; a unit
   killed by a cursed victim gets the sorcery's effect.
