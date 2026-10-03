@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 
+from . import av as avmod
 from .original import free_display, read_actions
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -305,7 +306,7 @@ def act_text(a):
     return a["op"] + (" " + " ".join(f"{k}={v}" for k, v in rest.items()) if rest else "")
 
 
-def write_report(path, name, actions, free, first, local, shots, extra):
+def write_report(path, name, actions, free, first, local, shots, extra, sections=()):
     L = [f"# Diff test: {name}", ""]
     L += [f"- actions: {len(actions)} ({act_text(actions[0])})" if actions else "- no actions"]
     L += [f"- {k}: {v}" for k, v in extra.items()]
@@ -353,6 +354,8 @@ def write_report(path, name, actions, free, first, local, shots, extra):
     L += ["## Fields only one side has", ""]
     L += [f"- `{p}`: only {who}" for p, who in miss] or ["None."]
     L += [""]
+    for sec in sections:
+        L += sec
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(L))
 
@@ -376,6 +379,11 @@ def main(argv=None):
                          "original/trace.jsonl; with `random` Frida gives the draws instead "
                          "of the stub")
     ap.add_argument("--no-shots", action="store_true", help="no Razdor screenshot")
+    ap.add_argument("--av", action="store_true",
+                    help="also compare the sounds, music and animations (tools/difftest/av.py): "
+                         "adds the Frida preset `av` to the original's trace and an \"Audio and "
+                         "effects\" section to the report (and av.json)")
+    ap.add_argument("--exe", help="use this Razdor binary (no build)")
     a = ap.parse_args(argv)
 
     acts = read_actions(a.actions)
@@ -391,7 +399,9 @@ def main(argv=None):
             f.write(json.dumps(x, ensure_ascii=False) + "\n")
 
     target = os.path.join(CACHE, "target")
-    exe = os.path.join(target, "release", "razdor") if a.no_build else build(target)
+    exe = a.exe or (os.path.join(target, "release", "razdor") if a.no_build else build(target))
+    if a.av:
+        a.trace = ",".join([p for p in (a.trace or "").split(",") if p.strip()] + ["av"])
     run_razdor(exe, alist, os.path.join(run, "razdor"))
     odir = os.path.join(run, "original")
     if a.reuse_original:
@@ -424,7 +434,17 @@ def main(argv=None):
              "original's draw trace": "Frida" if frida_random else "off" if a.no_trace else "stub"}
     if a.trace:
         extra["original's runtime trace"] = f"{a.trace} → {os.path.join(odir, 'trace.jsonl')}"
-    write_report(os.path.join(run, "report.md"), name, acts, free, first, local, shots, extra)
+    sections = []
+    if a.av:
+        # The step-local run: the chords and the music picks are the generator's draws, so
+        # each step starts from the original's state.
+        o_av = avmod.original_events(load_jsonl(os.path.join(odir, "trace.jsonl")))
+        r_av = avmod.razdor_events(rsync_run)
+        av_rows = avmod.diff_run(len(acts), o_av, r_av)
+        sections.append(avmod.report_lines(av_rows, acts, act_text))
+        with open(os.path.join(run, "av.json"), "w", encoding="utf-8") as f:
+            json.dump(av_rows, f, ensure_ascii=False, indent=1)
+    write_report(os.path.join(run, "report.md"), name, acts, free, first, local, shots, extra, sections)
     with open(os.path.join(run, "diff.json"), "w", encoding="utf-8") as f:
         json.dump({"first": first, "free": free, "local": local, "shots": shots}, f,
                   ensure_ascii=False, indent=1)

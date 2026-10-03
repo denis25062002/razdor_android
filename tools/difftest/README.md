@@ -42,8 +42,9 @@ fought by explicit actions (planned against the original, so Razdor notes the pr
 own course of the battle has no use for; `battle_auto` then ends Razdor's battle if it is
 still on, and is a no-op in the original).
 
-Options: `--no-build`, `--reuse-original DIR` (take the original's side of an earlier run),
-`--real-music`, `--no-trace`, `--no-shots`, `--trace PRESETS` (the Frida runtime trace below). `FINDINGS.md` lists the differences found so far.
+Options: `--no-build`, `--exe PATH` (this Razdor binary, no build), `--reuse-original DIR`
+(take the original's side of an earlier run), `--real-music`, `--no-trace`, `--no-shots`,
+`--trace PRESETS` (the Frida runtime trace below), `--av` (sounds and animations, below). `FINDINGS.md` lists the differences found so far.
 
 ## Runtime trace (Frida)
 
@@ -67,6 +68,7 @@ at entry/return, `ra` return address, `a` arguments, `e`/`l` values read at entr
 | `advance` | World_AdvanceAI 0x4ade3c (the per-frame AI driver, `dt`) |
 | `damage` | physical damage 0x485908 (kind, both units' type and HP, the result) and ApplyDamage 0x48a354 (HP before/after) |
 | `events` | the event scan 0x4abfbc, opening an event 0x4a8ae8 (0-based index), Event_Finish 0x4ab1ec |
+| `av` | Sound_Play 0x481420 (slot, restart, loop; the slot's group and `_Sounds.ini` key), Music_Play 0x49d774, Music_NextRandom 0x49d7f8, and every entry pushed on the deferred-call queues (0x48c2e4, 0x48c348): the callback and its {a, b, c}. See "Sounds and animations" |
 
 A JSON file in the list adds hook specs of its own (format in `trace_agent.js`: address,
 arguments by register or stack slot in Delphi's register convention, JavaScript expressions
@@ -97,6 +99,44 @@ loses; the agent buffers up to 500000 records between two steps and counts any i
 (`trace_dropped` in `run.jsonl`). Hooks cost time in the game's frames, and the original's AI
 movement depends on the frame rate (FINDINGS.md §5): the presets above did not change the
 game in repeated runs, but a slow hook (25 ms per frame) moved an army three cells less.
+
+## Sounds and animations (`--av`, `av.py`)
+
+    python -m tools.difftest.run --actions tools/difftest/rk1-day1.jsonl --av
+    python -m tools.difftest.av --run RUN_DIR --events       # both sides' events, step by step
+    python -m tools.difftest.av --coverage RUN_DIR...        # the table of AV.md
+
+`run.py --av` adds the Frida preset `av` to the original's trace and an "Audio and effects"
+section to `report.md` (and `av.json`): per step, the sounds (`sfx`, by their
+`[SFX-Effects]` key), the music tracks started (`music`, `[Backgrounds]` key) and the
+animations started (`anim`) of the original against Razdor's step-local run (the chords and
+the music picks are the generator's draws). Compared per kind: the names as a multiset
+(missing in Razdor, extra in Razdor), then the order of the common ones; battle effects and
+slides also by their card (`side:row:col`, side 1 the player's) when both sides have as many.
+
+The original: a sound is a Sound_Play of a slot of group 2 (the music's own plays, group 1,
+are left out; Music_Play and Music_NextRandom name the track); the slot is named by the
+globals the loader fills (0x4e2e80, `trace.SOUND_GLOBALS`). An animation is an entry pushed
+on a deferred-call queue, which is how the game starts every timed thing (`av.QUEUE_FNS`):
+battle slide 0x4afbd8 (b = from place | side << 8 | to place << 16 | side << 24), effect
+0x4afe7c (b = place | side << 8 | sound << 16, c = picture: 0 shot, 1 melee, 2 magic,
+3 bless, 4 cure), pass 0x4afb54, card slide 0x4b0284, the won battle's hold 0x4b09e8, walk
+0x4ae6dc, wait 0x4ae280, camera glide 0x4af96c (c = cell x | y << 16), reveal 0x4af83c,
+look at an army 0x4afa98, world spell 0x4af2f8, a unit moved or hired 0x4b0c04, a unit's
+heal or potion 0x4b11cc, promotion 0x4b1a04; the event chain 0x4af658 and the class
+portrait 0x4b2044 only sequence things and are not compared.
+
+Razdor: the replay logs (`razdor-run.jsonl`, `av` per step; `src/av.rs`) what the
+interface would cue at the same points, without a window: the window sounds of
+`App::sounds` (an event, village or shipyard chord, `InterfacePanelDown` for another
+window, `Global-Battle`, `Item-Gold` when the gold rises), the buttons the ops stand for
+(dialog OK/Yes/No, the market, hire, heal and learn buttons, the bar's button before the
+army window or the book; the map clicks and the time panel are silent in Razdor), the new
+game's menu presses, the battle's sounds and effects (`av::BattleSound`, shared with
+`battle_view`; the actor's lunge is logged as `battle_slide`), the result box's OK, the
+level gain, a spell landing, item sounds, the music (map start, battle themes, triumph,
+the track after the victory box, defeat) and the walk, the wait and the flights to places
+an event shows. `AV.md` has the coverage over the runs so far.
 
 ## Battles (action list and state, v1 extension)
 
