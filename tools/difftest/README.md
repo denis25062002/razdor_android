@@ -1,5 +1,70 @@
 # Diff test
 
+Play the same actions in the original Discord Times and in Razdor and compare their game
+state after every step. The whole pipeline is one command:
+
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.run --actions rk1.jsonl --map РК1 --hero 1
+
+It builds Razdor (release, without sound, into `~/.cache/razdor-difftest/target`), plays the
+list in Razdor (`razdor --replay`), in the original (`python -m tools.difftest.original`, under
+Wine on a hidden Xvfb display), and once more in Razdor with each step starting from the
+original's generator state of the step before (`--rng-from`), then writes
+`~/.cache/razdor-difftest/runs/<name>/report.md` (`--name`, default the list's name and the
+time) and `diff.json`. Exit code 0 when every step compares equal, 1 otherwise.
+
+**The report.** The first step and the fields where the free run differs, with both values,
+the explanation of a generator mismatch and the screenshots of both sides at that step
+(`original/shot-NNNN.png`; Razdor's `razdor-shot-NNNN.png` through `RAZDOR_SCENE=replay`, on
+its own hidden display); then a table per step for the free run and for the step-local run
+(a generator difference in one step does not spill into the next ones there); then the fields
+only one side has.
+
+**How it compares.** Only the fields both sides have (a missing one is listed, not counted).
+Armies by id, other lists by position. Two differences of timing are taken into account:
+- the original counts an event as done when its window closes, Razdor when it fires: the
+  event the original shows is counted as done (not the engine's own reports, which use the
+  slot after the last event);
+- a difference seen while the original shows a window (event, village, building, shipyard,
+  question) that is gone once the window is closed with only closing actions is reported as
+  *window timing*, not as a divergence (the original applies an event's finishing results at
+  OK and pays a village's stock when its window closes; Razdor does both at once).
+
+**Generator mismatches** are explained three ways: by stepping the generator ("the original is
+k draws ahead"), by the two draw traces (each side's `Random(n)` of the step with its source:
+Razdor's file and line, the original's return address and the caller's name from engine.md
+§3.4; the first draw where the `n` differ is shown), and by the music: the original's timed
+music change is held off in these runs (`--real-music` lets it draw, and it is then flagged
+as real-time noise).
+
+`rk1-day1.jsonl` is the list of the first run: РК1 with the knight, the first day (the
+village, noon, the opening events, the waits through midnight) and the ruins' garrison
+fought by explicit actions (planned against the original, so Razdor notes the presses its
+own course of the battle has no use for; `battle_auto` then ends Razdor's battle if it is
+still on, and is a no-op in the original).
+
+Options: `--no-build`, `--reuse-original DIR` (take the original's side of an earlier run),
+`--real-music`, `--no-trace`, `--no-shots`. `FINDINGS.md` lists the differences found so far.
+
+## Battles (action list and state, v1 extension)
+
+    {"op":"battle_act","side":2,"row":1,"col":4}   a press on that card (side 1 own, 2 enemy)
+    {"op":"battle_pass"}                            the space key
+
+Rows 1 front, 2 back, 3 reserve; columns 1-6 as the original's grid numbers them (6-column
+formation; in it the back row has columns 2-5 and the reserve 3-4). A press does what the
+cell holds for the unit whose turn it is: a strike, a shot or a spell on an enemy, a heal or
+a blessing on a friend, a pass on its own card, a step to an empty own cell. The enemy's turns
+then play until the player's next turn or the end. A press with no action is noted.
+
+While a battle is on screen the state has
+`"battle": {"turn", "actor": [side, row, col], "sides": [[unit...], [unit...]]}`, a unit being
+`{"type", "row", "col", "hp", "actions"}` in the side's record order (a dead unit's record is
+removed); `actor` only while the player has the input. Original: the battle object 0x668cf8
+(`memread.Game.battle`), cards by Formation_CellToSlot (0x492940): front row places 0-5,
+back row 7-10, reserve 6 and 11 (`memread.WIDE_PLACES`), the card widgets at 0x66aea0 (enemy)
+and 0x66b224 (own) + place × 0x4b. The run log also gets the units' attack, defence and
+initiative fields (`battle_raw`) on both sides.
+
 ## Razdor side (script mode)
 
 Razdor plays an action list (v1) without a window and writes the state (schema v1) after
@@ -10,11 +75,15 @@ every action:
     target/release/razdor --replay actions.jsonl --map РК1 --hero 1 --out out/
 
 The install comes from `RAZDOR_DT_DIR` (or `.env`); a list on `"map":"demo"` needs none.
-`--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
+`--rng-from original.jsonl` sets the generator before each step to the state that file
+has for the step before. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
 prefix). States go to `out/razdor.jsonl`, one line per action (`step` = the action's index,
 0-based), or to the standard output without `--out`. Actions that do not apply at that
 moment (an `ok` with nothing open, a click on a cell that is no target) are skipped and
-listed on stderr as `note:` lines.
+listed on stderr as `note: step N:` lines. With `--out`, `razdor-run.jsonl` has per step
+the notes, the generator's draws (`[n, state before, "file:line"]`) and the battle units'
+stats. `RAZDOR_SCENE=replay:<step>` with `RAZDOR_REPLAY=<list>` shows the screen after that
+step (`src/ui/snapshot.rs`).
 
 How the actions are applied (`src/difftest.rs`):
 - `click_map`: both clicks of the original at once; the walk plays to its end, or until a
@@ -22,13 +91,14 @@ How the actions are applied (`src/difftest.rs`):
 - `wait`: 1 or 4 hours of 30-minute ticks; a message or the noon report stops it.
 - `ok` closes the front dialog, else the building window; `answer` the front question.
 - `battle_auto`: the battle AI plays both sides to the end and the result box is closed.
+- `battle_act`, `battle_pass`: see "Battles" above.
 - `key`: `Escape`, `1`, `4`, `Return`/`space`; others are noted and skipped.
 - The generator gets the interface's draws: `Random(3)` as an event, village or shipyard
   window opens, and the music change when the first dialog after a won battle closes. The
   map music's real-time rotation is not played (it has no fixed place in a script).
 
 Field meanings follow `memread.py`: `clock` = time div 100 + start offset; unit `type`
-1-based, `hp` the hit points (max when unhurt); building `owner` 0 player, k army, 255
+1-based, `level` 0-based as the map file and the unit record number it, `hp` the hit points (max when unhurt); building `owner` 0 player, k army, 255
 none; `goods` the non-empty goods without sign (ruins: their treasure); `events_done` the
 events fired at least once. An army Razdor dropped after its defeat (no respawn) is given
 as `{"id", "alive": false}` only; an army waiting to respawn as `active` and `alive` false.
@@ -79,11 +149,26 @@ A start that hangs before the main menu (seen once) is retried once.
 - `answer`: the event window's Yes or No button (from memory); Return/Esc on the yes/no box.
 - `key`: an X keysym name (`Escape`, `Return`, `space`, `F4`, ...).
 - `battle_auto`: the original has no auto battle; the step is recorded with a note.
+- `battle_act`: a click on the card's widget (rectangle read from memory); `battle_pass`:
+  Space. Both need the player's turn (input flag 0x68dc63).
 - `snapshot`: only records.
 
 After each action the harness waits until the game is at rest: on the world map with the
-idle flag set and the timeline queue empty, or on another window, and nothing (screen,
-time, generator, hero cell) changed for 0.6 s. An action that does not apply (wrong screen,
+idle flag set and the timeline queue empty, in battle with the player's input on, or on
+another window, and nothing (screen, time, generator, hero cell, battle sides) changed for
+0.6 s.
+
+**Draw trace and music** (`--trace-draws`, `--hold-music`; `run.py` turns both on). The
+trace writes a 6-byte jump at the top of Random (0x4832fc) into a 76-byte stub placed in
+unused, zero space at the end of the Community's `.mod` section (0xc2b000, RWX, no references
+to it in the exe); the stub stores the return address, `n`, the state before and the game
+time into a 512-slot ring (0xc2b200) and counts the calls (0xc2b100), then runs the displaced
+prologue. The harness reads the ring as it waits; `run.jsonl` gets each step's `draws`
+(`[n, state before, return address, caller, time_cs]`) and `draws_lost` (the ring wrapped:
+the map load's plant jitter always does). `--hold-music` keeps the next timed music change
+(0xae123c) an hour ahead of the frame clock (0x4f1c34), so the music rotation, a real-time
+draw, never fires during a run; the music changes the game starts itself (a battle, the
+triumph's end) still draw. Nothing else is written into the process. An action that does not apply (wrong screen,
 no question) is skipped with a note, like Razdor's.
 
 **State fields** (addresses in `memread.py`):
@@ -107,7 +192,8 @@ Not validated by a live change yet: `xp` (0 at start; no event of РК1 gives XP
 original has no auto battle), unit `hp` and `level` after a battle, army `gold` after
 the AI earns or spends.
 
-**Things to know when diffing.**
+**Things to know when diffing.** `run.jsonl`'s `meta` also has `event_count` and, in battle,
+`battle_raw`.
 - The original changes the music on a real-time timer (50-90 s) and that change draws the
   generator (engine.md §3.4). A run that idles long enough gets an extra draw;
   `run.jsonl` has the timer (`next_music_ms`) and the clock (`now_ms`) to spot it.
