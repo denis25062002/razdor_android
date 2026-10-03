@@ -818,7 +818,8 @@ pub fn marble_button(r: Rect, label: &str, enabled: bool, hover: bool) {
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, color);
 }
 
-/// The small pill buttons of the barracks ("Hire" green, "Heal" blue).
+/// The small pill buttons of the barracks ("Hire" green, "Heal" blue). They pay: the
+/// press plays `Item-Gold` (interface.md §14).
 pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
     let hover = enabled && super::widgets::mouse_in(r.x, r.y, r.w, r.h);
     let name = if !enabled {
@@ -851,7 +852,7 @@ pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, if enabled { WHITE } else { Color::new(0.8, 0.8, 0.8, 1.0) });
     let pressed = hover && super::widgets::clicked();
     if pressed {
-        super::audio::cue(super::audio::Cue::Button);
+        super::audio::cue(super::audio::Cue::Gold);
     }
     pressed
 }

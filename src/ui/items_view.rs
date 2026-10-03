@@ -324,6 +324,8 @@ pub fn squad(
     let sheet_rect = at(2.0, 27.0, 244.0, 570.0);
     if let Some(slot) = unit_sheet::draw(assets, &c, sheet_rect, &sheet, true, &mut hover) {
         if let Some(item) = u.items[slot] {
+            // An item taken up plays its sound, and again where it goes (interface.md §14).
+            cue(Cue::Item(c.item(item).kind));
             held = Some(Held { from: From::Worn(sel, slot), item, at: pointer().into(), moved: false });
         }
     }
@@ -344,6 +346,7 @@ pub fn squad(
     if show_tree {
         tree_view(game, assets, sel, &u, content, message);
     } else if let Some(i) = pack_view(game, assets, content, scroll, &mut hover) {
+        cue(Cue::Item(c.item(game.pack[i]).kind));
         held = Some(Held { from: From::Pack(i), item: game.pack[i], at: pointer().into(), moved: false });
     }
     if let Some(h) = held.as_mut() {

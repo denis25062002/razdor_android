@@ -246,11 +246,16 @@ pub fn tooltip_panel(r: Rect) {
 
 /// Draws a button and returns true when it was clicked this frame.
 pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> bool {
+    button_sounding(x, y, w, h, label, enabled, super::audio::Cue::Button)
+}
+
+/// [`button`] with its own press sound (the money buttons play `Item-Gold`).
+pub fn button_sounding(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool, sound: super::audio::Cue) -> bool {
     let hover = enabled && mouse_in(x, y, w, h);
     super::chrome::marble_button(Rect::new(x, y, w, h), label, enabled, hover);
     let pressed = hover && clicked();
     if pressed {
-        super::audio::cue(super::audio::Cue::Button);
+        super::audio::cue(sound);
     }
     pressed
 }
