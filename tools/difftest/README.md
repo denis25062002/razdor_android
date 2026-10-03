@@ -43,7 +43,60 @@ own course of the battle has no use for; `battle_auto` then ends Razdor's battle
 still on, and is a no-op in the original).
 
 Options: `--no-build`, `--reuse-original DIR` (take the original's side of an earlier run),
-`--real-music`, `--no-trace`, `--no-shots`. `FINDINGS.md` lists the differences found so far.
+`--real-music`, `--no-trace`, `--no-shots`, `--trace PRESETS` (the Frida runtime trace below). `FINDINGS.md` lists the differences found so far.
+
+## Runtime trace (Frida)
+
+`trace.py` hooks any function of the original by address and logs each call (arguments,
+memory read before and after, return value) as JSON lines tagged with the step:
+
+    python -m tools.difftest.trace --list                       # the presets
+    python -m tools.difftest.run --actions a.jsonl --trace random,ai:1,events
+    python -m tools.difftest.original --actions a.jsonl --out out/ --trace ai_frames:1,my-hooks.json
+    python -m tools.difftest.trace --read out/trace.jsonl --steps 8-10 --army 1
+
+Records go to `original/trace.jsonl` (`s` step, `q` sequence, `f` hook, `t`/`tl` game time
+at entry/return, `ra` return address, `a` arguments, `e`/`l` values read at entry/return,
+`r` return value; step −1 is before the first action). Presets:
+
+| preset | hooks |
+|---|---|
+| `random` | Random 0x4832fc: `n` (EAX), the state before, the result. With it Frida gives `run.jsonl`'s `draws` and the stub is not installed |
+| `ai[:K]` | the step clock 0x4a399c (step starts and arrivals: cell, direction, play time, bank, window, path index), goal choice 0x4a2d88 (the new path), wander points 0x4a2550, arrival rules 0x4a548c, the snap at the hero's stop 0x4ad8a0; `:K` = army K only |
+| `ai_frames[:K]` | every call of the step clock (each frame of game time) |
+| `advance` | World_AdvanceAI 0x4ade3c (the per-frame AI driver, `dt`) |
+| `damage` | physical damage 0x485908 (kind, both units' type and HP, the result) and ApplyDamage 0x48a354 (HP before/after) |
+| `events` | the event scan 0x4abfbc, opening an event 0x4a8ae8 (0-based index), Event_Finish 0x4ab1ec |
+
+A JSON file in the list adds hook specs of its own (format in `trace_agent.js`: address,
+arguments by register or stack slot in Delphi's register convention, JavaScript expressions
+over the arguments and memory for the reads and the filters). The expressions run inside the
+game: only use hook files you wrote.
+
+**Setup.** `pip install frida` (tested with 17.22.0) in the venv
+that runs the harness, and the matching Windows x86 gadget from the Frida releases
+(`frida-gadget-<version>-windows-x86.dll.xz`, unpacked into `~/.local/opt/frida-win/`, or
+`--gadget PATH` / `RAZDOR_FRIDA_GADGET`).
+
+**How it gets in.** Wine 11 runs the game through new-style WoW64: 32-bit code in a 64-bit
+Linux process (`wine-preloader`). A Linux Frida cannot attach to it: its 64-bit agent is
+injected but aborts ("Unable to locate the libc": the main image is the static preloader)
+and the game dies with SIGSEGV; and a 64-bit agent could not hook the 32-bit code anyway.
+So the Windows x86 gadget runs inside the game: the harness copies it into the private
+install copy with a config that listens on a free 127.0.0.1 port, writes a one-shot stub
+into unused space of `.mod` (0xc2e000) and points the import slot of `timeGetTime`
+(0xc0b834, called every frame) at it; the stub restores the slot, calls
+`LoadLibraryA("frida-gadget.dll")` and goes on into `timeGetTime`. The gadget loads within a
+frame at the main menu; the harness then connects to it and loads `trace_agent.js`. No
+proxy DLL, no registry or prefix change, nothing in the real install. Frida's frida-server
+for Windows was not needed and not tried.
+
+**Reliability.** On РК1 (the first 14 steps of `rk1-day1.jsonl`) the `random` hook gave the
+very draws the stub gave, step by step, and also the 2721 map-load draws the stub's ring
+loses; the agent buffers up to 500000 records between two steps and counts any it drops
+(`trace_dropped` in `run.jsonl`). Hooks cost time in the game's frames, and the original's AI
+movement depends on the frame rate (FINDINGS.md §5): the presets above did not change the
+game in repeated runs, but a slow hook (25 ms per frame) moved an army three cells less.
 
 ## Battles (action list and state, v1 extension)
 

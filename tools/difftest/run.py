@@ -77,10 +77,12 @@ def run_razdor(exe, actions, out, rng_from=None):
         raise SystemExit(f"razdor --replay failed ({res.returncode}): {res.stderr[-2000:]}")
 
 
-def run_original(actions, out, real_music=False, trace=True):
+def run_original(actions, out, real_music=False, trace=True, frida=None):
     cmd = [PY, "-m", "tools.difftest.original", "--actions", actions, "--out", out]
     if trace:
         cmd.append("--trace-draws")
+    if frida:
+        cmd += ["--trace", frida]
     if not real_music:
         cmd.append("--hold-music")
     print("original:", " ".join(cmd), file=sys.stderr)
@@ -368,6 +370,11 @@ def main(argv=None):
     ap.add_argument("--real-music", action="store_true",
                     help="let the original's timed music change draw (real-time noise)")
     ap.add_argument("--no-trace", action="store_true", help="no draw trace in the original")
+    ap.add_argument("--trace", metavar="PRESETS",
+                    help="Frida runtime trace of the original (tools/difftest/trace.py): "
+                         "comma-separated presets or a JSON file of hook specs, written to "
+                         "original/trace.jsonl; with `random` Frida gives the draws instead "
+                         "of the stub")
     ap.add_argument("--no-shots", action="store_true", help="no Razdor screenshot")
     a = ap.parse_args(argv)
 
@@ -392,7 +399,7 @@ def main(argv=None):
             shutil.copytree(a.reuse_original, odir, dirs_exist_ok=True)
         orc = 0
     else:
-        orc = run_original(alist, odir, a.real_music, not a.no_trace)
+        orc = run_original(alist, odir, a.real_music, not a.no_trace, a.trace)
     orig = load_jsonl(os.path.join(odir, "original.jsonl"))
     orig_run = load_jsonl(os.path.join(odir, "run.jsonl"))
     run_razdor(exe, alist, os.path.join(run, "razdor-sync"), os.path.join(odir, "original.jsonl"))
@@ -411,9 +418,12 @@ def main(argv=None):
             p = os.path.join(run, f"razdor-shot-{first:04d}.png")
             if razdor_shot(exe, alist, first, p, run):
                 shots["razdor"] = p
+    frida_random = bool(a.trace) and "random" in [p.strip() for p in a.trace.split(",")]
     extra = {"run folder": run, "original's exit code": orc,
              "original's music": "real (timed changes draw)" if a.real_music else "held off",
-             "original's draw trace": "off" if a.no_trace else "on"}
+             "original's draw trace": "Frida" if frida_random else "off" if a.no_trace else "stub"}
+    if a.trace:
+        extra["original's runtime trace"] = f"{a.trace} → {os.path.join(odir, 'trace.jsonl')}"
     write_report(os.path.join(run, "report.md"), name, acts, free, first, local, shots, extra)
     with open(os.path.join(run, "diff.json"), "w", encoding="utf-8") as f:
         json.dump({"first": first, "free": free, "local": local, "shots": shots}, f,

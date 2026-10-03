@@ -90,7 +90,8 @@ def prepare_install(src, work):
 
 class Original:
     def __init__(self, install=DEFAULT_INSTALL, work=DEFAULT_WORK, display=None,
-                 wineprefix=None, log=None, trace=False, hold_music=False):
+                 wineprefix=None, log=None, trace=False, hold_music=False, frida=None,
+                 gadget=None):
         self.src = install
         self.work = work
         self.display_num = display
@@ -104,6 +105,8 @@ class Original:
         self.trace_on, self.hold_music = trace, hold_music
         self.trace = None
         self.draws, self.draws_lost = [], 0
+        self.frida_presets, self.gadget = frida, gadget
+        self.tracer = None
 
     # --- lifecycle ------------------------------------------------------------------------
     def start(self, timeout=90, tries=2):
@@ -163,10 +166,19 @@ class Original:
         self.game = memread.Game(memread.Memory(self.pid))
         self.wait_screen("main_menu", timeout - (time.time() - t0))
         time.sleep(1.0)  # menu fade-in
+        if self.frida_presets:
+            from . import trace as frida_trace
+            self.tracer = frida_trace.Tracer(self.game.m, self.dir, self.frida_presets,
+                                             self.gadget, self.log).start()
+            self.trace_on = self.trace_on and not self.traces_random()
         if self.trace_on:
             self.trace = memread.DrawTrace(self.game.m)
             self.trace.install()
         self.log(f"game pid {self.pid}: main menu")
+
+    def traces_random(self):
+        """Whether the Frida trace hooks Random (it then gives the draws; the stub is not used)."""
+        return bool(self.tracer) and any(s["addr"] == memread.RANDOM for s in self.tracer.specs)
 
     def tick(self):
         """Collects the traced draws and keeps the timed music change away."""
@@ -207,6 +219,9 @@ class Original:
         return None
 
     def stop(self):
+        if self.tracer:
+            self.tracer.stop()
+            self.tracer = None
         for pid in {p for p in (self.pid, self.wine and self.wine.pid) if p}:
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -539,8 +554,20 @@ class Original:
                 "now_ms": self.game.m.u32(memread.NOW_MS)}
         if note:
             line["note"] = note
+        draws = None
+        if self.tracer:
+            from . import trace as frida_trace
+            recs, dropped = self.tracer.drain()
+            with open(os.path.join(out, "trace.jsonl"), "a") as f:
+                for r in recs:
+                    f.write(json.dumps(r) + "\n")
+            if dropped:
+                line["trace_dropped"] = dropped
+            if self.traces_random():
+                draws, lost = frida_trace.draws_from(recs), dropped
         if self.trace:
             draws, lost = self.take_draws()
+        if draws is not None:
             line["draws"] = [[n, before, hex(ret), memread.draw_site(ret), t]
                              for n, before, ret, t in draws]
             line["draws_lost"] = lost
@@ -580,6 +607,11 @@ def main(argv=None):
     ap.add_argument("--wineprefix", help="default: Wine's own (~/.wine)")
     ap.add_argument("--trace-draws", action="store_true",
                     help="log every draw of the generator (a hook on Random; see memread.DrawTrace)")
+    ap.add_argument("--trace", metavar="PRESETS",
+                    help="Frida runtime trace: comma-separated presets (python -m "
+                         "tools.difftest.trace --list) or a JSON file of hook specs; records go "
+                         "to <out>/trace.jsonl; with `random` it gives the draws instead of the stub")
+    ap.add_argument("--gadget", help="the Windows x86 frida-gadget DLL (see trace.py)")
     ap.add_argument("--hold-music", action="store_true",
                     help="keep the timed music change (a real-time draw) from happening")
     ap.add_argument("--check", action="store_true",
@@ -592,16 +624,18 @@ def main(argv=None):
     if not acts:
         ap.error("nothing to do: give --map and/or --actions")
     os.makedirs(a.out, exist_ok=True)
-    for name in ("run.jsonl", "original.jsonl"):
+    for name in ("run.jsonl", "original.jsonl", "trace.jsonl"):
         open(os.path.join(a.out, name), "w").close()
 
     o = Original(a.install, a.work, a.display, a.wineprefix,
-                 trace=a.trace_draws, hold_music=a.hold_music)
+                 trace=a.trace_draws, hold_music=a.hold_music, frida=a.trace, gadget=a.gadget)
     rc = 0
     try:
         o.start()
         for step, act in enumerate(acts):
             print(f"step {step}: {json.dumps(act, ensure_ascii=False)}", file=sys.stderr)
+            if o.tracer:
+                o.tracer.set_step(step)
             try:
                 note = o.perform(act)
             except NotApplicable as e:
