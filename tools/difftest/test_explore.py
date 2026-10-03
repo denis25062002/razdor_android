@@ -67,6 +67,15 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 0, "diffs": [["rng", 1, 2]]}, {"step": 1, "diffs": [["hero.x", 1, 2]]}], c)
         self.assertEqual([e["class"] for e in per[1]], ["downstream:1", "downstream:1"])
 
+    def test_one_cell_off_is_noise(self):
+        c = known.Context([{"op": "wait", "hours": 1}], {},
+                          [{"step": 0, "armies": [{"id": 9, "x": 5, "y": 24}]}],
+                          [{"step": 0, "armies": [{"id": 9, "x": 5, "y": 25}]}],
+                          [{"step": 0, "draws": [[3000, 0, "0x4ad933", "patroller idle offset"]]}],
+                          [{"step": 0, "draws": []}])
+        per = known.classify([{"step": 0, "diffs": [["armies[id 9].y", 24, 25], ["rng", 1, 2]]}], c)
+        self.assertEqual([e["class"] for e in per[0]], ["known:1", "noise"])
+
     def test_paths(self):
         st = {"armies": [{"id": 3, "x": 7}], "battle": {"sides": [[], [{"hp": 5}]]}}
         self.assertEqual(explore.get_path(st, "armies[id 3].x"), 7)

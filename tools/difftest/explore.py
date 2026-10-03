@@ -722,6 +722,7 @@ def save_candidate(cid, info, hero, episode_actions, repro, step, entries, run_d
 
 
 def append_candidate_md(cid, info, hero, repro, step, entries, diff_row, shrink_info, out):
+    out = out.replace(os.path.expanduser("~"), "~", 1)
     short = lambda v: (lambda s: s if len(s) <= 50 else s[:47] + "...")(json.dumps(v, ensure_ascii=False))
     a = repro[step]
     L = [f"## {cid}: {info.stem}, step {step} `{act_text(a)}`", "",
@@ -733,12 +734,12 @@ def append_candidate_md(cid, info, hero, repro, step, entries, diff_row, shrink_
         L.append(f"  - `{e['path']}`: {short(e['razdor'])} / {short(e['original'])}")
     if len(entries) > 8:
         L.append(f"  - ... {len(entries) - 8} more")
-    for s in diff_row.get("rng", [])[:3]:
+    for s in diff_row.get("rng", [])[:5]:
         L.append(f"- rng: {s}")
     L.append(f"- The original gave the same values on a second run (trace `random,ai,events`). "
              f"Files: states, screenshots, `trace-around.jsonl` in `{out}/`.")
     L.append("")
-    new_file = not os.path.exists(CANDIDATES)
+    new_file = not os.path.exists(CANDIDATES) or os.path.getsize(CANDIDATES) == 0
     with open(CANDIDATES, "a", encoding="utf-8") as f:
         if new_file:
             f.write("# Diff test candidates\n\nDifferences the LLM explorer (`explore.py`) found that "

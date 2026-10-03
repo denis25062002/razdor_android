@@ -20,6 +20,8 @@ The rules, by FINDINGS.md entry:
 3. `battle.sides[0]...row/col/type` (the hero's starting formation). Taints everything after
    it: the battle runs otherwise from there.
 4. `battle.sides[1]...hp` in a battle with a ruins' garrison. Taints everything.
+5. first part: an AI army one cell off while the generator agrees (or differs only by §1's
+   draws) is the original's frame noise (class `noise`).
 5. second part, `rng` where both sides drew the same `n` (Random(3000) aside) but in another
    order and the draws include the AI's wander points: arrivals within a tick come in another
    order. Taints the armies, the buildings' goods, gold and owners, and later generator
@@ -159,7 +161,7 @@ def classify(rows, ctx):
             taint_all = near[1] if near else "desync"
         order = lambda d: (d[0] != "rng", not d[0].startswith("battle.sides"), d[0])
         diffs = sorted(row.get("diffs", []), key=order)
-        rng_diff = any(p == "rng" for p, _, _ in diffs)
+        rng_diff = any(p == "rng" for p, _, _ in diffs)   # cleared below when only §1's draws
         for p, a, b in diffs:
             cls, why = None, ""
             if p == "state":
@@ -178,6 +180,8 @@ def classify(rows, ctx):
                 if e == 5 and taint and any(en == 5 for _, en in taint):
                     cls, why = "downstream:5", "the AI's draws after an arrival-order difference"
                 elif e:
+                    if e == 1:
+                        rng_diff = False   # only the stop's Random(3000): no effect on the armies
                     cls, why = f"known:{e}", {1: "extra Random(3000) per idle patroller at the stop",
                                               2: "village offer rolled at arrival, not after the event",
                                               5: "the AI's draws differ (wander points; arrivals in another order)"}[e]
