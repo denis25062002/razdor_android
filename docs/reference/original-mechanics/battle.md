@@ -543,7 +543,11 @@ stops after the **first action of turn 25**: 24 full turns plus one action. **co
 - **Column count.** The global at 4ed044 is 6 when `[Options] OptValue11 = 1`, else 4 (read at
   4b8a46). The width is stored in the save header at new game (4b25a2) and restored on load
   (4b77f3). **code**
-- **Vanilla (4 columns):** 3 rows × 4 columns, 12 cells.
+- **Vanilla (4 columns):** 3 rows × 4 columns, 12 cells. On screen they take the same 2 × 6
+  places (492940): the front row the middle four of the first line, the back row the middle
+  four of the second, and the reserve the four ends (columns 1, 2, 3, 4 at the first line's
+  right end, the second line's left end, its right end and the first line's left end), so the
+  front row's two edge places are reserve cells as the back row's are. **code**
 - **Wide (6 columns)** (48395c). The grid blocks cells by filling them with −1:
   - front row: 6 cells;
   - back row: 4 cells, columns 2–5;

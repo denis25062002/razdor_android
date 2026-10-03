@@ -1041,7 +1041,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
 | 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
-| 43 | Options window | Music and sound volume, battle AI | Five sliders and eight checkboxes; slider test sound | 16 |
+| 43 | Options window | Music and sound volume, battle AI, the front row's width for new games (6 or 4: a switch for `OptValue11`, which stays the default until chosen; a save keeps its own width) | Five sliders and eight checkboxes; slider test sound | 16 |
 | 44 | Loading | Razdor's own start-up | Logo slides, a loading bar that takes at least 4 s, first-run sound conversion | 3 |
 | 45 | Info card colours | Compares the value with its start-of-battle value (blue above, red below) | Compares the shown value with the level value (no items): blue above, red below the level **or** the current value | 9.1 |
 | 46 | Info card values | "base + bonus" split for what items add; "v + n" for building defence on both defences and `Row2Def` on ranged defence in the back row | Only the shown value; "v + n" for the building defence on both defences and `Row2Def` on ranged defence in the back row | 9.1 |

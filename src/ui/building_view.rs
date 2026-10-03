@@ -443,10 +443,10 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     let raises = game.resurrects_here();
     let form = c.formation;
     let lines = form.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
     let grid = at(f, 250.0, 330.0, 588.0, 0.0);
-    let gx = (grid.x + (grid.w - (form.cols as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
+    let gx = (grid.x + (grid.w - (form.display_cols() as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
     let cell_at = |slot: Slot| {
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()
@@ -565,10 +565,10 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
     let c = &game.content;
     let form = c.formation;
     let lines = form.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
     let grid = at(f, 250.0, rel_y, 584.0, 0.0);
-    let gx = (grid.x + (grid.w - (form.cols as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
+    let gx = (grid.x + (grid.w - (form.display_cols() as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
     let cell_at = |slot: Slot| {
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()

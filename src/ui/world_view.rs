@@ -903,7 +903,7 @@ fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x:
     let f = game.content.formation;
     let lines = f.display_lines();
     for r in 0..lines {
-        for col in 0..f.cols {
+        for col in 0..f.display_cols() {
             let Some(slot) = f.at_display(r, col) else { continue };
             let (cx, cy) = (x + col as f32 * (cell + 3.0), y + (lines - 1 - r) as f32 * (cell + 3.0));
             let sq = Rect::new(cx, cy, cell, cell);
@@ -1009,7 +1009,7 @@ fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
     let cell = (46.0 * k).round();
     let f = game.content.formation;
     // `formation_grid` spaces its cells 3 px apart.
-    let grid_w = f.cols as f32 * (cell + 3.0) - 3.0;
+    let grid_w = f.display_cols() as f32 * (cell + 3.0) - 3.0;
     let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 * k };
     // Names in Benguiat, larger; the rest small.
     let big = |c: Color| c == TIP_NAME || c == TIP_NOTE;

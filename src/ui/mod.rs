@@ -36,6 +36,7 @@ use std::sync::Arc;
 use razdor::dt::dtm::Scenario;
 use razdor::i18n::tr;
 use razdor::rules::content::Content;
+use razdor::rules::formation::Formation;
 use razdor::rules::events::EventOutcome;
 use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, Install};
@@ -175,7 +176,7 @@ impl App {
             })
             .collect();
         let audio = Audio::new(assets.dt.as_ref().map(|d| &d.install));
-        App {
+        let mut app = App {
             assets,
             demo,
             dt_content,
@@ -196,7 +197,9 @@ impl App {
             help: false,
             lang: razdor::i18n::lang(),
             quit: false,
-        }
+        };
+        app.follow_row_setting();
+        app
     }
 
     /// Opens the map editor (the title screen's button and `--editor`).
@@ -517,6 +520,21 @@ impl App {
         }
     }
 
+    /// The install's "wide front row in battle" (`OptValue11`; wide without an install).
+    fn install_wide_row(&self) -> bool {
+        self.assets.dt.as_ref().is_none_or(|d| d.install.settings.wide_row)
+    }
+
+    /// New games take the front row's width of the settings (a running or loaded game keeps
+    /// its own: it holds its content, and a save its width).
+    fn follow_row_setting(&mut self) {
+        let wide = main_menu::wide_row(&self.audio.settings, self.install_wide_row());
+        let want = if wide { Formation::WIDE } else { Formation::VANILLA };
+        if let Some(c) = self.dt_content.as_mut().filter(|c| c.formation != want) {
+            *c = Arc::new(c.with_formation(want));
+        }
+    }
+
     pub fn frame(&mut self) {
         chrome::begin_frame();
         widgets::track_held_key();
@@ -526,6 +544,8 @@ impl App {
         if let Some(g) = self.game.as_mut() {
             g.improved_ai = main_menu::expert_ai(&self.audio.settings);
         }
+        // The front row's width from the settings: the next new game uses it.
+        self.follow_row_setting();
         if matches!(self.screen, Screen::Editor) {
             self.editor_frame();
             return;
@@ -535,6 +555,7 @@ impl App {
         let guard = self.guard();
         widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
         let mut restart = false;
+        let install_wide = self.install_wide_row();
         let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::MainMenu, _) => match main_menu::frame() {
                 Some(main_menu::Pick::NewGame) if new_game::tutorial_map(&self.scenarios).is_some() => Some(Screen::TutorialOffer),
@@ -550,7 +571,7 @@ impl App {
                 None => None,
             },
             (Screen::Authors(started), _) => main_menu::authors(*started).then_some(Screen::MainMenu),
-            (Screen::Options, _) => main_menu::options(&mut self.audio.settings).then_some(Screen::MainMenu),
+            (Screen::Options, _) => main_menu::options(&mut self.audio.settings, install_wide).then_some(Screen::MainMenu),
             (Screen::ScenarioSelect, _) => new_game::scenario_select(&self.scenarios, self.dt_content.is_some()),
             (Screen::TutorialOffer, _) => new_game::tutorial_offer(&self.scenarios),
             (Screen::ClassSelect { scenario }, game) => {
@@ -585,7 +606,7 @@ impl App {
             },
             (Screen::Settings, Some(game)) => {
                 world_view::backdrop_lit(game, &self.assets, Some(game_bar::BarButton::Settings));
-                main_menu::options_window(&mut self.audio.settings).then_some(Screen::WorldMap)
+                main_menu::options_window(&mut self.audio.settings, install_wide).then_some(Screen::WorldMap)
             }
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),

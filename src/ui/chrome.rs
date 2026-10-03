@@ -873,13 +873,14 @@ pub enum CellIcon {
 }
 
 impl CellIcon {
-    /// The icon of `slot`: the outer columns of a six-wide formation are the tents.
+    /// The icon of `slot`: the reserve's cells (the outer places of the 2 × 6 grid) are the
+    /// tents.
     pub fn of(f: razdor::rules::formation::Formation, slot: razdor::rules::formation::Slot) -> CellIcon {
         use razdor::rules::formation::Row;
         let (_, col) = f.display(slot);
         match slot.row {
             Row::Reserve => CellIcon::Tent,
-            _ if f.cols >= 6 && (col == 0 || col + 1 == f.cols) => CellIcon::Tent,
+            _ if f.display_cols() >= 6 && (col == 0 || col + 1 == f.display_cols()) => CellIcon::Tent,
             Row::Front => CellIcon::Swords,
             Row::Back => CellIcon::Bow,
         }

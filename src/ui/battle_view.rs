@@ -68,10 +68,10 @@ impl Layout {
         let strip = Rect::new(rx, y + 302.0 * k, rw, 20.0 * k);
         let f = battle.formation;
         let lines = f.display_lines() as f32;
-        let c = 1.0f32.min(2.0 / lines).min(6.0 / f.cols as f32);
+        let c = 1.0f32.min(2.0 / lines).min(6.0 / f.display_cols() as f32);
         let card = vec2(88.0 * c * k, 128.0 * c * k).round();
         let pitch = vec2(96.0 * c * k, 133.0 * c * k);
-        let grid_w = f.cols as f32 * pitch.x - 8.0 * c * k;
+        let grid_w = f.display_cols() as f32 * pitch.x - 8.0 * c * k;
         Layout { k, win, panel, quick, strip, card, pitch, grid_x: (rx + (rw - grid_w) / 2.0).round(), formation: f }
     }
 

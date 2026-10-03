@@ -73,6 +73,15 @@ was seen on and what to check.
    battle.md §6), with no in-game switch. To work out: where the setting lives (Razdor's
    `settings.json` vs the install's option), whether it applies to a battle or a whole game
    (saves record the row width), and how the reserve row changes with it.
+   Done (2026-10-04, dt-original): the short row is the original's own 4-column formation
+   (`OptValue11` = 0): front 4, back 4, reserve 4, and the original draws it on the same 2 × 6
+   places (0x492940): front and back rows in the middle four, the reserve's four cells at the
+   ends of both lines, so the front row's edge places are inactive reserve cells exactly as
+   asked. The width is a whole game's (stored in the save at a new game, 0x4b25a2). Razdor's
+   settings window now has "Front row in battle (new games)": 6 or 4 cells, kept in
+   `audio.json` with the other settings (`wide_row`; until chosen the install's `OptValue11`),
+   applied to games started afterwards; saves keep their width. The 4-column formation is now
+   drawn as the original's places (it was three lines of four).
 
 6. **The camera jumps back to the hero on the first click.** With the hero off screen (the map
    scrolled away), a single click on a place moves the view straight back to the hero. Wanted:

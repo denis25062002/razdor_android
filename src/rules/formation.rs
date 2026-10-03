@@ -101,20 +101,45 @@ impl Formation {
         self.slots().count()
     }
 
-    /// Grid lines on screen: 2 for the wide row (the reserve sits at the back row's ends),
+    /// The vanilla 4 columns with a reserve: the original draws them on its 2 × 6 places too.
+    fn short(&self) -> bool {
+        self.cols == 4 && self.reserve
+    }
+
+    /// Grid lines on screen: 2 for both of the original's shapes (its 12 places, 492940),
     /// else one per row.
     pub fn display_lines(&self) -> usize {
-        if self.wide() {
+        if self.wide() || self.short() {
             2
         } else {
             self.rows().len()
         }
     }
 
-    /// Where `s` is drawn: (line from the front, column).
+    /// Grid columns on screen: 6 for both of the original's shapes, else the columns.
+    pub fn display_cols(&self) -> u8 {
+        if self.wide() || self.short() {
+            6
+        } else {
+            self.cols
+        }
+    }
+
+    /// Where `s` is drawn: (line from the front, column). The original's places (492940):
+    /// 6 columns put the reserve at the back row's ends; 4 columns put the front and back
+    /// rows in the middle four places of their lines and the reserve at all four ends
+    /// (reserve 1 front right, 2 back left, 3 back right, 4 front left, 1-based).
     pub fn display(&self, s: Slot) -> (usize, u8) {
-        match (self.wide(), s.row) {
-            (true, Row::Reserve) => (1, if s.col <= 2 { 0 } else { self.cols - 1 }),
+        match (self.wide(), self.short(), s.row) {
+            (true, _, Row::Reserve) => (1, if s.col <= 2 { 0 } else { self.cols - 1 }),
+            (_, true, Row::Front) => (0, s.col + 1),
+            (_, true, Row::Back) => (1, s.col + 1),
+            (_, true, Row::Reserve) => match s.col {
+                0 => (0, 5),
+                1 => (1, 0),
+                2 => (1, 5),
+                _ => (0, 0),
+            },
             _ => (self.rows().iter().position(|&r| r == s.row).unwrap_or(0), s.col),
         }
     }
@@ -223,9 +248,17 @@ mod tests {
             ]
         );
         assert!((0..6).all(|c| w.at_display(0, c) == Some(Slot::new(Row::Front, c))));
+    }
+
+    #[test]
+    fn four_columns_draw_the_reserve_at_both_lines_ends() {
+        // 492940 with 4 columns: front places 1-4, back 7-10, reserve 5, 6, 11, 0.
         let v = Formation::VANILLA;
-        assert_eq!(v.display_lines(), 3);
-        assert_eq!(v.at_display(2, 1), Some(Slot::new(Row::Reserve, 1)));
+        assert_eq!((v.display_lines(), v.display_cols()), (2, 6));
+        let line = |l| (0..6).map(|c| v.at_display(l, c)).collect::<Vec<_>>();
+        let (f, b, r) = (|c| Some(Slot::new(Row::Front, c)), |c| Some(Slot::new(Row::Back, c)), |c| Some(Slot::new(Row::Reserve, c)));
+        assert_eq!(line(0), vec![r(3), f(0), f(1), f(2), f(3), r(0)]);
+        assert_eq!(line(1), vec![r(1), b(0), b(1), b(2), b(3), r(2)]);
     }
 
     #[test]

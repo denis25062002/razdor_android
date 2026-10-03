@@ -413,9 +413,9 @@ pub fn squad(
     // The army: the cards as in battle, the selected one lit.
     let f = c.formation;
     let lines = f.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / f.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / f.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
-    let grid_w = f.cols as f32 * pitch.x - 8.0 * cs * k;
+    let grid_w = f.display_cols() as f32 * pitch.x - 8.0 * cs * k;
     let gx = (strip.x + (strip.w - grid_w) / 2.0).round();
     let cell_at = |slot: razdor::rules::formation::Slot| {
         let (line, col) = f.display(slot);

@@ -13,6 +13,10 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The front row's width in the settings:** the settings window chooses 6 or 4 front-row
+  cells for new games (the install's "wide front row" until chosen); a saved game keeps its
+  own. With 4 the formation is the original's 4-column one, drawn as the original draws it:
+  the front row's two edge places, like the back row's, are the reserve's.
 - **The view stays while you choose a route:** a click on the map with the hero off screen
   no longer brings the view back to him; it follows him once he sets off, as in the original.
 - **The back row's ranged defence is shown:** a unit in the back row shows the `Row2Def`

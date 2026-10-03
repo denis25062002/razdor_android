@@ -139,11 +139,16 @@ pub struct Settings {
     /// The enemy's battle AI: `Some(true)` expert (the original's "improved enemy AI in
     /// battle"), `Some(false)` easy; `None` until chosen: the install's `OptValue9`.
     pub expert_ai: Option<bool>,
+    /// The front row's width for new games: `Some(true)` 6 cells (the Community's wide row),
+    /// `Some(false)` 4 (its two edge places are the reserve's, as the back row's are);
+    /// `None` until chosen: the install's `OptValue11`. A save keeps the width it was
+    /// started with.
+    pub wide_row: Option<bool>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None }
+        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None, wide_row: None }
     }
 }
 
@@ -485,6 +490,20 @@ mod tests {
         // Missing fields take the defaults; out-of-range volumes are clamped.
         let partial: Settings = serde_json::from_str(r#"{"music_volume": 3.0}"#).unwrap();
         assert_eq!(partial.clamped(), Settings { music_volume: 1.0, ..Settings::default() });
+    }
+
+    /// The front row's width: the install's `OptValue11` until chosen, then the choice; an
+    /// older file without it keeps following the install.
+    #[test]
+    fn the_front_row_setting_falls_back_on_the_install() {
+        use crate::ui::main_menu::wide_row;
+        let old: Settings = serde_json::from_str(r#"{"music_volume": 0.5, "expert_ai": true}"#).unwrap();
+        assert_eq!(old.wide_row, None);
+        assert!(wide_row(&old, true) && !wide_row(&old, false));
+        let four = Settings { wide_row: Some(false), ..Settings::default() };
+        assert!(!wide_row(&four, true));
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&four).unwrap()).unwrap();
+        assert_eq!(back.wide_row, Some(false));
     }
 
     #[test]
