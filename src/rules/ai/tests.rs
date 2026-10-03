@@ -545,6 +545,33 @@ fn ai_battle_loot_is_asymmetric() {
     assert!(w.troops.iter().all(|t| t.alive()) && w.troops.iter().any(|t| t.hurt > 0 || t.xp > 0), "{:?}", w.troops);
 }
 
+/// The player's loot adds the beaten army's wage bill (+0x16e0) as its last recount (0x4a16d4)
+/// left it (0x4c50ec): his battle recounts nobody, so a gang he wipes out still pays the bill
+/// of its living units at the map load; a recount after their deaths would have none. Not
+/// with "units carry no money" (+0x3822) or for peasants.
+#[test]
+fn the_players_loot_adds_the_wage_bill_of_the_last_recount() {
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 1, &[troop(4, 0, 2)])];
+    let mut g = start(&s);
+    let bill = g.army_totals(0).wages;
+    assert!(bill > 0);
+    assert_eq!(g.world.armies[0].mind.wage_bill, bill, "counted at the load");
+    g.world.armies[0].gold = 150;
+    let c = g.content.clone();
+    for t in g.world.armies[0].troops.iter_mut() {
+        t.hurt = troop_max_hp(&c, t);
+        t.died_at = Some(0);
+    }
+    assert_eq!(g.army_totals(0).wages, 0, "nobody living");
+    assert_eq!(g.player_victory_gold(&g.world.armies[0]), (75, bill), "the bill of the last recount");
+    g.recount_bill(0);
+    assert_eq!(g.player_victory_gold(&g.world.armies[0]), (75, 0));
+    g.world.armies[0].mind.wage_bill = bill;
+    g.world.armies[0].ai.no_money = true;
+    assert_eq!(g.player_victory_gold(&g.world.armies[0]).1, 0, "its units carry no money");
+}
+
 #[test]
 fn a_surviving_sides_dead_stay_in_its_record_and_its_leader_lives() {
     let mut s = map();

@@ -535,6 +535,9 @@ old id, and their versions give both.
 - An AI army arriving just as the hero finishes a step sees him on his new cell, facing his
   step, as in the original: one standing right ahead of him stays put instead of walking off,
   and the idle draws of the hero's stop count it as the original does.
+- An army the hero beats pays its gold share plus its wage bill as it last counted it, as in
+  the original, even when none of its units survives the battle (before, a gang wiped out
+  paid no wages at all).
 
 ## 0.2.2 — 2026-10-01
 

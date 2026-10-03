@@ -466,6 +466,20 @@ fn ds1_an_army_at_the_end_of_his_step_sees_him_arrived() {
     assert_eq!(s.rng, 1_491_519_599);
 }
 
+/// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
+/// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
+/// last recount, 85, as the original's victory gives (450 → 610), though none of its units
+/// lives when the loot is counted.
+#[test]
+fn cursed_lake_the_gang_pays_its_wage_bill() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/lake-gang.jsonl")).unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let last = states.last().unwrap();
+    assert_eq!(last.hero.gold, 610, "{notes:?}");
+    assert!(last.battle.is_none());
+}
+
 /// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
 /// moves 28 AI armies through 509 draws. With the first step in place priced south of each
 /// army (§10), the simulated battles counted in side strengths (§11) from the strengths of

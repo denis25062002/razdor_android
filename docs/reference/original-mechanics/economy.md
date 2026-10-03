@@ -406,6 +406,12 @@ is the event's gold result (events.md).
 - **An army**:
   - Gold = `enemy gold div VictoryGoldDiv`. `MinVictoryGold` is not used.
   - Plus the enemy's wage bill when its byte +0x3822 is 0 and its style is below 2 (not peasants).
+    The bill is the record's +0x16e0 as its last recount (0x4a16d4) left it: the player's battle
+    recounts neither side (its write-back, 0x4988c0, copies HP only), so a gang he wipes out pays
+    the wages of the units it had at its last arrival in a building, AI battle, respawn or the map
+    load. Checked on Проклятое озеро (diff test, `lake-gang.jsonl`): army 17, 150 gold, two
+    robbers (Cost 70) and a chieftainess (130) behind its leader, pays 75 + 85 (18 + 18 + 49; the
+    leader draws no wage). +0x3822 is the map's byte 62, "units carry no money".
   - Every item the enemy units wore and its 12-item pack go to the loot list (32 entries; a larger
     haul would overrun the loot gold and mana that follow it in memory).
   - If the building the beaten army stood in (+0x3788) is a castle or fort with an empty garrison,

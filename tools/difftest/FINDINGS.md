@@ -398,6 +398,27 @@ C1004-003724 (ДС1).
   one ahead). After the fix the repro is 16 of 16 steps equal (`r3-c003724`); the recorded
   repros of rounds 2-3 replay as before.
 
+## 19. A beaten army's wage bill: the one of its last recount
+
+**Status: fixed** (`AiMind::wage_bill`, `Game::player_victory_gold`, the AI battles' loot;
+economy.md §3). The gameplay video's open point (VIDEO.md, the bandit gang's gold).
+
+- `lake-gang.jsonl` (Проклятое озеро, knight: two walks to army 17, the gang of a leader, two
+  robbers and a chieftainess with 150 gold, then the battle by presses): the original's gold
+  450 → 610 when the victory box closes (step 32), Razdor's 450 → 525. Every press of the
+  battle compared equal (run `r3-gold-lake17`).
+- 0x4c50ec: loot gold = `+0x16d8 div VictoryGoldDiv` (75) plus `+0x16e0` when +0x3822 is 0
+  and the style is below 2. +0x16e0 is the wage bill the recount 0x4a16d4 writes (0x4a1857:
+  the living units' wages); nothing recounts the beaten army during the player's battle
+  (the write-back 0x4988c0 has no call to it), so it is the bill of the gang's last recount:
+  18 + 18 + 49 = 85 for its robbers and chieftainess (the leader draws none). Razdor worked
+  the bill out from the units living after the battle: none, so 0. (In the video's 1.5 run
+  Razdor's 49 was the same slip with one unit left.)
+- Razdor now keeps the bill of the last recount (at the map load, an arrival in or out of a
+  building, after an AI battle, at a respawn) and the loot reads it, the player's and the AI
+  battles' (0x4a4c68 reads +0x16e0 too). After the fix the gang pays 160 (run
+  `r3-gold-lake17-fix`: 610 on both sides).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

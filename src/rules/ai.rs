@@ -246,6 +246,10 @@ pub struct AiMind {
     /// in a building at the start scores with 0 until its next recount. Its battle sides
     /// copy those strengths (49855c), so its simulated battles and its XP pools count them.
     pub strength_bd: i32,
+    /// Its gold wage bill (+0x16e0) as the same recount (0x4a16d4) last worked it out: the
+    /// wages of the units living then. The player's loot adds it (0x4c50ec), and his battle
+    /// recounts nobody, so a gang he wipes out still pays the bill of its last recount.
+    pub wage_bill: i32,
     /// The step weights its path buffer holds, node by node (the original's direction field
     /// of each path point read through the table 0x4ecfd4): a path read writes the weight of
     /// every step out of a node but the last, whose entry keeps what an earlier, longer path
@@ -561,6 +565,15 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
         }
     }
     t
+}
+
+impl Game {
+    /// The recount (0x4a16d4) of army `i`'s wage bill (+0x16e0): the wages of its living
+    /// units now.
+    pub(crate) fn recount_bill(&mut self, i: usize) {
+        let bill = army_wages(&self.content, &self.world.armies[i].troops);
+        self.world.armies[i].mind.wage_bill = bill;
+    }
 }
 
 /// Daily gold wages of an AI army's living troops (the leader and event units draw none).
@@ -1297,6 +1310,7 @@ impl Game {
         for &i in &ids {
             let cell = self.world.armies[i].tile(&self.world.map);
             let standing = self.world.location_covering(cell);
+            let bill = army_wages(&self.content, &self.world.armies[i].troops);
             {
                 let m = &mut self.world.armies[i].mind;
                 m.standing = standing;
@@ -1304,6 +1318,10 @@ impl Game {
                 // The recount comes before the defence is written (0x4a1ff0): a fresh record
                 // counts none; a save's its loaded one.
                 m.strength_bd = if from_save { m.defence } else { 0 };
+                // A save keeps its bill; one from before Razdor kept it counts it afresh.
+                if !from_save || m.wage_bill == 0 {
+                    m.wage_bill = bill;
+                }
                 if !from_save {
                     m.income = 0;
                     m.village_avg = 0;
@@ -2049,6 +2067,7 @@ impl Game {
                 m.standing = None;
                 m.defence = 0;
                 m.strength_bd = 0;
+                self.recount_bill(i);
             }
             return result;
         };
@@ -2183,6 +2202,7 @@ impl Game {
             self.mark_dirty(uid);
         }
         // Its strengths are recounted with the defence it has here now (0x4a79c5).
+        self.recount_bill(i);
         let m = &mut self.world.armies[i].mind;
         m.strength_bd = m.defence;
         m.countdown = 0;
@@ -2766,9 +2786,10 @@ impl Game {
         if empty {
             return true;
         }
-        let att_totals = self.army_totals(att);
+        // The loot reads each record's wage bill (+0x16e0) of its last recount.
+        let att_bill = self.world.armies[att].mind.wage_bill;
         let def_wages = match def {
-            Defender::Army(j) => self.army_totals(j).wages,
+            Defender::Army(j) => self.world.armies[j].mind.wage_bill,
             Defender::Garrison(_) => 0,
         };
         let (side_a, fought_a) = self.army_side(att, true);
@@ -2844,7 +2865,7 @@ impl Game {
         if a_beaten {
             let (style, gold) = (self.world.armies[att].ai.style, self.world.armies[att].gold);
             if def_lordly {
-                let mut take = if style == Style::Feudal { att_totals.wages } else { 0 };
+                let mut take = if style == Style::Feudal { att_bill } else { 0 };
                 let g = if gold < o.min_victory_gold { gold } else { gold / o.victory_gold_div.max(1) };
                 take += g;
                 self.world.armies[att].gold -= g;
@@ -2979,6 +3000,7 @@ impl Game {
         .into_iter()
         .flatten()
         {
+            self.recount_bill(i);
             let m = &mut self.world.armies[i].mind;
             m.strength_bd = m.defence;
         }
@@ -3140,6 +3162,7 @@ impl Game {
             m.just_respawned = true;
             // Recounted with the defence its record kept (0x4a28d0).
             m.strength_bd = m.defence;
+            m.wage_bill = army_wages(&self.content, &army.troops);
             m.walked = 0;
             m.no_path = true;
             m.free_step = true;

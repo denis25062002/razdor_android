@@ -906,11 +906,14 @@ impl Game {
     }
 
     /// Gold the player takes from a beaten army: `gold / VictoryGoldDiv` (no minimum), plus
-    /// its daily wage total unless it is a peasant army or its units carry no money
-    /// *(guess: which flag the exe reads there is not decoded)*.
+    /// its wage bill (+0x16e0) unless it is a peasant army or its units carry no money
+    /// (+0x3822, the map's byte 62; 0x4c50ec). The bill is the one of its last recount
+    /// ([`ai::AiMind::wage_bill`]): his battle recounts nobody, so the units it lost there
+    /// still count. A demo gang counts its living units.
     pub fn player_victory_gold(&self, a: &Army) -> (i32, i32) {
         let gold = a.gold.max(0) / self.content.options.victory_gold_div.max(1);
-        let wages = if a.ai.no_money || a.ai.style == ai::Style::Peasant { 0 } else { ai::army_wages(&self.content, &a.troops) };
+        let bill = if ai::managed(a) { a.mind.wage_bill } else { ai::army_wages(&self.content, &a.troops) };
+        let wages = if a.ai.no_money || a.ai.style == ai::Style::Peasant { 0 } else { bill };
         (gold, wages)
     }
 }

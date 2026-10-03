@@ -40,7 +40,10 @@ as real-time noise).
 village, noon, the opening events, the waits through midnight) and the ruins' garrison
 fought by explicit actions (planned against the original, so Razdor notes the presses its
 own course of the battle has no use for; `battle_auto` then ends Razdor's battle if it is
-still on, and is a no-op in the original).
+still on, and is a no-op in the original). `lake-gang.jsonl`: Проклятое озеро with the
+knight, two walks to the bandit gang (army 17) and the battle by presses, every press equal
+on both sides; it checks the loot of a beaten map army (FINDINGS §19). Built by playing
+Razdor's replay: walk toward the army's cell, strike the weakest enemy of the front row.
 
 Options: `--no-build`, `--exe PATH` (this Razdor binary, no build), `--reuse-original DIR`
 (take the original's side of an earlier run), `--real-music`, `--no-trace`, `--no-shots`,
