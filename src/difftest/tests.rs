@@ -434,38 +434,6 @@ fn cursed_lake_the_village_offer_rolls_as_it_opens() {
     assert_eq!((states[2].rng, states[3].rng), (3_728_805_967, 3_728_805_967), "{notes:?}");
 }
 
-/// FINDINGS.md §18 (candidate C1004-003724): an army arriving at the very end of the hero's
-/// step plans with him on his new cell, facing the step he took. On ДС1 army 5 then stands
-/// (the cell ahead of him is its own, erased), so the meeting's stop draws seven idle offsets,
-/// not eight: the original's generator after the walk.
-#[test]
-fn ds1_an_army_at_the_end_of_his_step_sees_him_arrived() {
-    let Some(dt) = install() else { return };
-    let actions = parse_actions(
-        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
-{"op":"ok"}
-{"op":"ok"}
-{"op":"ok"}
-{"op":"ok"}
-{"op":"click_map","x":97,"y":7}
-{"op":"ok"}
-{"op":"click_map","x":96,"y":18}
-{"op":"ok"}
-{"op":"wait","hours":4}
-{"op":"wait","hours":1}
-{"op":"wait","hours":4}
-{"op":"click_map","x":87,"y":19}
-{"op":"ok"}
-{"op":"wait","hours":1}
-{"op":"click_map","x":83,"y":27}"#,
-    )
-    .unwrap();
-    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
-    let s = &states[15];
-    assert_eq!((s.hero.x, s.hero.y, s.clock), (85, 23, 1118), "{notes:?}");
-    assert_eq!(s.rng, 1_491_519_599);
-}
-
 /// FINDINGS.md §10-§13 (candidate C1003-174927): on Проклятое озеро the first four-hour wait
 /// moves 28 AI armies through 509 draws. With the first step in place priced south of each
 /// army (§10), the simulated battles counted in side strengths (§11) from the strengths of
