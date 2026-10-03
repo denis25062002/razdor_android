@@ -595,3 +595,36 @@ fn ds1_a_village_opened_again_draws_its_chord() {
     r.random(3);
     assert_eq!((states[6].rng, states[6].clock), (r.state(), states[5].clock));
 }
+
+/// The replay's log of sounds, tracks and animations (`crate::av`) on `rk1-day1.jsonl`,
+/// step-locally: what the original played at the same steps (its Frida `av` trace, run
+/// `av-rk1`; tools/difftest/AV.md), where Razdor plays the same.
+#[test]
+fn rk1_day1_the_av_log_follows_the_original_where_razdor_plays_the_same() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-day1.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions, Some(&RK1_DAY1_ORIGINAL_RNG)).unwrap();
+    let names = |step: usize, kind: crate::av::AvKind| -> Vec<String> {
+        r.av[step].iter().filter(|e| e.k == kind).map(|e| match &e.t {
+            Some(t) if e.n.starts_with("battle_") => format!("{}@{t}", e.n),
+            _ => e.n.clone(),
+        }).collect()
+    };
+    use crate::av::AvKind::{Anim, Music, Sfx};
+    assert_eq!(names(0, Music), ["BkgMap2"]);
+    assert_eq!(names(2, Sfx), ["Global-Event-3"]);
+    assert_eq!(names(10, Sfx), ["InterfaceButtonDown", "Global-Event-2"]);
+    assert_eq!(names(18, Sfx), ["Global-Battle"]);
+    assert_eq!(names(18, Music), ["BkgBattle1"]);
+    assert_eq!(names(19, Anim), ["battle_slide@1:2:3", "battle_effect:bless@1:2:3"]);
+    assert_eq!(names(22, Sfx), ["Battle-Shoot", "Battle-Fight", "Battle-Fight", "Battle-Fight"]);
+    assert_eq!(
+        names(22, Anim),
+        ["battle_slide@1:2:4", "battle_effect:shot@2:1:4", "battle_slide@2:1:4", "battle_effect:melee@1:1:4", "battle_slide@2:1:5", "battle_effect:melee@1:1:4", "battle_slide@2:1:2", "battle_effect:melee@1:1:3"]
+    );
+    assert_eq!(names(36, Music), ["BkgTriumph"]);
+    assert!(names(36, Sfx).ends_with(&["Global-Event-3".to_string()]), "{:?}", names(36, Sfx));
+    // Closing the victory box changes the map track at once (its pick is a draw).
+    let after = names(38, Music);
+    assert!(after.len() == 1 && crate::rules::music::ROTATION.contains(&after[0].as_str()), "{after:?}");
+}

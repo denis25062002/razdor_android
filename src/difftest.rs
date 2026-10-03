@@ -22,13 +22,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::av::{self, AvEvent, AvLog, BattleSound};
 use crate::dt::dtm::Scenario;
 use crate::dt::install::DtInstall;
-use crate::rules::battle::{Battle, Outcome, Team};
+use crate::rules::battle::{Battle, Outcome, Step, Team};
 use crate::rules::formation::{Row, Slot};
 use crate::rules::content::{Content, HeroClass};
 use crate::rules::events::EventOutcome;
-use crate::rules::game::{BattleResult, Event, Game, STEP_SECONDS};
+use crate::rules::game::{BattleResult, Event, Foe, Game, STEP_SECONDS};
 use crate::rules::script::ScriptEnd;
 use crate::rules::world::{Army, LocationKind, Owner, Troop};
 
@@ -350,6 +351,13 @@ pub struct Runner<'a> {
     pub ui_draws: usize,
     /// What could not be applied, one line each.
     pub notes: Vec<String>,
+    /// The sounds, tracks and animations the interface would play (`crate::av`), at the
+    /// points where `ui` cues them.
+    pub av: AvLog,
+    /// The gold at the last look: a rise plays `Item-Gold` (`App::sounds`).
+    last_gold: Option<i32>,
+    /// Places an event showed, flown to once no dialog is open (`world_view`).
+    shows: Vec<crate::rules::map::Tile>,
 }
 
 /// Safety stop for a walk or a wait that does not end.
@@ -370,6 +378,9 @@ impl<'a> Runner<'a> {
             music_pick: crate::rules::music::WORLD_THEME,
             ui_draws: 0,
             notes: Vec::new(),
+            av: AvLog::default(),
+            last_gold: None,
+            shows: Vec::new(),
         }
     }
 
@@ -509,6 +520,11 @@ impl<'a> Runner<'a> {
             }
         };
         game.set_hero_name("");
+        // The way there with the mouse (`main_menu`, `new_game`): New game, the scenario's
+        // row, Next, the class portrait, Start.
+        for key in ["MainMenuPress", "InterfaceButtonDown", "MainMenuPress", "InterfaceButtonDown", "MainMenuPress"] {
+            self.av.sfx(key);
+        }
         self.game = Some(game);
         self.screen = Screen::Map;
         self.last_screen_building = false;
@@ -516,6 +532,8 @@ impl<'a> Runner<'a> {
         self.triumph = false;
         self.music_pick = crate::rules::music::WORLD_THEME;
         self.ui_draws = 0;
+        self.last_gold = None;
+        self.shows.clear();
         self.settle();
         Ok(())
     }
@@ -566,7 +584,9 @@ impl<'a> Runner<'a> {
             self.note(format!("click_map {t:?}: not a target"));
             return;
         }
-        if !g.set_destination(t) {
+        if g.set_destination(t) {
+            self.av.anim("walk", Some(format!("{},{}", t.0, t.1)));
+        } else {
             self.note(format!("click_map {t:?}: no way there"));
         }
     }
@@ -578,15 +598,19 @@ impl<'a> Runner<'a> {
             return;
         }
         self.g().begin_wait(hours);
+        self.av.anim("wait", Some(hours.to_string()));
     }
 
     /// Closes the front dialog; the music changes if the triumph plays.
     fn close_dialog(&mut self) {
+        // Its OK, Yes or No button (`widgets::button`).
+        self.av.sfx("InterfaceButtonDown");
         self.dialogs.pop_front();
         if self.triumph {
             let g = self.game.as_mut().expect("a game");
             let (pick, _) = g.music_rotate(self.music_pick);
             self.music_pick = pick;
+            self.av.music(crate::rules::music::ROTATION[pick]);
             self.triumph = false;
             self.ui_draws += 1;
         }
@@ -651,8 +675,13 @@ impl<'a> Runner<'a> {
         if !self.in_building("buy") {
             return;
         }
-        if let Err(e) = self.g().buy(slot) {
-            self.note(format!("buy {slot}: {e:?}"));
+        match self.g().buy(slot) {
+            Ok(item) => {
+                let kind = self.g().content.item(item).kind;
+                self.av.sfx("InterfaceButtonDown");
+                self.av.sfx(av::item_sound(kind));
+            }
+            Err(e) => self.note(format!("buy {slot}: {e:?}")),
         }
     }
 
@@ -670,8 +699,9 @@ impl<'a> Runner<'a> {
             Some(k) => g.sell(k).map(|_| ()).map_err(|e| format!("{e:?}")),
             None => Err("no such row".into()),
         };
-        if let Err(e) = r {
-            self.note(format!("sell {slot}: {e}"));
+        match r {
+            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            Err(e) => self.note(format!("sell {slot}: {e}")),
         }
     }
 
@@ -685,8 +715,10 @@ impl<'a> Runner<'a> {
             Some(k) => g.hire(k).map_err(|e| format!("{e:?}")),
             None => Err("no such barracks slot".into()),
         };
-        if let Err(e) = r {
-            self.note(format!("hire {slot}: {e}"));
+        match r {
+            // The hire pill (`chrome::pill_button`).
+            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            Err(e) => self.note(format!("hire {slot}: {e}")),
         }
     }
 
@@ -698,7 +730,10 @@ impl<'a> Runner<'a> {
         let g = self.g();
         let r = if raise { g.resurrect(unit) } else { g.heal(unit) };
         match r {
-            Ok(events) => self.handle(events),
+            Ok(events) => {
+                self.av.sfx("InterfaceButtonDown");
+                self.handle(events);
+            }
             Err(e) => self.note(format!("{op} {unit}: {e:?}")),
         }
     }
@@ -713,8 +748,9 @@ impl<'a> Runner<'a> {
             Some(id) => g.learn_spell(id).map_err(|e| format!("{e:?}")),
             None => Err("no such row".into()),
         };
-        if let Err(e) = r {
-            self.note(format!("learn {slot}: {e}"));
+        match r {
+            Ok(()) => self.av.sfx("InterfaceButtonDown"),
+            Err(e) => self.note(format!("learn {slot}: {e}")),
         }
     }
 
@@ -723,6 +759,9 @@ impl<'a> Runner<'a> {
     fn map_window(&mut self, op: &str) -> bool {
         self.close_building();
         if self.map_idle() && self.game.as_ref().is_some_and(|g| g.foe.is_none()) {
+            // The bar's button (`game_bar`), then the window opens (`App::sounds`).
+            self.av.sfx("InterfaceButtonDown");
+            self.av.sfx("InterfacePanelDown");
             return true;
         }
         self.note(format!("{op}: the map takes no input now"));
@@ -751,7 +790,18 @@ impl<'a> Runner<'a> {
             CastTarget::Own
         };
         match g.begin_cast(spell.id, target) {
-            Ok(_) => {}
+            Ok(outcome) => {
+                self.av.sfx("InterfaceCastSpell");
+                match outcome {
+                    // A spell that lands at once (no reading) plays its landing now.
+                    Some(crate::rules::magic::CastOutcome::Done { .. }) => {
+                        self.av.sfx(if matches!(target, CastTarget::Own) { "Spell-Good" } else { "Spell-Evil" })
+                    }
+                    // The hero reads on the map, the clock running as in a wait.
+                    None => self.av.anim("wait", Some("cast".into())),
+                    Some(_) => {}
+                }
+            }
             Err(e) => self.note(format!("cast {slot}: {e:?}")),
         }
     }
@@ -760,8 +810,14 @@ impl<'a> Runner<'a> {
         if !self.map_window("equip") {
             return;
         }
-        if let Err(e) = self.g().equip(unit, slot) {
-            self.note(format!("equip {slot} on {unit}: {e:?}"));
+        let kind = self.game.as_ref().and_then(|g| g.pack.get(slot).map(|&i| g.content.item(i).kind));
+        match self.g().equip(unit, slot) {
+            Ok(()) => {
+                if let Some(kind) = kind {
+                    self.av.sfx(av::item_sound(kind));
+                }
+            }
+            Err(e) => self.note(format!("equip {slot} on {unit}: {e:?}")),
         }
     }
 
@@ -862,14 +918,26 @@ impl<'a> Runner<'a> {
         let slot = Slot::new(row, u8::try_from(col - 1).map_err(|_| "col is 1 to 6")?);
         let done = match b.at(team, slot) {
             Some(t) => match b.options(active, t).first() {
-                Some(&kind) => b.act_with(t, kind).is_ok(),
+                Some(&kind) => match b.act_with(t, kind) {
+                    Ok(hit) => {
+                        log_hit(&mut self.av, b, active, &hit);
+                        true
+                    }
+                    Err(_) => false,
+                },
                 None if t == active => {
                     b.pass();
                     true
                 }
                 None => false,
             },
-            None if team == Team::Player => b.move_active(slot).is_ok(),
+            None if team == Team::Player => {
+                let moved = b.move_active(slot).is_ok();
+                if moved {
+                    log_move(&mut self.av, b, active);
+                }
+                moved
+            }
             None => false,
         };
         if done {
@@ -883,7 +951,10 @@ impl<'a> Runner<'a> {
     fn battle_pass(&mut self) {
         let ok = match &mut self.screen {
             Screen::Battle(b) if b.active().is_some_and(|a| b.fighters[a].team == Team::Player) => {
-                b.own_cell();
+                let actor = b.active().expect("an actor");
+                if let Some(hit) = b.own_cell() {
+                    log_hit(&mut self.av, b, actor, &hit);
+                }
                 true
             }
             _ => false,
@@ -909,8 +980,11 @@ impl<'a> Runner<'a> {
                 Some(a) if b.fighters[a].team == Team::Player => return,
                 Some(_) => {
                     // A plan that cannot be carried out still ends the unit's turn.
-                    if b.ai_step().is_none() {
-                        b.skip();
+                    match b.ai_step() {
+                        Some(Step::Act { actor, hit }) => log_hit(&mut self.av, b, actor, &hit),
+                        Some(Step::Move { actor, .. }) => log_move(&mut self.av, b, actor),
+                        Some(Step::Wait { .. }) => {}
+                        None => b.skip(),
                     }
                 }
                 None => break,
@@ -928,8 +1002,22 @@ impl<'a> Runner<'a> {
         let g = self.game.as_mut().expect("a game");
         let result = g.resolve_battle(b);
         let won = matches!(result, BattleResult::Victory { .. });
-        // The won battle's result box starts the triumph.
+        // The won battle's result box starts the triumph; its OK resolves the battle, a level
+        // gained plays `Unit-Upgrade` (`battle_view::result_overlay`); a defeat plays its piece.
         self.triumph = won;
+        if won {
+            self.av.music(av::TRIUMPH);
+        }
+        if matches!(result, BattleResult::Defeat) {
+            self.av.music(av::DEFEAT);
+        } else {
+            self.av.sfx("InterfaceButtonDown");
+        }
+        if let BattleResult::Victory { level_ups, .. } = &result {
+            if !level_ups.is_empty() {
+                self.av.sfx("Unit-Upgrade");
+            }
+        }
         match result {
             BattleResult::Defeat => self.screen = Screen::Ended,
             BattleResult::Victory { .. } if g.won() => self.screen = Screen::Ended,
@@ -956,6 +1044,11 @@ impl<'a> Runner<'a> {
                 Event::NewDay(_) => self.dialogs.push_back(Dialog::message()),
                 Event::Script(EventOutcome::Fired { message: true, event }) => self.dialogs.push_back(Dialog { id: Some(event), ..Dialog::message() }),
                 Event::Script(EventOutcome::Question(event)) => self.dialogs.push_back(Dialog { event: true, question: true, cued: false, offer: false, id: Some(event) }),
+                // `world_view::handle_events`: a level gained; a spell read to its end lands.
+                Event::LevelUp(..) => self.av.sfx("Unit-Upgrade"),
+                Event::SpellCast { target, outcome: crate::rules::magic::CastOutcome::Done { .. }, .. } => {
+                    self.av.sfx(if matches!(target, crate::rules::magic::CastTarget::Own) { "Spell-Good" } else { "Spell-Evil" })
+                }
                 _ => {}
             }
         }
@@ -969,18 +1062,45 @@ impl<'a> Runner<'a> {
         if building && !self.last_screen_building {
             let chord = g.location.is_some_and(|l| matches!(g.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard));
             if chord {
-                g.event_chord();
+                let k = g.event_chord();
                 self.ui_draws += 1;
+                self.av.sfx(av::chord(k as u32));
+            } else {
+                self.av.sfx("InterfacePanelDown");
             }
         }
         self.last_screen_building = building;
+        // Gold that came in (`App::sounds`).
+        if self.last_gold.is_some_and(|before| g.gold > before) {
+            self.av.sfx("Item-Gold");
+        }
+        self.last_gold = Some(g.gold);
         if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
             d.cued = true;
             if d.event {
-                g.event_chord();
+                let k = g.event_chord();
                 self.ui_draws += 1;
+                self.av.sfx(av::chord(k as u32));
+            } else {
+                self.av.sfx("InterfacePanelDown");
             }
         }
+    }
+
+    /// The places an event showed: once no dialog is open (the windows of the same moment
+    /// included) the camera flies to each and its uncovered cells fade in; after the last one
+    /// it flies back to the hero (`world_view`).
+    fn fly_to_shown(&mut self) {
+        if !self.dialogs.is_empty() || self.shows.is_empty() {
+            return;
+        }
+        for at in std::mem::take(&mut self.shows) {
+            let at = Some(format!("{},{}", at.0, at.1));
+            self.av.anim("camera_glide", at.clone());
+            self.av.anim("reveal", at);
+        }
+        let hero = self.g().tile();
+        self.av.anim("camera_glide", Some(format!("{},{}", hero.0, hero.1)));
     }
 
     /// Plays on until the game waits for input: events are handled, windows open, a pending
@@ -992,9 +1112,12 @@ impl<'a> Runner<'a> {
             }
             let g = self.game.as_mut().expect("a game");
             // What the interface takes and has no place here.
-            g.shown.clear();
+            self.shows.extend(std::mem::take(&mut g.shown).into_iter().map(|s| s.at));
             g.autosave_due = None;
-            let _ = g.take_music_wait();
+            // A map start or a load starts the world theme (`App::sounds`).
+            if g.take_music_wait().is_some() {
+                self.av.music(crate::rules::music::ROTATION[crate::rules::music::WORLD_THEME]);
+            }
             let mut events = g.drain_events();
             let ticked = events.is_empty() && self.dialogs.is_empty() && matches!(self.screen, Screen::Map) && g.foe.is_none() && (g.moving() || g.wait_ticks > 0);
             if ticked {
@@ -1003,6 +1126,7 @@ impl<'a> Runner<'a> {
             let any = !events.is_empty();
             self.handle(events);
             self.cue();
+            self.fly_to_shown();
             // The stop's snap, after the chords of the windows it opened (0x4ad8a0).
             self.g().armies_snap();
             let g = self.game.as_mut().expect("a game");
@@ -1012,6 +1136,12 @@ impl<'a> Runner<'a> {
                     return;
                 }
                 if g.foe.is_some() && matches!(self.screen, Screen::Map | Screen::Building) {
+                    // The horn as the battle window opens, and the battle's theme
+                    // (`App::sounds`, `jukebox`: a garrison's or an army's).
+                    let garrison = matches!(g.foe, Some(Foe::Garrison(_)));
+                    self.av.sfx("Global-Battle");
+                    self.av.music(av::BATTLE[if garrison { 0 } else { 1 }]);
+                    let g = self.game.as_mut().expect("a game");
                     let mut b = g.start_battle();
                     b.begin();
                     self.screen = Screen::Battle(Box::new(b));
@@ -1103,6 +1233,21 @@ impl<'a> Runner<'a> {
 }
 
 /// The battle as the state shows it.
+/// A battle action as the battle window animates and sounds it (`battle_view`): the actor
+/// lunges at the target (Razdor's stand-in for the original's slide, logged under its name),
+/// the target shows the action's effect, its sound plays. A counterblow shows only its number.
+fn log_hit(log: &mut AvLog, b: &Battle, actor: usize, hit: &crate::rules::battle::Hit) {
+    log.sfx(BattleSound::of(b, actor, hit.kind).key());
+    log.anim("battle_slide", Some(av::card(b, actor)));
+    log.anim(format!("battle_effect:{}", av::battle_effect(hit.kind)), Some(av::card(b, hit.target)));
+}
+
+/// A step to another cell: the card slides there with `Card-Move`.
+fn log_move(log: &mut AvLog, b: &Battle, actor: usize) {
+    log.sfx("Card-Move");
+    log.anim("card_slide", Some(av::card(b, actor)));
+}
+
 fn battle_state(b: &Battle) -> BattleState {
     let cell = |s: Slot| (s.row.number(), s.col as i32 + 1);
     let side = |team: Team| {
@@ -1159,6 +1304,8 @@ pub struct Replay {
     pub raw: Vec<serde_json::Value>,
     /// What the screen shows after each step ([`Runner::look`]), for the explorer.
     pub looks: Vec<serde_json::Value>,
+    /// The sounds, tracks and animations of each step ([`Runner::av`]).
+    pub av: Vec<Vec<AvEvent>>,
 }
 
 /// [`replay`] with the generator's draws recorded step by step. With `rng_from`, each
@@ -1167,7 +1314,7 @@ pub struct Replay {
 pub fn replay_traced(source: Source<'_>, actions: &[Action], rng_from: Option<&[u32]>) -> Result<Replay, String> {
     use crate::rules::rng::trace;
     let mut r = Runner::new(source);
-    let mut out = Replay { states: Vec::new(), notes: Vec::new(), draws: Vec::new(), raw: Vec::new(), looks: Vec::new() };
+    let mut out = Replay { states: Vec::new(), notes: Vec::new(), draws: Vec::new(), raw: Vec::new(), looks: Vec::new(), av: Vec::new() };
     trace::start();
     for (i, a) in actions.iter().enumerate() {
         if let Some(&state) = i.checked_sub(1).and_then(|k| rng_from?.get(k)) {
@@ -1185,6 +1332,7 @@ pub fn replay_traced(source: Source<'_>, actions: &[Action], rng_from: Option<&[
         }
         out.raw.push(r.raw());
         out.looks.push(r.look());
+        out.av.push(r.av.take());
     }
     trace::stop();
     Ok(out)
@@ -1250,7 +1398,7 @@ fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<P
         None
     };
     let source = dt.as_ref().map_or(Source::Demo, Source::Install);
-    let Replay { states, notes, draws, raw, looks } = replay_traced(source, &actions, rng_from.as_deref())?;
+    let Replay { states, notes, draws, raw, looks, av } = replay_traced(source, &actions, rng_from.as_deref())?;
     for n in &notes {
         eprintln!("note: {n}");
     }
@@ -1274,7 +1422,8 @@ fn run_cli(list: &Path, map: Option<String>, hero: Option<String>, out: Option<P
             for (i, d) in draws.iter().enumerate() {
                 let list: Vec<_> = d.iter().map(|d| serde_json::json!([d.n, d.before, format!("{}:{}", d.site.file(), d.site.line())])).collect();
                 let step_notes: Vec<&String> = notes.iter().filter(|n| n.starts_with(&format!("step {i}: "))).collect();
-                extra.push_str(&serde_json::json!({ "step": i, "draws": list, "notes": step_notes, "meta": raw.get(i) }).to_string());
+                // `av`: the sounds, tracks and animations of the step (`crate::av`).
+                extra.push_str(&serde_json::json!({ "step": i, "draws": list, "notes": step_notes, "meta": raw.get(i), "av": av.get(i) }).to_string());
                 extra.push('\n');
             }
             let path = dir.join("razdor-run.jsonl");

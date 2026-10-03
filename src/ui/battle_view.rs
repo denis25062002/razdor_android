@@ -171,16 +171,17 @@ fn preview_lines(p: Preview, kind: ActionKind, name: &str, hp: i32) -> (String, 
     (head, effect)
 }
 
-/// The sound of `actor`'s action `kind`: shooters with a ranged attack of at least
-/// `ShotWeaponRange` fire cannon.
+/// The sound of `actor`'s action `kind` (`razdor::av::BattleSound`): shooters with a ranged
+/// attack of at least `ShotWeaponRange` fire cannon.
 fn action_cue(battle: &Battle, actor: usize, kind: ActionKind) -> Cue {
-    match kind {
-        ActionKind::Melee | ActionKind::LongStrike => Cue::Fight,
-        ActionKind::Shot if battle.fighters[actor].stats[Stat::AttackShot] >= battle.content().options.shot_weapon_range => Cue::Cannon,
-        ActionKind::Shot => Cue::Shoot,
-        ActionKind::Heal => Cue::Cure,
-        ActionKind::Bless => Cue::Bless,
-        ActionKind::Strike | ActionKind::Curse => Cue::Sorcery,
+    use razdor::av::BattleSound;
+    match BattleSound::of(battle, actor, kind) {
+        BattleSound::Fight => Cue::Fight,
+        BattleSound::Cannon => Cue::Cannon,
+        BattleSound::Shoot => Cue::Shoot,
+        BattleSound::Cure => Cue::Cure,
+        BattleSound::Bless => Cue::Bless,
+        BattleSound::Sorcery => Cue::Sorcery,
     }
 }
 
