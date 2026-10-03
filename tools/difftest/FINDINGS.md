@@ -2,7 +2,7 @@
 
 Differences between Razdor and the original Discord Times found by the diff test
 (`run.py`). Each entry gives the replay, the step, the field and both values, the cause and
-the spec reference. These are reports: Razdor's rules are not changed here.
+the spec reference. Each entry says whether a later commit fixed it.
 
 Run: `tools/difftest/rk1-day1.jsonl` (РК1, knight; the first day, then the ruins' garrison
 fought by explicit actions), `python -m tools.difftest.run --actions
@@ -11,6 +11,8 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
 "Step-local" is the run where each Razdor step starts from the original's generator state.
 
 ## 1. No draw for the idle patrollers when the hero stops
+
+**Status: fixed in 1c1696f** (`Game::armies_snap`; world.md §2.2.1).
 
 - Steps 2, 5, 7, 9, 12, 14, 16 (every stop of a walk or a wait). Step 5 (`wait 1`),
   step-local: `rng` Razdor 120733505, original 18883840, the original one draw ahead; its
@@ -21,6 +23,9 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
 - Spec: engine.md §3.4, row 0x4ad8a0 ("each time the hero stops").
 
 ## 2. A village entered while an event fires: offers, chords and tribute come too early
+
+**Status: fixed in 0da6331** (`Game::enter_waiting_building`; world.md §7.2). The tribute is
+still taken as the village window opens, the original's when it closes (window timing).
 
 - Step 2 (`click_map 40,32`: village 4, event 17 fires on arrival) and step 3 (`ok`).
 - Original: the event window opens first (chord `Random(3)` at 0x4d1663, then the patroller
@@ -38,6 +43,8 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
   engine.md §3.4 (0x4bba40; chords 0x4d1282, 0x4d155f, 0x4d165e).
 
 ## 3. The hero's starting formation: the original auto-arranges it at the map load
+
+**Status: fixed in 6aa8933** (`Game::arrange_at_load`; saves-data.md §10.1).
 
 - Step 18 (`click_map 36,23`, the battle with the ruins' garrison), `battle.sides[0]`
   (type, row, col): original knight (1, 1, 4), militia (4, 1, 3), hunter (19, 2, 4),
@@ -59,6 +66,9 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
 
 ## 4. The ruins' garrison does not wear the ruins' goods
 
+**Status: fixed in 080f7dd** (`ai::give_item_to` at the load, the loot takes worn items
+first; economy.md §3).
+
 - Step 18, the robber (type 66) of ruins 8: shot defence 9 in the original's battle record
   (+0x3c; base 5 plus the Round shield, item 51, `d-DefenceShot=4`), 5 in Razdor (building
   defence 3 on both sides). Step 21 (`battle_act 2,1,4`, the hunter's shot, attack 20):
@@ -69,6 +79,12 @@ tools/difftest/rk1-day1.jsonl --name rk1-day1`, original's music held off, draw 
   garrison items, worn or packed").
 
 ## 5. AI armies arrive by play time and by frame, not as soon as the bank covers a step
+
+**Status: the step-14 part fixed in f6f51f2** (`Game::ai_move` plays each tick by the step
+clock's play times, arrivals in time order, a midnight among them; world.md §5). The frame
+part stays noise: Razdor plays the order of the limit of short frames, so a run of the
+original whose coarse frames cost an army a step, or put a midnight after a tick's last
+arrivals, still differs there (seen again in fix runs 2, 3 and 4 at steps 14 and 16).
 
 Traced with the Frida trace (`--trace random,ai,events`, run `rk1-frida`; README.md
 "Runtime trace"). Two parts.
