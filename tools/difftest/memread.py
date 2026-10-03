@@ -267,12 +267,29 @@ def check_against_map(game, path):
         f"{game.clock()} vs {mp.start_minutes + 1}")
     cls = m.i32(HERO_CLASS)
     p = mp.presets[cls]
+    # Events that fired during the load (the shown one counts its firing only when closed)
+    # have already applied their results: units given to the hero, armies switched on/off.
+    base = m.u32(EVENTS)
+    fired = set(game.events_done())
+    if game.dialog_event() >= 0:
+        fired.add(game.dialog_event() + 1)
+    given, switched = [], {}
+    for ev in sorted(fired):
+        e = base + (ev - 1) * EVENT_SIZE
+        given += [u for u in m.read(e + 0x61, 4) if u]
+        for k in m.read(e + 0x79, 2):
+            if k:
+                switched[k] = True
+        if m.u8(e + 0x7B):
+            switched[m.u8(e + 0x7B)] = False
+    if fired:
+        chk("events fired at load", True, f"{sorted(fired)}: units {given}, armies {switched}")
     h = game.hero()
     chk("hero x, y", (h["x"], h["y"]) == (p.x, p.y), f"{(h['x'], h['y'])} vs {(p.x, p.y)}")
     chk("hero cell table", m.i32(0x75A544) == p.y * m.i32(STRIDE_X) + p.x)
     chk("hero gold", h["gold"] == p.gold, f"{h['gold']} vs {p.gold}")
     chk("hero mana", h["mana"] == p.mana, f"{h['mana']} vs {p.mana}")
-    want = [(u, lv) for (u, lv, c) in p.troops if u > 3 for _ in range(c)]
+    want = [(u, lv) for (u, lv, c) in p.troops if u > 3 for _ in range(c)] + [(u, 0) for u in given]
     got = [(u["type"], u["level"]) for u in h["units"][1:]]
     chk("hero troops (type, level)", got == want, f"{got} vs {want}")
     chk("hero unit 1 is the class", h["units"][0]["type"] == cls + 1)
@@ -282,7 +299,7 @@ def check_against_map(game, path):
     for a, f in zip(armies, mp.armies):
         chk(f"army {f.id} x, y", (a["x"], a["y"]) == (f.x, f.y), f"{(a['x'], a['y'])} vs {(f.x, f.y)}")
         chk(f"army {f.id} gold", a["gold"] == f.gold, f"{a['gold']} vs {f.gold}")
-        chk(f"army {f.id} active", a["active"] == (f.inactive == 0))
+        chk(f"army {f.id} active", a["active"] == switched.get(f.id, f.inactive == 0))
         chk(f"army {f.id} alive", a["alive"])
         want = ([(f.leader, f.leader_level)] if f.leader else []) + \
                [(u, lv) for (u, lv, c) in f.troops if u > 3 for _ in range(c)]
@@ -308,7 +325,6 @@ def check_against_map(game, path):
                 f"{b['goods']} vs {fixed}")
         elif f.type != 12:
             chk(f"building {f.id} goods cleared", b["goods"] == [], f"{b['goods']}")
-    chk("events_done empty before the start events", True, f"{game.events_done()}")
     return res
 
 
