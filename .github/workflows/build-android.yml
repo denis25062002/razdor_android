@@ -28,17 +28,17 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
-      - name: Fix crate compatibility for cargo-quad-apk
+      - name: Vendor and sanitize all dependencies
         run: |
-          # Фиксируем версию encoding_rs на 0.8.33 (до редакции Edition 2024)
-          cargo update -p encoding_rs --precise 0.8.33 || true
-          
-          # Понижаем формат Cargo.lock до версии 3
+          # 1. Скачиваем все зависимости локально в папку vendor
+          mkdir -p .cargo
+          cargo vendor > .cargo/config.toml
+
+          # 2. Понижаем версию формата lock-файла до 3
           sed -i 's/version = 4/version = 3/' Cargo.lock || true
-          
-          # Скачиваем зависимости и исправляем редакции в манифестах
-          cargo fetch --target aarch64-linux-android || true
-          find ~/.cargo -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+
+          # 3. Полностью удаляем edition = "2024" из всех залинкованных библиотек
+          find vendor/ -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
@@ -49,7 +49,7 @@ jobs:
         run: |
           export NDK_HOME=$ANDROID_NDK_ROOT
           export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
-          cargo quad-apk build --release
+          cargo quad-apk build --release --offline
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
