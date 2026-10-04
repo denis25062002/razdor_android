@@ -305,6 +305,14 @@ pub struct Game {
     /// While the hero steps: the cell he left, which AI armies keep off too.
     #[serde(skip)]
     pub(crate) step_from: Option<Tile>,
+    /// The hero's step flag (0x75e0c7): the walk timer clears it every frame (0x4ae71e) and
+    /// sets it in the frame a step ends and the next begins (0x4ae975); nothing else writes
+    /// it. So it stays set after a walk that ran its course or was stopped at a step's end,
+    /// through the waits that follow, until the next walk: an AI army's attack or greeting
+    /// counts only while it is set (0x4ade3c). Clear before the first walk and after a
+    /// step stopped before it began (0x4ad94c).
+    #[serde(default)]
+    pub(crate) step_flag: bool,
     /// The building defence the hero's unit strengths were last counted with (his record's
     /// +0x378c at the last recount 0x4a16d4, which writes each unit's cached strength
     /// +0x1ae): an AI army scoring him copies those strengths (ai.md §4), so after he walks
@@ -413,6 +421,9 @@ pub struct Game {
 pub(crate) struct HeroCells {
     pub(crate) cells: [Option<Tile>; 2],
     pub(crate) at: Tile,
+    /// The frame where his step ends (his step flag 0x75e0c7 set): only an arrival then
+    /// attacks or greets him (0x4ade3c).
+    pub(crate) boundary: bool,
 }
 
 /// Talk counter an army towards the hero is set to after a greeting (world.md §4.3).
@@ -507,6 +518,7 @@ impl Game {
             speed_set: None,
             step_base: None,
             step_from: None,
+            step_flag: false,
             hero_strength_bd: 0,
             battle_troops: Vec::new(),
             facing: None,
@@ -1128,7 +1140,7 @@ impl Game {
         // wait, also one an event cut short (0x4ae24c, 0x4ae42f); not a run into an army or a
         // garrison in the middle of a step (0x4ad94c snaps them without the idle draws), nor
         // the endless wait going on under an event's dialog (0xc2782b).
-        if (walked && !self.moving() && !self.snapped) || (waited && self.wait_ticks == 0) {
+        if (walked && !self.moving() && !self.snapped) || (waited && self.wait_ticks == 0 && !self.snapped) {
             self.snap_due = true;
         }
         if !self.moving() && self.wait_ticks == 0 {
@@ -1152,6 +1164,8 @@ impl Game {
         }
         let Some(&next) = self.path.first() else { return false };
         let from = self.tile();
+        // The walk timer's frame clears the step flag; the step sets it again as it ends.
+        self.step_flag = false;
         match self.step_contact(next) {
             Some(StepContact::Army(i)) => {
                 self.snapped = true;
@@ -1353,6 +1367,21 @@ impl Game {
     /// greet the hero while he waits (world.md §4.3). Returns false when it ended.
     fn wait_tick(&mut self, events: &mut Vec<Event>) -> bool {
         self.pass_time(WAIT_TICK_MINUTES, events);
+        // An AI army's attack or greeting while he waits, his step flag still set from his
+        // last walk (0x4ade3c): as after a step, the stop snaps the armies, the events run
+        // with the army met, and a greeting stops the wait only when one of them fired.
+        if let Some(e) = self.ai_contact() {
+            let attack = matches!(e, Event::Encounter(_));
+            if attack {
+                self.snap_now();
+            }
+            if self.meet(e, events) || attack {
+                if !attack {
+                    self.snap_now();
+                }
+                return false;
+            }
+        }
         !events.iter().any(Event::needs_reading) && self.foe.is_none()
     }
 
@@ -1440,6 +1469,7 @@ impl Game {
         self.step_from = Some(from);
         self.pass_time_as(minutes, minutes.max(WAIT_TICK_MINUTES), events);
         self.step_from = None;
+        self.step_flag = true;
     }
 
     /// A slice of time (world.md §6.4): the armies move, then 00:00 comes (0x4a1998 runs at
@@ -1537,12 +1567,16 @@ impl Game {
         // in the frame the step ends (0x4ae8cc), so the AI's arrivals of the tick see him
         // there (world.md §5).
         let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
+        // His step flag: clear during a step (each frame of the walk timer), set in the
+        // frame it ends (the walk timer runs before the armies, 0x4ae975); standing or
+        // waiting, as his last walk left it.
+        let walking = self.step_from.is_some();
         let hero = match self.step_from {
-            Some(from) => HeroCells { cells: [Some(from), Some(hero_tile)], at: from },
-            None => HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile },
+            Some(from) => HeroCells { cells: [Some(from), Some(hero_tile)], at: from, boundary: false },
+            None => HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile, boundary: self.step_flag },
         };
         // At the tick's end his step has ended: his cell and the one ahead of him.
-        let hero_end = HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile };
+        let hero_end = HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile, boundary: walking || self.step_flag };
         let later = self.ai_move(minutes, &hero, &hero_end, start, midnights);
         events.append(&mut self.ai_events);
         let mut armies = std::mem::take(&mut self.world.armies);

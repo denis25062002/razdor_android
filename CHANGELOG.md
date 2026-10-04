@@ -570,6 +570,10 @@ old id, and their versions give both.
 - Accepting a village's furs, the witch's mana or the innkeeper's pay shows the result in a
   window of its own, with its chord, as in the original (the blessing and the priest show
   none).
+- AI armies attack or greet the hero when he ends a step, not in the middle of one, and still
+  do while he stands or waits after a walk, as in the original: a friendly army walking
+  beside him greets him when it catches him at a step's end, and one that reaches him while
+  he waits stops the wait with its meeting or its battle.
 
 ## 0.2.2 — 2026-10-01
 

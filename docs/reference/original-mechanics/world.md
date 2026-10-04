@@ -357,12 +357,20 @@ distance > 0 (0x4a399c). A greeting in a frame takes the place of any attack in 
 armies, the last in army order acts (the loop keeps overwriting its pick, 0x4ade3c). An attack
 also runs the event scan with the attacker first; the battle opens only if no event fired.
 
-Both the attack and the greeting are acted on only in a frame where the hero has **just
-finished a step** (the hero's "arrived" flag, set only by the walk timer, 0x4ae977; tested in
-0x4ade3c). So while he waits or casts, AI armies move and bank time but never attack or
-greet him; an AI step that ends next to him in another frame is ignored (it is tested again
-after its next step). A greeting runs the event scan with that army as the met army; only
-an event that fires stops the walk.
+Both the attack and the greeting are acted on only while the hero's step flag (0x75e0c7) is
+set (tested in 0x4ade3c; for a greeting 0x4a548c tests it too, so without it the talk counters
+are left alone). Only the walk timer writes it: it clears it at the top of every frame of a
+walk (0x4ae71e) and sets it in the frame where a step ends and the next begins (0x4ae975),
+before the armies advance in that frame. So during a walk an AI step that ends next to him
+counts only in the frame his step ends (in Razdor's ticks: an arrival at the end of his
+step); one in another frame is ignored (it is tested again after its next step). Nothing
+clears the flag when the walk is over: after a walk that ran to its end, or stopped at a
+step's end (an event, a greeting, an attack), it stays set while he stands, waits or casts,
+so an army arriving next to him then attacks or greets him, and the meeting's event or the
+battle ends the wait (РК7, FINDINGS.md §26). It is clear before his first walk on the map and
+after a walk stopped before its step began (stepping onto an army or a guarded cell,
+0x4ad94c). A greeting runs the event scan with that army as the met army; only an event that
+fires stops the walk or the wait.
 
 ### 4.4 View, patrol and planning ranges
 
@@ -636,7 +644,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Ship lost by walking out on land | yes (from the shipyard, or where the misread cell is water) | yes | Matches |
 | Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, the patrol box stays (`Army::box_centre`), a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | Matches |
 | Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
-| AI attack while waiting | never: AI attacks and greetings only after a step of his; an attack's events run first and one that fires means no battle; no attack in a step with a greeting | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
+| AI attack while waiting | AI attacks and greetings while his step flag is set: at the end of a step of his, and after a walk while he stands or waits (`Game::step_flag`, `HeroCells::boundary`); an attack's events run first and one that fires means no battle; no attack in a step with a greeting | the same: the flag (0x75e0c7) is written only by the walk timer (§4.3) | Matches |
 | Chase target unreachable | chase ends and the hero stops, also when the army's cell is in the dark; the new plan keeps the original click's buildings | chase ends and the hero stops (target cell tested after the fog is laid) | Matches |
 | Show army reveal | 3 cells | 3 cells (6 half-cells), growing | none |
 | Minimap size | 400×400 frame | 200 px under 100 cells wide, else 400 | small |

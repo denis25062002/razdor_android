@@ -565,6 +565,29 @@ fn rk3_the_furs_offer_shows_its_result_window() {
     assert_eq!(states[6].rng, 15_412_174);
 }
 
+/// FINDINGS.md §26 (РК7 started without carry-over): the King's squad (army 2, friendly)
+/// trails the walking hero but greets him only in the frame a step of his ends (his step
+/// flag 0x75e0c7); the walk reaches (59,152). In the wait after it the flag is still set,
+/// so the squad's next arrival next to him greets him: the meeting's event stops the wait
+/// after one tick, as in the original.
+#[test]
+fn rk7_the_kings_squad_greets_only_with_the_step_flag_set() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"РК7-Конец","hero":1}
+{"op":"ok"}
+{"op":"click_map","x":59,"y":152}
+{"op":"wait","hours":1}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[2];
+    assert_eq!((s.hero.x, s.hero.y, s.clock, s.rng), (59, 152, 624_557_568, 1_587_391_380), "{notes:?}");
+    let s = &states[3];
+    assert_eq!((s.clock, s.rng), (624_557_598, 2_572_407_127), "{notes:?}");
+    assert!(s.events_done.contains(&4), "{:?}", s.events_done);
+}
+
 /// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
 /// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
 /// last recount, 85, as the original's victory gives (450 → 610), though none of its units

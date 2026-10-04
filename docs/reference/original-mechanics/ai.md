@@ -365,10 +365,11 @@ on the map, the player included:
     as well. With the player and a counter ≤ 0 only the player's side is reset.
 
 ### 8.1 Attacking the player
-An attack or greeting of the player takes effect only once the player has started a step
-since entering the walk routine (a flag set when each hero step starts, 0x4ae975, and cleared
-when the walk routine is entered, 0x4ae71e); before his first step on the map, armies cannot
-attack or greet him. If several armies attack in one frame, the last one in index order is the
+An attack or greeting of the player takes effect only while his step flag is set (0x75e0c7:
+set in the frame where a step of his ends and the next begins, 0x4ae975, cleared at the top of
+every frame of the walk timer, 0x4ae71e, and written nowhere else): during a walk only in the
+frame his step ends; after a walk, while he stands, waits or casts, until his next walk
+(world.md §4.3); before his first walk on the map, never. If several armies attack in one frame, the last one in index order is the
 foe; likewise the last greeting army is the one met. **A greeting wins over an attack**: if any
 army greeted the player in a frame, the event scan runs for the greeting and no attack of that
 frame is carried out (0x4ade3c). An attack stops the player, runs the event scan, and starts

@@ -563,3 +563,9 @@ read, a walk, a wait of an hour, the nearest building entered (runs `c1-<map>`).
 - The original draws the event window's chord after the Yes and shows the offer's result;
   Razdor showed nothing. **Resolved: fixed, FINDINGS.md §25** (`c2-РК3` 8 of 8).
 
+## Campaign: РК7, step 2 `click_map 59 152` and step 10 `wait 1`
+
+- Razdor's King's squad greeted the walking hero mid-step (the walk stopped at (58,149)); the
+  original's did not, and greeted him in the wait after the walk. **Resolved: fixed,
+  FINDINGS.md §26** (`r4f7-c1-РК7` 12 of 13, the last a window timing).
+

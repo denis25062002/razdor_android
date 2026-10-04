@@ -536,6 +536,28 @@ economy.md §3). Campaign round (РК3 started without carry-over, run `c1-РК3
   blessings (§17) have no message, hence no window there.
 - After the fix the РК3 run is 8 of 8 steps equal (`c2-РК3`).
 
+## 26. The hero's step flag decides AI attacks and greetings
+
+**Status: fixed** (`Game::step_flag`, `HeroCells::boundary`, `Game::wait_tick`; world.md §4.3,
+ai.md §8.1). Campaign round (РК7 started without carry-over, run `c1-РК7`).
+
+- РК7 (knight), step 2 (`click_map 59 152`): the King's squad (army 2, friendly) trails the
+  walking hero. Razdor's squad greeted him at 72.7 minutes, mid-step, and the meeting's chain
+  stopped the walk at (58,149); in the original (Frida, `ai:2` and a hook on its plans: talk
+  counter, path) the squad stands next to him the same way and greets nobody, and the walk
+  reaches (59,152). Then, in step 10 (`wait 1`), the original's squad greets him and event 4
+  (meet army 2) stops the wait after one tick; Razdor's waits never took an AI contact.
+- The step flag 0x75e0c7 is written only by the walk timer: cleared at the top of each of its
+  frames (0x4ae71e), set in the frame a step ends (0x4ae975). 0x4a548c greets the hero only with
+  it set, and 0x4ade3c acts on an attack or a greeting only with it set. After a walk nothing
+  clears it, so it stays set through the waits that follow. Razdor took any arrival during his
+  step and none while he waits.
+- Razdor now keeps the flag: arrivals see it set only at the end of his step while he walks,
+  and as his last walk left it while he stands or waits; a wait tick takes the contacts as a
+  step does (the snap, the meeting's events, a battle).
+- After the fix the РК7 run is 12 of 13 steps equal (10 before; the one left is the event's
+  gold before its OK, window timing); the other recorded runs as before.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

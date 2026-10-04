@@ -1963,7 +1963,9 @@ impl Game {
     /// and what it did to the hero then is dropped *(guess: the original would open a
     /// battle or a meeting with the beaten army)*.
     pub(crate) fn ai_arrive(&mut self, uid: u32, hero: &HeroCells) -> Option<Contact> {
-        let result = self.ai_arrive_rules(uid, hero);
+        // An attack on the hero counts only in the frame his step ends (his step flag
+        // 0x75e0c7, 0x4ade3c): not while he waits or stands, nor mid-step.
+        let result = self.ai_arrive_rules(uid, hero).filter(|c| *c != Contact::Attack || hero.boundary);
         let i = self.army_by_uid(uid)?;
         if self.world.armies[i].mind.fallen {
             self.world.armies[i].mind.fallen = false;
@@ -1991,7 +1993,10 @@ impl Game {
             self.world.armies[i].troops.retain(|t| t.died_at.is_none_or(|d| d as f64 + window >= now));
         }
         // Contacts.
-        let hero_step = self.step_from.is_some();
+        // The hero's step flag (0x75e0c7) is set only in the frame where his step ends (the
+        // walk timer, 0x4ae977) and cleared at the next: an attack or a greeting counts only
+        // for an arrival in that frame (0x4ade3c), the tick's end of his step.
+        let hero_step = hero.boundary;
         let here = self.world.armies[i].tile(&self.world.map);
         let parties: Vec<(Party, u32)> = self.parties().into_iter().map(|p| (p, self.key_of(p))).collect();
         for (p, key) in parties {

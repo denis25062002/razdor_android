@@ -69,7 +69,7 @@ fn sim(own: i64, own_left: i64, theirs: i64, theirs_left: i64) -> SimResult {
 fn plan(g: &mut Game, i: usize) {
     let here = g.world.armies[i].tile(&g.world.map);
     let grid = g.world.map.grid;
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     let dist: Vec<(Party, i32)> = g.parties().into_iter().filter(|&p| p != Party::Army(i)).map(|p| (p, grid.octile(here, g.cell_of(p, &hero)))).collect();
     g.ai_plan(i, &dist, &hero);
 }
@@ -410,7 +410,7 @@ fn a_step_in_place_barred_by_the_hero_follows_the_originals_path_index() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
     let mut g = start(&s);
     let uid = g.world.armies[0].uid;
-    let barred = HeroCells { cells: [Some((30, 10)), None], at: (30, 10) };
+    let barred = HeroCells { cells: [Some((30, 10)), None], at: (30, 10), boundary: false };
     let step = |g: &mut Game, walked: i32, no_path: bool| {
         let m = &mut g.world.armies[0].mind;
         (m.scripted, m.idle, m.countdown, m.walked, m.no_path) = (true, 3, 4, walked, no_path);
@@ -448,7 +448,7 @@ fn a_step_costs_the_cell_left_and_the_countdown_runs_out() {
     g.world.armies[0].path = (31..=40).map(|x| (x, 10)).collect();
     let plans = g.ai_stats.paths;
     g.world.armies[0].budget = 4.0 * 25.0;
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     let uid = g.world.armies[0].uid;
     g.ai_walk(uid, &hero);
     assert_eq!((g.world.armies[0].tile(&g.world.map), g.world.armies[0].mind.countdown, g.ai_stats.paths), ((34, 10), 1, plans));
@@ -472,7 +472,7 @@ fn a_neighbour_near_makes_it_plan_at_every_step_and_counts_talk() {
     g.world.armies[0].mind.scripted = true;
     g.world.armies[0].path = vec![(31, 10)];
     g.world.armies[0].budget = 25.0;
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     let uid = g.world.armies[0].uid;
     g.ai_walk(uid, &hero);
     // Relation to its own faction: (3 + 3) div 2 = 3; +1 for the distance, +4 at contact
@@ -482,9 +482,9 @@ fn a_neighbour_near_makes_it_plan_at_every_step_and_counts_talk() {
     assert_eq!(a.talk, 1, "the hero: hostile, only the 1");
 }
 
-/// Army `uid`'s arrival rules, as after a step.
+/// Army `uid`'s arrival rules, as in the frame a step of the hero ends (his step flag set).
 fn arrive(g: &mut Game, uid: u32) -> Option<Contact> {
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: true };
     g.ai_arrive(uid, &hero)
 }
 
@@ -1612,7 +1612,7 @@ fn a_respawned_army_arrives_at_once_its_first_step_free() {
     (a.budget, a.mind.idle) = (0.0, 0);
     assert!(a.mind.just_respawned && a.mind.free_step);
     let plans = g.ai_stats.paths;
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     g.ai_walk(1, &hero);
     let a = &g.world.armies[0];
     assert_eq!((a.mind.idle, a.mind.just_respawned, a.mind.free_step), (1, false, false));
@@ -1669,7 +1669,7 @@ fn the_step_clock_faces_the_next_step_and_none_at_the_paths_end() {
     let mut g = start(&s);
     assert_eq!((g.world.armies[0].mind.facing_none, g.world.armies[1].mind.facing_none), (false, true));
     let uid = g.world.armies[0].uid;
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     g.world.armies[0].mind.scripted = true;
     g.world.armies[0].path = vec![(31, 10), (32, 10)];
     g.world.armies[0].budget = 25.0;
@@ -1801,7 +1801,7 @@ fn the_first_step_in_place_prices_the_step_after_south_of_the_army() {
     tk::set(&mut s, 30, 11, Surface::Road);
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)])];
     let mut g = start(&s);
-    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile(), boundary: false };
     let uid = g.world.armies[0].uid;
     assert_eq!((g.world.armies[0].mind.stand_facing, g.world.armies[0].speed), (Some((0, 1)), 5), "the load's direction 5");
     let play = |g: &mut Game, facing: Option<Tile>| {
@@ -1883,10 +1883,10 @@ fn a_patroller_plans_with_the_hero_on_the_cell_he_leaves() {
         g.world.armies[0].path.clone()
     };
     // Stepping from (24,10), outside the box (x 25..35), to (25,10), inside it.
-    let path = plan_seeing(&mut g, HeroCells { cells: [Some((24, 10)), Some((25, 10))], at: (24, 10) });
+    let path = plan_seeing(&mut g, HeroCells { cells: [Some((24, 10)), Some((25, 10))], at: (24, 10), boundary: false });
     assert!(path.is_empty(), "no seed: {path:?}");
     // The step ended: he stands on (25,10), in the box, and is hunted.
-    let path = plan_seeing(&mut g, HeroCells { cells: [Some((25, 10)), Some((26, 10))], at: (25, 10) });
+    let path = plan_seeing(&mut g, HeroCells { cells: [Some((25, 10)), Some((26, 10))], at: (25, 10), boundary: false });
     assert_eq!(path.first(), Some(&(29, 10)), "{path:?}");
 }
 
@@ -1913,4 +1913,21 @@ fn the_heros_strengths_keep_the_defence_of_his_last_recount() {
     assert_eq!((side.defence, side.strength_defence), (0, 15));
     g.army_window_opened();
     assert_eq!(g.hero_side().strength_defence, 0);
+}
+
+/// FINDINGS §26: an army's attack on the hero, or its greeting, counts only while his step
+/// flag (0x75e0c7) is set: in the frame a step of his ends, and after a walk until the next
+/// one (0x4ade3c, 0x4ae71e, 0x4ae975).
+#[test]
+fn contacts_with_the_hero_need_his_step_flag() {
+    let mut s = map();
+    s.header.heroes[0] = hero(30, 10, 100, &[troop(4, 0, 1)]);
+    s.armies = vec![army(1, (31, 10), 4, ENEMY, 0, &[troop(6, 0, 3)])];
+    let mut g = start(&s);
+    g.world.armies[0].mind.scores.insert(HERO, 50);
+    g.world.armies[0].mind.clean.insert(HERO);
+    let uid = g.world.armies[0].uid;
+    let cells = |boundary| HeroCells { cells: [Some((30, 10)), None], at: (30, 10), boundary };
+    assert_eq!(g.ai_arrive(uid, &cells(false)), None, "mid-step, or before his first walk");
+    assert_eq!(g.ai_arrive(uid, &cells(true)), Some(Contact::Attack));
 }
