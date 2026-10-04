@@ -248,6 +248,12 @@ pub struct Fighter {
     pub mods: Buff,
     /// The items the unit wears (an enemy's too), for the panel.
     pub items: [Option<ItemId>; crate::rules::items::SLOTS],
+    /// The unit's lasting world spells and its life loss as the battle began, for the cards'
+    /// spell badges (the battle cards read the unit records, 493a64).
+    pub spells: [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS],
+    pub drain: i32,
+    /// Drank a potion before the battle (its sign on the card, unit +0xc4).
+    pub potion: bool,
     /// Blessed or cursed this turn.
     pub blessed: bool,
     pub cursed: bool,
@@ -313,6 +319,9 @@ impl Fighter {
             base,
             mods: Buff::default(),
             items: unit.items,
+            spells: unit.spells,
+            drain: unit.drain,
+            potion: !unit.potions.is_empty(),
             blessed: false,
             cursed: false,
             actions: 0,

@@ -10,7 +10,7 @@
 //! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_SHOW=x,y,r` shows
 //! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
-//! puts the pointer there. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
+//! puts the pointer there; `RAZDOR_SCENE_SPELLS=<id>,…` puts those spells on every unit. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
 //! test's action list played to that step.
 
 use razdor::rules::content::HeroClass;
@@ -137,6 +137,25 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         for (i, u) in game.squad.iter_mut().enumerate() {
             // A different share for each, to see the fill vary.
             u.hp = (u.max_hp(&content) * (pct - 15 * i as i32).clamp(0, 100) / 100).max(1);
+        }
+    }
+    // `RAZDOR_SCENE_SPELLS=<id>,<id>…`: those spells running on every unit of the hero's army
+    // and of the map's armies (the n-th for 10 h + n days), to see the cards' spell badges.
+    if let Ok(v) = std::env::var("RAZDOR_SCENE_SPELLS") {
+        let ids: Vec<u32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        let now = game.clock.total_minutes() as u64;
+        let slots: Vec<_> = ids.iter().enumerate().map(|(n, &spell)| razdor::rules::units::SpellSlot { spell, until: now + 600 + n as u64 * 1440 }).collect();
+        let fill = |spells: &mut [Option<razdor::rules::units::SpellSlot>]| {
+            for (slot, s) in spells.iter_mut().zip(&slots) {
+                *slot = Some(*s);
+            }
+        };
+        for u in &mut game.squad {
+            fill(&mut u.spells);
+            u.drain = 20;
+        }
+        for t in game.world.armies.iter_mut().flat_map(|a| a.troops.iter_mut()) {
+            fill(&mut t.spells);
         }
     }
     // `RAZDOR_SCENE_SHOW=x,y,r`: an event shows that place (as a lantern does), to see the

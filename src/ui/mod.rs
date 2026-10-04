@@ -19,6 +19,7 @@ pub mod new_game;
 pub mod saves;
 pub mod screens;
 pub mod snapshot;
+pub mod spell_badges;
 pub mod spellbook;
 pub mod story;
 pub mod terrain;
@@ -666,6 +667,8 @@ impl App {
             (Screen::Editor, _) => None,
             (_, None) => Some(Screen::MainMenu),
         };
+        // A spell badge's hint over the screen that drew it (under the dialogs).
+        spell_badges::flush();
         widgets::set_input_blocked(false);
         // "Варианты выхода из битвы" chose.
         if let Screen::Battle(v) = &mut self.screen {

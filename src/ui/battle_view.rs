@@ -152,6 +152,16 @@ pub struct BattleView {
     exit_asking: bool,
     /// What that window chose, for the app to carry out.
     pub exit: Option<super::saves::ExitChoice>,
+    /// The cards' curse and blessing signs by fighter: set as a magic or a blessing effect
+    /// ends on the card, kept to the end of the battle (unit +0xc5 / +0xc9, 4b00c1).
+    signs: Vec<Signs>,
+}
+
+/// A card's curse and blessing signs.
+#[derive(Clone, Copy, Default)]
+struct Signs {
+    curse: bool,
+    bless: bool,
 }
 
 fn all_cells(battle: &Battle) -> Vec<(Team, Slot)> {
@@ -245,7 +255,7 @@ impl BattleView {
     /// the one set in the army window beforehand (interface.md §12, 0x4daa80).
     pub fn new(mut battle: Battle) -> Self {
         battle.begin();
-        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, hold: None, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None }
+        BattleView { battle, fx: None, ai_timer: 0.0, xp: None, result_cued: false, hold: None, news: None, quick_played: false, exiting: false, exit_asking: false, exit: None, signs: Vec::new() }
     }
 
     /// The battle is won and its result is up: the triumph has started.
@@ -287,7 +297,32 @@ impl BattleView {
         let l = Layout::new(&self.battle);
         let dt = get_frame_time();
         if let Some(fx) = &mut self.fx {
+            let before = fx.t;
             fx.t += dt;
+            // An effect that ends marks its card: the magic effect (a strike or a curse) with
+            // the curse sign, the blessing's with the blessing sign (4afe7c, effects 2 and 3).
+            if let FxKind::Act { hit, echo, .. } = &fx.kind {
+                let ended = |end: f32| before < end && fx.t >= end;
+                let mut marks = Vec::new();
+                if ended(STRIKE_TIME) {
+                    marks.push((hit.target, hit.kind));
+                }
+                match echo {
+                    Some(Echo::Counter) if ended(2.0 * STRIKE_TIME) => marks.push((fx.actor, hit.kind)),
+                    Some(Echo::Curse) if ended(2.0 * STRIKE_TIME) => marks.push((fx.actor, ActionKind::Strike)),
+                    _ => {}
+                }
+                for (id, kind) in marks {
+                    if self.signs.len() < self.battle.fighters.len() {
+                        self.signs.resize(self.battle.fighters.len(), Signs::default());
+                    }
+                    match kind {
+                        ActionKind::Strike | ActionKind::Curse => self.signs[id].curse = true,
+                        ActionKind::Bless => self.signs[id].bless = true,
+                        _ => {}
+                    }
+                }
+            }
             // The echo's sound as its half begins: the action's own, or the sorcery.
             let echoing = fx.echoing();
             if let FxKind::Act { hit, echo: Some(e), echo_cued } = &mut fx.kind {
@@ -519,7 +554,7 @@ impl BattleView {
                 None
             };
             let order = queue.iter().position(|&q| q == i);
-            self.draw_card(l, assets, i, p, frame, hovered && targets.contains(&i), order);
+            self.draw_card(l, assets, i, p, frame, hovered && targets.contains(&i), order, game.clock.total_minutes() as u64);
         }
 
         if let Some(fx) = &self.fx {
@@ -545,7 +580,8 @@ impl BattleView {
         } else {
             chrome::parchment(l.panel, true);
         }
-        if player_turn {
+        // One hint box at a time: a spell badge's hint replaces the hover box (49e710).
+        if player_turn && !super::spell_badges::hovered() {
             self.draw_preview(l, active.expect("player turn"));
         }
     }
@@ -590,7 +626,7 @@ impl BattleView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, frame: Option<(Color, bool)>, aimed: bool, order: Option<usize>) {
+    fn draw_card(&self, l: &Layout, assets: &Assets, id: usize, p: Vec2, frame: Option<(Color, bool)>, aimed: bool, order: Option<usize>, now: u64) {
         let f = &self.battle.fighters[id];
         // Against the start of the battle, so every gain or loss shows (blue or red), with
         // the building's defence in the D values.
@@ -613,27 +649,29 @@ impl BattleView {
         let row2 = if f.slot.row == Row::Back { self.battle.content().options.row2_def } else { 0 };
         unit_sheet::stat_strip(strip, s, base, f.power, f.hp, row2, frame.is_some_and(|(c, _)| c == ACTIVE));
 
-        // Badges: blessed / cursed / poisoned in the top-right corner, the hero's mark and
-        // the turn order at the top left.
-        let bs = 20.0 * k;
-        let mut bx = sq.x + sq.w - bs * 0.6;
-        let by = sq.y + bs * 0.6;
-        for (on, art, c) in [
-            (f.blessed, "army-2", BLUE_TEXT),
-            (f.cursed, "army-3", PURPLE),
-            (f.poisoned(), "sign-poison", GREEN),
-            (f.bleed > 0, "Bonus39", RED),
-        ] {
+        // The original's signs (493a64): a drunk potion, then the blessing, from the top
+        // left; poison (a negative regeneration), then the curse, from the top right; 23 px
+        // apart, 1 px below the portrait's top. The spell badges along its bottom.
+        let signs = self.signs.get(id).copied().unwrap_or_default();
+        let s = sq.w / 92.0;
+        let bs = 22.0 * s;
+        let mut bx = sq.x;
+        for (on, art, c) in [(f.potion, "sign-potion", GREEN), (signs.bless, "sign-bless", BLUE_TEXT)] {
             if on {
-                chrome::badge(art, bx, by, bs, c);
-                bx -= bs * 0.9;
+                chrome::badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
+                bx += 23.0 * s;
             }
         }
-        if f.is_hero {
-            chrome::badge("SI_Helm", sq.x + bs * 0.6, by, bs, GOLD);
+        let mut bx = sq.x + 70.0 * s;
+        for (on, art, c) in [(f.poisoned(), "sign-poison", GREEN), (signs.curse, "sign-curse", PURPLE)] {
+            if on {
+                chrome::badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
+                bx -= 23.0 * s;
+            }
         }
+        // The turn order (Razdor's) in the bottom right corner, clear of the spell badges.
         if let Some(n) = order {
-            let (ox, oy) = (sq.x + 3.0 * k, sq.y + sq.h - 16.0 * k);
+            let (ox, oy) = (sq.x + sq.w - 16.0 * k, sq.y + sq.h - 16.0 * k);
             draw_rectangle(ox, oy, 13.0 * k, 13.0 * k, Color::new(0.0, 0.0, 0.0, 0.55));
             shadow_centered(&(n + 1).to_string(), ox + 6.5 * k, oy + 11.0 * k, (11.0 * k).round(), CREAM);
         }
@@ -641,6 +679,10 @@ impl BattleView {
         if fighting && f.alive() && f.slot.row != Row::Reserve && self.battle.helpless(id) {
             draw_rectangle(sq.x, sq.y + sq.h - 16.0 * k, sq.w, 15.0 * k, Color::new(0.0, 0.0, 0.0, 0.5));
             shadow_centered(tr("can't reach"), sq.x + sq.w / 2.0, sq.y + sq.h - 4.0 * k, (11.0 * k).round(), Color::new(0.8, 0.8, 0.75, 1.0));
+        }
+        // In battle a dead unit's card shows no badges (493a64: HP 0).
+        if f.alive() {
+            super::spell_badges::draw(sq, &f.spells, f.drain, now, self.battle.content());
         }
         if let Some((c, strong)) = frame {
             chrome::glow_frame(sq, c, strong);

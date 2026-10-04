@@ -451,6 +451,7 @@ pub fn squad(
         if i == 0 {
             chrome::badge("SI_Helm", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, chrome::GOLD);
         }
+        super::spell_badges::draw(sq, &v.spells, v.drain, game.clock.total_minutes() as u64, &c);
         if super::unit_drag::dragged() == Some(i) {
             draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
         }

@@ -605,6 +605,27 @@ more remain. The duration (49d044) is months, days and hours joined by ", " (no 
 hour a fixed word). It writes the month count plus one, but the 40 000-minute cut-off means a
 month (43 200 minutes) is never reached. **code**
 
+Details (**code**, and seen under Wine on Проклятое озеро, «Укрепление Брони» on the army):
+- **Which and where.** The four slots are walked in order; a slot shows a badge when its end is
+  after the game time and its spell's `CostMana` is above 0, and only shown badges advance the
+  position: badge n at (card + 1 + 23·n, card + 0x47), 22×22, so along the portrait's bottom
+  edge. In battle a unit with 0 HP (and a hidden unpaid one) shows none; outside battle a dead
+  unit's card keeps them.
+- **The picture** (49ac64): the spell's 100×100 picture (its `Icon1..3` layers added, less their
+  `ColorC`; `Spell-IconMask` subtracted; `Spell-Frame` laid in through `Spell-FrameAlpha`) is
+  shrunk to 20×20 at (1, 1) of a 22×22 surface; `si-mask` is drawn over it with white as the
+  colour key (black corners), then the `si-border` ring through its alpha. On the card it is laid
+  in through `si-alpha` (the round mask); under the pointer it is **added** onto the card
+  instead (brighter). The same composed surface, with the alpha of `si-alpha`, is what the
+  editor writes as `Graphics/Editor/*.spi`.
+- **The hint** (kind 4, 420 px): the spell's 50×50 picture on the left; the name in the title
+  font; the effect text of §9.3 (49b63c) blue for `Target=Hero`, else red; then, when the unit's
+  life loss (unit +0x1bf) is above 0 and the spell's `p-LifeLose` is not 0, "`LifeLost`: n %" in
+  red; then "`RemainedTimeOfEffect` " and the duration (time left in hundredths of a minute,
+  capped at 4 320 000, divided by 100), or `RemainedTimeOfEffectAll` from 4 000 000 on, in the
+  pale yellow font. Words: `[Skills]` and `[Time]` (`cMounth`, `cDay`, `cHour`, `cLessAtHour`)
+  of the interface ini; each part of the duration is "n word".
+
 ### 9.5 Card stat strip and the building panel (49462c)
 
 Under each card of the army, building and battle grids three short lines are drawn, starting
@@ -1068,6 +1089,8 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 53 | Pack scrolling | Wheel by one row over the whole 256-slot pack | Scroll bar over `max(0, length div 5 − 4)` rows of the used part, rounded | 9.7 |
 | 54 | Army window right side | Gear, pack and promotion views | Pack when nothing or the hero is selected, the promotion tree for any other unit (greyed with a lock when it cannot be promoted) | 9.7 |
 | 55 | Panel icon hover | (see row 42) | A hint box with the icon's name only when hints are on; nothing otherwise | 6, 10 |
+| 56 | Spell badges | Matches: up to four badges along the portrait's bottom on the army, building and battle cards, from the units' slots (running spells with a mana cost, slot order), composed from the install's art (a coloured disc without one), added on hover; the hint with the picture, name, effect text (49b63c), `LifeLost` line and time left with the original's words and quirks (`spell_hint`, `ui::spell_badges`); the box is Razdor's parchment, flipped and clamped to the screen | Four 22 px badges 23 px apart at card + 0x47; 420 px hint box | 9.4 |
+| 57 | Battle card signs | Matches: potion and blessing from the top left, poison and curse from the top right, 23 px apart; the curse and blessing signs set as a magic or a blessing effect ends on the card and kept to the battle's end (the turn order number, Razdor's, moved to the bottom right). The army and building cards do not show the potion sign yet | `Sign-*` badges by the unit's potion, +0xc9, regeneration < 0, +0xc5 | 12 |
 
 ## Unknowns
 
