@@ -742,6 +742,10 @@ impl App {
                     let _ = world_view::handle_events(g, events, &mut self.message, &mut self.dialogs);
                 }
             }
+            // The army window opens: it recounts the hero's army (0x4d1814).
+            if let (Screen::Squad { .. }, false, Some(g)) = (&next, matches!(self.screen, Screen::Squad { .. }), self.game.as_mut()) {
+                g.army_window_opened();
+            }
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
                 // A map starts: the fog opens around the hero.

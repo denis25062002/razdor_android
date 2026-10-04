@@ -1889,3 +1889,28 @@ fn a_patroller_plans_with_the_hero_on_the_cell_he_leaves() {
     let path = plan_seeing(&mut g, HeroCells { cells: [Some((25, 10)), Some((26, 10))], at: (25, 10) });
     assert_eq!(path.first(), Some(&(29, 10)), "{path:?}");
 }
+
+/// FINDINGS §21 (C1004-041105): an AI army scoring the hero copies his units' cached
+/// strengths, which only his recount (0x4a16d4(0)) writes, with his building defence then
+/// (+0x378c). Recounted in his own town of defence 15, he still counts it after walking out,
+/// until the next recount (here his army window, 0x4d1814).
+#[test]
+fn the_heros_strengths_keep_the_defence_of_his_last_recount() {
+    let mut s = map();
+    s.buildings = vec![building(BuildingType::Town, 10, 10, (1, 1))];
+    s.header.heroes[0] = hero(10, 10, 100, &[troop(4, 0, 1)]);
+    let mut g = start(&s);
+    g.world.give_to_player(0);
+    g.world.locations[0].garrison_defence = 15;
+    g.location = Some(0);
+    g.recount_hero();
+    let side = g.hero_side();
+    assert_eq!((side.defence, side.strength_defence), (15, 15));
+    // He walks out: the battle's defence follows him, the strengths keep the town's.
+    g.location = None;
+    g.pos = g.world.map.center((12, 10));
+    let side = g.hero_side();
+    assert_eq!((side.defence, side.strength_defence), (0, 15));
+    g.army_window_opened();
+    assert_eq!(g.hero_side().strength_defence, 0);
+}

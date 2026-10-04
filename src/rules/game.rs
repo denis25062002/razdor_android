@@ -305,6 +305,13 @@ pub struct Game {
     /// While the hero steps: the cell he left, which AI armies keep off too.
     #[serde(skip)]
     pub(crate) step_from: Option<Tile>,
+    /// The building defence the hero's unit strengths were last counted with (his record's
+    /// +0x378c at the last recount 0x4a16d4, which writes each unit's cached strength
+    /// +0x1ae): an AI army scoring him copies those strengths (ai.md §4), so after he walks
+    /// out of his town they still count its defence until the next recount
+    /// ([`Game::recount_hero`]). A save from before this field reads 0.
+    #[serde(default)]
+    pub(crate) hero_strength_bd: i32,
     /// The battle under way: the enemy's troop records its fighters came from, in their
     /// order (its living troops at the start), for [`Game::battle_write_back`].
     #[serde(skip)]
@@ -500,6 +507,7 @@ impl Game {
             speed_set: None,
             step_base: None,
             step_from: None,
+            hero_strength_bd: 0,
             battle_troops: Vec::new(),
             facing: None,
             noon_from: None,
@@ -615,7 +623,25 @@ impl Game {
         // too (0x4a1ff0). The original seems to add it again on top of a saved value after a
         // load (economy.md, Unknowns); Razdor adds it at the map's start only.
         g.stored_income = g.world.locations.iter().filter(|l| l.kind.capturable() && l.owned()).map(|l| l.gold_income).sum();
+        // The map load ends with his army recounted on his cell (0x4b5b64 → 0x497240(0, 1)).
+        g.recount_hero();
         g
+    }
+
+    /// The hero's army recount (0x4a16d4(0), most often through 0x497240(0, 1)): his units'
+    /// cached strengths take the defence of his record now (+0x378c: the building he stands
+    /// in when it is his, else 0, 0x497c68). The original runs it at the map load, at every
+    /// event window closed (0x4ab1ec), at his noon (0x4abfbc), in a building window
+    /// (0x4ba854: the hire and garrison tabs and the close; the hire 0x4bd3a4), after his
+    /// battles and when his army window opens (0x4d1814); not when he walks.
+    pub(crate) fn recount_hero(&mut self) {
+        let here = self.location.or_else(|| self.world.location_covering(self.tile()));
+        self.hero_strength_bd = here.map(|l| &self.world.locations[l]).filter(|l| l.owned()).map_or(0, |l| l.garrison_defence.max(0));
+    }
+
+    /// The army window opened (0x4d1814): it recounts his army.
+    pub fn army_window_opened(&mut self) {
+        self.recount_hero();
     }
 
     pub fn hero(&self) -> &Unit {
@@ -1270,6 +1296,7 @@ impl Game {
         // armies to be rescored on its hire, garrison and close tabs (0x4ba854 →
         // 0x497240(0, 1)); time stands while it is open, so here is as good.
         self.mark_dirty(ai::HERO);
+        self.recount_hero();
         events.push(Event::Arrived(l));
         events.extend(self.auto_tribute(l));
     }
@@ -1838,8 +1865,10 @@ impl Game {
         }
         let (_, mut dropped_left) = self.take_items(dropped);
         let foe = self.foe.take();
-        // The AI rescores its matchups with the hero and the army he fought (4c50ec).
+        // The AI rescores its matchups with the hero and the army he fought (4c50ec); his
+        // army is recounted (the victory report's layout 0x4a9b75, the window's close).
         self.mark_dirty(ai::HERO);
+        self.recount_hero();
         if let Some(Foe::Army(i)) = foe {
             let uid = self.world.armies[i].uid;
             self.mark_dirty(uid);

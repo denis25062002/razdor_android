@@ -540,6 +540,8 @@ impl Game {
         if alive {
             self.raise_hero();
             rebuild_after_spell(&c, &mut self.squad, &max, now);
+            // 0x4900fc → 0x497240(0): the rebuild recounts his army.
+            self.recount_hero();
         }
         let hits = self.squad.iter().zip(&before).map(|(u, b)| u.hp - b.0).sum();
         let killed = self.squad.iter().zip(&before).filter(|(u, b)| b.1 && !u.alive()).count();
@@ -570,6 +572,12 @@ impl Game {
         }
         for (t, u) in self.world.armies[i].troops.iter_mut().zip(&units) {
             unit_into_troop(&c, t, u, now);
+        }
+        if alive {
+            // 0x4900fc → 0x497240(i): the rebuild recounts the army with the defence it has.
+            self.recount_bill(i);
+            let m = &mut self.world.armies[i].mind;
+            m.strength_bd = m.defence;
         }
         let hits = units.iter().zip(&before).map(|(u, b)| u.hp - b.0).sum();
         let killed = units.iter().zip(&before).filter(|(u, b)| b.1 && !u.alive()).count();

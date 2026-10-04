@@ -758,13 +758,13 @@ pub struct SimKey {
 }
 
 /// A side of a [`SimKey`]: (type, level, HP, worn items, spells, drain) of each unit, the
-/// defence.
+/// defence and the defence its strengths were counted with.
 type UnitKey = (u32, i32, i32, [Option<ItemId>; items::SLOTS], [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS], i32);
-type SideKey = (Vec<UnitKey>, i32);
+type SideKey = (Vec<UnitKey>, i32, i32);
 
 impl SimKey {
     fn of(a: &Side, b: &Side) -> SimKey {
-        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence);
+        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence, s.strength_defence);
         SimKey { sides: [side(a), side(b)] }
     }
 }
@@ -1040,11 +1040,12 @@ impl Game {
         (Side { units, defence: a.mind.defence, strength_defence: a.mind.strength_bd }, fought)
     }
 
-    /// The hero's side as a target: all his living units.
+    /// The hero's side as a target: all his living units, their strengths as his last recount
+    /// counted them ([`Game::recount_hero`]: the defence he stood in then).
     fn hero_side(&self) -> Side {
         let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
         let defence = self.hero_defence();
-        Side { units, defence, strength_defence: defence }
+        Side { units, defence, strength_defence: self.hero_strength_bd }
     }
 
     // ------------------------------------------------------------------------------------

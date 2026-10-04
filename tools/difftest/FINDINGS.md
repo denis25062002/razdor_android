@@ -442,6 +442,26 @@ ai.md §2). Candidate C1004-035744 (ДС1).
   army 3 one cell off with the generator equal is §5's frame noise); rk1-day1 41 of 44 as
   before (`r4-rk1-fix1`).
 
+## 21. The hero's unit strengths keep the defence of his last recount
+
+**Status: fixed** (`Game::recount_hero`, `Game::hero_side`; ai.md §4). Candidate
+C1004-041105 (Другой берег).
+
+- Другой берег (archmage), step 17 (`click_map 81 77`, a chase of army 36): the chase ends at
+  (78,66) after 585 minutes in the original, at (80,68) after 646 in Razdor; Razdor 15 draws
+  ahead. Army 36's plan at 40500 scores the hero −17 in the original, −16 in Razdor.
+- Frida on AI_ArmyTargetScore 0x4a08f8 (army 36 against 0): A0 531 on both sides, B0 (his
+  side) 928 against Razdor's 624. His side copies each unit's cached strength +0x1ae from army
+  record 0, written only by the recount 0x4a16d4 with his +0x378c of the moment. His recounts
+  (0x497240, the hire 0x4bd5e7, the casts) all ran in his town (defence 15); walking out
+  clears +0x378c but recounts nothing, so in the open he still counts 15.
+- Razdor now keeps the defence of the hero's last recount (map load, event window closed,
+  noon, building window, army window, a spell on his army) for his strengths; the battle's
+  defence stays where he stands. A spell that leaves an AI army alive recounts it too
+  (0x4900fc), and the simulated battles' cache now tells sides apart by that defence.
+- After the fix the repro is 18 of 18 steps equal (`r4-c041105`, against 17 of 18); the
+  recorded repros of rounds 2-4 replay as before, rk1-day1 41 of 44.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

@@ -402,6 +402,7 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
     arrived since the hero's last step in Razdor, while the original re-plans only when the
     army ends a step in the frame where the hero ends one (world.md §1.3). With equal army
     steps it gave the same targets here.
+- **Resolved: fixed, FINDINGS.md §21** (the repro 18 of 18 steps equal, `r4-c041105`).
 
 ## C1004-042357: Обучающий1, step 17 `click_map 20 28`
 

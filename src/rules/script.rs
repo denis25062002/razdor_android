@@ -103,6 +103,7 @@ impl Game {
         // the AI's armies marked to be rescored (0x4ab1ec → 0x497240(0, 1)).
         if out.iter().any(|o| matches!(o, EventOutcome::Fired { .. })) {
             self.mark_dirty(super::ai::HERO);
+            self.recount_hero();
         }
         let mut events: Vec<Event> = out.into_iter().map(Event::Script).collect();
         let effects = std::mem::take(&mut self.effect_events);

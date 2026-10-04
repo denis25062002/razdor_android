@@ -913,6 +913,7 @@ impl<'a> Runner<'a> {
             return;
         }
         let kind = self.game.as_ref().and_then(|g| g.pack.get(slot).map(|&i| g.content.item(i).kind));
+        self.g().army_window_opened();
         match self.g().equip(unit, slot) {
             // Its sound as it is taken from the pack, and again as it is worn.
             Ok(()) => {

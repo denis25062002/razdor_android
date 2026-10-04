@@ -495,6 +495,39 @@ fn ds1_the_ai_sees_the_hero_on_the_cell_he_leaves() {
     assert_eq!(s.rng, 2_236_314_233);
 }
 
+/// FINDINGS.md §21 (candidate C1004-041105, Другой берег): the archmage hires and casts in
+/// his town (defence 15) and walks out; army 36 scores him with the strengths of his last
+/// recount, still the town's defence, so its way and the chase's end are the original's.
+#[test]
+fn other_shore_the_hero_is_scored_as_last_recounted() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"Другой берег","hero":2}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"hire","slot":0}
+{"op":"hire","slot":2}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"click_map","x":71,"y":54}
+{"op":"cast","slot":0}
+{"op":"click_map","x":71,"y":54}
+{"op":"cast","slot":0}
+{"op":"click_map","x":81,"y":77}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[17];
+    assert_eq!((s.hero.x, s.hero.y, s.clock), (78, 66, 586), "{notes:?}");
+    assert_eq!(s.rng, 2_044_507_713);
+}
+
 /// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
 /// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
 /// last recount, 85, as the original's victory gives (450 → 610), though none of its units

@@ -138,7 +138,19 @@ starts in a building is counted without its defence until its next recount, whil
 battles get the defence (the side's +0x844 reads +0x378c). Checked in the running game
 (Проклятое озеро: army 2 starts in a building of defence 15: its side strength is 877 at the
 load, 1764 after its first arrival there; FINDINGS.md §12). Garrisons are recounted with
-their defence at the load (0x4b2504), so theirs always count it.
+their defence at the load (0x4b2504), so theirs always count it. A spell that leaves someone
+alive in an army recounts it too (0x4900fc → 0x497240).
+
+The player's side (army 0) is copied the same way. His +0x378c is the defence of the
+building he stands in when it is his, else 0, written when he comes onto a cell (0x497c68);
+his recount runs at the map load's end (0x4b5b64), at every event window closed (Event_Finish
+0x4ab1ec, the victory and noon reports and the village window included), at his noon
+(0x4abfbc), in a building window on the hire and garrison tabs and at its close (0x4ba854;
+the hire tab 0x4bd3a4), when his army window opens (0x4d1814) and after a spell on his army
+(0x4900fc); not when he walks. So after he walks out of his town an AI army still scores him
+with the town's defence until the next of those (Другой берег: B0 928 in the open, his
+units' +0x1ae counted with 15; FINDINGS.md §21). The battle's own defence is the one of
+where he stands.
 
 **Score of army A against army C** (computed for A, cached per pair, §7.1):
 1. If nothing happened (A1 = A0 and B1 = B0) or the battle ran to `BattleEndTurn`: score 0.

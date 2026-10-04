@@ -556,6 +556,10 @@ old id, and their versions give both.
 - While the hero is taking a step, AI armies see him on the cell he is leaving until the step
   ends, as in the original: their distances, their plans (a patrol only hunts him inside its
   area) and their contacts no longer jump ahead to the cell he steps to.
+- AI armies judge the hero's army with the strength it had when it was last counted (in a
+  building window, at an event, at noon, in the army window, after a spell), as in the
+  original: after he leaves his town they still reckon with its defence until then, and
+  avoid or chase him accordingly.
 
 ## 0.2.2 — 2026-10-01
 
