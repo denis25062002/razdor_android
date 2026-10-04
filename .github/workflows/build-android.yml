@@ -28,11 +28,17 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
-      - name: Prepare dependencies and patch Cargo manifests
+      - name: Fix crate compatibility for cargo-quad-apk
         run: |
+          # Фиксируем версию encoding_rs на 0.8.33 (до редакции Edition 2024)
+          cargo update -p encoding_rs --precise 0.8.33 || true
+          
+          # Понижаем формат Cargo.lock до версии 3
           sed -i 's/version = 4/version = 3/' Cargo.lock || true
-          cargo fetch --target aarch64-linux-android
-          find ~/.cargo/registry/src -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+          
+          # Скачиваем зависимости и исправляем редакции в манифестах
+          cargo fetch --target aarch64-linux-android || true
+          find ~/.cargo -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
