@@ -467,10 +467,11 @@ gold falls short), then the model is asked for one action of that kind and picks
 unit or slot (a scripted pick when its answer is no use), and plays `--cover-tail` more
 actions (default 6). `log.jsonl` gets a `cover` record (kind, reached, setup steps, the
 pick and who made it, the original's note, whether the step-local run found that step
-equal) and, for every episode, `ops_steps` (per op: steps diffed, equal, NEW). The run stops
+equal) and, for every episode, `ops_steps` (per op: steps diffed, equal, explained — every
+difference known, downstream, noise or timing —, NEW). The run stops
 when every kind has been played on both sides and every forced kind picked and applied in
 the original, or at `--hours`. `--summary` prints the table over the cover episodes of
-`log.jsonl`; `--exe` takes a fixed Razdor binary; `--live-trace` the Frida presets of the
+`log.jsonl` (`--recount`: classified again from their run folders with today's `known.py`); `--exe` takes a fixed Razdor binary; `--live-trace` the Frida presets of the
 original played along (default `random`).
 
     ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --cover --hours 1.5 --max-new 20
