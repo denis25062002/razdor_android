@@ -238,7 +238,9 @@ one's named character, 0 none: an event's unit of an earlier map, such as РК1'
 РК2 checks at once), `hero_level` 0-based (with it `book`
 replaces the map's), `flags` the campaign flags of the earlier maps' event title scripts,
 `reveal` the whole map explored. A field left out keeps the map's preset. Used for the
-gameplay-video experiment (`VIDEO.md`, `rk3-video.jsonl`); Razdor only. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
+gameplay-video experiment (`VIDEO.md`, `rk3-video.jsonl`); Razdor only: the original's side
+starts a later map without carry-over (below, `new_game`), so a diff test of a later map
+leaves `carry` out. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique
 prefix). States go to `out/razdor.jsonl`, one line per action (`step` = the action's index,
 0-based), or to the standard output without `--out`. Actions that do not apply at that
 moment (an `ok` with nothing open, a click on a cell that is no target) are skipped and
@@ -301,9 +303,13 @@ A start that hangs before the main menu (seen once) is retried once.
 **Actions.**
 - `new_game`: main menu → New game → the map's row in the scenario list → Next → the hero
   class portrait (`hero` 1 knight, 2 archmage, 3 ranger) → Start. Only standalone maps and
-  the first map of a campaign are in the list (`kind` 2 maps cannot be started), and only
-  from the main menu, so a list has one `new_game`, first. Map names as for Razdor: the file
-  name with or without `.DTm`, or a unique prefix.
+  the first map of a campaign are shown in the list; a later campaign map (`kind` 2) is
+  started by clicking the first row and then writing its entry into the list selection
+  (0x65adab): Next (0x4c1804) copies whatever entry the selection holds, so it starts as a
+  new game with the map's own preset hero and no carry-over, as Razdor's `new_game` without
+  `carry` (a `carry` cannot be played on the original side). Only from the main menu, so a
+  list has one `new_game`, first. Map names as for Razdor: the file name with or without
+  `.DTm`, or a unique prefix.
 - `click_map`: a building window still open is closed (Esc); the cell becomes a pixel through
   the camera read from memory (`px = (x+1)·32 + 16 − camera x`, `py = (y+1)·22 + 11 −
   camera y`), scrolling with the arrow keys while it is outside the safe part of the view;

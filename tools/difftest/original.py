@@ -23,6 +23,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import struct
 import time
 
 from Xlib import X, XK, display as xdisplay
@@ -364,9 +365,19 @@ class Original:
             raise HarnessError(f"{map_name} is not in the scenario list: {[e[1] for e in entries]}")
         idx, _, kind = want[0]
         if kind == 2:
-            raise HarnessError(f"{map_name} is a later campaign map; the list only starts campaigns "
-                               "at their first map")
-        self._select_map(idx)
+            # A later campaign map: the list shows only a campaign's first map, but Next
+            # (0x4c1804) starts whatever entry the selection 0x65adab holds (it copies that
+            # entry's header and sets the classes from its presets). So a row is selected by
+            # clicking, then the selection is set to the later map: it starts as a new game
+            # with the map's own preset hero, no carry-over (as Razdor's `new_game` without
+            # `carry`). Only the selection is written; nothing else of the game.
+            self._select_map(0)
+            self.game.m.write(memread.MAP_LIST_SELECTED, struct.pack("<i", idx))
+            time.sleep(0.2)
+            if self.game.m.i32(memread.MAP_LIST_SELECTED) != idx:
+                raise HarnessError(f"could not select the later campaign map {map_name}")
+        else:
+            self._select_map(idx)
         self.click(*NEW_GAME_NEXT)
         self.wait_screen("new_hero")
         time.sleep(0.3)
