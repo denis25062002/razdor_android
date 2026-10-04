@@ -25,17 +25,23 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
-      - name: Vendor and sanitize all dependencies
+      - name: Vendor and sanitize dependencies
         run: |
-          # 1. Скачиваем все зависимости локально в папку vendor
+          # 1. Принудительно понижаем encoding_rs до версии на Edition 2018 до скачивания
+          cargo update -p encoding_rs --precise 0.8.33 || true
+
+          # 2. Понижаем версию формата Cargo.lock до v3
+          sed -i 's/version = 4/version = 3/' Cargo.lock || true
+
+          # 3. Скачиваем все зависимости локально в vendor
           mkdir -p .cargo
           cargo vendor > .cargo/config.toml
 
-          # 2. Понижаем версию формата lock-файла до 3
-          sed -i 's/version = 4/version = 3/' Cargo.lock || true
-
-          # 3. Заменяем edition = "2024" во всех вендорных библиотеках на "2021"
+          # 4. Менявшем любые проскочившие edition = "2024" на "2021"
           find vendor/ -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+
+          # 5. Сбрасываем проверку хэшей файлов в .cargo-checksum.json
+          find vendor/ -name ".cargo-checksum.json" -exec sed -i 's/"files":{[^}]*}/"files":{}/' {} +
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
@@ -44,13 +50,12 @@ jobs:
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
-          # Настраиваем пути к совместимому NDK 25.2
           NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
           export ANDROID_NDK_ROOT="$NDK_PATH"
           export NDK_HOME="$NDK_PATH"
           export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
-          # Создаем симлинк на случай проверки устаревшего имени утилиты ar
+          # Создаем симлинк для тулчейна ar
           cd "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
           ln -sf llvm-ar arm-linux-androideabi-ar || true
 
