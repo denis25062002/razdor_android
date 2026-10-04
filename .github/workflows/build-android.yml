@@ -1,0 +1,65 @@
+﻿name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android SDK and NDK
+        run: |
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-29" "ndk;25.2.9519653"
+
+      - name: Install cargo-quad-apk
+        run: cargo install cargo-quad-apk
+
+      - name: Configure NDK
+        run: |
+          NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+          TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+
+          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
+          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+
+          ls -l "$TOOLCHAIN/llvm-ar"
+          ls -l "$TOOLCHAIN/llvm-ranlib"
+          ls -l "$TOOLCHAIN/arm-linux-androideabi-ar"
+          ls -l "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+
+      - name: Verify Rust target
+        run: rustup target list --installed
+
+      - name: Verify Android configuration
+        run: |
+          echo "Android configuration:"
+          grep -A10 'package.metadata.android' Cargo.toml || true
+
+      - name: Build APK
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+        run: cargo quad-apk build --release --offline
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: razdor-engine-apk
+          path: target/**/*.apk
