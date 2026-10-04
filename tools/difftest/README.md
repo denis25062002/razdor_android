@@ -200,8 +200,10 @@ then waits for a click on the target army's cell. Equip: the panel's army button
 cell (5×5 from (338, 58), 55 px), then for the hero the lowest empty worn slot of the window,
 for another unit its card (0x667f3c + place·0x4b). Each op checks that something changed
 (pack, gold, army, book, worn items) and notes it when nothing did. Checked live on ДС1
-(hire, buy, sell, learn, equip: every step equal), РК1 (heal after the ruins' battle) and
-Проклятое озеро (two casts: clock and generator equal).
+(hire, buy, sell, learn, equip: every step equal), РК1 (heal after the ruins' battle; a
+resurrect at the church after a won battle that cost a unit, the dead card's button found by
+the same place table: gold and HP equal) and Проклятое озеро (two casts: clock and generator
+equal).
 
 ## Razdor side (script mode)
 
@@ -451,6 +453,29 @@ episode, two thirds of it the model); 13% of the model's actions invalid (5 on t
 screen, 53 refused by Razdor, 3 outside the vocabulary; another 20 refused as too strong),
 against 24% before; 6 of 9 episodes reached their length (4 of 13 before); 8 rewinds after
 lost battles, 21 resyncs. Candidates: `CANDIDATES.md`, third round.
+
+**Forced coverage** (`--cover [KINDS]`, `cover.py`). The model alone never chose `sell`,
+`heal`, `resurrect` or `equip`. With `--cover` each episode is built around one action kind
+(the one played least in the original so far; default all of `cover.FORCED`): scripted setup
+steps, decided on Razdor's replay and played on both sides like any action, steer to a place
+where the kind is valid (the nearest building whose window offers it, walking toward
+unexplored buildings when none in reach does; an item bought for `sell`/`equip`, a fitting
+one for `equip` or else a won fight's loot; a spell learnt for `cast`; for `heal`/`resurrect`
+a fight with a weak hostile army or a ruins' garrison, its presses found by seeded rollouts
+on Razdor's replay that win and leave a unit wounded or dead, then pack items sold when the
+gold falls short), then the model is asked for one action of that kind and picks the row,
+unit or slot (a scripted pick when its answer is no use), and plays `--cover-tail` more
+actions (default 6). `log.jsonl` gets a `cover` record (kind, reached, setup steps, the
+pick and who made it, the original's note, whether the step-local run found that step
+equal) and, for every episode, `ops_steps` (per op: steps diffed, equal, NEW). The run stops
+when every kind has been played on both sides and every forced kind picked and applied in
+the original, or at `--hours`. `--summary` prints the table over the cover episodes of
+`log.jsonl`; `--exe` takes a fixed Razdor binary; `--live-trace` the Frida presets of the
+original played along (default `random`).
+
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --cover --hours 1.5 --max-new 20
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --cover sell,equip --episodes 2
+    ~/.local/opt/re-venv/bin/python -m tools.difftest.explore --summary
 
 Known limits: the model plans on Razdor's state; a resync keeps the two sides on the same
 screen but the step it fixes is still a difference (classified as usual); a rewind restarts

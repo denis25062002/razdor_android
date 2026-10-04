@@ -5,7 +5,7 @@
 
 import unittest
 
-from . import explore, known
+from . import cover, explore, known
 
 
 class Repair(unittest.TestCase):
@@ -186,6 +186,45 @@ class Matcher(unittest.TestCase):
         self.assertEqual(explore.get_path(st, "battle.sides[1][0].hp"), 5)
         self.assertEqual(explore.get_path(st, "battle.sides[0].len"), 0)
         self.assertEqual(known.norm_path("armies[id 3].units[2].hp"), "armies[].units[].hp")
+
+
+class Cover(unittest.TestCase):
+    ST = {"hero": {"gold": 120, "mana": 50, "units": [{"hp": 10}, {"hp": 0}]},
+          "armies": [{"id": 4, "x": 3, "y": 3, "active": True, "alive": True}]}
+
+    def test_services_by_price(self):
+        look = {"services": [{"op": "heal", "unit": 0, "price": 100}, {"op": "resurrect", "unit": 1, "price": 150}],
+                "sell": [{"slot": 0, "id": 51, "price": 25}], "goods": [{"slot": 2, "price": 130}]}
+        self.assertEqual(cover.choices("heal", self.ST, "building", look), [{"op": "heal", "unit": 0}])
+        self.assertEqual(cover.choices("resurrect", self.ST, "building", look), [])
+        self.assertEqual(cover.choices("sell", self.ST, "building", look), [{"op": "sell", "slot": 0}])
+        self.assertEqual(cover.choices("buy", self.ST, "building", look), [])
+        self.assertEqual(cover.choices("heal", self.ST, "map", look), [])
+
+    def test_book_and_pack(self):
+        look = {"book": [{"slot": 0, "mana": 40, "enemy": True}, {"slot": 1, "mana": 80, "enemy": False}],
+                "pack": [{"slot": 0}]}
+        self.assertEqual(cover.choices("cast", self.ST, "map", look), [{"op": "cast", "slot": 0, "army": 4}])
+        self.assertEqual(len(cover.choices("equip", self.ST, "building", look)), 2)
+
+    def test_table_counts_live_cover_episodes(self):
+        import json
+        import os
+        import tempfile
+        recs = [{"cover": {"kind": "sell", "reached": True, "by": "model", "action": {"op": "sell"},
+                           "original_note": None, "equal": True},
+                 "live_original": "ok", "ops_razdor": {"sell": 1, "ok": 2}, "ops_original": {"sell": 1},
+                 "ops_steps": {"sell": {"steps": 1, "equal": 1, "new": 0}}},
+                {"cover": {"kind": "sell"}, "ops_razdor": {"sell": 5}},   # played without the original
+                {"ops_razdor": {"wait": 3}, "live_original": "ok"}]     # not a cover episode
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "log.jsonl")
+            open(p, "w").write("".join(json.dumps(r) + "\n" for r in recs))
+            t = explore.coverage(p)
+        self.assertEqual((t["sell"]["razdor"], t["sell"]["original"], t["sell"]["equal"]), (1, 1, 1))
+        self.assertEqual((t["sell"]["episodes"], t["sell"]["model"], t["sell"]["pick_equal"]), (1, 1, 1))
+        self.assertEqual(t["wait"]["razdor"], 0)
+        self.assertFalse(explore.covered(t, ["sell"]))
 
 
 if __name__ == "__main__":

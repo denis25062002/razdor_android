@@ -708,172 +708,242 @@ def battle_start(screens, upto):
     return i
 
 
-def play_episode(info, hero, goals, razdor, model, length, rnd, log, live=None, max_rewinds=3):
-    acts = [{"op": "new_game", "map": info.stem, "hero": hero}]
-    st = {"model_calls": 0, "proposed": 0, "repaired_json": 0, "unparsed": 0, "dropped": 0,
-          "wrong_screen": 0, "rejected": 0, "too_strong": 0, "fallbacks": 0, "auto_ok": 0,
-          "accepted_from_model": 0, "rewinds": 0, "resyncs": 0, "screen_mismatch": 0,
-          "ops_razdor": {}, "ops_original": {}}
-    visited = {"types": set(), "ids": set()}
-    history, rejected, empty_rounds = [], [], 0
-    seen_events = set()
-    new_events = []
-    avoid = set()          # cells of armies that beat the hero (rewound)
-    state, screen, look = razdor.look(acts)
-    if state is None:
-        return acts, st, "razdor could not start the map"
-    screens = [screen]
-    if live:
-        try:
-            live.start()
-            live.do(acts[0])
-        except Exception as e:
-            live.failed = f"start: {e}"
-    seen_events |= set(state.get("events_done", []))
-    goal_i = 0
+class Episode:
+    """One episode's actions and both sides' play: Razdor's replay state after the last
+    action (`state`, `screen`, `look`), the original played along (`live`), the counters
+    of `log.jsonl`. `push` plays an action on both sides."""
 
-    def count(a, o_note):
+    def __init__(self, info, hero, razdor, model, rnd, log, live=None, max_rewinds=3):
+        self.info, self.hero, self.razdor, self.model, self.rnd, self.log = info, hero, razdor, model, rnd, log
+        self.live, self.max_rewinds = live, max_rewinds
+        self.acts = [{"op": "new_game", "map": info.stem, "hero": hero}]
+        self.st = {"model_calls": 0, "proposed": 0, "repaired_json": 0, "unparsed": 0, "dropped": 0,
+                   "wrong_screen": 0, "rejected": 0, "too_strong": 0, "fallbacks": 0, "auto_ok": 0,
+                   "accepted_from_model": 0, "rewinds": 0, "resyncs": 0, "screen_mismatch": 0,
+                   "ops_razdor": {}, "ops_original": {}}
+        self.visited = {"types": set(), "ids": set()}
+        self.history, self.rejected = [], []
+        self.seen_events, self.new_events = set(), []
+        self.avoid = set()          # cells of armies that beat the hero (rewound)
+        self.original_notes = []    # the original's note per action (None: applied)
+        self.state = self.screen = self.look = None
+        self.screens = []
+
+    def start(self):
+        """Starts both sides; returns an error text or None."""
+        self.state, self.screen, self.look = self.razdor.look(self.acts)
+        if self.state is None:
+            return "razdor could not start the map"
+        self.screens = [self.screen]
+        o_note = None
+        if self.live:
+            try:
+                self.live.start()
+                o_note = self.live.do(self.acts[0])
+            except Exception as e:
+                self.live.failed = f"start: {e}"
+                o_note = "harness down"
+        self.original_notes.append(o_note)
+        self.seen_events |= set(self.state.get("events_done", []))
+        return None
+
+    def count(self, a, o_note):
+        st = self.st
         st["ops_razdor"][a["op"]] = st["ops_razdor"].get(a["op"], 0) + 1
-        if live and not live.failed and o_note is None:
+        if self.live and not self.live.failed and o_note is None:
             st["ops_original"][a["op"]] = st["ops_original"].get(a["op"], 0) + 1
 
-    def push(a, tag=""):
+    def push(self, a, tag=""):
         """Plays `a` on both sides; returns the original's note."""
-        nonlocal state, screen, look, new_events
-        acts.append(a)
-        o_note = live.do(a) if live else None
-        count(a, o_note)
-        state, screen, look = razdor.look(acts)
-        if state is None:
-            screen = "ended"
-            screens.append(screen)
+        self.acts.append(a)
+        o_note = self.live.do(a) if self.live else None
+        self.original_notes.append(o_note)
+        self.count(a, o_note)
+        self.state, self.screen, self.look = self.razdor.look(self.acts)
+        if self.state is None:
+            self.screen = "ended"
+            self.screens.append(self.screen)
             return o_note
-        screens.append(screen)
-        done = set(state.get("events_done", []))
-        fresh = sorted(done - seen_events)
-        seen_events.update(done)
-        new_events = fresh
-        history.append(act_text(a) + tag + (f" -> events {fresh}" if fresh else "") + f" -> {screen}"
-                       + (f" (original: {o_note})" if o_note else ""))
+        self.screens.append(self.screen)
+        done = set(self.state.get("events_done", []))
+        fresh = sorted(done - self.seen_events)
+        self.seen_events.update(done)
+        self.new_events = fresh
+        self.history.append(act_text(a) + tag + (f" -> events {fresh}" if fresh else "") + f" -> {self.screen}"
+                            + (f" (original: {o_note})" if o_note else ""))
         return o_note
 
-    while len(acts) < length:
-        goal = goals[(goal_i + (len(acts) // 20)) % len(goals)]
-        if screen == "ended":
-            # The game ended in a battle (lost): rewind the script to before the action that
-            # opened it, as a reload of the last point before the battle, and go on elsewhere.
-            if len(screens) > 1 and screens[-2] == "battle" and st["rewinds"] < max_rewinds:
-                k = battle_start(screens, len(screens) - 2)
-                opener = acts[k] if k < len(acts) else {}
-                if opener.get("op") == "click_map":
-                    avoid.add((opener["x"], opener["y"]))
-                del acts[k:]
-                del screens[k:]
-                st["rewinds"] += 1
-                state, screen, look = razdor.look(acts)
-                if live:
-                    live.replay(acts)
-                history.append(f"(rewound to before the lost battle of step {k})")
-                rejected.append(f"click_map {opener.get('x')} {opener.get('y')}: that army beat you, avoid it")
-                continue
-            break
-        # The original's view, when it shows another screen.
-        o_screen, o_text = live.view(info) if live else (None, "")
-        orig_view = None
-        if o_screen and o_screen != screen and not (o_screen == "dialog" and screen == "question"):
-            st["screen_mismatch"] += 1
-            orig_view = f"{o_text} (screen {o_screen})"
-            # A window only the original shows: close it (Razdor notes the step and skips it).
-            if o_screen in ("dialog",) and screen in ("map", "building") and st["resyncs"] < 40:
-                st["resyncs"] += 1
-                push({"op": "ok"}, " (resync)")
-                continue
-            if o_screen == "question" and screen in ("map", "building") and st["resyncs"] < 40:
-                st["resyncs"] += 1
-                push({"op": "answer", "yes": False}, " (resync)")
-                continue
-            if o_screen in ("map", "building") and screen == "dialog" and st["resyncs"] < 40:
-                st["resyncs"] += 1
-                push({"op": "ok"}, " (resync)")
-                continue
-        if screen == "dialog":
-            cand_list = [{"op": "ok"}]
-            st["auto_ok"] += 1
-            from_model = False
-        else:
-            reach = None
-            if screen in ("map", "building"):
-                hp = (state["hero"]["x"], state["hero"]["y"])
-                samples = sample_cells(info, hp)
-                cells = list(samples) + [(b.x, b.y) for b in info.m.buildings if dist(hp, (b.x, b.y)) <= 30][:16] + \
-                    [(x["x"], x["y"]) for x in state.get("armies", []) if "x" in x and x.get("active", True)
-                     and x.get("alive", True) and dist(hp, (x["x"], x["y"])) <= 30][:10]
-                reach = (razdor.reachable(acts, cells), samples)
-            prompt = cap_prompt(summarise(info, state, screen, goal, visited, history, new_events, rejected,
-                                          reach, look, orig_view))
-            st["prompt_chars_max"] = max(st.get("prompt_chars_max", 0), len(prompt) + len(SYSTEM))
-            text = model.ask(prompt)
-            st["model_calls"] += 1
-            cand_list, fix = repair(text)
-            st["repaired_json"] += fix["repaired"]
-            st["unparsed"] += fix["unparsed"]
-            st["dropped"] += fix["dropped"]
-            st["proposed"] += len(cand_list) + fix["dropped"]
-            from_model = True
-            log({"prompt_screen": screen, "orig_view": orig_view, "reply": text[:400]})
-        took = 0
-        for a in cand_list:
-            if a["op"] not in valid_ops(screen, look):
-                st["wrong_screen"] += 1
-                rejected.append(f"{act_text(a)} (not valid on {screen})")
+    def note_of(self, a):
+        """Razdor's note when it would skip `a` now (None: it applies)."""
+        _, notes, _ = self.razdor.replay(self.acts + [a])
+        n = notes.get(len(self.acts))
+        return n[0] if n else None
+
+    def rewind_lost_battle(self):
+        """The game ended in a battle (lost): rewind the script to before the action that
+        opened it, as a reload of the last point before the battle. False when it cannot."""
+        screens, acts = self.screens, self.acts
+        if not (len(screens) > 1 and screens[-2] == "battle" and self.st["rewinds"] < self.max_rewinds):
+            return False
+        k = battle_start(screens, len(screens) - 2)
+        opener = acts[k] if k < len(acts) else {}
+        if opener.get("op") == "click_map":
+            self.avoid.add((opener["x"], opener["y"]))
+        del acts[k:]
+        del screens[k:]
+        del self.original_notes[k:]
+        self.st["rewinds"] += 1
+        self.state, self.screen, self.look = self.razdor.look(acts)
+        if self.live:
+            self.live.replay(acts)
+        self.history.append(f"(rewound to before the lost battle of step {k})")
+        self.rejected.append(f"click_map {opener.get('x')} {opener.get('y')}: that army beat you, avoid it")
+        return True
+
+    def resync(self):
+        """A window only one side shows is closed (the other side notes the step and skips
+        it). Returns (pushed, the original's view text or None)."""
+        o_screen, o_text = self.live.view(self.info) if self.live else (None, "")
+        screen = self.screen
+        if not (o_screen and o_screen != screen and not (o_screen == "dialog" and screen == "question")):
+            return False, None
+        self.st["screen_mismatch"] += 1
+        orig_view = f"{o_text} (screen {o_screen})"
+        if self.st["resyncs"] < 40:
+            fix = None
+            if o_screen == "dialog" and screen in ("map", "building"):
+                fix = {"op": "ok"}
+            elif o_screen == "question" and screen in ("map", "building"):
+                fix = {"op": "answer", "yes": False}
+            elif o_screen in ("map", "building") and screen == "dialog":
+                fix = {"op": "ok"}
+            if fix:
+                self.st["resyncs"] += 1
+                self.push(fix, " (resync)")
+                return True, orig_view
+        return False, orig_view
+
+    def reach_cells(self):
+        """(cells click_map accepts now, {sample cell: direction}) around the hero."""
+        info, state = self.info, self.state
+        hp = (state["hero"]["x"], state["hero"]["y"])
+        samples = sample_cells(info, hp)
+        cells = list(samples) + [(b.x, b.y) for b in info.m.buildings if dist(hp, (b.x, b.y)) <= 30][:16] + \
+            [(x["x"], x["y"]) for x in state.get("armies", []) if "x" in x and x.get("active", True)
+             and x.get("alive", True) and dist(hp, (x["x"], x["y"])) <= 30][:10]
+        return self.razdor.reachable(self.acts, cells), samples
+
+    def ask_model(self, goal, orig_view=None, extra=None):
+        """The model's actions for the screen now (repaired), counted in the stats."""
+        st = self.st
+        reach = self.reach_cells() if self.screen in ("map", "building") else None
+        prompt = summarise(self.info, self.state, self.screen, goal, self.visited, self.history,
+                           self.new_events, self.rejected, reach, self.look, orig_view)
+        if extra:
+            prompt = prompt.replace('Reply with JSON {"actions":[...],"why":"..."}.', extra + '\nReply with JSON {"actions":[...],"why":"..."}.')
+        prompt = cap_prompt(prompt)
+        st["prompt_chars_max"] = max(st.get("prompt_chars_max", 0), len(prompt) + len(SYSTEM))
+        text = self.model.ask(prompt)
+        st["model_calls"] += 1
+        cand_list, fix = repair(text)
+        st["repaired_json"] += fix["repaired"]
+        st["unparsed"] += fix["unparsed"]
+        st["dropped"] += fix["dropped"]
+        st["proposed"] += len(cand_list) + fix["dropped"]
+        self.log({"prompt_screen": self.screen, "orig_view": orig_view, "reply": text[:400]})
+        return cand_list
+
+    def too_strong(self, a):
+        """Whether a click_map meets a hostile army much stronger than the hero's."""
+        c = (a["x"], a["y"])
+        state = self.state
+        foe = next((x for x in state.get("armies", []) if (x.get("x"), x.get("y")) == c
+                    and x.get("active", True) and x.get("alive", True)), None)
+        mine = strength(state["hero"]["units"])
+        friendly = foe and self.info.army_faction.get(foe["id"]) in (1, 2)
+        return c in self.avoid or bool(foe and not friendly and strength(foe.get("units")) > mine * STRONGER)
+
+    def visit(self, a):
+        if a["op"] == "click_map":
+            b = self.info.building_at(a["x"], a["y"])
+            if b:
+                self.visited["types"].add(b.type)
+                self.visited["ids"].add(b.id)
+
+    def explore(self, goals, length, goal_i=0):
+        """The model plays until the list has `length` actions. Returns why it stopped."""
+        st = self.st
+        empty_rounds = 0
+        while len(self.acts) < length:
+            goal = goals[(goal_i + (len(self.acts) // 20)) % len(goals)]
+            if self.screen == "ended":
+                if self.rewind_lost_battle():
+                    continue
                 break
-            if a["op"] == "click_map":
-                c = (a["x"], a["y"])
-                foe = next((x for x in state.get("armies", []) if (x.get("x"), x.get("y")) == c
-                            and x.get("active", True) and x.get("alive", True)), None)
-                mine = strength(state["hero"]["units"])
-                friendly = foe and info.army_faction.get(foe["id"]) in (1, 2)
-                if c in avoid or (foe and not friendly and strength(foe.get("units")) > mine * STRONGER):
-                    st["too_strong"] += 1
-                    rejected.append(f"{act_text(a)}: that army is too strong for you")
+            pushed, orig_view = self.resync()
+            if pushed:
+                continue
+            screen = self.screen
+            if screen == "dialog":
+                cand_list = [{"op": "ok"}]
+                st["auto_ok"] += 1
+                from_model = False
+            else:
+                cand_list = self.ask_model(goal, orig_view)
+                from_model = True
+            took = 0
+            for a in cand_list:
+                if a["op"] not in valid_ops(self.screen, self.look):
+                    st["wrong_screen"] += 1
+                    self.rejected.append(f"{act_text(a)} (not valid on {self.screen})")
                     break
-            _, notes, _ = razdor.replay(acts + [a])
-            n = notes.get(len(acts))
-            if n:
-                st["rejected"] += 1
-                rejected.append(f"{act_text(a)}: {n[0].split(': ', 1)[-1]}")
-                break
-            took += 1
-            if from_model:
-                st["accepted_from_model"] += 1
-            if a["op"] == "click_map":
-                b = info.building_at(a["x"], a["y"])
-                if b:
-                    visited["types"].add(b.type)
-                    visited["ids"].add(b.id)
-            push(a)
-            if screen != "map" or len(acts) >= length:
-                break  # the screen changed: ask again with the new state
-        if took == 0:
-            empty_rounds += 1
-            if empty_rounds >= 3:
-                a = fallback(info, state, screen, rnd, visited, razdor, acts, avoid)
-                _, notes, _ = razdor.replay(acts + [a])
-                if notes.get(len(acts)):
-                    a = {"op": "wait", "hours": 1} if screen == "map" else {"op": "ok"}
-                    _, notes, _ = razdor.replay(acts + [a])
-                    if notes.get(len(acts)):
-                        return acts, st, f"stuck on {screen}"
-                st["fallbacks"] += 1
+                if a["op"] == "click_map" and self.too_strong(a):
+                    st["too_strong"] += 1
+                    self.rejected.append(f"{act_text(a)}: that army is too strong for you")
+                    break
+                n = self.note_of(a)
+                if n:
+                    st["rejected"] += 1
+                    self.rejected.append(f"{act_text(a)}: {n.split(': ', 1)[-1]}")
+                    break
+                took += 1
+                if from_model:
+                    st["accepted_from_model"] += 1
+                self.visit(a)
+                self.push(a)
+                if self.screen != "map" or len(self.acts) >= length:
+                    break  # the screen changed: ask again with the new state
+            if took == 0:
+                empty_rounds += 1
+                if empty_rounds >= 3:
+                    a = fallback(self.info, self.state, self.screen, self.rnd, self.visited, self.razdor,
+                                 self.acts, self.avoid)
+                    if self.note_of(a):
+                        a = {"op": "wait", "hours": 1} if self.screen == "map" else {"op": "ok"}
+                        if self.note_of(a):
+                            return f"stuck on {self.screen}"
+                    st["fallbacks"] += 1
+                    empty_rounds = 0
+                    self.push(a, " (fallback)")
+            else:
                 empty_rounds = 0
-                push(a, " (fallback)")
-        else:
-            empty_rounds = 0
-            rejected = rejected[-2:]
-    return acts, st, "length reached" if len(acts) >= length else f"screen {screen}"
+                self.rejected = self.rejected[-2:]
+        return "length reached" if len(self.acts) >= length else f"screen {self.screen}"
+
+
+def play_episode(info, hero, goals, razdor, model, length, rnd, log, live=None, max_rewinds=3):
+    ep = Episode(info, hero, razdor, model, rnd, log, live, max_rewinds)
+    err = ep.start()
+    if err:
+        return ep.acts, ep.st, err
+    why = ep.explore(goals, length)
+    return ep.acts, ep.st, why
 
 
 # --- diffing and classifying ---------------------------------------------------------------------
+EXE = None   # the Razdor binary of `--exe` (run.py builds or takes its last build otherwise)
+
+
 def run_both(actions, name, trace="random", shots=False, reuse=None):
     """run.py on `actions` into RUNS/<name>; returns the run folder. `reuse`: an original's
     run folder recorded along the episode (`LiveOriginal`)."""
@@ -883,7 +953,7 @@ def run_both(actions, name, trace="random", shots=False, reuse=None):
         for a in actions:
             f.write(json.dumps(a, ensure_ascii=False) + "\n")
     cmd = [PY, "-m", "tools.difftest.run", "--actions", path, "--name", name, "--runs", RUNS,
-           "--no-build", "--trace", trace]
+           "--trace", trace] + (["--exe", EXE] if EXE else ["--no-build"])
     if not shots:
         cmd.append("--no-shots")
     if reuse:
@@ -1095,6 +1165,87 @@ def investigate(name, actions, info, hero, per, diff, ctx, razdor, exe, shrink_b
     return res
 
 
+# --- coverage -------------------------------------------------------------------------------
+def step_ops(acts, diff, per):
+    """Per op: the steps played, those the step-local run found equal (no field differs) and
+    those with a NEW difference."""
+    out = {}
+    rows = {r["step"]: r for r in diff["local"]}
+    for s, a in enumerate(acts):
+        if s == 0 or s not in rows:
+            continue
+        o = out.setdefault(a["op"], {"steps": 0, "equal": 0, "new": 0})
+        o["steps"] += 1
+        if not rows[s]["diffs"]:
+            o["equal"] += 1
+        if any(e["class"] == "new" for e in per.get(s, [])):
+            o["new"] += 1
+    return out
+
+
+def coverage(log_path, cover_only=True):
+    """Per action kind over `log.jsonl` (the cover episodes, or all): applied in Razdor,
+    applied in the original (no note), compared equal step-local, NEW; cover episodes built
+    around it (reached, picked by the model)."""
+    from . import cover as C
+    fields = ("razdor", "original", "steps", "equal", "new", "episodes", "reached", "model",
+              "pick_original", "pick_equal")
+    t = {k: dict.fromkeys(fields, 0) for k in C.KINDS}
+    row = lambda k: t.setdefault(k, dict.fromkeys(fields, 0))
+    if not os.path.exists(log_path):
+        return t
+    for line in open(log_path, encoding="utf-8"):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if cover_only and ("cover" not in r or "live_original" not in r):
+            continue   # not a cover episode, or one played without the original
+        for k, n in r.get("ops_razdor", {}).items():
+            row(k)["razdor"] += n
+        for k, n in r.get("ops_original", {}).items():
+            row(k)["original"] += n
+        for k, o in r.get("ops_steps", {}).items():
+            for f in ("steps", "equal", "new"):
+                row(k)[f] += o[f]
+        c = r.get("cover")
+        if c:
+            k = c["kind"]
+            t[k]["episodes"] += 1
+            t[k]["reached"] += int(bool(c.get("reached")))
+            t[k]["model"] += int(c.get("by") == "model")
+            t[k]["pick_original"] += int(c.get("action") is not None and c.get("original_note") is None)
+            t[k]["pick_equal"] += int(bool(c.get("equal")))
+    return t
+
+
+def coverage_table(t):
+    L = ["| kind | Razdor | original | steps diffed | equal | NEW | cover episodes | reached | model's pick | pick applied in original | pick equal |",
+         "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for k, v in t.items():
+        L.append(f"| {k} | {v['razdor']} | {v['original']} | {v['steps']} | {v['equal']} | {v['new']} | "
+                 f"{v['episodes']} | {v['reached']} | {v['model']} | {v['pick_original']} | {v['pick_equal']} |")
+    return "\n".join(L)
+
+
+def covered(t, kinds):
+    """Every kind played on both sides, and every forced kind picked and applied in the
+    original."""
+    from . import cover as C
+    return all(t[k]["razdor"] and t[k]["original"] for k in C.KINDS) and \
+        all(t[k]["pick_original"] for k in kinds)
+
+
+def next_kind(t, kinds, tried):
+    """The kind to build the next episode around: the fewest played in the original (and
+    reached), skipping the ones no map could set up this run (`tried`: failed map count)."""
+    left = [k for k in kinds if tried.get(k, 0) < 99]
+    if not left:
+        return None
+    return min(left, key=lambda k: (min(t[k]["original"], 1) + min(t[k]["pick_original"], 1),
+                                    t[k]["pick_original"], tried.get(k, 0)))
+
+
 # --- main -----------------------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1114,7 +1265,24 @@ def main(argv=None):
                     "(e.g. 'buy,hire,heal,learn,equip')")
     ap.add_argument("--no-live", action="store_true",
                     help="do not play the original along (it is then played once after the episode)")
+    ap.add_argument("--cover", nargs="?", const="all", metavar="KINDS",
+                    help="forced coverage: each episode built around one action kind (comma-separated "
+                         "kinds, default all of cover.FORCED), see cover.py")
+    ap.add_argument("--cover-tail", type=int, default=6, help="model actions after the forced one")
+    ap.add_argument("--exe", help="this Razdor binary (no build)")
+    ap.add_argument("--live-trace", default="random", help="Frida presets of the original played along")
+    ap.add_argument("--summary", action="store_true", help="print the coverage table of log.jsonl and stop")
     a = ap.parse_args(argv)
+
+    log_path = os.path.join(EXPLORE, "log.jsonl")
+    if a.summary:
+        print(coverage_table(coverage(log_path)))
+        return
+    from . import cover as C
+    cover_kinds = None
+    if a.cover:
+        cover_kinds = list(C.FORCED) if a.cover == "all" else [k.strip() for k in a.cover.split(",") if k.strip()]
+    cover_tried = {}        # kind -> maps whose setup failed this run
 
     rnd = random.Random(a.seed)
     lo, _, hi = a.len.partition("-")
@@ -1127,7 +1295,9 @@ def main(argv=None):
         raise SystemExit("no startable maps")
     os.makedirs(EXPLORE, exist_ok=True)
     target = os.path.join(CACHE, "target")
-    exe = os.path.join(target, "release", "razdor") if a.no_build else build(target)
+    exe = a.exe or (os.path.join(target, "release", "razdor") if a.no_build else build(target))
+    global EXE
+    EXE = a.exe
     razdor = Razdor(exe, os.path.join(EXPLORE, "tmp"))
     model = Model(a.ollama, a.model)
     if not model.available():
@@ -1137,7 +1307,6 @@ def main(argv=None):
     episode = 0
     found = 0
     skip = set()
-    log_path = os.path.join(EXPLORE, "log.jsonl")
     goals = GOALS[:]
     if a.goals:
         words = [w.strip().lower() for w in a.goals.split(",") if w.strip()]
@@ -1148,22 +1317,60 @@ def main(argv=None):
             break
         if time.time() - t_start > a.hours * 3600 or found >= a.max_new:
             break
-        info = maps[episode % len(maps)]
-        heroes = [h for h in info.heroes() if (info.stem, h) not in skip] or [1]
-        # Each episode the next class (7 maps and 3 classes: every pair within 21 episodes).
-        hero = heroes[episode % len(heroes)]
+        kind = None
+        if cover_kinds and covered(coverage(log_path), cover_kinds):
+            print("cover: every kind played on both sides", file=sys.stderr)
+            break
+        if cover_kinds:
+            kind = next_kind(coverage(log_path), cover_kinds, {k: len(v) for k, v in cover_tried.items()})
+            if kind is None:
+                print("cover: every kind failed its setup on 3 maps", file=sys.stderr)
+                break
+            # The first map (from this episode's turn on) whose setup reaches the kind on
+            # Razdor's replay alone; the original is started only for that one.
+            seed = rnd.random()
+            info = hero = None
+            for j in range(len(maps)):
+                m = maps[(episode + j) % len(maps)]
+                hs = [h for h in m.heroes() if (m.stem, h) not in skip] or [1]
+                h = 2 if kind == "cast" and 2 in hs else hs[(episode + j) % len(hs)]
+                if (m.stem, h) in cover_tried.get(kind, set()):
+                    continue
+                if C.dry_setup(m, h, razdor, kind, seed):
+                    info, hero = m, h
+                    break
+                cover_tried.setdefault(kind, set()).add((m.stem, h))
+            if info is None:
+                print(f"cover {kind}: no map reaches it", file=sys.stderr)
+                cover_tried[kind] = set(range(99))   # given up for this run
+                continue
+        else:
+            info = maps[episode % len(maps)]
+            heroes = [h for h in info.heroes() if (info.stem, h) not in skip] or [1]
+            # Each episode the next class (7 maps and 3 classes: every pair within 21 episodes).
+            hero = heroes[episode % len(heroes)]
         length = rnd.randint(lo, hi)
         name = "ep" + datetime.datetime.now().strftime("%m%d-%H%M%S")
         goal_list = goals[episode % len(goals):] + goals[: episode % len(goals)]
-        print(f"episode {episode} {name}: {info.stem}, hero {hero}, {length} actions, "
-              f"first goal: {goal_list[0][:50]}", file=sys.stderr)
+        print(f"episode {episode} {name}: {info.stem}, hero {hero}, "
+              + (f"cover {kind}" if kind else f"{length} actions, first goal: {goal_list[0][:50]}"), file=sys.stderr)
         t0 = time.time()
         calls0, secs0 = model.calls, model.seconds
         chat = open(os.path.join(EXPLORE, name + "-chat.jsonl"), "w", encoding="utf-8")
         logf = lambda rec: chat.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        live = None if a.play_only or a.no_live else LiveOriginal(os.path.join(RUNS, name + "-live"))
+        live = None if a.play_only or a.no_live else LiveOriginal(os.path.join(RUNS, name + "-live"), a.live_trace)
+        cover_rec = None
         try:
-            acts, st, why = play_episode(info, hero, goal_list, razdor, model, length, rnd, logf, live)
+            if kind:
+                ep = Episode(info, hero, razdor, model, random.Random(seed), logf, live)
+                why = ep.start()
+                if not why:
+                    cover_rec, why = C.run_cover(ep, kind, goal_list, a.cover_tail)
+                acts, st = ep.acts, ep.st
+                if cover_rec and not cover_rec["reached"]:
+                    cover_tried.setdefault(kind, set()).add((info.stem, hero))
+            else:
+                acts, st, why = play_episode(info, hero, goal_list, razdor, model, length, rnd, logf, live)
         finally:
             if live:
                 live.stop()
@@ -1174,6 +1381,11 @@ def main(argv=None):
         rec = {"episode": episode, "name": name, "map": info.file, "hero": hero, "goal": goal_list[0],
                "length": len(acts), "target": length, "end": why, "play_s": round(t_play),
                "model_s": round(model.seconds - secs0), **st}
+        if cover_rec:
+            rec["cover"] = cover_rec
+            print(f"  cover {kind}: reached {cover_rec['reached']}, pick {cover_rec.get('action')} by "
+                  f"{cover_rec.get('by')}, original note {cover_rec.get('original_note')}; setup "
+                  f"{cover_rec.get('setup')}", file=sys.stderr)
         print(f"  played {len(acts)} actions in {t_play:.0f}s ({why}); model calls {st['model_calls']}, "
               f"invalid: wrong screen {st['wrong_screen']}, rejected {st['rejected']}, too strong "
               f"{st['too_strong']}, dropped {st['dropped']}, repaired JSON {st['repaired_json']}; "
@@ -1197,6 +1409,12 @@ def main(argv=None):
                     rec["original_steps"] = len(orig)
                     rec["free_first"] = diff.get("first")
                     rec["tally"] = known.tally(per)
+                    rec["ops_steps"] = step_ops(acts, diff, per)
+                    if cover_rec and cover_rec.get("step") is not None:
+                        k = cover_rec["step"]
+                        row = next((r for r in diff["local"] if r["step"] == k), None)
+                        cover_rec["equal"] = bool(row) and not row["diffs"]
+                        cover_rec["diff"] = [[e["class"], e["path"]] for e in per.get(k, [])][:10]
                     hits = []
                     for s in sorted(per):
                         for e in per[s]:
@@ -1221,6 +1439,8 @@ def main(argv=None):
     hours = (time.time() - t_start) / 3600
     print(f"done: {episode} episodes in {hours:.2f} h ({episode / hours if hours else 0:.1f}/h), "
           f"{found} NEW", file=sys.stderr)
+    if cover_kinds:
+        print(coverage_table(coverage(log_path)), file=sys.stderr)
 
 
 if __name__ == "__main__":
