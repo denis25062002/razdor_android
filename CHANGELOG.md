@@ -13,6 +13,8 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The victory report after a won battle comes 250 ms after the battle screen closes,** as in
+  the original (it came at once).
 - **The potion sign on the army and building cards:** a unit that drank a potion shows its
   sign on the army screen and in the building windows too, as the original, next to the
   promotion sign, in the battle signs' places (it showed only in battle).

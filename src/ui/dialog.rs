@@ -64,6 +64,9 @@ pub struct Dialog {
     pub chord: bool,
     /// Its opening sound has played.
     pub cued: bool,
+    /// Not shown before this clock time (seconds, `get_time`): the won battle's report comes
+    /// 250 ms after the battle screen closes (the chained step 0x4af658).
+    pub not_before: Option<f64>,
 }
 
 impl Dialog {
@@ -81,7 +84,13 @@ impl Dialog {
             left: Vec::new(),
             chord: false,
             cued: false,
+            not_before: None,
         }
+    }
+
+    /// It still waits for its time ([`Dialog::not_before`]) at clock `now`.
+    pub fn waiting(&self, now: f64) -> bool {
+        self.not_before.is_some_and(|t| now < t)
     }
 
     /// Adds a line to the blue notice.
@@ -315,4 +324,21 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     }
     let ok = button(x + w / 2.0 - 60.0, by, 120.0, 38.0, "OK", true);
     (ok || key(KeyCode::Enter) || key(KeyCode::Escape)).then_some(Close::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The won battle's report waits its 250 ms after the screen closes (0x4af658), then shows.
+    #[test]
+    fn a_dialog_with_a_time_waits_for_it() {
+        let gap = razdor::av::BATTLE_REPORT_GAP_MS as f64 / 1000.0;
+        assert_eq!(gap, 0.25);
+        let d = Dialog { not_before: Some(10.0 + gap), ..Dialog::new("report") };
+        assert!(d.waiting(10.0));
+        assert!(d.waiting(10.2));
+        assert!(!d.waiting(10.25));
+        assert!(!Dialog::new("now").waiting(0.0));
+    }
 }

@@ -381,7 +381,7 @@ impl App {
         self.last_screen = Some(now);
         // A window waits while the camera flies to the places of the event before it.
         let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
-        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued && !held) {
+        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued && !held && !d.waiting(clock)) {
             d.cued = true;
             if d.event.is_some() || d.chord {
                 let k = self.game.as_mut().map_or(0, |g| g.event_chord());
@@ -700,7 +700,8 @@ impl App {
             return;
         }
         let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
-        if let Some(d) = self.dialogs.front().filter(|_| !held) {
+        let clock = macroquad::prelude::get_time();
+        if let Some(d) = self.dialogs.front().filter(|d| !held && !d.waiting(clock)) {
             if let Some(close) = dialog::draw(d, &self.assets) {
                 let closed = self.dialogs.pop_front();
                 let asked = closed.as_ref().is_some_and(|d| d.question);

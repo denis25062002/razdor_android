@@ -100,6 +100,9 @@ pub fn echo(battle: &Battle, actor: usize, hit: &crate::rules::battle::Hit) -> O
 /// The won battle's hold (0x4b09e8): the battle screen stays up this long, the experience on
 /// the cards, before it closes and the report follows.
 pub const BATTLE_END_HOLD_MS: u32 = 2500;
+/// Then the screen closes and the report (the chained event step, 0x4af658) follows this
+/// much later.
+pub const BATTLE_REPORT_GAP_MS: u32 = 250;
 /// A pass in battle (0x4afb54): a pause with the busy pointer.
 pub const BATTLE_PASS_MS: u32 = 100;
 

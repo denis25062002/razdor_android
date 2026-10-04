@@ -799,14 +799,16 @@ impl BattleView {
     }
 
     /// The won battle's hold is over: the battle is settled and the screen closes; the
-    /// victory report follows on the map (a level gained has no sound here: `Unit-Upgrade`
-    /// is the promotion screen's).
+    /// victory report follows on the map 250 ms later (a level gained has no sound here:
+    /// `Unit-Upgrade` is the promotion screen's).
     fn close_won(&self, game: &mut Game, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Screen {
         let result = game.resolve_battle(&self.battle);
         if game.won() {
             return Screen::Victory;
         }
-        dialogs.extend(Dialog::victory(game, &result));
+        // The report is the chained step 250 ms after the screen closes (0x4af658).
+        let due = macroquad::time::get_time() + razdor::av::BATTLE_REPORT_GAP_MS as f64 / 1000.0;
+        dialogs.extend(Dialog::victory(game, &result).map(|d| Dialog { not_before: Some(due), ..d }));
         *message = None;
         Screen::WorldMap
     }

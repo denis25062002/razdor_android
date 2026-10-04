@@ -113,7 +113,8 @@ The gaps the first runs showed, by weight, and how Razdor plays them now (the in
    box and its OK are gone for a win (kept for a defeat and for a battle nobody won). A
    level gained plays no `Unit-Upgrade` any more (the original's is the promotion screen's),
    after a battle or from an event. A player's pass is a 100 ms pause (`battle_pass`). The
-   250 ms between the screen's close and the report is left out.
+   report comes 250 ms after the screen closes (the chained step 0x4af658, queued with the
+   hold: `chain` in the trace, not compared).
 3. **Building windows** (done). The building window opens with `InterfaceCastSpell` and
    every tab switch plays it; its Esc close is silent. The side windows open silent, their
    panel icon playing `InterfacePanelDown` (the bar's buttons played the button sound and
