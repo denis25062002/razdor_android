@@ -31,6 +31,7 @@ jobs:
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
+          export NDK_HOME=$ANDROID_NDK_ROOT
           export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
           cargo quad-apk build --release
 
