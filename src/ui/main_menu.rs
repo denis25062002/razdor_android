@@ -94,12 +94,12 @@ thread_local! {
 
 /// An oval button: the violet swirl, the frame (gold under the mouse) and its word. Returns
 /// true when clicked.
-fn oval(i: usize, label: &str) -> bool {
+fn oval(i: usize, label: &str, hot: Option<usize>) -> bool {
     let k = chrome::k();
     let c = video(button_centre(i));
     let size = OVAL * k;
-    let r = Rect::new(c.x - size.x / 2.0, c.y - size.y / 2.0, size.x, size.y);
-    let hover = !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
+    let r = oval_rect(i);
+    let hover = hot == Some(i);
     // The bell as the pointer comes onto an item (interface.md §4, 0x4b9b3c); leaving clears
     // the light.
     HOVERED.with(|h| {
@@ -190,12 +190,29 @@ pub fn backdrop() {
     logo();
 }
 
+/// The screen rectangle of oval button `i`.
+fn oval_rect(i: usize) -> Rect {
+    let k = chrome::k();
+    let c = video(button_centre(i));
+    let size = OVAL * k;
+    Rect::new(c.x - size.x / 2.0, c.y - size.y / 2.0, size.x, size.y)
+}
+
+/// The one button under the pointer: neighbouring ovals overlap by 20 px, and the original's
+/// hit test (0x4743c8) reports a single widget, the first in order. Without this the pointer in
+/// an overlap counted as on two buttons, which took the light from each other every frame and
+/// rang the bell each time.
+fn hot_button(pointer: Vec2, n: usize) -> Option<usize> {
+    (0..n).find(|&i| oval_rect(i).contains(pointer))
+}
+
 /// Draws the menu; returns what was picked.
 pub fn frame() -> Option<Pick> {
     backdrop();
     let mut pick = None;
+    let hot = if input_blocked() { None } else { hot_button(crate::ui::widgets::pointer().into(), BUTTONS.len()) };
     for (i, (p, label)) in BUTTONS.iter().enumerate() {
-        if oval(i, tr(label)) {
+        if oval(i, tr(label), hot) {
             pick = Some(*p);
         }
     }

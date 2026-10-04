@@ -396,6 +396,9 @@ impl Backend {
         let gain = settings.sfx_gain();
         match self.sfx.get(&key.to_ascii_lowercase()) {
             Some(s) if gain > 0.0 => {
+                // One buffer per sound, as the original's (engine.md §8): playing a sound that
+                // is still playing restarts it instead of layering a second copy on top.
+                stop_sound(s);
                 play_sound(s, PlaySoundParams { looped: false, volume: gain });
                 if log {
                     razdor::diag!("audio: sfx {key} ({}) at {gain:.1}", self.table.effect(&key).unwrap_or("?"));

@@ -13,6 +13,10 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Sound effects never pile up:** a sound played again while it still plays starts over, as the
+  original's one buffer per sound does; sweeping the pointer over the main menu no longer stacks
+  its bell into a din. Overlapping ovals no longer count the pointer on two buttons at once,
+  which rang the bell every frame between them.
 - **A building reached under an event opens after it:** when an event's window stops the
   walk inside the building you clicked, the building's window opens once the event is read,
   as in the original (it left you on the map).
