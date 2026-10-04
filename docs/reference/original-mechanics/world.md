@@ -426,6 +426,13 @@ What the world needs:
   play time the rest of the tick) sees him on his new cell with the cell **ahead** of him
   closed, not the cell he came from; the planner's erase (ai.md §7) reads the same two cells.
   An army standing right ahead of him then erases its own cell and stays (a one-cell path).
+  Everything else the AI computes from "the hero's cell" reads the same record cell
+  (`army(0)+0x1724`, 0x75c064): an arrival's distances (the re-plan within
+  `AIGetPathDistance`, the talk counts, ai.md §2), the planner's rescoring range, his seed
+  and its patrol-box test, the cone and the erase (ai.md §7), and the arrival rules'
+  adjacency (0x4a548c, ai.md §8). So an army arriving while he is mid-step sees him on the
+  cell he leaves: a patroller whose box holds the cell he steps to but not the one he leaves
+  does not seed him (ДС1, FINDINGS.md §20).
 - AI armies stand at the centre of their home building's footprint `(x0 + sx div 2,
   y0 + sy div 2)` when they respawn.
 - Boarding or leaving the sea (§8) empties the banks and route countdowns of the AI armies on

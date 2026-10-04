@@ -466,6 +466,35 @@ fn ds1_an_army_at_the_end_of_his_step_sees_him_arrived() {
     assert_eq!(s.rng, 1_491_519_599);
 }
 
+/// FINDINGS.md §20 (candidate C1004-035744, ДС1): during the hero's step (96,3) → (95,4)
+/// army 1 re-plans with him on the cell he leaves, outside its patrol box, so it keeps its
+/// way west to its wander point instead of turning on him; at step 10 its cell and the
+/// generator are the original's.
+#[test]
+fn ds1_the_ai_sees_the_hero_on_the_cell_he_leaves() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":98,"y":5}
+{"op":"click_map","x":98,"y":1}
+{"op":"wait","hours":4}
+{"op":"click_map","x":98,"y":17}
+{"op":"click_map","x":98,"y":1}
+{"op":"click_map","x":86,"y":13}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    let s = &states[10];
+    let a = s.armies.iter().find(|a| a.id == 1).unwrap();
+    assert_eq!((s.hero.x, s.hero.y, s.clock), (86, 13, 1733), "{notes:?}");
+    assert_eq!((a.x, a.y), (Some(68), Some(5)));
+    assert_eq!(s.rng, 2_236_314_233);
+}
+
 /// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
 /// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
 /// last recount, 85, as the original's victory gives (450 → 610), though none of its units

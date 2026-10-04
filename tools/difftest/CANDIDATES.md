@@ -347,6 +347,7 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
   - Checked with a throw-away instrumented build (not committed): with the hero's cell taken
     as `step_from` in the AI's arrivals of a step (not at the tick's end), step 10 of this
     run comes out equal (generator 2236314233, army 1 at (68,5) on both sides).
+- **Resolved: fixed, FINDINGS.md §20** (the repro 16 of 17 steps equal, `r4-c035744`).
 
 ## C1004-041105: Другой берег, step 17 `click_map 81 77`
 

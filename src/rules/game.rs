@@ -400,8 +400,9 @@ pub struct Game {
     pub(crate) sims: std::cell::RefCell<ai::SimCache>,
 }
 
-/// What an AI army's step needs of the hero: the cells it may not enter (his own and the
-/// one he steps to), and where he is.
+/// What an AI army's step needs of the hero: the cells it may not enter (his logical cell
+/// and the one ahead of him: the one he steps to), and where he is for the AI: his logical
+/// cell, the cell he leaves while a step is under way (world.md §5).
 pub(crate) struct HeroCells {
     pub(crate) cells: [Option<Tile>; 2],
     pub(crate) at: Tile,
@@ -1504,8 +1505,15 @@ impl Game {
         // The hero's cells: where he stands and, while he steps, the cell he left; standing,
         // the cell ahead of him in the direction of his last step (the original tests his
         // cell plus his direction, which a stop does not clear: 0x4a399c).
+        // While he steps his logical cell (the record's, 0x75c064) is still the cell he
+        // leaves and the cell ahead of him the one he steps to; the walk timer moves it only
+        // in the frame the step ends (0x4ae8cc), so the AI's arrivals of the tick see him
+        // there (world.md §5).
         let ahead = self.facing.map(|(dx, dy)| (hero_tile.0 + dx, hero_tile.1 + dy));
-        let hero = HeroCells { cells: [Some(hero_tile), self.step_from.or(ahead)], at: hero_tile };
+        let hero = match self.step_from {
+            Some(from) => HeroCells { cells: [Some(from), Some(hero_tile)], at: from },
+            None => HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile },
+        };
         // At the tick's end his step has ended: his cell and the one ahead of him.
         let hero_end = HeroCells { cells: [Some(hero_tile), ahead], at: hero_tile };
         let later = self.ai_move(minutes, &hero, &hero_end, start, midnights);

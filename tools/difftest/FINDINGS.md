@@ -419,6 +419,29 @@ economy.md §3). The gameplay video's open point (VIDEO.md, the bandit gang's go
   battles' (0x4a4c68 reads +0x16e0 too). After the fix the gang pays 160 (run
   `r3-gold-lake17-fix`: 610 on both sides).
 
+## 20. The AI sees the hero on the cell he leaves while he steps
+
+**Status: fixed** (`Game::cell_of` with `HeroCells::at`, `Game::move_armies`; world.md §5,
+ai.md §2). Candidate C1004-035744 (ДС1).
+
+- ДС1 (knight), step 10 (`click_map 86 13`): army 1 at (82,8) in Razdor, (68,5) in the
+  original; the original 48 draws ahead (its wander points `Random(31)/Random(21)` at 159750,
+  Razdor army 16's). The step 16 that the explorer reported (a battle in Razdor only) is
+  downstream.
+- Army 1 re-plans at 137545 at (70,5); its patrol box is x 65..95, y 0..20. The hero's step
+  (96,3) → (95,4) runs 1353.5–1421 minutes. A Frida hook on the planner 0x4a2d88 reads his
+  record cell `army(0)+0x1724` = (96,3), the cell he leaves, outside the box: no hero seed,
+  and army 1 keeps its way to the wander point (65,3). Razdor took the cell he steps to,
+  (95,4), inside the box, seeded him and turned army 1 east to hunt him.
+- The record cell moves only in the frame the step ends (0x4ae8cc), before the armies
+  advance; everything the AI reads as the hero's cell (an arrival's distances and talk
+  counts, the rescoring range, the seed and its box test, the cone, the erase, the arrival
+  rules' adjacency in 0x4a548c) is that cell. Razdor now gives the arrivals of a tick the
+  cell he leaves (the tick's end, §18, the new cell).
+- After the fix the repro is 16 of 17 steps equal (`r4-c035744`, against 9 of 17; step 9's
+  army 3 one cell off with the generator equal is §5's frame noise); rk1-day1 41 of 44 as
+  before (`r4-rk1-fix1`).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

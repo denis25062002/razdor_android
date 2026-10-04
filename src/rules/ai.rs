@@ -979,9 +979,11 @@ impl Game {
         }
     }
 
-    fn cell_of(&self, p: Party) -> Tile {
+    /// Where `p` stands for the AI: the hero's logical cell, the cell he leaves while he
+    /// steps (his record's cell 0x75c064 until the walk timer ends the step, 0x4ae8cc).
+    fn cell_of(&self, p: Party, hero: &HeroCells) -> Tile {
         match p {
-            Party::Hero => self.tile(),
+            Party::Hero => hero.at,
             Party::Army(j) => self.world.armies[j].tile(&self.world.map),
         }
     }
@@ -1714,7 +1716,7 @@ impl Game {
             if p == Party::Army(i) {
                 continue;
             }
-            let d = grid.octile(here, self.cell_of(p));
+            let d = grid.octile(here, self.cell_of(p, hero));
             if 0 < d && d <= reach {
                 replan = true;
             }
@@ -1739,7 +1741,7 @@ impl Game {
         let a = &mut self.world.armies[i];
         a.mind.facing_none = a.path.is_empty();
         a.mind.stand_facing = a.path.first().map(|t| (t.0 - here.0, t.1 - here.1));
-        if let Some(c) = self.ai_arrive(uid) {
+        if let Some(c) = self.ai_arrive(uid, hero) {
             if let Some(i) = self.army_by_uid(uid) {
                 self.world.armies[i].mind.contact = Some(c);
             }
@@ -1847,7 +1849,7 @@ impl Game {
             if self.ignored(p) {
                 v = 0;
             }
-            let cell = self.cell_of(p);
+            let cell = self.cell_of(p, hero);
             if v < 1 {
                 if v < 0 && a.sails() == self.afloat(p) {
                     repulsion(&mut mult, w, h, cell, f, -v);
@@ -1866,15 +1868,15 @@ impl Game {
         let parties = self.parties();
         for &p in &parties {
             if self.guard(p) {
-                if let Some(k) = idx(self.cell_of(p)) {
+                if let Some(k) = idx(self.cell_of(p, hero)) {
                     mult[k] = 0;
                 }
             }
         }
         let grid = self.world.map.grid;
         for &p in parties.iter().filter(|&&p| p != Party::Hero) {
-            if (a.ai.ignored || self.ignored(p)) && grid.octile(here, self.cell_of(p)) < NEAR_IGNORED {
-                if let Some(k) = idx(self.cell_of(p)) {
+            if (a.ai.ignored || self.ignored(p)) && grid.octile(here, self.cell_of(p, hero)) < NEAR_IGNORED {
+                if let Some(k) = idx(self.cell_of(p, hero)) {
                     mult[k] = 0;
                 }
             }
@@ -1892,7 +1894,7 @@ impl Game {
         let reach = o.ai_get_path_distance;
         for &(p, d) in dist {
             if 0 < d && d <= reach {
-                field.erase(self.cell_of(p));
+                field.erase(self.cell_of(p, hero));
                 field.erase(self.next_cell(p, hero));
             }
         }
@@ -1959,8 +1961,8 @@ impl Game {
     /// collect a village's gold, hire, heal or raise its dead; it leaves the map at the end,
     /// and what it did to the hero then is dropped *(guess: the original would open a
     /// battle or a meeting with the beaten army)*.
-    pub(crate) fn ai_arrive(&mut self, uid: u32) -> Option<Contact> {
-        let result = self.ai_arrive_rules(uid);
+    pub(crate) fn ai_arrive(&mut self, uid: u32, hero: &HeroCells) -> Option<Contact> {
+        let result = self.ai_arrive_rules(uid, hero);
         let i = self.army_by_uid(uid)?;
         if self.world.armies[i].mind.fallen {
             self.world.armies[i].mind.fallen = false;
@@ -1970,7 +1972,7 @@ impl Game {
         result
     }
 
-    fn ai_arrive_rules(&mut self, uid: u32) -> Option<Contact> {
+    fn ai_arrive_rules(&mut self, uid: u32, hero: &HeroCells) -> Option<Contact> {
         let now = self.clock.total_minutes();
         let i = self.army_by_uid(uid)?;
         let mut result = None;
@@ -2007,7 +2009,7 @@ impl Game {
             if r >= 0 {
                 self.add_talk(i, key, r as i32 + 1);
             }
-            let there = self.cell_of(p);
+            let there = self.cell_of(p, hero);
             if (here.0 - there.0).abs() >= 2 || (here.1 - there.1).abs() >= 2 {
                 continue;
             }

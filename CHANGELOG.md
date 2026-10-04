@@ -553,6 +553,9 @@ old id, and their versions give both.
 - An army the hero beats pays its gold share plus its wage bill as it last counted it, as in
   the original, even when none of its units survives the battle (before, a gang wiped out
   paid no wages at all).
+- While the hero is taking a step, AI armies see him on the cell he is leaving until the step
+  ends, as in the original: their distances, their plans (a patrol only hunts him inside its
+  area) and their contacts no longer jump ahead to the cell he steps to.
 
 ## 0.2.2 — 2026-10-01
 

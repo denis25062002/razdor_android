@@ -58,7 +58,9 @@ Every frame of game time, armies 1..N in index order:
    200 minutes) and takes a step when the bank covers `cost(cell it leaves) × speed` minutes,
    ×1.5 on a diagonal. The cost map is LAND for land armies and SHIP for ship armies (§13).
    If the next cell is the player's cell or the player's next cell, the step's time is spent
-   but the army stays where it is.
+   but the army stays where it is. "The player's cell" here and in §7–8 is his record cell
+   (`army(0)+0x1724`): while he steps, the cell he leaves, until the walk timer ends the step
+   (world.md §5).
 3. When the step ends on a cell ("arrival"), the army may **re-plan** (§7) and then runs its
    **arrival** rules (§8–9). A step arrives when its play time runs out (world.md §5): the
    arrivals of all the armies, and the draws they make, come in the order of their times, the

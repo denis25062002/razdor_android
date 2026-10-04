@@ -69,8 +69,8 @@ fn sim(own: i64, own_left: i64, theirs: i64, theirs_left: i64) -> SimResult {
 fn plan(g: &mut Game, i: usize) {
     let here = g.world.armies[i].tile(&g.world.map);
     let grid = g.world.map.grid;
-    let dist: Vec<(Party, i32)> = g.parties().into_iter().filter(|&p| p != Party::Army(i)).map(|p| (p, grid.octile(here, g.cell_of(p)))).collect();
     let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    let dist: Vec<(Party, i32)> = g.parties().into_iter().filter(|&p| p != Party::Army(i)).map(|p| (p, grid.octile(here, g.cell_of(p, &hero)))).collect();
     g.ai_plan(i, &dist, &hero);
 }
 
@@ -484,7 +484,8 @@ fn a_neighbour_near_makes_it_plan_at_every_step_and_counts_talk() {
 
 /// Army `uid`'s arrival rules, as after a step.
 fn arrive(g: &mut Game, uid: u32) -> Option<Contact> {
-    g.ai_arrive(uid)
+    let hero = HeroCells { cells: [Some(g.tile()), None], at: g.tile() };
+    g.ai_arrive(uid, &hero)
 }
 
 #[test]
@@ -1854,4 +1855,37 @@ fn an_armys_strengths_keep_the_defence_of_their_last_recount() {
     let uid = g.world.armies[0].uid;
     g.ai_in_building(uid, 0, g.clock.total_minutes(), &mut None);
     assert_eq!(g.world.armies[0].mind.strength_bd, 10);
+}
+
+/// FINDINGS §20 (C1004-035744): while the hero steps, the AI sees him on his logical cell,
+/// the cell he leaves (his record's cell, moved only as the step ends, 0x4ae8cc). A
+/// patroller whose box holds the cell he steps to but not the one he leaves does not seed
+/// him (0x4a2d88 reads `army(0)+0x1724`); once the step has ended it does.
+#[test]
+fn a_patroller_plans_with_the_hero_on_the_cell_he_leaves() {
+    let mut s = map();
+    s.header.heroes[0] = hero(24, 10, 100, &[troop(4, 0, 1)]);
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 1)]);
+    a.no_random_targets = 1;
+    s.armies = vec![a];
+    let mut g = start(&s);
+    g.world.armies[0].patrols = true;
+    g.world.armies[0].patrol_radius = 5;
+    g.world.armies[0].box_centre = Some((30, 10));
+    let plan_seeing = |g: &mut Game, hero: HeroCells| {
+        g.world.armies[0].path.clear();
+        g.world.armies[0].mind.scores.insert(HERO, 50);
+        g.world.armies[0].mind.clean.insert(HERO);
+        let here = g.world.armies[0].tile(&g.world.map);
+        let grid = g.world.map.grid;
+        let dist: Vec<(Party, i32)> = g.parties().into_iter().filter(|&p| p != Party::Army(0)).map(|p| (p, grid.octile(here, g.cell_of(p, &hero)))).collect();
+        g.ai_plan(0, &dist, &hero);
+        g.world.armies[0].path.clone()
+    };
+    // Stepping from (24,10), outside the box (x 25..35), to (25,10), inside it.
+    let path = plan_seeing(&mut g, HeroCells { cells: [Some((24, 10)), Some((25, 10))], at: (24, 10) });
+    assert!(path.is_empty(), "no seed: {path:?}");
+    // The step ended: he stands on (25,10), in the box, and is hunted.
+    let path = plan_seeing(&mut g, HeroCells { cells: [Some((25, 10)), Some((26, 10))], at: (25, 10) });
+    assert_eq!(path.first(), Some(&(29, 10)), "{path:?}");
 }
