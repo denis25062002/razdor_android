@@ -78,7 +78,23 @@ impl Game {
         let Some(mut engine) = self.script.take() else { return Vec::new() };
         let out = engine.tick(self);
         self.script = Some(engine);
+        // A check that fires nothing goes idle, which drops the wish for a check at the
+        // building window's close (0x4ac3a6).
+        if !out.iter().any(|o| matches!(o, EventOutcome::Fired { .. } | EventOutcome::Question(_))) {
+            self.scan_on_close = false;
+        }
         self.script_events(out)
+    }
+
+    /// A window over the map was closed (not by opening another one, 0x4b8d28(0)): after a
+    /// heal, a raise or a trade in the building window the events are checked now
+    /// (0x4b8f63), so one those changes allow opens as the window closes, not at the next
+    /// step.
+    pub fn window_closed(&mut self) -> Vec<Event> {
+        if !self.scan_on_close {
+            return Vec::new();
+        }
+        self.run_script()
     }
 
     fn script_events(&mut self, out: Vec<EventOutcome>) -> Vec<Event> {

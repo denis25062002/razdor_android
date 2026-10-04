@@ -589,6 +589,9 @@ impl<'a> Runner<'a> {
             // window, with its chord.
             self.last_screen_building = false;
             self.tab = None;
+            // After a heal, a raise or a trade the events are checked as it closes (0x4b8f63).
+            let events = self.g().window_closed();
+            self.handle(events);
         }
     }
 

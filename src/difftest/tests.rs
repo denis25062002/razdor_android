@@ -896,3 +896,30 @@ fn rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day() {
     let v = village(&r);
     assert_eq!((v.owner, v.gold, g.gold), (0, 0, gold), "his again, and no tribute");
 }
+
+/// An event's window that cuts a walk short inside the clicked building keeps the building
+/// waiting: its window opens once the event's is read (0x4aed41 → 0x4ae5d8, 0x4aed64). On
+/// РК1 the archmage's walk to the building at (47, 45) is stopped at (45, 45) by event 4; the
+/// original shows the building's window after the OK (runs r3-c004157 and rk1-h2-minimap);
+/// Razdor left him on the map until a second click.
+#[test]
+fn rk1_an_event_on_the_way_into_a_building_opens_it_after_its_window() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"РК1","hero":2}
+{"op":"ok"}
+{"op":"click_map","x":41,"y":43}
+{"op":"click_map","x":42,"y":43}
+{"op":"click_map","x":47,"y":45}
+{"op":"ok"}"#,
+    )
+    .unwrap();
+    let mut r = Runner::new(Source::Install(&dt));
+    for a in &actions[..5] {
+        r.apply(a).unwrap();
+    }
+    assert_eq!(r.game().unwrap().tile(), (45, 45));
+    assert_eq!((r.look()["screen"].as_str(), r.look()["event"].as_u64()), (Some("dialog"), Some(4)));
+    r.apply(&actions[5]).unwrap();
+    assert_eq!(r.look()["screen"].as_str(), Some("building"), "{:?}", r.notes);
+}

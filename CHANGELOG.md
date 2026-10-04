@@ -13,6 +13,12 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **A building reached under an event opens after it:** when an event's window stops the
+  walk inside the building you clicked, the building's window opens once the event is read,
+  as in the original (it left you on the map).
+- **Events checked as the building window closes:** after healing, raising, buying or selling
+  there, an event your purchase allows opens as you close the window, as in the original,
+  not at your next step.
 - **The front row's width in the settings:** the settings window chooses 6 or 4 front-row
   cells for new games (the install's "wide front row" until chosen); a saved game keeps its
   own. With 4 the formation is the original's 4-column one, drawn as the original draws it:

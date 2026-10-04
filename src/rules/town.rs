@@ -166,6 +166,7 @@ impl Game {
         self.pay_service(price);
         let c = self.content.clone();
         self.squad[i].heal_full(&c);
+        self.scan_on_close = true;
         Ok(Vec::new())
     }
 
@@ -190,6 +191,7 @@ impl Game {
         u.died_at = None;
         u.unpaid = false;
         u.heal_full(&c);
+        self.scan_on_close = true;
         Ok(Vec::new())
     }
 
@@ -1407,6 +1409,29 @@ mod tests {
         want.rng.random(90_000);
         assert_eq!(a.rng.state(), want.rng.state());
         assert_eq!(a.world.locations[0].shop.as_ref().unwrap().places, want.world.locations[0].shop.as_ref().unwrap().places);
+    }
+
+    /// A trade (or a heal, or a raise) asks for the events to be checked as the building
+    /// window closes (0x4ed440 → 0x4b8f63): an event the purchase allows opens then, not at
+    /// the next step; a window closed without one checks nothing.
+    #[test]
+    fn a_trade_has_the_events_checked_as_the_window_closes() {
+        use crate::dt::dtm::EventKind;
+        use crate::rules::events::EventOutcome;
+        let mut s = shop_town(2);
+        let mut e = crate::dt::dtm::Event { kind: EventKind::Global as u8, repeat: 1440, duration: 1440, once: 1, title: "t".into(), message: "m".into(), ..Default::default() };
+        (e.conditions.artifacts_check, e.conditions.artifacts, e.conditions.artifacts_owner) = (1, [24, 0, 0], [1, 0, 0]);
+        s.events = vec![e];
+        let mut g = start(&s);
+        g.drain_events();
+        g.gold = 10_000;
+        assert_eq!(g.location, Some(0), "he starts in the market");
+        assert!(g.window_closed().is_empty(), "no trade: no check");
+        let at = g.market_here().unwrap().iter().position(|i| i.0 == 24).unwrap();
+        g.buy(at).unwrap();
+        let fired = |ev: &[Event]| ev.iter().any(|e| matches!(e, Event::Script(EventOutcome::Fired { event: 1, .. })));
+        assert!(fired(&g.window_closed()), "the amulet bought: the event opens as the window closes");
+        assert!(g.window_closed().is_empty(), "asked once");
     }
 
     #[test]

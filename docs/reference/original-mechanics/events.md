@@ -48,8 +48,11 @@ The scan (0x4abfbc, §2) is started from these places. **code**
   *met army* (§9). If an event fires, the battle the contact would start does not happen.
 - **After a dialog is finished** (OK, 0x4abea0), **after a No** (0x4c2452, 0x4c2480), after a
   chained event's timer with nothing to chain (0x4af6c9), after the village chooser (0x4bbd2f).
-- **When a building window closes** after the player hired, healed or traded there
-  (flag 0x4ed440, set at 0x4b13cb, 0x4b14dc, 0x4b9fd9; checked at 0x4b8f63).
+- **When a window over the map closes** (0x4b8d28(0), not when another window replaces it)
+  after the player healed, raised or traded in the building window (flag 0x4ed440, set by
+  heal and raise at 0x4b13cb and 0x4b14dc and by a purchase or a sale at 0x4b9fd9; checked
+  at 0x4b8f63; a hire does not set it). The flag is cleared when a scan goes idle (0x4ac3a6).
+  Razdor: the same (`Game::window_closed`).
 
 ## 2. The scan
 

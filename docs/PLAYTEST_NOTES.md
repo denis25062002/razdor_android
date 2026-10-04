@@ -25,6 +25,22 @@ was seen on and what to check.
    in what order the original shows them, and whether it queues them one at a time. See
    interface.md (message boxes, the order of the world-map windows) and events.md (the ask/OK
    flow).
+   Checked (2026-10-04, dt-original): the original shows one window at a time by
+   construction: the event scan opens one event's window and runs again only when it is
+   finished (or answered No); the noon report is part of that scan; a building reached as a
+   window opens waits for it (0x4ed42c); a battle and its report come after the windows of
+   that moment. Razdor queues its dialogs the same way (one shown, the next after it). To find
+   what still differs, every action list of the diff-test runs so far (28 lists, about 550
+   steps) was replayed in Razdor with its screen read at each step and set against the
+   original's screen (event window, village, building, battle, map). Two differences, both
+   fixed: (1) an event's window that cut the walk short inside the clicked building: the
+   original opens the building's window after the OK (РК1, runs r3-c004157 and
+   rk1-h2-minimap; 0x4aed41 → 0x4ae5d8, 0x4aed64), Razdor left the hero on the map;
+   (2) after a heal, a raise, a purchase or a sale in the building window the original checks
+   the events as the window closes (0x4ed440, 0x4b8f63), Razdor only at the next step. The
+   other screen differences of those runs come from AI walks that part (FINDINGS §5) or from
+   `battle_auto`. No window of dt-original was found open over another one; what was seen on
+   dt-feat should be checked again after it merges.
 
 2. **Entering a village must not make it the hero's.** The player only takes the village's
    money, and only if nobody else has taken it that day. This **contradicts the current spec**:

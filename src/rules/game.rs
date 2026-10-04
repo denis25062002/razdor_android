@@ -327,6 +327,11 @@ pub struct Game {
     /// are read (0x4ed42c; [`Game::enter_waiting_building`]).
     #[serde(skip)]
     pub(crate) waiting_entry: Option<usize>,
+    /// A heal, a raise or a trade in the building window asks for the events to be checked
+    /// when the window closes (0x4ed440, set at 0x4b13cb, 0x4b14dc and 0x4b9fd9, tested at
+    /// 0x4b8f63); a check that fires nothing clears it (0x4ac3a6).
+    #[serde(default)]
+    pub(crate) scan_on_close: bool,
     /// The name the player gave the hero (`#HERONAME`); `None`: his class's name.
     #[serde(default)]
     pub hero_name: Option<String>,
@@ -499,6 +504,7 @@ impl Game {
             noon_from: None,
             click_buildings: (None, None),
             waiting_entry: None,
+            scan_on_close: false,
             hero_name: None,
             journal: History::default(),
             offer: None,
@@ -1045,7 +1051,8 @@ impl Game {
         while self.step_elapsed >= STEP_SECONDS && (self.moving() || self.wait_ticks > 0) {
             self.step_elapsed -= STEP_SECONDS;
             self.since_step = 0.0;
-            let go = if self.moving() {
+            let stepping = self.moving();
+            let go = if stepping {
                 walked = true;
                 self.hero_step(&mut events)
             } else {
@@ -1072,6 +1079,12 @@ impl Game {
                 go
             };
             if !go || events.iter().any(Event::needs_reading) {
+                // An event's window opened by the step's scan ends the walk on this cell
+                // (0x4aed41 → 0x4ae5d8), which counts as arriving on it again; the building
+                // he clicked waits for the windows to be read if he stands in it (0x4aed64).
+                if go && stepping {
+                    self.stop_for_reading();
+                }
                 // Stop and read: time stands still while a message is open. A reading
                 // goes on after it.
                 self.path.clear();
@@ -1179,6 +1192,20 @@ impl Game {
             return false;
         }
         true
+    }
+
+    /// An event's window cut the walk short (0x4aed41): it ends on his cell as a walk's end
+    /// does (0x4ae5d8, the arrival repeated, so a building he is on is entered), and the
+    /// building of the clicked cell, if he stands in it, waits to be entered once the windows
+    /// are read (0x4aed64 → 0x4ed42c, [`Game::enter_waiting_building`]).
+    fn stop_for_reading(&mut self) {
+        self.goal = None;
+        self.talk_to = None;
+        let here = self.tile();
+        self.move_to_cell(here, here);
+        if let Some(l) = self.location.filter(|&l| self.click_buildings.0 == Some(l)) {
+            self.waiting_entry = Some(l);
+        }
     }
 
     /// The end of a walk (0x4ae5d8): he stops on his cell, which counts as arriving on it
@@ -1932,6 +1959,7 @@ impl Game {
         }
         self.gold = (self.gold - price).max(0);
         self.pack.push(item);
+        self.scan_on_close = true;
         Ok(item)
     }
 
@@ -1945,6 +1973,7 @@ impl Game {
         let price = self.sell_price(item);
         self.pack.remove(pack_index);
         self.gold += price;
+        self.scan_on_close = true;
         Ok(price)
     }
 

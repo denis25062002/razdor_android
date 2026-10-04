@@ -523,6 +523,13 @@ map or is destroyed during the ticks (0x4ae536).
   an event fires, the order is: the event's chord, the stop's idle draws (§2.2.1), then after
   the OK the offer rolls and the village window's chord; its stock is paid when that window
   is closed.
+- **An event's window on the way** (0x4aed41): when the scan after a step opens an event's
+  window (not the noon report) before the route's end, the walk ends there (0x4ae5d8, the
+  arrival repeated, so a building he is on counts as entered) and the same rule applies: the
+  clicked building he now stands in waits for the window (0x4aed64 → 0x4ed42c) and its window
+  opens after the OK. Seen on РК1 (diff-test runs r3-c004157 and rk1-h2-minimap): the
+  archmage's walk to (47, 45) stops at (45, 45) inside that building on event 4, and the
+  building's window follows its OK. **code**
 - Event scan order (0x4abfbc): global events, then the event point under the hero (a single
   cell), then the building he is in (only local events there, except in villages and
   shipyards where all its events count).
@@ -602,6 +609,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
 | Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
 | Village crossed on the way | an unguarded village (or an empty castle, fort or ruins) stepped on is his, with no window; the walk goes on | captured when crossed, no window, the walk goes on | Matches (Razdor showed a capture window that stopped the walk until 2026-10-03) |
+| Building under an event's window on the way | the walk an event's window cuts short ends on his cell; the clicked building he stands in opens after the windows (`Game::stop_for_reading`) | 0x4aed41 → 0x4ae5d8, pending 0x4aed64 | Matches (until 2026-10-04 Razdor left him on the map) |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
 | Friendly meeting | talk counter per army: +1 per step off his cell, + relation + 1 per step wherever he is (relation ≥ 0), greets above 0, then −500; the events run, and only one that fires stops the walk; the last army in order acts | talk counters, −500 after each meeting, grow per AI step; walk stops only if an event fires | Matches |
 | Sight radii | 9/8/10 cells | same | none |

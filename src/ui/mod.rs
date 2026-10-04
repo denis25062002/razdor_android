@@ -730,6 +730,18 @@ impl App {
             if matches!(next, Screen::WorldMap) && !matches!(self.screen, Screen::WorldMap) {
                 self.map_view.reset();
             }
+            // A window over the map closed: after a heal, a raise or a trade in the building
+            // window the events are checked now (0x4b8d28(0) → 0x4b8f63).
+            let side_window = matches!(
+                self.screen,
+                Screen::Building(_) | Screen::Squad { .. } | Screen::Journal(_) | Screen::Spellbook { .. } | Screen::Menu(_) | Screen::Settings | Screen::Save(_) | Screen::Load(_)
+            );
+            if let (true, true, Some(g)) = (matches!(next, Screen::WorldMap), side_window, self.game.as_mut()) {
+                let events = g.window_closed();
+                if !events.is_empty() {
+                    let _ = world_view::handle_events(g, events, &mut self.message, &mut self.dialogs);
+                }
+            }
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
                 // A map starts: the fog opens around the hero.
