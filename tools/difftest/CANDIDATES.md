@@ -558,6 +558,20 @@ original's side writes the later map's entry into the New-game list selection, R
 "`new_game`"); each list is the map's opening built from Razdor's replay: the opening windows
 read, a walk, a wait of an hour, the nearest building entered (runs `c1-<map>`).
 
+Results after the round's fixes (Razdor at the round's end against the recordings `c1-<map>`,
+`tools/difftest/campaign/`), steps equal free run / step-local:
+
+| map | steps | equal | what differs |
+|---|---|---|---|
+| РК2 | 6 | 6 / 6 | — (without РК1's herald the defeat event ends the map at once on both sides) |
+| РК3 | 8 | 8 / 8 | — (FINDINGS §25 fixed) |
+| РК4 | 8 | 2 / 2 | from step 2: an army 6 cells off with the generator equal, then other AI battles (below) |
+| РК5 | 16 | 12 / 12 | from step 12: two armies one cell off, one snap draw more (below) |
+| РК6 | 10 | 3 / 3 | from step 3: two arrivals in one frame of the original (frame noise, below) |
+| РК7 | 13 | 12 / 12 | step 11: the event's gold before its OK (window timing) (FINDINGS §26 fixed) |
+| ДС2 | 9 | 9 / 9 | — |
+| Обучающий2 | 8 | 8 / 8 | — (no building in reach) |
+
 ## Campaign: РК3, step 5 `answer yes` (the village furs offer)
 
 - The original draws the event window's chord after the Yes and shows the offer's result;

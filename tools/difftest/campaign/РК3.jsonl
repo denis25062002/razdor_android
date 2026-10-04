@@ -1,0 +1,8 @@
+{"op": "new_game", "map": "РК3-Столица", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 15, "y": 198}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 14, "y": 189}
+{"op": "answer", "yes": true}
+{"op": "ok"}
+{"op": "ok"}

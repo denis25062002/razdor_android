@@ -1,0 +1,16 @@
+{"op": "new_game", "map": "РК5-Столица в огне", "hero": 1}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "click_map", "x": 183, "y": 1}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 178, "y": 10}
+{"op": "click_map", "x": 177, "y": 11}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}

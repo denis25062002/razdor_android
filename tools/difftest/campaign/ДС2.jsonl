@@ -1,0 +1,9 @@
+{"op": "new_game", "map": "ДС2-Страшная история", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 14, "y": 195}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 10, "y": 187}
+{"op": "ok"}
+{"op": "answer", "yes": true}
+{"op": "ok"}
+{"op": "ok"}

@@ -1,0 +1,10 @@
+{"op": "new_game", "map": "РК6-Северная битва", "hero": 1}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "click_map", "x": 91, "y": 198}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 93, "y": 189}
+{"op": "click_map", "x": 94, "y": 188}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}

@@ -1,0 +1,8 @@
+{"op": "new_game", "map": "РК4-Восточная провинция", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 8, "y": 68}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 11, "y": 65}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}

@@ -44,6 +44,9 @@ still on, and is a no-op in the original). `lake-gang.jsonl`: Проклятое
 knight, two walks to the bandit gang (army 17) and the battle by presses, every press equal
 on both sides; it checks the loot of a beaten map army (FINDINGS §19). Built by playing
 Razdor's replay: walk toward the army's cell, strike the weakest enemy of the front row.
+`campaign/<map>.jsonl`: the openings of the later campaign maps (РК2–РК7, ДС2, Обучающий2)
+with the knight and no carry-over, each the opening windows read, a walk, a wait of an hour
+and the nearest building (built from Razdor's replay); `CANDIDATES.md` has their results.
 `rk1-church.jsonl`: РК1 with the knight, the cover setup for `resurrect` (the ruins fought by
 a searched line of presses, the church at (47,27), its three event windows read, a raise and
 a sale); it checks the events behind a shown window (FINDINGS §22).
@@ -356,8 +359,8 @@ no question) is skipped with a note, like Razdor's.
 | `buildings` | [0x68ece0] + (b−1)·0x166: owner +0x124 (0 player, k army, 255 none), gold +0x11e, mana +0x160, goods = non-zero words at +0x88 without sign | owner and start buildings, village stock, market goods; tribute taken |
 | `events_done` | events whose times-fired counter (+0xa0) is above 0 | the start event counts once its OK is pressed |
 
-`--check` passes on РК1, Тихая пристань, Проклятое озеро, Устье Трейна, Другой берег and
-ДС1 (all checks; events fired during the load are taken into account: their results are
+`--check` passes on РК1, Тихая пристань, Проклятое озеро, Устье Трейна, Другой берег, ДС1
+and РК2 (all checks; events fired during the load are taken into account: their results are
 applied before their dialog is closed, their counter only when it closes).
 
 Not validated by a live change yet: `xp` (0 at start; no event of РК1 gives XP and the
