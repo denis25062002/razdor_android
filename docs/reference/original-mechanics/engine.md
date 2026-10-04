@@ -64,7 +64,11 @@ textures through a hook), redraws the whole screen, resumes drawing and **resume
 x87 unit in single precision for the rest of the run. The game never sets the FPU control word
 itself. If that holds, every float formula in the game is evaluated with 24-bit mantissas. The
 last bit of a rounded result can then differ from a double-precision reimplementation (§3.3).
-This could not be checked without running the game.
+In the running game (the diff test, Wine 11) the products are rounded with 64-bit mantissas: a
+relation price of exactly x.5 in decimal goes the way the 80-bit constant's error leads it
+(economy.md §2, FINDINGS.md §24), which single precision would not give. The game's own control
+word, Delphi's 0x1332, is also loaded again by the RTL's FPU init (0x403984). Whether a Windows
+run with DirectX 7 differs was not checked.
 
 ## 2. Clock and timing
 
@@ -471,9 +475,9 @@ silent.
 
 ## 11. Unknowns
 
-- **FPU precision**: whether the game really runs with x87 single precision after the
-  Direct3D device creation. That decides the exact plant-hash seeds, and the last bit of every
-  float formula elsewhere (§1).
+- **FPU precision** on Windows with DirectX 7: whether the game runs with x87 single precision
+  after the Direct3D device creation there. Under Wine 11 it runs with 64-bit mantissas (§1).
+  That decides the exact plant-hash seeds, and the last bit of every float formula elsewhere.
 - How DDrawCompat (shipped `ddraw.dll`) changes flip timing, vsync and the FPU state.
 - The exact source rectangles of the per-frame "visible → back buffer" restore (the stack arguments
   are lost in the decompiler); assumed one copy per dirty rectangle.

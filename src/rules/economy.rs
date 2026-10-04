@@ -39,19 +39,62 @@ pub fn round_ratio(num: i64, den: i64) -> i64 {
 /// buildings count as +3).
 pub const RELATION_PERCENT: [i64; 7] = [170, 145, 125, 110, 100, 90, 75];
 
+/// The factors as the code holds them (0x4a03ec), mantissa and exponent of the x87 value
+/// `mantissa × 2^(exponent − 63)`: 1.7, 1.45, 1.1 and 0.9 are 80-bit constants widened from
+/// the doubles (0x4a0524, 0x4a0518, 0x4a0508, 0x4a04fc: 1.7 and 1.45 a little low, 1.1 and
+/// 0.9 a little high), 1.25 and 0.75 exact singles (0x4a0514, 0x4a04f8); 1 multiplies by
+/// nothing. Indexed by attitude + 3.
+const RELATION_X87: [Option<(u64, i32)>; 7] = [
+    Some((0xD999_9999_9999_9800, 0)),
+    Some((0xB999_9999_9999_9800, 0)),
+    Some((0xA000_0000_0000_0000, 0)),
+    Some((0x8CCC_CCCC_CCCC_D000, 0)),
+    None,
+    Some((0xE666_6666_6666_6800, -1)),
+    Some((0xC000_0000_0000_0000, -1)),
+];
+
+/// `p / 2^s` rounded to the nearest, halves to even, symmetric about 0 (the x87's default
+/// rounding).
+fn shift_round(p: i128, s: u32) -> i128 {
+    if s == 0 {
+        return p;
+    }
+    let (neg, a) = (p < 0, p.unsigned_abs());
+    let (q, r, half) = (a >> s, a & ((1u128 << s) - 1), 1u128 << (s - 1));
+    let q = if r > half || (r == half && q & 1 == 1) { q + 1 } else { q };
+    if neg { -(q as i128) } else { q as i128 }
+}
+
 /// `Round(base × m)` with the relation factor m of `attitude` (+3 if the buyer owns it)
 /// (0x4a03ec). An attitude outside −3..3 leaves the price as it is, and so does +1. The
 /// base keeps its sign: a map's fixed good of negative Cost gets a negative price, which
 /// pays the buyer (the original takes the sign off the goods id only).
+///
+/// As the code computes it: `fild base`, `fmul` by the constant, `fistp` (0x402dd0), under
+/// the control word the program loads at its start (Default8087CW 0x1332: 64-bit
+/// mantissas, round to nearest even; the game uses DirectDraw only, which leaves it alone).
+/// The product is rounded to 64 bits, then to an integer. So a price that would be x.5 in
+/// decimal rounds **up** for 1.1 and 0.9 (75 × 1.1 → 83), **down** for 1.7 and 1.45, and to
+/// even for 1.25 and 0.75 (economy.md §2).
 pub fn relation_price(base: i32, attitude: i8, own: bool) -> i32 {
     let a = if own { 3 } else { attitude };
     if !(-3..=3).contains(&a) {
         return base;
     }
-    let m = RELATION_PERCENT[(a + 3) as usize];
-    let num = base as i64 * m;
-    // Round is symmetric about 0.
-    (if num < 0 { -round_ratio(-num, 100) } else { round_ratio(num, 100) }) as i32
+    let Some((mantissa, exp)) = RELATION_X87[(a + 3) as usize] else { return base };
+    // The exact product, then its 64-bit mantissa.
+    let p = base as i128 * mantissa as i128;
+    let bits = 128 - p.unsigned_abs().leading_zeros();
+    let cut = bits.saturating_sub(64);
+    let p = shift_round(p, cut);
+    // value = p × 2^(cut + exp − 63); the factors keep it below 2^31 × 2, so the shift is
+    // to the right.
+    let s = 63 - exp - cut as i32;
+    if s <= 0 {
+        return (p << (-s) as u32) as i32;
+    }
+    shift_round(p, s as u32) as i32
 }
 
 /// A `Merchant` in the army takes `price × 30 / 100` off a purchase.
@@ -961,6 +1004,26 @@ mod tests {
         assert_eq!(relation_price(1000, 4, false), 1000, "outside −3..3: unchanged");
         assert_eq!(relation_price(-100, 0, false), -110, "a negative Cost keeps its sign");
         assert_eq!(merchant_price(-110), -77);
+    }
+
+    /// FINDINGS §24 (C1004-052338): the x87's product of the 80-bit constant, rounded to
+    /// even: a decimal half goes up for 1.1 and 0.9 (a little high), down for 1.7 and 1.45
+    /// (a little low), to even for the exact 1.25 and 0.75. Проклятое озеро's church charged
+    /// 83 for an item of 75 at 1.1.
+    #[test]
+    fn relation_factor_halves_follow_the_x87_product() {
+        assert_eq!(relation_price(75, 0, false), 83);
+        assert_eq!(relation_price(15, 0, false), 17);
+        assert_eq!(relation_price(5, 2, false), 5);
+        assert_eq!(relation_price(15, -3, false), 25);
+        assert_eq!(relation_price(30, -2, false), 43);
+        assert_eq!(relation_price(2, -1, false), 2);
+        assert_eq!(relation_price(6, -1, false), 8);
+        assert_eq!(relation_price(2, 3, false), 2);
+        assert_eq!(relation_price(6, 3, false), 4);
+        assert_eq!(relation_price(-75, 0, false), -83, "symmetric about 0");
+        assert_eq!(relation_price(150, 0, false), 165);
+        assert_eq!(relation_price(i32::MAX / 2, 0, false), 1_181_116_005);
     }
 
     #[test]

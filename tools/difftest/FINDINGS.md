@@ -502,6 +502,25 @@ original": "Mask: armies"). Candidate C1004-052035 (Другой берег).
   the map and the meeting-waiting armies at distance 1 (both except the clicked one). Left as
   it is for the user to decide.
 
+## 24. A relation price of exactly x.5 rounds as the x87 product
+
+**Status: fixed** (`relation_price`; economy.md §2, engine.md §1). Candidate C1004-052338
+(Проклятое озеро).
+
+- Проклятое озеро (archmage), step 7 (`buy 1`): item 98 of Cost 75 at the church, attitude 0
+  (factor 1.1): 82.5. Razdor charged 82 (an exact half, to even), the original 83 (gold 285 →
+  202 in both runs).
+- 0x4a03ec: `fild base`, `fmul`/`fmulp` by the factor, `Round` (0x402dd0, `fistp` under the
+  control word). The factors 1.7, 1.45, 1.1, 0.9 are 80-bit constants widened from the doubles
+  (1.1 = 0x8CCCCCCCCCCCD000 × 2⁻⁶³, a little above 1.1), 1.25 and 0.75 exact singles. The
+  control word is Delphi's 0x1332 (64-bit mantissas, to nearest even), as the running game
+  shows: 75 × 1.1 = 82.5000000000000067 → 83.
+- Razdor now multiplies by the same constants, rounds the product to 64 bits and then to an
+  integer, halves to even: halves up for 1.1 and 0.9, down for 1.7 and 1.45, to even for 1.25
+  and 0.75.
+- After the fix the repro's gold is equal (`r4-c052338`; the two steps left are the market's
+  goods while the window is open, harness timing, C1004-050909).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

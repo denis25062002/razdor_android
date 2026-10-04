@@ -501,6 +501,8 @@ NEW candidates, and one from the manual resurrect check:
   halves round **up** for 1.1 and 0.9, **down** for 1.7 and 1.45, to even for 1.25 and
   0.75 (exact). Worth a check on Windows first: there the DirectX set-up may switch the
   FPU to single precision (the reason economy.md left it open).
+- **Resolved: fixed, FINDINGS.md §24** (the code's 80-bit constants under the control word
+  0x1332, as the running game shows; `r4-c052338`: gold equal).
 
 ## C1004-053051: Проклятое озеро, step 5 `click_map 51 80`
 

@@ -12,10 +12,11 @@ Spells, items and the event engine have their own files now (§4–§6 point to 
 - **Rounding** (code, 0x402dd0): `Round` is round-half-to-even (2.5 → 2, 3.5 → 4). It is applied to
   the x87 result, so whether a "half" really is a half depends on the constants and on the x87
   precision setting (see the relation factor, §2). Integer division (`div`) truncates towards 0.
-- **x87 precision** (unknown, engine.md §1): the RTL default is 64-bit mantissas, but the DirectDraw
-  set-up asks DirectX to put the x87 unit in single precision (24-bit mantissas) and the game never
-  sets it back. If that holds at run time, every float product is rounded to single precision
-  before `Round`. This only matters for results that land on or next to a half.
+- **x87 precision** (engine.md §1): the RTL default is 64-bit mantissas (0x1332), and the
+  DirectDraw set-up asks DirectX to put the x87 unit in single precision (24-bit mantissas). The
+  running game (Wine 11) computes with 64-bit mantissas: the relation factor's halves (§2) come
+  out as the 64-bit product gives them. This only matters for results that land on or next to a
+  half.
 - **Game time** (code): kept in 1/100 minutes (`0x68dcb8`). "now" means that value /100 plus an
   offset (`0x68dcbc`), in minutes. A day is 1440 minutes.
 - **Unit HP** (code): −1 means unhurt, 0 means dead, a positive value is a wounded unit.
@@ -143,15 +144,20 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
   | m | 1.7 | 1.45 | 1.25 | 1.1 | 1 (no rounding) | 0.9 | 0.75 |
 
   An attitude outside −3..3 leaves the price unchanged.
-- **Halves** (unknown: depends on the x87 precision, §0). The constants are code: 1.25 and 0.75 are
-  single floats (exact), 1.7, 1.45, 1.1 and 0.9 are the double values widened to 80 bits, so
-  slightly off (1.7 and 1.45 a little low, 1.1 and 0.9 a little high). A product that would be
-  exactly x.5 in decimal then gives:
-  - with 64-bit mantissas (RTL default): **down** for 1.7 and 1.45 (15 → 25, 30 → 43), **up** for
-    1.1 and 0.9 (15 → 17, 5 → 5);
-  - with single precision (what the DirectX set-up asks for): the product rounds to an exact half
-    first, so **half to even** for every factor (15 → 26, 30 → 44, 15 → 16, 5 → 4).
-  1.25 and 0.75 round halves to even either way. Away from halves both settings agree.
+- **Halves.** The code is `fild base`, `fmul` by the constant, then `Round` (0x402dd0:
+  `fistp`). The constants: 1.25 and 0.75 are single floats (exact), 1.7, 1.45, 1.1 and 0.9 the
+  double values widened to 80 bits (0x4a0524, 0x4a0518, 0x4a0508, 0x4a04fc), so slightly off
+  (1.7 and 1.45 a little low, 1.1 and 0.9 a little high). The game's own control word is
+  Delphi's Default8087CW 0x1332 (64-bit mantissas, round to nearest even), loaded at the start
+  and again by the RTL's FPU init (0x403984: `fninit`, `fldcw [0x4e8024]`, called from six
+  RTL sites); its other `fldcw` sites only save and restore around conversions. With 64-bit
+  mantissas the product keeps the constant's error, and a price that would be exactly x.5 in
+  decimal rounds **down** for 1.7 and 1.45 (15 → 25, 30 → 43), **up** for 1.1 and 0.9
+  (15 → 17, 5 → 5, 75 → 83), and to even for 1.25 and 0.75; negative bases symmetrically.
+  This is what the running game does (Wine 11: Проклятое озеро's church at attitude 0
+  charged 83 for an item of Cost 75, FINDINGS.md §24), and Razdor follows it. Under single
+  precision (what a Direct3D 7 device created without "FPU preserve" would set, §0) every
+  half would go to even instead (82); not seen in the running game.
 
 **Player market** (code, 0x4b9e18):
 - **Buying**: price = relation factor on the item's `Cost` (the sign is taken off the goods id, not
@@ -549,7 +555,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Stock growth | Every building with a maximum; the mana sum wraps on a byte (`grow_mana`) | Every building with a max > 0; byte wrap for mana | Matches |
 | Ranger heal | 15% at noon, 20% more when the report is shown | 15%, plus 20% when the report is shown | Matches |
 | Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight; a dead medic counts | Same (a dead medic counts) | Matches |
-| Relation factor | Exact table, half to even; an attitude outside −3..3 leaves the price unchanged | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
+| Relation factor | The x87 product of the code's constants, rounded to 64 bits then to even (`relation_price`); an attitude outside −3..3 leaves the price unchanged | Same table; halves down for 1.7/1.45, up for 1.1/0.9, to even for 1.25/0.75 (64-bit precision, §2) | Yes |
 | Buy / sell / spells / hire / ship prices | As the original; a fixed good of negative Cost has a negative price that pays the buyer; a dead Merchant counts | §2 | Matches |
 | Market buildings | Towns, markets, churches only: the map load drops every other building's goods | Towns, markets, churches only | Matches |
 | Market stock | 12 places with the map's goods fixed in theirs; a 12-hour timer; bands walking down the window, town potions (one of 95/96/97/114/115 when more than 6 remain, the rest 98 + Rand(3)), type and school rules, 1/n widening, run-down lists, 26 tries, no overwrite, not sorted (`restock_market`); a list that runs out is read on past its end as the original (the zeroed buffer, item 1; then the last index and the building's number: `Candidates`). Where fewer than two items can ever fit, or deeper past the end, the original hangs or reads its stack; Razdor gives up on that good | Bands walking down the window, n − 1 healing potions + one of 95/96/97/114/115 when R > 6 remains, type and school rules, 1/n widening, no overwrite of a full list, not sorted | Matches |
@@ -582,5 +588,4 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
   affects the Rear Service factor and the innkeeper test until the first noon.
 - How the global "last village offer" is reset when a map or save loads (0x4b58fe, 0x4b850f).
 - Rumour prices (expected to be the event's own gold result).
-- The x87 precision at run time (64-bit or single), which decides the relation factor's halves (§2)
   and the last bit of every other float formula here (engine.md).

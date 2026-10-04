@@ -564,6 +564,9 @@ old id, and their versions give both.
   after a message is checked and applied only once that message is closed, as in the original
   (before, they all happened at once, so an army an event activates moved, and the time an
   event shows was taken, before the earlier messages were read).
+- A price that comes to exactly half a gold piece after a building's attitude rounds the way
+  the original's arithmetic takes it: up at attitudes 0 and +2 (75 at 1.1 costs 83, not 82),
+  down at −3 and −2, to even at −1 and +3.
 
 ## 0.2.2 — 2026-10-01
 
