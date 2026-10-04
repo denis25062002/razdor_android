@@ -45,6 +45,21 @@ was seen on and what to check.
    ends it after the half hour under way (`Game::cut_wait`); the click or key does nothing
    else (no walk order, window or hotkey: `widgets::swallow_input`).
 
+## 2026-10-04, dt-original: a building won from its garrison opens from outside
+
+1. **"When I fight an enemy garrison in a building and win, I end up standing next to the
+   building, not inside it. When I then click the building, I don't walk into it, its window
+   just opens; I should walk to the building's cell and then its window opens."** Done.
+   Checked under Wine on РК1 (`tools/difftest/rk1-ruins-won.jsonl`: the ruins 8, 2×2 at
+   (36,23), won from (34,24)): (a) **standing next to it is the original**: after the result
+   box the hero is still at (34,24), the ruins are his (owner 0) but not entered (the entered
+   building 0x68dc74 stays none), no window opens; (b) a click on the ruins walks him onto the
+   clicked cell (36,23) and the building window opens there (entered 8). Razdor kept him
+   outside too but marked the building as entered and ran its events, so the click counted as
+   "the building you stand in" and opened the window at once. Now the won building is not
+   entered: its events wait until he walks in, and the click walks (world.md §7.2,
+   battle.md §11). Commit eebe641.
+
 ## 2026-10-04, dt-original: a quest's places shown only after leaving the building
 
 1. **"When I take a mission in the barracks, the map with the quest's places pops up not
