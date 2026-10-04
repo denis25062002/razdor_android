@@ -176,3 +176,7 @@ was seen on and what to check.
    offer 10 a day later and staffs the south mine (27 fires, quest 4 done). What dt-feat
    changed for repeating questions should be checked against this test when it merges.
    Commit 0d4057a.
+
+**Update 2026-10-04 (note 5):** at the player's request the setting now applies to the game under
+way too, from its next battle (not during one); its saves record the new width. Units on cells
+the narrower row lacks move to free cells, their own row first (`Game::set_formation`).

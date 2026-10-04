@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The front-row width setting applies at once:** a game under way switches to 6 or 4 cells from
+  its next battle (never during one), and its saves record the new width. Units on the two edge
+  cells a 4-wide row lacks move to free cells, their own row first; the others keep their cells.
 - **A quest taken in a building shows its places at once:** when the quest's message is
   closed in the main hall, the camera flies to the places it marks and back over the map,
   then the building window returns, as in the original (the flight waited until you left the

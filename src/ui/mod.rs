@@ -558,13 +558,18 @@ impl App {
         self.assets.dt.as_ref().is_none_or(|d| d.install.settings.wide_row)
     }
 
-    /// New games take the front row's width of the settings (a running or loaded game keeps
-    /// its own: it holds its content, and a save its width).
+    /// The front row's width of the settings, at once: new games take it, and so does the game
+    /// under way from its next battle (not during one; its saves then record the new width).
     fn follow_row_setting(&mut self) {
         let wide = main_menu::wide_row(&self.audio.settings, self.install_wide_row());
         let want = if wide { Formation::WIDE } else { Formation::VANILLA };
         if let Some(c) = self.dt_content.as_mut().filter(|c| c.formation != want) {
             *c = Arc::new(c.with_formation(want));
+        }
+        if !matches!(self.screen, Screen::Battle(_)) {
+            if let Some(g) = self.game.as_mut() {
+                g.set_formation(want);
+            }
         }
     }
 

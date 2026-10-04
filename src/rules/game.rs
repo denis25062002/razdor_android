@@ -660,6 +660,29 @@ impl Game {
         &self.squad[0]
     }
 
+    /// Switches the front row's width of a game under way (a Razdor setting, applied at once
+    /// rather than only to new games): the game fights in `formation` from its next battle on,
+    /// and its saves record the new width. The hero's units keep their cells when the new shape
+    /// has them; a unit on a cell it lacks (the two edge cells of a 6-wide row going to 4) moves
+    /// to a free cell, its own row first ([`Formation::free_slot`]). AI armies are arranged when
+    /// their battle starts, so they need nothing. Not during a battle.
+    pub fn set_formation(&mut self, formation: super::formation::Formation) {
+        if self.content.formation == formation || self.foe.is_some() {
+            return;
+        }
+        self.content = Arc::new(self.content.with_formation(formation));
+        self.wide_row = formation == super::formation::Formation::WIDE;
+        let mut taken: Vec<Slot> = self.squad.iter().map(|u| u.slot).filter(|s| formation.contains(*s)).collect();
+        for u in self.squad.iter_mut() {
+            if !formation.contains(u.slot) {
+                if let Some(s) = formation.free_slot(&taken, u.slot.row) {
+                    u.slot = s;
+                    taken.push(s);
+                }
+            }
+        }
+    }
+
     /// The map load puts every army, the hero's too, through a battle side and back (0x4b2504
     /// → 0x49855c, 0x4988c0): the side is auto-arranged (483b3c, [`Battle::auto_arrange`])
     /// and its grid becomes the army's formation. So the hero's starting army stands as the
@@ -2228,6 +2251,34 @@ mod tests {
         let mut g = Game::new(content(), hero);
         g.rng = Rng::new(seed);
         g
+    }
+
+    #[test]
+    fn the_front_row_width_switches_in_a_running_game() {
+        use crate::rules::formation::{Formation, Row};
+        let mut g = new_game(HeroClass::Knight, 1);
+        assert_eq!(g.content.formation, Formation::WIDE);
+        // Put the hero on the front row's edge cell, which the 4-wide shape lacks.
+        g.squad[0].slot = Slot::new(Row::Front, 5);
+        let kept: Vec<Slot> = g.squad[1..].iter().map(|u| u.slot).collect();
+        g.set_formation(Formation::VANILLA);
+        assert_eq!(g.content.formation, Formation::VANILLA);
+        assert!(!g.wide_row, "a save records the new width");
+        assert!(g.squad.iter().all(|u| Formation::VANILLA.contains(u.slot)), "every unit on a cell of the new shape");
+        let mut slots: Vec<Slot> = g.squad.iter().map(|u| u.slot).collect();
+        slots.sort_by_key(|s| (s.row, s.col));
+        slots.dedup();
+        assert_eq!(slots.len(), g.squad.len(), "no two units on one cell");
+        for (u, s) in g.squad[1..].iter().zip(&kept) {
+            if Formation::VANILLA.contains(*s) {
+                assert_eq!(u.slot, *s, "a unit whose cell the new shape has keeps it");
+            }
+        }
+        // Back to 6: nobody moves, the width is recorded again.
+        let before: Vec<Slot> = g.squad.iter().map(|u| u.slot).collect();
+        g.set_formation(Formation::WIDE);
+        assert!(g.wide_row);
+        assert_eq!(g.squad.iter().map(|u| u.slot).collect::<Vec<_>>(), before);
     }
 
     /// A game with no gangs on the map, for tests about travel and time.
