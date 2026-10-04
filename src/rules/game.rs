@@ -1000,6 +1000,19 @@ impl Game {
         self.path.truncate(1);
     }
 
+    /// A left click or a key press during a wait of 1 or 4 hours or the endless wait *(a
+    /// Razdor choice the players asked for: the original's waits run to their end whatever
+    /// is clicked or pressed, checked under Wine on РК1, 2026-10-04)*: the half-hour tick
+    /// under way plays out and the wait ends after it, as a walk's stop ends after the step
+    /// under way. A reading is not cut.
+    pub fn cut_wait(&mut self) {
+        if !self.waiting() {
+            return;
+        }
+        self.endless_wait = None;
+        self.wait_ticks = self.wait_ticks.min(1);
+    }
+
     /// The world theme's first change time if a map start or a load has just drawn it
     /// (interface.md §13); taken once.
     pub fn take_music_wait(&mut self) -> Option<u32> {
@@ -3718,6 +3731,39 @@ mod tests {
         assert!(!g.waiting());
         g.tick(1.0);
         assert_eq!(g.clock.total_minutes(), t0 + 300.0, "then time stands still");
+    }
+
+    /// A click or a key during a wait (Razdor's choice): the half hour under way plays
+    /// out, then the wait ends; the endless wait alike.
+    #[test]
+    fn a_cut_wait_ends_after_the_tick_under_way() {
+        let mut g = start(&strip());
+        let t0 = g.clock.total_minutes();
+        g.begin_wait(4);
+        g.tick(STEP_SECONDS * 2.5);
+        assert_eq!(g.clock.total_minutes(), t0 + 60.0, "two ticks played, the third under way");
+        g.cut_wait();
+        assert!(g.waiting(), "the tick under way still plays");
+        g.tick(STEP_SECONDS * 0.6);
+        assert_eq!(g.clock.total_minutes(), t0 + 90.0);
+        assert!(!g.waiting());
+        g.tick(1.0);
+        assert_eq!(g.clock.total_minutes(), t0 + 90.0, "the wait is over");
+        // The endless wait: the same.
+        g.begin_endless_wait();
+        g.tick(STEP_SECONDS * 3.5);
+        g.cut_wait();
+        assert!(!g.endless_waiting() && g.waiting());
+        for _ in 0..5 {
+            g.tick(STEP_SECONDS);
+        }
+        assert_eq!(g.clock.total_minutes(), t0 + 90.0 + 4.0 * 30.0);
+        assert!(!g.waiting());
+        // Nothing to cut: a walk is not touched.
+        assert!(g.set_destination((5, 2)));
+        let path = g.path.clone();
+        g.cut_wait();
+        assert_eq!(g.path, path);
     }
 
     #[test]

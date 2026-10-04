@@ -13,6 +13,13 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The wait and centre buttons:** hovering the time panel's message box on the idle map shows
+  the original's three buttons over it, with its art and hints: wait 1 hour, centre the view
+  on the hero, wait 4 hours. The centre button (and Tab) glides the view back to the hero in
+  the original's 900 ms cosine; the map takes no input meanwhile.
+- **A click or a key stops a wait** (a Razdor choice, not the original's: its waits always run
+  to their end): a left click anywhere or any key during a 1 h, 4 h or endless wait ends it
+  after the half hour under way, and does nothing else.
 - **The front-row width setting applies at once:** a game under way switches to 6 or 4 cells from
   its next battle (never during one), and its saves record the new width. Units on the two edge
   cells a 4-wide row lacks move to free cells, their own row first; the others keep their cells.

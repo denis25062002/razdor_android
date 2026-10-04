@@ -3,6 +3,25 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-04, dt-original: the wait and centre buttons, and stopping a wait
+
+1. **"I don't see any way to centre the camera back on the hero. When I hover the bottom
+   centre, three buttons must pop up."** Done. The original (interface.md §6; 0x4d46e0,
+   0x4b930c, 0x4b93a8, 0x4b9448): hovering the message box (372, 684, 280×60) on the idle
+   map shows `GP-ButtonLeft` (wait 1 h), `GP-ButtonCenter` (centre on the hero) and
+   `GP-ButtonRight` (wait 4 h) over it, its text hidden; screenshot under Wine on РК1. Razdor
+   now draws them the same (`game_bar::TimeButton`, the install's art with its alpha masks,
+   placeholders without one), with the `cp_*` hints and the button sound; the centre button
+   glides in the original's 900 ms cosine (`world_view::glide_ease`), as Tab now does. Keys
+   1, 4, Tab and the time panel's clicks off the buttons stay (F1 list updated).
+2. **"When I click to wait 4 hours, I want to be able to stop it by clicking anywhere on the
+   screen or pressing any key."** Done, as a Razdor choice: checked under Wine on РК1, the
+   original never stops a wait that way (a 4-hour wait ran its 240 minutes after a left
+   click on the map or the bar, a right click, A or Space; the endless wait ends only by
+   F5). In Razdor a left click anywhere or a key press during a 1 h, 4 h or endless wait
+   ends it after the half hour under way (`Game::cut_wait`); the click or key does nothing
+   else (no walk order, window or hotkey: `widgets::swallow_input`).
+
 ## 2026-10-04, dt-original: a quest's places shown only after leaving the building
 
 1. **"When I take a mission in the barracks, the map with the quest's places pops up not

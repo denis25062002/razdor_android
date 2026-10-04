@@ -395,7 +395,9 @@ impl App {
             g.armies_snap();
         }
         // N: music on/off (not while typing or answering a question: there any key answers).
-        if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
+        // A key that cuts a wait on the map does nothing else (`world_view::frame`).
+        let cuts_wait = matches!(self.screen, Screen::WorldMap) && self.dialogs.is_empty() && self.game.as_ref().is_some_and(|g| g.waiting());
+        if !self.help && !cuts_wait && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
             self.audio.settings.music_muted = !self.audio.settings.music_muted;
         }
         let mood = self.mood();
@@ -679,7 +681,7 @@ impl App {
             return;
         }
         // F1: the key list; F5 / F9: quick save and load (when the screen did not move on).
-        let pressed = |k: hotkeys::Global| next.is_none() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
+        let pressed = |k: hotkeys::Global| next.is_none() && !widgets::input_swallowed() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
         if self.help {
             if hotkeys::help_overlay(place) {
                 self.help = false;

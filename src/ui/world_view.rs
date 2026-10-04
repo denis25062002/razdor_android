@@ -24,7 +24,7 @@ use super::audio::{cue, Cue};
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
-use super::game_bar::{self, BarButton, Look};
+use super::game_bar::{self, BarButton, Look, TimeButton};
 use super::minimap;
 use super::saves::{self, Back, LoadView, SaveView};
 use super::story;
@@ -77,11 +77,14 @@ pub struct MapView {
     /// The building window that stepped aside for the flights of an event read in it: it
     /// comes back as it was once the camera is back on the hero.
     pub(super) back_to: Option<super::building_view::BuildingView>,
+    /// The view gliding back to the hero (the centre button or Tab, 0x4af96c): when it set
+    /// off and from where. The map takes no input meanwhile.
+    centring: Option<(f64, (f32, f32))>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None }
     }
 }
 
@@ -289,6 +292,16 @@ enum SpellFx {
 
 /// The glide's length, and the spell effect's.
 const GLIDE_SECS: f64 = 0.9;
+/// The glide's length in the original's whole ms (0x4af96c).
+const GLIDE_MS: i64 = 900;
+
+/// How far a glide has come after `ms` whole ms, 0 to 1: the original's cosine ease in its
+/// whole steps, `round(900 × (1 − cos(π t / 900)) / 2) / 900` (0x4af96c).
+fn glide_ease(ms: i64) -> f32 {
+    let t = ms.clamp(0, GLIDE_MS) as f64;
+    let e = (GLIDE_MS as f64 * (1.0 - (std::f64::consts::PI * t / GLIDE_MS as f64).cos()) / 2.0).round();
+    (e / GLIDE_MS as f64) as f32
+}
 const SPELL_FX_SECS: f64 = 0.8;
 
 thread_local! {
@@ -1292,7 +1305,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
 
 /// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
 /// minimap was toggled.
-fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool, map_idle: bool) -> (Option<Screen>, bool) {
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool, map_idle: bool, time_buttons: bool) -> (Option<Screen>, bool, Option<TimeButton>) {
     let idle = game.foe.is_none();
     let modal = input_blocked();
     let look = |b: BarButton| match b {
@@ -1301,7 +1314,7 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
         BarButton::Map if minimap_open => Look::Glow,
         _ => Look::Normal,
     };
-    let mut pressed = game_bar::draw(game, look);
+    let (mut pressed, timed) = game_bar::draw_with_time(game, look, time_buttons);
     // Keys act only on the idle map: while the hero walks a key stops him (`frame`).
     if pressed.is_none() && map_idle {
         // Esc opens the exit menu, the minimap open or not (0x4cd021).
@@ -1340,7 +1353,7 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
     if matches!(next, Some(Screen::Save(_))) && game.moving() {
         game.stop();
     }
-    (next, pressed == Some(BarButton::Map))
+    (next, pressed == Some(BarButton::Map), timed)
 }
 
 /// Where the camera looks (`None`: on the hero) after this frame's input: the walk locks it
@@ -1391,7 +1404,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 
     // The original's world frame acts on the map only while it is idle (interface.md §7.3,
     // 0x4cc1ff): while the hero walks or waits, it only watches for the stop.
-    let idle = !game.moving() && !game.waiting() && game.reading().is_none();
+    // The glide back to the hero takes no input either (0x4af96c).
+    let idle = !game.moving() && !game.waiting() && game.reading().is_none() && view.centring.is_none();
     // The whole milliseconds since the map's last frame (the original's timeGetTime).
     let now_ms = (get_time() * 1000.0) as i64;
     let dt_ms = now_ms - view.last_frame_ms.unwrap_or(now_ms);
@@ -1424,8 +1438,19 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.returning = None;
         view.look = None;
     }
-    if idle && key(KeyCode::Tab) {
-        view.look = None;
+    // Tab: the centre button's glide (Razdor's key), when the view is off the hero.
+    if idle && view.look.is_some() && key(KeyCode::Tab) {
+        view.centring = Some((get_time(), view.look.unwrap_or(game.display_pos())));
+    }
+    if let Some((t0, from)) = view.centring {
+        let ms = ((get_time() - t0) * 1000.0) as i64;
+        let to = game.display_pos();
+        let e = glide_ease(ms);
+        view.look = Some((from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e));
+        if ms >= GLIDE_MS {
+            view.centring = None;
+            view.look = None;
+        }
     }
     if idle && dialogs.is_empty() {
         scroll(game, view, dt_ms);
@@ -1446,6 +1471,13 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         // F5 held ends the Community endless wait (0xc27802).
         if game.endless_waiting() && held_key() == Some(KeyCode::F5) {
             game.end_endless_wait();
+        }
+        // A left click anywhere or a key press during a wait ends it after the half hour
+        // under way, and does nothing else *(Razdor's choice: the original's waits run to
+        // their end)*.
+        if game.waiting() && (clicked() || any_key_pressed()) {
+            game.cut_wait();
+            swallow_input();
         }
     } else if clicked() && !on_minimap {
         if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
@@ -1559,11 +1591,17 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for (i, (line, color)) in notes.iter().enumerate() {
         super::chrome::shadow_text(line, 10.0, 22.0 + i as f32 * 18.0, 16.0, *color);
     }
-    // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
-    // time, a 30-minute tick every 150 ms (`Game::tick`).
+    // Waiting: the buttons over the message box (interface.md §6), 1 / 4, or a click on the
+    // time panel off the buttons (left 1 h, right 4 h). Waits play in real time, a 30-minute
+    // tick every 150 ms (`Game::tick`).
     let can_wait = idle && game.foe.is_none();
+    // The three buttons show on the idle map only: no walk, wait, flight or glide.
+    let time_buttons = can_wait && view.shows.is_empty() && view.returning.is_none() && view.spell_fx.is_empty();
     let clock = game_bar::time_panel();
-    let on_clock = !input_blocked() && clock.contains(crate::ui::widgets::pointer().into());
+    let pointer = Vec2::from(crate::ui::widgets::pointer());
+    let (bar_top, bar_mid, bar_scale) = game_bar::time_layout();
+    let on_button = game_bar::time_button_at(pointer, time_buttons, bar_top, bar_mid, bar_scale).is_some();
+    let on_clock = !input_blocked() && clock.contains(pointer) && !on_button;
     // The original's wait buttons play the button sound (interface.md §14).
     if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {
         cue(Cue::Button);
@@ -1585,8 +1623,16 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         }
     }
 
-    let (bar, toggle_map) = bottom_bar(game, message, view.minimap, idle);
+    let (bar, toggle_map, timed) = bottom_bar(game, message, view.minimap, idle, time_buttons && !game.waiting());
     next = next.or(bar);
+    // A time button pressed (its sound played): a wait, or the view's glide back to the hero
+    // (0x4b9448: 2 or 8 ticks, 0x4af96c).
+    match timed {
+        Some(TimeButton::Wait1) => game.begin_wait(1),
+        Some(TimeButton::Wait4) => game.begin_wait(4),
+        Some(TimeButton::ShowHero) => view.centring = Some((get_time(), view.look.unwrap_or(game.display_pos()))),
+        None => {}
+    }
     if toggle_map {
         view.minimap = !view.minimap;
     }
@@ -1619,6 +1665,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The centre button's glide (0x4af96c): 900 ms, the cosine ease in the original's
+    /// whole steps of 1/900.
+    #[test]
+    fn the_glide_is_the_originals_900_ms_cosine() {
+        assert_eq!(glide_ease(0), 0.0);
+        assert_eq!(glide_ease(-5), 0.0);
+        assert_eq!(glide_ease(450), 0.5);
+        assert_eq!(glide_ease(900), 1.0);
+        assert_eq!(glide_ease(2000), 1.0);
+        // round(900 × (1 − cos(π/9)) / 2) = round(27.14) = 27.
+        assert_eq!(glide_ease(100), 27.0 / 900.0);
+        // Slow at both ends, symmetric, never backwards.
+        assert!((glide_ease(800) - (1.0 - glide_ease(100))).abs() < 1e-6);
+        assert!((1..=900).all(|t| glide_ease(t) >= glide_ease(t - 1)));
+    }
 
     /// A planning click keeps the view where it was scrolled; the walk brings it back to
     /// the hero, unless an event's places are being shown.
