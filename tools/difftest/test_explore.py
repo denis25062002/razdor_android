@@ -174,6 +174,16 @@ class Matcher(unittest.TestCase):
                                                           ["hero.x", 1, 2]]}], c)
         self.assertEqual([e["class"] for e in per[0]], ["timing", "timing", "new"])
 
+    def test_goods_after_a_purchase_in_the_open_window(self):
+        acts = [{"op": "click_map", "x": 87, "y": 19}, {"op": "buy", "slot": 8}, {"op": "ok"}]
+        c = known.Context(acts, {}, [], [], [{"step": s, "meta": {"screen": "building"}} for s in (0, 1)]
+                          + [{"step": 2, "meta": {"screen": "world"}}], [{"step": s} for s in range(3)])
+        g = ["buildings[id 11].goods", [73, 99], [73, 99, 100]]
+        per = known.classify([{"step": 1, "diffs": [g]}], c)
+        self.assertEqual(per[1][0]["class"], "timing")
+        per = known.classify([{"step": 2, "diffs": [g]}], c)
+        self.assertEqual(per[2][0]["class"], "new")   # closed: it must agree
+
     def test_an_xp_difference_is_new(self):
         # FINDINGS §6 is fixed: Razdor pays the install's rate, so XP must agree again.
         c = ctx([{"op": "battle_act"}], [{"step": 0}], [{"step": 0}])

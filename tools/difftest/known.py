@@ -10,8 +10,10 @@ run (each Razdor step starts from the original's generator state) is given a cla
 - `timing`       a result of the event the original shows that it applies only at OK
                  (FINDINGS.md "Not differences"), when the run ends before the OK; also the
                  events Razdor counts as done that the original fires only when the window
-                 on screen is closed (queued behind it; candidate C1003-174531); and the
+                 on screen is closed (queued behind it; candidate C1003-174531); the
                  tribute while the original's village window is open (paid as it closes);
+                 and a market's goods after a purchase while the original's building
+                 window is open (the slot is written back as it closes; C1004-050909);
 - `harness`      one side has no state at that step (the original's harness stopped);
 - `new`          none of the above: a candidate for a human to look at.
 
@@ -52,6 +54,7 @@ difference that simply stays).
 """
 
 import re
+from collections import Counter
 
 PATROL_IDLE = 3000
 AI_SITES = ("AI wander points", "AI hire XP", "ai.rs")
@@ -160,6 +163,16 @@ class Context:
     def screen(self, step):
         return (self.orun.get(step, {}).get("meta") or {}).get("screen")
 
+    def bought_in_window(self, step):
+        """Whether a `buy` was played since the original's building window opened (it stays
+        open through `step`)."""
+        i = step
+        while i > 0 and self.screen(i) == "building":
+            if (self.actions[i] if i < len(self.actions) else {}).get("op") == "buy":
+                return True
+            i -= 1
+        return False
+
     def building_at(self, x, y):
         for bid, (t, bx, by, sx, sy) in self.buildings.items():
             if bx - max(sx, 1) < x <= bx and by - max(sy, 1) < y <= by:
@@ -254,6 +267,12 @@ def classify(rows, ctx):
             if cls is None and ctx.screen(step) == "village" and re.match(r"hero\.(gold|mana)$|buildings\[id \d+\]\.(gold|mana)$", p):
                 cls, why = "timing", ("the original's village window is open: it pays the tribute when the "
                                       "window closes, Razdor on entering (FINDINGS 'Not differences')")
+            if cls is None and re.match(r"buildings\[id \d+\]\.goods$", p) and ctx.screen(step) == "building" and \
+                    ctx.bought_in_window(step) and isinstance(a, list) and isinstance(b, list) and \
+                    not Counter(a) - Counter(b):
+                cls, why = "timing", ("the original's building window is open after a purchase: it writes the "
+                                      "emptied market slot back to the building when the window closes "
+                                      "(economy.md, player market), Razdor at once")
             if cls is None and p == "events_done" and isinstance(a, list) and isinstance(b, list) and \
                     set(b) - set(a) and set(b) - set(a) == {ctx.shown_event(step)}:
                 cls, why = "timing", (f"event {ctx.shown_event(step)} is on screen in the original, which the "

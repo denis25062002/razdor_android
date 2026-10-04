@@ -423,3 +423,20 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
   seeds (other armies' cells) differ by that minute, and turns north toward a friendly army
   at (49,82) in Razdor, west toward (34,84) in the original. No draw in between, so the
   generator stays equal. Larger than the one-cell `noise` `known.py` knows; not fixed.
+
+# Fifth round: forced coverage (`explore.py --cover`, 2026-10-04)
+
+## C1004-050909: ДС1-С чего все начиналось, step 7 `buy 8`
+
+- Found 2026-10-04 by explore.py (hero 1); unconfirmed.
+- Repro: 8 actions (shrunk from 8, 0 tries): `~/.cache/razdor-difftest/explore/C1004-050909/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `buildings[id 11].goods`: [73, 74, 75, 95, 76, 76, 77, 99] / [73, 74, 75, 95, 76, 76, 77, 99, 100]
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-050909/`.
+- **Harness timing, not a difference.** Both sides bought item 100 for 25 gold (pack [100]
+  on both). The original empties the market slot in the window's own list and writes it back
+  to the building record only when the window closes (economy.md, player market, 0x4b9e18);
+  the state is read with the window still open, so the building's `+0x88` words still hold
+  100. `known.py` classes a market's goods `timing` while the original's building window
+  stays open after a `buy` (Razdor's list must be the original's minus the bought items).
+

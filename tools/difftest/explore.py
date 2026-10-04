@@ -1330,10 +1330,17 @@ def main(argv=None):
             # Razdor's replay alone; the original is started only for that one.
             seed = rnd.random()
             info = hero = None
+            pairs = []
             for j in range(len(maps)):
                 m = maps[(episode + j) % len(maps)]
                 hs = [h for h in m.heroes() if (m.stem, h) not in skip] or [1]
-                h = 2 if kind == "cast" and 2 in hs else hs[(episode + j) % len(hs)]
+                k0 = (episode + j) % len(hs)
+                hs = hs[k0:] + hs[:k0]
+                if kind == "cast" and 2 in hs:
+                    hs.remove(2)
+                    hs.insert(0, 2)
+                pairs += [(m, h) for h in hs]
+            for m, h in pairs:
                 if (m.stem, h) in cover_tried.get(kind, set()):
                     continue
                 if C.dry_setup(m, h, razdor, kind, seed):
