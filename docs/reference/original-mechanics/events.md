@@ -254,6 +254,14 @@ the same two steps without a window. **code**
 Opening a later firing of the event clears the answer again (6.1), and finishing an event
 clears it too (0x4ab51b tail), so "happened with No" means "the last response was No". **code**
 
+So a many-times question declined in a building is not asked again during that visit (the
+No's firing guard, then the scan skips the building the move began in, §2) and is asked again
+when the hero enters the building on a later move; a Yes makes it a once-event. Example, РК2's
+village offers of peasants for the two mines (events 8, 9 and the replacement offer 10, which
+a Yes to 9 opens a day later and which asks only while no peasant is left and the quest's end,
+27, has not fired): two groups of three staff the two mines (19, 24), and 27 completes the
+campaign quest only after both. Razdor: the same (`rk2_the_peasant_offers_and_the_mines`).
+
 ### 6.3 Look of the window
 
 - The window is drawn in the **defeat** style when the title contains `#DEFEAT`, when the event

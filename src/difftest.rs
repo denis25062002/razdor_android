@@ -118,6 +118,10 @@ pub struct Carry {
     /// The army after the hero (replaces the map's preset troops).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub units: Vec<[i32; 2]>,
+    /// The named character of each of `units` (0 none), as an event of an earlier map
+    /// added it (an event's unit: no wage).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named: Vec<u8>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pack: Vec<i32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -143,12 +147,17 @@ impl Carry {
         hero.heal_full(c);
         let mut taken = vec![front];
         let mut army = Vec::new();
-        for &[kind, level] in &self.units {
+        for (i, &[kind, level]) in self.units.iter().enumerate() {
             let Some(slot) = c.formation.new_unit_slot(&taken) else { break };
             taken.push(slot);
             let mut u = Unit::new(c, UnitId(kind as u32), slot);
             u.level = level + 1;
             u.heal_full(c);
+            u.named = self.named.get(i).copied().unwrap_or(0);
+            if u.named != 0 {
+                u.from_event = true;
+                u.wage_kind = crate::rules::content::WageKind::Event;
+            }
             army.push(u);
         }
         crate::rules::script::NextMap {

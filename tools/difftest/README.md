@@ -228,7 +228,9 @@ the opening events see it:
     {"op":"new_game","map":"РК3","hero":2,"carry":{"gold":3154,"mana":1172,"hero_level":4,
      "units":[[14,3],[28,3]],"pack":[93],"book":[1,11],"flags":["Band","King"],"reveal":true}}
 
-`units` are `[type, level]` (the state's encodings), `hero_level` 0-based (with it `book`
+`units` are `[type, level]` (the state's encodings; `named`, a list beside them, gives each
+one's named character, 0 none: an event's unit of an earlier map, such as РК1's herald whom
+РК2 checks at once), `hero_level` 0-based (with it `book`
 replaces the map's), `flags` the campaign flags of the earlier maps' event title scripts,
 `reveal` the whole map explored. A field left out keeps the map's preset. Used for the
 gameplay-video experiment (`VIDEO.md`, `rk3-video.jsonl`); Razdor only. `--map` puts a `new_game` before the list (file name with or without `.DTm`, or a unique

@@ -756,6 +756,118 @@ fn ds1_services_sound_as_the_original() {
     assert_eq!(names(14), ["InterfacePanelDown", "Item-Amulet", "Item-Amulet"]);
 }
 
+/// РК2's offers of peasants for the two silver mines (PLAYTEST_NOTES 2026-10-03 §7). The
+/// village (building 4) holds three offers: events 8 and 9 (many-times questions, the second
+/// needing a Yes to the first) and event 10, which a Yes to 9 opens 24 hours later and which
+/// asks only while the army has no peasant left and the quest is not done (27). A No counts
+/// the firing and nothing else (events.md §6.2), so a declined offer is asked again when the
+/// hero next enters the village; a Yes makes the question a once-event. Each mine's fort takes
+/// three peasants (19, 24), and the campaign quest (4) is done by event 27 only after both:
+/// two groups of three, the third offer being a replacement.
+#[test]
+fn rk2_the_peasant_offers_and_the_mines() {
+    let Some(dt) = install() else { return };
+    let mut r = Runner::new(Source::Install(&dt));
+    let start = parse_actions(r#"{"op":"new_game","map":"РК2","hero":1,"carry":{"gold":1000,"units":[[74,0],[4,1],[19,1]],"named":[1,0,0],"reveal":true}}"#).unwrap();
+    r.apply(&start[0]).unwrap();
+    let peasants = |r: &Runner| r.game().unwrap().squad.iter().filter(|u| u.def.0 == 60).count();
+    let question = |r: &Runner| r.game().unwrap().pending_question();
+    // Closes the windows in front of a question (or all of them).
+    let read = |r: &mut Runner| {
+        for _ in 0..6 {
+            if r.dialogs.is_empty() || r.dialogs.front().is_some_and(|d| d.question) {
+                break;
+            }
+            r.apply(&Action::Ok).unwrap();
+        }
+    };
+    let go = |r: &mut Runner, x: i32, y: i32| {
+        for _ in 0..4 {
+            r.apply(&Action::ClickMap { x, y }).unwrap();
+            read(r);
+            if r.game().unwrap().tile() == (x, y) || question(r).is_some() {
+                break;
+            }
+        }
+    };
+    let answer = |r: &mut Runner, id: u16, yes: bool| {
+        read(r);
+        assert_eq!(question(r), Some(id));
+        r.apply(&Action::Answer { yes }).unwrap();
+        read(r);
+    };
+    read(&mut r);
+    // The baron's town: his news (3) and the royal charter in its hall (4, the quest), then
+    // his promise of the peasants (5). The AI armies leave the map, to keep the walks clear.
+    go(&mut r, 10, 83);
+    let g = r.game.as_mut().unwrap();
+    for id in [4u16, 5] {
+        assert!(g.hall_here().contains(&id), "{id} in the hall");
+        g.take_hall_entry(id).unwrap();
+        if g.pending_question().is_some() {
+            g.answer_question(true);
+        }
+        g.drain_events();
+    }
+    let ids: Vec<u8> = g.world.armies.iter().map(|a| a.id).collect();
+    for id in ids {
+        crate::rules::events::EventWorld::deactivate_army(g, id);
+    }
+    r.apply(&Action::Key { key: "Escape".into() }).unwrap();
+    let (village, outside) = ((19, 67), (25, 67));
+
+    // The first offer declined comes back on the next visit.
+    go(&mut r, village.0, village.1);
+    answer(&mut r, 8, false);
+    assert_eq!((question(&r), peasants(&r)), (None, 0), "no second asking in the same visit");
+    go(&mut r, outside.0, outside.1);
+    go(&mut r, village.0, village.1);
+    answer(&mut r, 8, true);
+    // The second follows at once; declined, it comes back too.
+    answer(&mut r, 9, false);
+    assert_eq!(peasants(&r), 3);
+    go(&mut r, outside.0, outside.1);
+    go(&mut r, village.0, village.1);
+    answer(&mut r, 9, true);
+    assert_eq!((question(&r), peasants(&r)), (None, 6));
+    // Answered Yes, neither asks again; the third waits for an army without peasants.
+    go(&mut r, outside.0, outside.1);
+    for _ in 0..7 {
+        r.apply(&Action::Wait { hours: 4 }).unwrap();
+        read(&mut r);
+    }
+    go(&mut r, village.0, village.1);
+    assert_eq!(question(&r), None, "six peasants: no offer");
+
+    // The north mine's fort becomes the player's (its garrison gone): its quest (18) opens,
+    // and three peasants staff the mine; the campaign quest is not done with one mine.
+    let g = r.game.as_mut().unwrap();
+    for id in [22u16, 23] {
+        let l = g.world.locations.iter_mut().find(|l| l.id == id).unwrap();
+        (l.owner, l.attitude) = (crate::rules::world::Owner::Player, 3);
+        l.garrison.clear();
+    }
+    go(&mut r, 96, 36);
+    answer(&mut r, 19, true);
+    let e = r.game().unwrap().script().unwrap();
+    assert_eq!((peasants(&r), e.completed_quests().contains(&18), e.times_fired(27)), (3, true, 0));
+    // The other three are lost: a day later the village offers three more (10).
+    r.game.as_mut().unwrap().squad.retain(|u| u.def.0 != 60);
+    for _ in 0..7 {
+        r.apply(&Action::Wait { hours: 4 }).unwrap();
+        read(&mut r);
+    }
+    go(&mut r, village.0, village.1);
+    answer(&mut r, 10, true);
+    assert_eq!(peasants(&r), 3);
+    // The south mine: both staffed, the campaign quest is done (27).
+    go(&mut r, 52, 96);
+    answer(&mut r, 24, true);
+    let e = r.game().unwrap().script().unwrap();
+    assert_eq!(e.times_fired(27), 1);
+    assert!(e.completed_quests().contains(&4) && e.completed_quests().contains(&23));
+}
+
 /// PLAYTEST_NOTES 2026-10-03 §2, checked live (run `rk1-village-taken.jsonl`): on РК1 the AI
 /// army 9 takes the hero's start village (building 6) at 13:00 with its whole stock (owner 9,
 /// gold and mana 0); the hero who walks in the same day captures it back (owner 0, as the

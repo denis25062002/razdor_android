@@ -125,3 +125,21 @@ was seen on and what to check.
    branches may differ here; and whether the quest's completion counts groups sent or fires on
    another condition.
    **To fix** (the user, 2026-10-03): the quest must follow the original's offers and completion.
+   Checked (2026-10-04, dt-original): Razdor already follows the original here; no code change.
+   The map's events (village building 4): offer 8 asks with the baron's promise (5) answered
+   Yes; offer 9 needs Yes to 5 and 8 and, on its Yes, opens offer 10 a day later; 10 asks only
+   while the army has no peasant left (three "not the player's" unit slots) and the quest's end
+   (27) has not fired: it is a replacement, not a third group. 8, 9 and 10 are many-times
+   events with a message. In the original a No only counts the firing (answer 1, times + 1,
+   last fired = now + 1: 0x4c2320), so a declined offer is not asked again in that visit and is
+   asked again when the hero next enters the village; a Yes makes it a once-event (0x4c2100).
+   Each mine's fort takes three peasants (19, 24; "three per mine" in the baron's own words),
+   each completing its mine's quest (18, 23), and 27 completes the campaign quest (4) only
+   after both: two groups of three are the whole task, so the quest done after the second
+   accepted group is the original's. The original cannot start РК2 outside the campaign (New
+   game lists only first maps), so this was checked against its code (events.md §2, §6.2) and
+   the map file, and played in Razdor with the replay's carry-over (the herald now carried by
+   `named`): test `rk2_the_peasant_offers_and_the_mines` declines 8 and 9 and gets them back on
+   the next visit, staffs the north mine (quest 18 done, 4 not), loses the other three, gets
+   offer 10 a day later and staffs the south mine (27 fires, quest 4 done). What dt-feat
+   changed for repeating questions should be checked against this test when it merges.
