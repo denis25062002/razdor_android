@@ -46,15 +46,19 @@ jobs:
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-          # Симлинки тулчейна для aarch64 (64-bit)
+          # Симлинки линкера и утилит для aarch64 (64-bit)
+          ln -sf "$TOOLCHAIN/ld.lld" "$TOOLCHAIN/aarch64-linux-android-ld"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
+          ln -sf "$TOOLCHAIN/aarch64-linux-android29-clang" "$TOOLCHAIN/aarch64-linux-android-clang"
           
-          # Симлинки тулчейна для armv7 (32-bit)
+          # Симлинки линкера и утилит для armv7 (32-bit)
+          ln -sf "$TOOLCHAIN/ld.lld" "$TOOLCHAIN/arm-linux-androideabi-ld"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/arm-linux-androideabi-strip"
+          ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-clang"
 
       - name: Build APK
         env:
