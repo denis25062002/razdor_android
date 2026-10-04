@@ -1,0 +1,42 @@
+name: Build Android arm64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Setup Android NDK
+        uses: nsetup/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build for Android (arm64-v8a)
+        env:
+          # Флаг выравнивания страниц памяти 16 KB для Android 16
+          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+        run: |
+          cargo ndk -t arm64-v8a -o ./build_output build --release
+
+      - name: Upload Android Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: razdor-android-arm64
+          path: |
+            build_output/arm64-v8a/
+            target/aarch64-linux-android/release/razdor
