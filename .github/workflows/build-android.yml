@@ -61,48 +61,48 @@ jobs:
 
           # Обертка линковщика для aarch64
           cat << 'EOF' > "$TOOLCHAIN/aarch64-linux-android-ld"
-#!/usr/bin/env bash
-TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/aarch64 2>/dev/null | head -n 1)"
+          #!/usr/bin/env bash
+          TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/aarch64 2>/dev/null | head -n 1)"
 
-ARGS=()
-for arg in "$@"; do
-  if [[ "$arg" == -Wl,* ]]; then
-    cleaned="${arg#-Wl,}"
-    IFS=',' read -ra PARTS <<< "$cleaned"
-    for part in "${PARTS[@]}"; do
-      ARGS+=("$part")
-    done
-  else
-    ARGS+=("$arg")
-  fi
-done
+          ARGS=()
+          for arg in "$@"; do
+            if [[ "$arg" == -Wl,* ]]; then
+              cleaned="${arg#-Wl,}"
+              IFS=',' read -ra PARTS <<< "$cleaned"
+              for part in "${PARTS[@]}"; do
+                ARGS+=("$part")
+              done
+            else
+              ARGS+=("$arg")
+            fi
+          done
 
-exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
-EOF
+          exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
+          EOF
           chmod +x "$TOOLCHAIN/aarch64-linux-android-ld"
 
           # Обертка линковщика для armv7
           cat << 'EOF' > "$TOOLCHAIN/arm-linux-androideabi-ld"
-#!/usr/bin/env bash
-TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/arm 2>/dev/null | head -n 1)"
+          #!/usr/bin/env bash
+          TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/arm 2>/dev/null | head -n 1)"
 
-ARGS=()
-for arg in "$@"; do
-  if [[ "$arg" == -Wl,* ]]; then
-    cleaned="${arg#-Wl,}"
-    IFS=',' read -ra PARTS <<< "$cleaned"
-    for part in "${PARTS[@]}"; do
-      ARGS+=("$part")
-    done
-  else
-    ARGS+=("$arg")
-  fi
-done
+          ARGS=()
+          for arg in "$@"; do
+            if [[ "$arg" == -Wl,* ]]; then
+              cleaned="${arg#-Wl,}"
+              IFS=',' read -ra PARTS <<< "$cleaned"
+              for part in "${PARTS[@]}"; do
+                ARGS+=("$part")
+              done
+            else
+              ARGS+=("$arg")
+            fi
+          done
 
-exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
-EOF
+          exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
+          EOF
           chmod +x "$TOOLCHAIN/arm-linux-androideabi-ld"
 
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android-ld" >> "$GITHUB_ENV"
