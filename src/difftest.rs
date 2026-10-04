@@ -88,6 +88,9 @@ pub enum Action {
     Resurrect { unit: usize },
     /// The sanctuary tab: learns the spell of row `slot` of its list.
     Learn { slot: usize },
+    /// The main hall tab: takes the quest or rumour of row `slot` (0-based) of its list
+    /// (Take quest, 0x4bb798): its window opens at once.
+    Take { slot: usize },
     /// On the map: casts the spell of book entry `slot` (0-based) on the hero's army, or, for
     /// a spell on an enemy, on the army with map id `army`. A building window is closed first.
     Cast {
@@ -481,6 +484,7 @@ impl<'a> Runner<'a> {
             Action::Heal { unit } => self.heal(*unit, false),
             Action::Resurrect { unit } => self.heal(*unit, true),
             Action::Learn { slot } => self.learn(*slot),
+            Action::Take { slot } => self.take(*slot),
             Action::Cast { slot, army } => self.cast(*slot, *army),
             Action::Equip { slot, unit } => self.equip(*slot, *unit),
         }
@@ -860,6 +864,27 @@ impl<'a> Runner<'a> {
         }
     }
 
+    /// The main hall's Take quest (0x4bb798) on row `slot`: the row's click is silent, the
+    /// button sounds; the event's window opens over the building window.
+    fn take(&mut self, slot: usize) {
+        if !self.in_building("take") {
+            return;
+        }
+        self.open_tab(Tab::MainHall);
+        let g = self.g();
+        let r = match g.hall_here().get(slot).copied() {
+            Some(id) => g.take_hall_entry(id).map_err(|e| format!("{e:?}")),
+            None => Err("no such row".into()),
+        };
+        match r {
+            Ok(events) => {
+                self.av.sfx("InterfaceButtonDown");
+                self.handle(events);
+            }
+            Err(e) => self.note(format!("take {slot}: {e}")),
+        }
+    }
+
     /// The map takes a window's input: a building window is closed first (opening a side
     /// window closes the open one, interface.md §9).
     fn map_window(&mut self, op: &str) -> bool {
@@ -990,6 +1015,10 @@ impl<'a> Runner<'a> {
                         }
                     }
                     out["services"] = json!(heal);
+                }
+                let hall: Vec<_> = g.hall_here().iter().enumerate().map(|(k, &id)| json!({"slot": k, "event": id})).collect();
+                if !hall.is_empty() {
+                    out["hall"] = json!(hall);
                 }
                 let spells: Vec<_> = g.spells_here().iter().enumerate().map(|(k, s)| json!({"slot": k, "id": s.id, "name": s.name, "price": s.cost_gold, "known": g.knows_spell(s.id)})).collect();
                 if !spells.is_empty() {
@@ -1205,6 +1234,8 @@ impl<'a> Runner<'a> {
     /// The places an event showed: once that event's window is closed (before the next
     /// window opens) the camera flies to each and its uncovered cells fade in; after the
     /// event's last one it flies back to the hero (`world_view`, 0x4af96c, 0x4af83c).
+    /// In a building window too: the window steps aside for the flights and comes back
+    /// silent (`App::fly_from_building`, interface.md §9.8), so the log is the same.
     fn fly_to_shown(&mut self) {
         while let Some(&(event, _)) = self.shows.first() {
             if !self.free_to_show(event) {

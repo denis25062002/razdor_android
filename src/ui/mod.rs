@@ -402,6 +402,39 @@ impl App {
         self.audio.frame(mood);
     }
 
+    /// An event read in a building window (a quest taken in the main hall) shows its places
+    /// at once, as the original does: its OK queues the camera's glides (0x4ab1ec → 0x4af96c,
+    /// 0x4af83c) and they play over the world map, then the building window comes back as it
+    /// was, without a sound (checked live on РК1, interface.md §9.8). `leaving`: the screen
+    /// changes this frame anyway.
+    fn fly_from_building(&mut self, leaving: bool) {
+        if leaving {
+            self.map_view.back_to = None;
+            return;
+        }
+        let Some(game) = self.game.as_ref() else { return };
+        let in_building = matches!(self.screen, Screen::Building(_));
+        let on_map = matches!(self.screen, Screen::WorldMap);
+        let aside = self.map_view.back_to.is_some();
+        let due = in_building && self.map_view.shows_due(game, &self.dialogs);
+        match world_view::building_flight(in_building, aside && on_map, due, self.map_view.flying()) {
+            world_view::BuildingFlight::StepAside => {
+                if let Screen::Building(view) = std::mem::replace(&mut self.screen, Screen::WorldMap) {
+                    self.map_view.back_to = Some(view);
+                }
+                self.map_view.reset();
+            }
+            world_view::BuildingFlight::ComeBack => {
+                if let Some(view) = self.map_view.back_to.take() {
+                    self.screen = Screen::Building(view);
+                }
+            }
+            world_view::BuildingFlight::Stay => return,
+        }
+        // Silent both ways: the map has no sound of its own, the window is not opened anew.
+        self.last_screen = Some(std::mem::discriminant(&self.screen));
+    }
+
     /// The current screen, by what its keys do.
     fn place(&self) -> hotkeys::Place {
         use hotkeys::Place;
@@ -426,7 +459,7 @@ impl App {
     fn guard(&self) -> hotkeys::Guard {
         hotkeys::Guard {
             typing: hotkeys::typing(self.place(), widgets::typing()),
-            dialog: !self.dialogs.is_empty(),
+            dialog: !self.dialogs.is_empty() || self.map_view.back_to.is_some(),
             game: self.game.is_some(),
             foe: self.game.as_ref().is_some_and(|g| g.foe.is_some()),
             endless: self.game.as_ref().is_some_and(|g| g.endless_waiting()),
@@ -553,7 +586,8 @@ impl App {
         // A dialog or the key list on top: the screen below is drawn but takes no input.
         let place = self.place();
         let guard = self.guard();
-        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help);
+        // The flights of an event read in a building window take no input either.
+        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help || self.map_view.back_to.is_some());
         let mut restart = false;
         let install_wide = self.install_wide_row();
         let mut next = match (&mut self.screen, &mut self.game) {
@@ -701,6 +735,7 @@ impl App {
                 next = next.or(after);
             }
         }
+        self.fly_from_building(next.is_some());
         // A fight decided on the map or in a building begins once the messages of that moment
         // are read (the original shows a meeting's words over the map, then the battle).
         if next.is_none() && self.dialogs.is_empty() && matches!(self.screen, Screen::WorldMap | Screen::Building(_)) {

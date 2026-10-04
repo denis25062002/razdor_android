@@ -469,6 +469,9 @@ the box is left empty. **code**
   that pass the full check of §3–§4 are listed, quests in one colour and rumours in another.
 - Taking an entry opens its dialog at once, without a new check: a question first if it asks,
   else its results.
+- The places the taken event shows (lanterns, a shown army) are flown to at its window's OK,
+  over the world map, before the building window comes back (interface.md §9.8; checked
+  under Wine on РК1), not when the building window is closed.
 - Rumours have no price of their own: a rumour that costs money has a negative gold result
   (and usually a gold condition and a question). In shipped maps prices run from 5 to 700.
   Combined with the Yes rule of §6.2, a rumour that asks is heard **once**.
@@ -603,6 +606,7 @@ world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag scr
 | Quests in buildings | Listed in the main hall with the rumours and fired when taken; villages and shipyards fire them on entering | Listed in the main hall and taken by the player, except in villages and shipyards (§2, §10) | Matches |
 | Event points | Every listed event, whatever its type | Every listed event, whatever its type | Matches |
 | Rumour or quest list | The building's quests and rumours that pass the full check (`EventEngine::hall`); taking one opens it without a new check | Quests and rumours of the building that pass the full check | Matches |
+| Places shown by a taken quest | Flown to at its window's OK over the map, then the building window comes back (`App::fly_from_building`) | At the OK, over the world screen, then the building window again (§10, interface.md §9.8; live on РК1) | Matches |
 | Journal | The engine's journal: re-added on every finish, completion removes the last entry, a new engine on the next map; Razdor's history is a separate extra | Re-added on every finish; completion removes the last entry; emptied on the next map | Matches |
 | Journal detail | Active quests: question then message, `#HERONAME` not filled, markers raw, and the time since the event last fired (`Game::quest_row`) | Title, a label, question then message as one justified block (no `#HERONAME` fill, markers raw), a label and the time since the event last fired, long calendar (§10) | Matches in content; the justified layout and the long calendar's wording are presentation, left |
 | Dismissed unit on a full army | Lowest level value (`experience::level_value`: level stats, no items, raw multiplier) of units 2–12, first on a tie; its worn items to the pack | Lowest mode-0 tactical cost of slots 2–12, first on a tie (§7.1) | Matches |

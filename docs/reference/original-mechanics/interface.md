@@ -729,6 +729,17 @@ wage total. **code**
   bar, and the Take Quest button, shown but disabled. Selecting a row enables it (4ba754). Take
   Quest (4bb798) prepares the selected quest's event and opens its event dialog (4a8ae8,
   4ac3b4). **code**
+- **An event read in the building window shows its places at once.** The event window's OK
+  (Event_Finish 0x4ab1ec) queues the glide to each shown place (4af96c), its reveal (4af83c),
+  the glide back and the event chain (4af658); they play over the **world screen** (the
+  building window steps aside: the screen pointer is the world's, 0x674a20, while they run),
+  then the scan runs and the building window comes back on the tab it was on, without a
+  sound; closing it later moves nothing. Checked under Wine on РК1 (the castle's quest
+  «Сообщение посыльного», lantern 2, taken in the main hall: screen event → world at the OK,
+  camera y 440 → 264 in about 0.9 s, the reveal, back to 440, then the building window again
+  at about 2.7 s; Frida hooks on 4af96c/4af83c fire inside that step, none after the Exit).
+  Razdor: the same (the building window steps aside for the flights, input off meanwhile).
+  **live**
 - **Tab buttons** (4bb6c8 enter, 4bb734 leave): hovering a tab lights it (normal → lit picture)
   and repaints the left panel the first time; leaving restores every lit tab. Pressing a tab
   (4ba770) plays the click sound and shows it pressed; the release switches the tab (4ba854).
@@ -1010,7 +1021,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 9 | Zoom | Wheel and +/− (extra) | None | 7.7 |
 | 10 | Camera while walking | Locked on the hero while he walks (centred on him; the original's off-centre placement is presentation, left out) | Locked on the hero (his cell at column 14, row 16) while he walks | 8 |
 | 11 | Centre on hero | Tab | Centre button on the message box, 900 ms cosine glide | 6, 8 |
-| 12 | Shown places | 0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep | 900 ms cosine glide, only when farther than 300 px | 8 |
+| 12 | Shown places | 0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep; Matches: an event read in a building window flies at its OK over the map, then the window comes back | 900 ms cosine glide, only when farther than 300 px; in a building window at the OK, over the world screen, then the window again | 8, 9.8 |
 | 13 | Waiting | Keys 1 and 4; time panel left / right click (extras); Matches: F4 endless wait, F5 ends it (`Game::begin_endless_wait`; the minutes of the tick under way are dropped) | Two buttons that appear over the message box (1 h, 4 h); Community F4 endless wait, F5 ends it | 6, 7.7 |
 | 14 | Minimap | M or the panel button opens a minimap window | Overlay in the top right corner, 200 or 400 px, toggled by the panel button and saved; left-drag on it moves the view | 6, 7.6 |
 | 15 | Hotkeys | F1 key list, F2 language, F5 quick save (not during the endless wait), F9 quick load, N music, letters for windows (extras); F4 / F5 endless wait as the original | Community F1 newest autosave, F2 newest own save, F3 save, F4/F5 endless wait; no letters | 7.7 |

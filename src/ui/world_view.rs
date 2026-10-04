@@ -74,11 +74,14 @@ pub struct MapView {
     /// then (0x4cc18f), so the first frame back from a window counts the window's time too,
     /// as in the original.
     last_frame_ms: Option<i64>,
+    /// The building window that stepped aside for the flights of an event read in it: it
+    /// comes back as it was once the camera is back on the hero.
+    pub(super) back_to: Option<super::building_view::BuildingView>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None }
     }
 }
 
@@ -183,10 +186,7 @@ impl Showing {
 
     /// Its event's window is closed (a place shown with no window waits for all of them).
     fn free(&self, dialogs: &VecDeque<Dialog>) -> bool {
-        match self.event {
-            Some(id) => !dialogs.iter().any(|d| d.event == Some(id)),
-            None => dialogs.is_empty(),
-        }
+        shown_free(self.event, dialogs.iter().map(|d| d.event))
     }
 
     /// How far the reveal has come: 0 until the camera arrives, 1 when it is open.
@@ -210,6 +210,7 @@ impl MapView {
         self.opening = None;
         self.spell_fx.clear();
         self.preview = None;
+        self.back_to = None;
     }
 
     /// A map starts: the fog opens around the hero (0x4af83c), the places of the last game
@@ -229,6 +230,51 @@ impl MapView {
     pub fn holds_dialogs(&self, dialogs: &VecDeque<Dialog>) -> bool {
         self.returning.is_some() || self.shows.front().is_some_and(|s| s.free(dialogs)) || !self.spell_fx.is_empty()
     }
+
+    /// A place an event showed is due now (its window is closed), in `game.shown` or in
+    /// line: a building window steps aside for its flight.
+    pub fn shows_due(&self, game: &Game, dialogs: &VecDeque<Dialog>) -> bool {
+        let due = |event: Option<u16>| shown_free(event, dialogs.iter().map(|d| d.event));
+        self.shows.front().is_some_and(|s| due(s.event)) || game.shown.first().is_some_and(|s| due(s.event))
+    }
+
+    /// The camera is flying to the shown places or back to the hero.
+    pub fn flying(&self) -> bool {
+        !self.shows.is_empty() || self.returning.is_some()
+    }
+}
+
+/// A place shown by `event` may be flown to: that event's window is no longer among the
+/// open windows `open` (their events); a place shown with no event waits for every window.
+fn shown_free(event: Option<u16>, mut open: impl Iterator<Item = Option<u16>>) -> bool {
+    match event {
+        Some(id) => !open.any(|e| e == Some(id)),
+        None => open.next().is_none(),
+    }
+}
+
+/// What the building window does about an event's flights (`App`): it steps aside for the
+/// world map when a shown place is due, and comes back once the camera is back on the hero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BuildingFlight {
+    Stay,
+    StepAside,
+    ComeBack,
+}
+
+/// `in_building`: the building window is the screen; `aside`: it stepped aside for the
+/// flights; `due`: a shown place is due; `flying`: the camera is on its way.
+pub(super) fn building_flight(in_building: bool, aside: bool, due: bool, flying: bool) -> BuildingFlight {
+    if in_building && due {
+        BuildingFlight::StepAside
+    } else if !in_building && aside && !flying {
+        BuildingFlight::ComeBack
+    } else {
+        BuildingFlight::Stay
+    }
+}
+
+impl MapView {
 }
 
 /// A world spell's part on the map: the camera's glide to the target army when it is more
@@ -1583,6 +1629,29 @@ mod tests {
         assert_eq!(camera_look(away, true, false), None);
         assert_eq!(camera_look(away, true, true), away);
         assert_eq!(camera_look(None, false, false), None);
+    }
+
+    #[test]
+    fn a_shown_place_waits_for_its_own_window() {
+        assert!(!shown_free(Some(6), [Some(6)].into_iter()), "the quest's message is still open");
+        assert!(shown_free(Some(6), [Some(7), None].into_iter()), "other windows do not hold it");
+        assert!(!shown_free(None, [None].into_iter()), "a place with no event waits for all");
+        assert!(shown_free(None, std::iter::empty()));
+    }
+
+    #[test]
+    fn a_building_window_steps_aside_for_the_flights_and_comes_back() {
+        use BuildingFlight::*;
+        // The quest's message open in the building: nothing due yet.
+        assert_eq!(building_flight(true, false, false, false), Stay);
+        // Its OK: the place is due, the window steps aside for the map (0x4af96c).
+        assert_eq!(building_flight(true, false, true, false), StepAside);
+        // On the map, the camera on its way: the window waits.
+        assert_eq!(building_flight(false, true, false, true), Stay);
+        // Back on the hero: the window comes back as it was.
+        assert_eq!(building_flight(false, true, false, false), ComeBack);
+        // A map with no window aside stays the map.
+        assert_eq!(building_flight(false, false, false, false), Stay);
     }
 
     #[test]

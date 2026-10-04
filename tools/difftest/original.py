@@ -58,6 +58,8 @@ MARKET_BUTTON = 0x6709BC                         # Buy / Sell (market), Learn (s
 SELL_LIST_BTN, GOODS_BTN = 0x670B30, 0x670CA4    # "Inventory" (sell list) / "Trade shop" (goods)
 BUY_ROW, SELL_ROW = 0x671258, 0x671254           # selected row of the goods / sell list
 SPELL_LIST, SPELL_ROWS = 0x671334, 6
+HALL_LIST, HALL_SEL, HALL_COUNT = 0x6701AC, 0x67022F, 0x67067C   # quests and rumours (0x4beaac)
+TAKE_BUTTON = 0x670408                           # Take quest (0x4bb798)
 HIRE_BTN, CURE_BTN, BTN_STRIDE = 0x66EFB0, 0x66DE64, 0x171   # 6 by barracks slot, 12 by card
 # Bottom panel and side windows.
 ARMY_BUTTON, BOOK_BUTTON, MINIMAP_BUTTON = (800, 714), (888, 714), (967, 714)
@@ -670,6 +672,29 @@ class Original:
             return f"learn {row}: nothing changed"
         return None
 
+    def take(self, row):
+        """The main hall: selects row `row` of the quest and rumour list (its rows found by
+        stepping down the list until the selection 0x67022f is the row) and presses Take
+        quest (0x4bb798)."""
+        self.open_tab(0, "take")
+        g = self.game
+        if not 0 <= row < g.m.i32(HALL_COUNT):
+            raise NotApplicable(f"take: no row {row} (the list has {g.m.i32(HALL_COUNT)})")
+        _, lx, ly, lw, lh = g.widget(HALL_LIST)
+        for y in range(ly + 6, ly + lh - 4, 6):
+            self.click(lx + lw // 2, y)
+            self.settle(quiet=0.3)
+            sel = g.m.i32(HALL_SEL)
+            if sel == row:
+                break
+            if 0 <= sel and sel > row:
+                raise NotApplicable(f"take: row {row} skipped (selection {sel})")
+        else:
+            raise NotApplicable(f"take: row {row} not reached")
+        self._rect_click(TAKE_BUTTON, "the take quest button")
+        self.settle()
+        return None
+
     def _side_window(self, button, screen):
         if self.game.screen() in WINDOWS_CLOSED_BY_ESC:
             self.key("Escape")
@@ -784,6 +809,8 @@ class Original:
             return self.heal(int(act["unit"]), op == "resurrect")
         elif op == "learn":
             return self.learn(int(act["slot"]))
+        elif op == "take":
+            return self.take(int(act["slot"]))
         elif op == "cast":
             return self.cast(int(act["slot"]), act.get("army"))
         elif op == "equip":

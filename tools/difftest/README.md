@@ -47,6 +47,9 @@ Razdor's replay: walk toward the army's cell, strike the weakest enemy of the fr
 `campaign/<map>.jsonl`: the openings of the later campaign maps (РК2–РК7, ДС2, Обучающий2)
 with the knight and no carry-over, each the opening windows read, a walk, a wait of an hour
 and the nearest building (built from Razdor's replay); `CANDIDATES.md` has their results.
+`rk1-castle-quest.jsonl`: РК1 with the knight, the castle's main hall: «Сообщение посыльного»
+taken (`take`), its window read, the building window closed; it checks where the flight to the
+quest's lantern plays (at the OK, over the world screen: interface.md §9.8).
 `rk1-church.jsonl`: РК1 with the knight, the cover setup for `resurrect` (the ruins fought by
 a searched line of presses, the church at (47,27), its three event windows read, a raise and
 a sale); it checks the events behind a shown window (FINDINGS §22).
@@ -176,6 +179,7 @@ initiative fields (`battle_raw`) on both sides.
     {"op":"hire","slot":n}                             the hire tab: barracks slot n (the building record's)
     {"op":"heal","unit":i}  {"op":"resurrect","unit":i}  the hire tab: unit i of the hero's army
     {"op":"learn","slot":n}                            the sanctuary tab: row n of its spells
+    {"op":"take","slot":n}                             the main hall: row n of its quests and rumours
     {"op":"cast","slot":k[,"army":id]}                 on the map: book entry k (on army id for a spell on enemies)
     {"op":"equip","slot":n,"unit":i}                   the army window: pack item n on unit i
 
@@ -201,7 +205,9 @@ sell list), then Buy/Sell (0x6709bc) is pressed; the list switch buttons are "In
 0x66efb0 + k·0x171 by barracks slot; heal and resurrect: the twelve buttons 0x66de64 +
 p·0x171 by the unit's card place p (its cell in the army grid at army +0x1630 + r·0x18 + c·4,
 then the place table of the battle cards). Learn: the spell list 0x671334 (6 rows) and the
-same button. Cast: the panel's book button, the cell 0x66c2fc + k·0x4b; a spell on enemies
+same button. Take: the main hall's list (0x6701ac; its count 0x67067c, its event numbers
+0x67057c, the selection 0x67022f) clicked from the top in 6 px steps until the selection is
+the row, then Take quest (0x670408, handler 0x4bb798). Cast: the panel's book button, the cell 0x66c2fc + k·0x4b; a spell on enemies
 then waits for a click on the target army's cell. Equip: the panel's army button, the pack
 cell (5×5 from (338, 58), 55 px), then for the hero the lowest empty worn slot of the window,
 for another unit its card (0x667f3c + place·0x4b). Each op checks that something changed
@@ -262,7 +268,7 @@ How the actions are applied (`src/difftest.rs`):
 - `battle_auto`: the battle AI plays both sides to the end and the result box is closed.
 - `battle_act`, `battle_pass`: see "Battles" above.
 - `key`: `Escape`, `1`, `4`, `Return`/`space`; others are noted and skipped.
-- services (`buy`, `sell`, `hire`, `heal`, `resurrect`, `learn`, `cast`, `equip`): see
+- services (`buy`, `sell`, `hire`, `heal`, `resurrect`, `learn`, `take`, `cast`, `equip`): see
   "Services" above; a refusal (no money, no such row) is a note.
 - The generator gets the interface's draws: `Random(3)` as an event, village or shipyard
   window opens, and the music change when the first dialog after a won battle closes. The

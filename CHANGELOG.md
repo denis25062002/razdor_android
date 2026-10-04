@@ -13,6 +13,10 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **A quest taken in a building shows its places at once:** when the quest's message is
+  closed in the main hall, the camera flies to the places it marks and back over the map,
+  then the building window returns, as in the original (the flight waited until you left the
+  building).
 - **Sound effects never pile up:** a sound played again while it still plays starts over, as the
   original's one buffer per sound does; sweeping the pointer over the main menu no longer stacks
   its bell into a din. Overlapping ovals no longer count the pointer on two buttons at once,

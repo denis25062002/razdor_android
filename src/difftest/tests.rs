@@ -858,6 +858,28 @@ fn rk1_day1_the_av_log_follows_the_original_where_razdor_plays_the_same() {
     assert!(after.len() == 1 && crate::rules::music::ROTATION.contains(&after[0].as_str()), "{after:?}");
 }
 
+/// РК1's castle (`rk1-castle-quest.jsonl`, run q1-hall): «Сообщение посыльного» taken in the
+/// main hall; the flight to its lantern (2, at (45,28)) and back is logged at its window's
+/// OK, while the building window is still the screen after it, as the original plays it
+/// (interface.md §9.8); closing the building window later moves nothing.
+#[test]
+fn rk1_a_quest_taken_in_the_castle_flies_at_its_ok() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-castle-quest.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions, None).unwrap();
+    assert!(r.notes.is_empty(), "{:?}", r.notes);
+    let names = |step: usize| -> Vec<String> {
+        r.av[step].iter().map(|e| match &e.t {
+            Some(t) if e.n == "camera_glide" => format!("{}@{t}", e.n),
+            _ => e.n.clone(),
+        }).collect()
+    };
+    assert_eq!(names(4), ["InterfaceButtonDown", "Global-Event-1"]);
+    assert_eq!(names(5), ["InterfaceButtonDown", "camera_glide@45,28", "reveal", "camera_glide@45,45"]);
+    assert!(names(8).is_empty(), "the building's close is silent and flies nowhere: {:?}", names(8));
+    assert!(r.states[5].events_done.contains(&6));
+}
+
 /// The services' sounds on ДС1 (`ds1-services.jsonl`) as the original plays them (run
 /// `av-ds1-services`, AV.md): the building window's tab sounds as the harness presses its tabs
 /// from the top, the gold sound of each money button, the hired card's slide, the item's
