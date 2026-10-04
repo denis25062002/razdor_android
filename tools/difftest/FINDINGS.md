@@ -483,6 +483,25 @@ The manual cover run on РК1 (`runs/cover-res1`).
 - After the fix `cover-res1` is 52 of 53 steps equal (47 before; the one left is step 47's
   §5 frame noise); rk1-day1 41 of 44 and the recorded repros as before.
 
+## 23. A hero route around an army: the known deviation of the hero's mask
+
+**Status: not fixed — a deviation the user asked for** (world.md §1.3, "Razdor now →
+original": "Mask: armies"). Candidate C1004-052035 (Другой берег).
+
+- Другой берег (ranger), step 20 (`click_map 17 12` from (37,38)): the original arrives 12
+  minutes sooner (1765 against 1777), 57 steps against 58.
+- Frida on the hero's flood (0x482a58, planner 0x68bc10) and route read (0x482fe8) at the
+  click: the seed (17,12), the mask and the costs of x 5..42, y 5..42 are cell for cell the
+  ones Razdor's planner uses (explored image and LAND costs equal); the original's route goes
+  (13,25), (13,24), (12,23), **(12,22)**, (11,21), …, Razdor's (13,24), (13,23), (13,22),
+  (12,21), (11,20), …. Army 11 stands on (12,22): the original closes only stationary guards
+  and meeting-waiting armies next to the hero, so its route crosses the army's cell (the hero
+  reached the church without meeting it); Razdor closes every army's cell (`Game::plan_from`, "no
+  army can be walked through: the player's request") and goes round it.
+- To follow the original, `plan_from` would close only the armies with patrol radius 0 on
+  the map and the meeting-waiting armies at distance 1 (both except the clicked one). Left as
+  it is for the user to decide.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

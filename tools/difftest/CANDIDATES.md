@@ -476,6 +476,10 @@ NEW candidates, and one from the manual resurrect check:
   cells around (12..14, 20..24), world.md §1.3) or the flood's ties. Next: read the
   original's planned route (the route buffer after the first click) and its explored image
   at the click, against Razdor's `route_to` and fog there.
+- **Resolved: the cause is a known deviation, FINDINGS.md §23.** Frida on the hero's flood and
+  route read at the click: mask, costs and explored cells equal; army 11 stands on (12,22),
+  which the original's route crosses (only stationary guards are closed) and Razdor's goes
+  round (every army closed, the user's request). Not changed: for the user to decide.
 
 ## C1004-052338: Проклятое озеро, step 7 `buy 1`
 
