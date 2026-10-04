@@ -3,6 +3,22 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-04, dt-original: a quest's places shown only after leaving the building
+
+1. **"When I take a mission in the barracks, the map with the quest's places pops up not
+   during the dialog but only after I close the barracks window; it should show when
+   needed."** Done. Checked under Wine on РК1 (`tools/difftest/rk1-castle-quest.jsonl`: the
+   castle's main hall, «Сообщение посыльного», lantern 2): **the original flies at the
+   quest's OK**: its OK queues the glide, the reveal and the glide back (Event_Finish 0x4ab1ec
+   → 0x4af96c, 0x4af83c), the screen switches to the world map while they play (camera
+   y 440 → 264 → 440 in about 2 s), then the building window comes back on its tab, silent;
+   closing it later moves nothing (Frida hooks on 0x4af96c/0x4af83c fire only in the OK's
+   step; screenshot burst). Razdor waited for the building window to close, because the map
+   frame that plays the flights did not run under it. Now the building window steps aside
+   for the flights (input off meanwhile) and comes back as it was (`App::fly_from_building`;
+   interface.md §9.8, events.md §10). The diff test got a `take` op for the main hall on both
+   sides. Commit b41b916.
+
 ## 2026-10-03, dt-original: a hero class the map leaves out
 
 1. **A player's report: "on 'Осмотр владений' I started as the Ranger though only the Knight
