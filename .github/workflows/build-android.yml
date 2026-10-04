@@ -18,16 +18,15 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Install Android NDK via SDKManager
-        run: |
-          yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.0.12077973"
-          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
+      - name: Add Android target explicitly
+        run: rustup target add aarch64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
 
       - name: Build for Android (arm64-v8a)
         env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_ROOT }}
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
           cargo ndk -t arm64-v8a -o ./build_output build --release
@@ -37,5 +36,5 @@ jobs:
         with:
           name: razdor-android-arm64
           path: |
-            build_output/arm64-v8a/
-            target/aarch64-linux-android/release/
+            build_output/
+            target/aarch64-linux-android/release/razdor
