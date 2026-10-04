@@ -1227,7 +1227,7 @@ fn an_ai_battle_beats_a_side_whose_end_strength_is_0() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(20, 0, 2)]), army(2, (31, 10), 2, ALLY, 0, &[troop(20, 0, 1)])];
     let mut g = start_with(&s, c);
     let cc = g.content.clone();
-    let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
+    let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0, bare: false };
     let bt = fight(&cc, &side(&g, 0), &side(&g, 1), true, Default::default());
     assert!(bt.fighters.iter().all(|f| f.alive()));
     assert_eq!(bt.strength_now(Team::Enemy), 0);
@@ -1794,6 +1794,36 @@ fn the_ruins_garrison_wears_the_ruins_goods_and_gives_them_back_as_loot() {
 }
 
 #[test]
+fn a_ruins_garrison_counts_its_strengths_without_the_load_items_until_recounted() {
+    // 0x4b2504: the garrison is recounted (0x4b53dd) before the ruins' goods are given to
+    // its units (0x4a273c at 0x4b55aa), so its cached strengths (+0x1ae) lack them, and its
+    // battles count them so (49855c) until its next recount (0x4a16d4; after a battle,
+    // 0x4d21fd). РК4: a garrison's B0 552, not 617 (FINDINGS §28).
+    let mut s = map();
+    let mut ruins = building(BuildingType::Ruins, 10, 10, (1, 1));
+    ruins.artifact_slots[0] = 11; // a ring of +10 attack
+    ruins.relations = [-3, 0, 0, 0];
+    ruins.garrison[0] = troop(4, 0, 1);
+    s.buildings = vec![ruins];
+    let mut g = start(&s);
+    assert!(g.world.locations[0].strengths_bare);
+    let t = g.world.locations[0].garrison[0];
+    assert_eq!(t.worn.iter().flatten().copied().collect::<Vec<_>>(), [ItemId(11)]);
+    let bd = g.world.locations[0].garrison_defence;
+    let bare = crate::rules::experience::tactical(&g.content, t.unit, &crate::rules::units::Stats::of_level(&g.content, t.unit, t.level), bd);
+    let worn = tactical_now(&g.content, &t, bd);
+    assert!(worn > bare, "{worn} {bare}");
+    g.foe = Some(Foe::Garrison(0));
+    let mut b = g.start_battle();
+    b.begin();
+    let f = b.fighters.iter().find(|f| f.team == Team::Enemy).expect("its unit");
+    assert_eq!(f.tactical, bare, "counted without the ring");
+    // The battle's end recounts it: the next one counts the ring.
+    g.resolve_battle(&b);
+    assert!(!g.world.locations[0].strengths_bare);
+}
+
+#[test]
 fn arrivals_come_in_the_order_of_their_play_times_not_of_the_armies() {
     // 0x4a399c / 0x4ade3c: army 1's bank pays one step but not the one after, so it plays
     // over the whole window and arrives at the tick's end; army 2's bank covers its steps, so
@@ -1854,7 +1884,7 @@ fn a_simulated_battle_counts_side_strengths_not_hit_points() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 1)])];
     let g = start(&s);
     let cc = g.content.clone();
-    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
+    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0, bare: false };
     let r = simulate(&cc, &side(0), &side(1));
     let bt = fight(&cc, &side(0), &side(1), false, Default::default());
     assert_eq!((r.own, r.theirs), (bt.start_of(Team::Player).strength, bt.start_of(Team::Enemy).strength));
@@ -1879,7 +1909,7 @@ fn an_armys_strengths_keep_the_defence_of_their_last_recount() {
     let (side, _) = g.army_side(0, true);
     assert_eq!((side.defence, side.strength_defence), (10, 0));
     let cc = g.content.clone();
-    let foe = Side { units: army_units(&cc, &g.world.armies[1]), defence: 0, strength_defence: 0 };
+    let foe = Side { units: army_units(&cc, &g.world.armies[1]), defence: 0, strength_defence: 0, bare: false };
     let stale = simulate(&cc, &side, &foe).own;
     let fresh = simulate(&cc, &Side { strength_defence: 10, ..g.army_side(0, true).0 }, &foe).own;
     assert!(stale < fresh, "{stale} {fresh}");
@@ -1975,7 +2005,7 @@ fn off_screen_battles_keep_the_static_side_records() {
     s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 2)])];
     let g = start(&s);
     let cc = g.content.clone();
-    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
+    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0, bare: false };
     let mut old = [[0; RECORDS]; 2];
     old[0] = [7; RECORDS];
     old[1] = [9; RECORDS];

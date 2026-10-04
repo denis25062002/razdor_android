@@ -1780,6 +1780,11 @@ impl Game {
         let player: Vec<_> = self.squad.iter().enumerate().filter(|(i, u)| *i == 0 || (u.alive() && (attacker != Team::Player || !u.unpaid))).collect();
         self.battles += 1;
         let mut b = Battle::new(self.content.clone(), &player, &enemies, attacker);
+        if let Some(Foe::Garrison(l)) = self.foe {
+            if self.world.locations[l].strengths_bare {
+                b.set_bare_strengths(Team::Enemy);
+            }
+        }
         // The units that stay out still hold their cells in the army's formation.
         let fighting: Vec<usize> = player.iter().map(|p| p.0).collect();
         b.set_bench((0..self.squad.len()).filter(|i| !fighting.contains(i)).map(|i| self.squad[i].slot).collect());
@@ -1965,6 +1970,10 @@ impl Game {
         }
         let (_, mut dropped_left) = self.take_items(dropped);
         let foe = self.foe.take();
+        // The opponent's record is recounted too (0x4d21fd), a garrison's as well.
+        if let Some(Foe::Garrison(l)) = foe {
+            self.world.locations[l].strengths_bare = false;
+        }
         // The AI rescores its matchups with the hero and the army he fought (4c50ec); his
         // army is recounted (the victory report's layout 0x4a9b75, the window's close).
         self.mark_dirty(ai::HERO);

@@ -140,7 +140,12 @@ starts in a building is counted without its defence until its next recount, whil
 battles get the defence (the side's +0x844 reads +0x378c). Checked in the running game
 (Проклятое озеро: army 2 starts in a building of defence 15: its side strength is 877 at the
 load, 1764 after its first arrival there; FINDINGS.md §12). Garrisons are recounted with
-their defence at the load (0x4b2504), so theirs always count it. A spell that leaves someone
+their defence at the load (0x4b2504, 0x4b53dd), so theirs always count it; but a ruins'
+garrison is recounted there **before** the ruins' goods are given to its units (0x4a273c at
+0x4b55aa), so its strengths count the units without those items until its next recount: a
+real battle (0x4a4c68, the player's 0x4d21fd), a garrison purchase (0x4a704e) or a reshuffle
+(0x4a7972). Checked in the running game (РК4: a garrison with a ring on one unit fights its
+off-screen battles at B0 552, not 617; FINDINGS.md §28). A spell that leaves someone
 alive in an army recounts it too (0x4900fc → 0x497240).
 
 The player's side (army 0) is copied the same way. His +0x378c is the defence of the
@@ -616,6 +621,7 @@ after the parity pass.
 | Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression ÷1000 only when the side lost no unit | §4 exactly | Matches (÷1000 always until 2026-10-03) |
 | Simulated battle results | the sides' strengths at the start and the end (`simulate`) | side strengths +0x7ec / +0x7e8 (483ecc) | Matches (Razdor counted hit points until 2026-10-03) |
 | Cached unit strengths | an army's sides count its units with the defence of its last recount (`AiMind::strength_bd`): 0 from the map load, the building's after an arrival in it, an AI battle or a respawn | +0x1ae per unit, written by 0x4a16d4 only | Matches |
+| A ruins' garrison's strengths | counted from its units' level stats, without the items the load gave them, until its first recount (a battle, a purchase, a reshuffle; `Location::strengths_bare`) | recounted at the load before the items (0x4b53dd, 0x4b55aa) | Matches (until 2026-10-04 Razdor counted the items) |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
 | Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
 | Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |

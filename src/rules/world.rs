@@ -440,6 +440,12 @@ pub struct Location {
     /// The scenario's garrison (the owner's troops).
     pub garrison: Vec<Troop>,
     pub garrison_defence: i32,
+    /// Its garrison's unit strengths (+0x1ae) are still the ones of the map load's recount,
+    /// counted before the ruins' items were given to its units (0x4b53dd, 0x4b55aa): its
+    /// battles count them without those items until the garrison's next recount
+    /// (0x4a16d4: after a real battle, a garrison purchase or a reshuffle).
+    #[serde(default)]
+    pub strengths_bare: bool,
     /// The player's units left here (his castles and forts).
     pub stationed: Vec<Stationed>,
     pub recruits: Vec<Recruit>,
@@ -490,6 +496,7 @@ impl Location {
             tribute_mana: 0,
             garrison: Vec::new(),
             garrison_defence: 0,
+            strengths_bare: false,
             stationed: Vec::new(),
             recruits: Vec::new(),
             recruit_all_types: false,
@@ -1008,6 +1015,8 @@ impl World {
                 if l.garrison.is_empty() {
                     l.treasure = goods(5);
                 } else {
+                    // Given after the garrison's recount: its strengths stay without them.
+                    l.strengths_bare = !goods(5).is_empty();
                     for item in goods(5) {
                         super::ai::give_item_to(content, &mut l.garrison, &mut l.treasure, item);
                     }

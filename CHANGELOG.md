@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **A ruins' garrison is weighed as in the original:** until its first battle the AI counts
+  its units without the treasure items they were handed at the start, so its armies judge
+  such ruins as the original's do.
 - **Hiring sounds the gold twice, as the original:** the coins ring as the hire button is
   pressed and start again as it is let go.
 - **The victory report after a won battle comes 250 ms after the battle screen closes,** as in

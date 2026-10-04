@@ -599,6 +599,8 @@ Results after the round's fixes (Razdor at the round's end against the recording
   65]) and 1724 against 1794 ([44, 43 ×4, 47]); every other side of the opening's 269
   battles starts equal. Next: Frida on 483ecc for those sides (each unit's +0x64 strength),
   against Razdor's `tactical` for level-1 garrison units.
+- **Resolved: fixed, FINDINGS.md §28** (the ruins' garrisons are recounted at the load before
+  their items are handed out; Razdor counted the items).
 
 ## Campaign: РК5, step 12 `click_map 177 11`
 

@@ -705,6 +705,9 @@ pub struct Side {
     /// The defence its unit strengths count (an army's last recount, [`AiMind::strength_bd`];
     /// a garrison's and the hero's are their defence).
     pub strength_defence: i32,
+    /// Its strengths count the units' level stats, not their items (a ruins' garrison not
+    /// recounted since the map load, [`Location::strengths_bare`]).
+    pub bare: bool,
 }
 
 /// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
@@ -725,6 +728,11 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool, records: SideRecor
     }
     bt.set_strength_defence(Team::Player, a.strength_defence);
     bt.set_strength_defence(Team::Enemy, b.strength_defence);
+    for (team, s) in [(Team::Player, a), (Team::Enemy, b)] {
+        if s.bare {
+            bt.set_bare_strengths(team);
+        }
+    }
     bt.auto_arrange(Team::Player);
     bt.auto_arrange(Team::Enemy);
     bt.set_side_records(records);
@@ -784,11 +792,11 @@ pub struct SimKey {
 /// A side of a [`SimKey`]: (type, level, HP, worn items, spells, drain) of each unit, the
 /// defence and the defence its strengths were counted with.
 type UnitKey = (u32, i32, i32, [Option<ItemId>; items::SLOTS], [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS], i32);
-type SideKey = (Vec<UnitKey>, i32, i32);
+type SideKey = (Vec<UnitKey>, i32, i32, bool);
 
 impl SimKey {
     fn of(a: &Side, b: &Side) -> SimKey {
-        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence, s.strength_defence);
+        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence, s.strength_defence, s.bare);
         SimKey { sides: [side(a), side(b)] }
     }
 }
@@ -1147,7 +1155,7 @@ impl Game {
         let a = &self.world.armies[i];
         let fought: Vec<usize> = (0..a.troops.len()).filter(|&k| a.troops[k].alive() && (!attacking || !a.troops[k].unpaid)).collect();
         let units = fought.iter().map(|&k| troop_unit(c, &a.troops[k])).collect();
-        (Side { units, defence: a.mind.defence, strength_defence: a.mind.strength_bd }, fought)
+        (Side { units, defence: a.mind.defence, strength_defence: a.mind.strength_bd, bare: false }, fought)
     }
 
     /// The hero's side as a target: all his living units, their strengths as his last recount
@@ -1155,7 +1163,7 @@ impl Game {
     fn hero_side(&self) -> Side {
         let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
         let defence = self.hero_defence();
-        Side { units, defence, strength_defence: self.hero_strength_bd }
+        Side { units, defence, strength_defence: self.hero_strength_bd, bare: false }
     }
 
     // ------------------------------------------------------------------------------------
@@ -1375,7 +1383,7 @@ impl Game {
         let loc = &self.world.locations[l];
         let mut units: Vec<Unit> = loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect();
         units.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
-        Side { units, defence: loc.garrison_defence, strength_defence: loc.garrison_defence }
+        Side { units, defence: loc.garrison_defence, strength_defence: loc.garrison_defence, bare: loc.strengths_bare }
     }
 
     /// Army `i` scores every building afresh.
@@ -2668,6 +2676,8 @@ impl Game {
                             ai_hire_gain(&c, &mut self.rng, &mut t, xp, &mut pool);
                         }
                         self.world.locations[l].garrison.push(t);
+                        // The garrison is recounted with its new unit (0x4a704e).
+                        self.world.locations[l].strengths_bare = false;
                         self.ai_stats.hired += 1;
                         bought = true;
                         scan.done = true;
@@ -2821,6 +2831,8 @@ impl Game {
             }
         }
         self.world.locations[l].garrison = held;
+        // Recounted, then passed through the first side (0x4a7972).
+        self.world.locations[l].strengths_bare = false;
         // The army, then the garrison, are passed through the first static side and back
         // (0x4a7923, 0x4a7989: 49855c, 4988c0).
         let army_hp: Vec<i32> = self.world.armies[i].troops.iter().map(|t| troop_unit(&c, t).hp).collect();
@@ -3132,6 +3144,9 @@ impl Game {
             }
         }
         // Both records are recounted (0x4a4c68 → 0x4a16d4), with the defence each has now.
+        if let Defender::Garrison(l) = def {
+            self.world.locations[l].strengths_bare = false;
+        }
         for i in [Some(att), match def {
             Defender::Army(j) => Some(j),
             Defender::Garrison(_) => None,

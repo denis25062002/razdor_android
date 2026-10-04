@@ -586,9 +586,31 @@ battle.md "Killable", ai.md §4). Campaign round (РК4, run `c1-РК4`).
   opening (the map load's 186 included) are the original's, value for value; in the РК4 list 42
   off-screen battles come out otherwise than with empty records. The recorded runs
   compare as before (their differences come earlier or are elsewhere).
-- Seen on the way, not fixed: two of РК4's garrisons (units of level 1, defence 5) start
-  their battles with another side strength in the original (552 against Razdor's 617, 1724
-  against 1794); see CANDIDATES.md.
+- Seen on the way: two of РК4's garrisons (units of level 1, defence 5) start their battles
+  with another side strength in the original (552 against Razdor's 617, 1724 against 1794):
+  fixed, §28.
+
+## 28. A ruins' garrison counts its strengths without its load items
+
+**Status: fixed** (`Location::strengths_bare`, `Battle::set_bare_strengths`, `ai::Side::bare`;
+ai.md §4). Campaign round (РК4, run `c1-РК4`, the open point of §27).
+
+- РК4 (knight), the map load and steps 2-3: two ruins' garrisons start every off-screen
+  battle with another side strength: 552 in the original against Razdor's 617, 1724 against
+  1794. Frida on 483ecc (each grid unit's +0x64 strength, HP, role) and on 49fc50 / 4a02a0
+  (the unit strength and its caller): the units of type 66 and 44 count 156 and 473 in the
+  original, 221 and 543 in Razdor; the others are equal.
+- 0x4b2504 recounts a garrison (0x4b53dd → 0x4a16d4) before it hands the ruins' first five
+  goods to its units (0x4a273c at 0x4b55aa): the unit of type 66 is counted at 156 with its
+  level stats (65 HP), then wears its items (71 HP, defences 13/10; 0x4a273c's gain tests
+  give 198, 208, 221 but store nothing). Nothing recounts the garrison until a real battle
+  (0x4a4c68 both sides, 0x4d21fd the player's opponent), a purchase into it (0x4a704e) or a
+  reshuffle (0x4a7972); the battle side copies the cached +0x1ae (49855c) with the HP of
+  the record (71 of 71). Razdor counted the worn items.
+- Razdor now marks such a garrison at the load and counts its units' level stats (with its
+  defence) until one of those recounts. Every off-screen battle both sides play in the РК4
+  list now starts with the original's two side strengths (Razdor's cache skips the repeats).
+  The run stays 2 of 8 equal (army 21's position at step 2 comes first).
 
 ## Not differences
 

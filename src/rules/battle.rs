@@ -564,6 +564,10 @@ pub struct Battle {
     /// [`Battle::building_defence`]: an AI army's cached strengths (+0x1ae) keep the defence
     /// of its last recount (0x4a16d4), which the battle side copies as they are (49855c).
     strength_defence: [Option<i32>; 2],
+    /// A side whose unit strengths were last counted from their level stats, without the
+    /// items they wear: a ruins' garrison recounted at the map load before its items are
+    /// given out (0x4b53dd, then 0x4a273c at 0x4b55aa), until its next recount.
+    bare_strengths: [bool; 2],
     /// A side whose army's first unit is of the Knight type (49855c): it takes
     /// [`KNIGHT_PERCENT`] of physical damage, an AI lord's army as well as the player's.
     knight: [bool; 2],
@@ -718,6 +722,7 @@ impl Battle {
             attacker,
             building_defence: [0; 2],
             strength_defence: [None; 2],
+            bare_strengths: [false; 2],
             knight,
             cells,
             mean_initiative: [1.0; 2],
@@ -940,6 +945,12 @@ impl Battle {
         self.strength_defence[team.index()] = Some(defence);
     }
 
+    /// `team`'s unit strengths count its units' level stats, not the items they wear
+    /// ([`Battle::bare_strengths`]). Set before [`Battle::begin`].
+    pub fn set_bare_strengths(&mut self, team: Team) {
+        self.bare_strengths[team.index()] = true;
+    }
+
     pub fn is_deploying(&self) -> bool {
         self.deploying
     }
@@ -989,7 +1000,12 @@ impl Battle {
         // building they stand in.
         for f in &mut self.fighters {
             let t = f.team.index();
-            f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.strength_defence[t].unwrap_or(self.building_defence[t]));
+            let bd = self.strength_defence[t].unwrap_or(self.building_defence[t]);
+            f.tactical = if self.bare_strengths[t] {
+                experience::tactical(&self.content, f.unit, &Stats::of_level(&self.content, f.unit, f.level), bd)
+            } else {
+                experience::tactical(&self.content, f.unit, &f.base, bd)
+            };
             f.role = experience::role(&f.base);
         }
         for team in Team::BOTH {
