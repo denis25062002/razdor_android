@@ -3,6 +3,8 @@
 A small Rust prototype inspired by *Discord Times* («Времена раздора», Aterdux, 2004):
 travel a kingdom map, hire a squad in towns, fight turn-based tactical battles on a grid.
 
+**Site:** [indicozy.github.io/razdor](https://indicozy.github.io/razdor/) · **Trailer:** [youtu.be/p7g0yvwtEeM](https://youtu.be/p7g0yvwtEeM)
+
 ```sh
 cargo run --release
 cargo test          # game rules
