@@ -27,7 +27,7 @@ jobs:
 
       - name: Vendor and sanitize dependencies
         run: |
-          # 1. Принудительно понижаем encoding_rs до версии на Edition 2018 до скачивания
+          # 1. Понижаем encoding_rs до версии на Edition 2018 до генерации vendor
           cargo update -p encoding_rs --precise 0.8.33 || true
 
           # 2. Понижаем версию формата Cargo.lock до v3
@@ -37,11 +37,19 @@ jobs:
           mkdir -p .cargo
           cargo vendor > .cargo/config.toml
 
-          # 4. Менявшем любые проскочившие edition = "2024" на "2021"
-          find vendor/ -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+          # 4. Заменяем edition = "2024" во всех вендорных библиотеках на "2021"
+          find vendor/ -name "Cargo.toml" -type f -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
-          # 5. Сбрасываем проверку хэшей файлов в .cargo-checksum.json
-          find vendor/ -name ".cargo-checksum.json" -exec sed -i 's/"files":{[^}]*}/"files":{}/' {} +
+          # 5. Очищаем хэши файлов в .cargo-checksum.json через Python
+          python3 -c '
+          import glob, json
+          for path in glob.glob("vendor/**/.cargo-checksum.json", recursive=True):
+              with open(path, "r") as f:
+                  data = json.load(f)
+              data["files"] = {}
+              with open(path, "w") as f:
+                  json.dump(data, f, indent=2)
+          '
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
