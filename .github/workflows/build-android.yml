@@ -55,8 +55,13 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
-          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar" || true
-          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib" || true
+
+          # Симлинки для aarch64-linux-android и arm-linux-androideabi
+          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
+          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
+          ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
+          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
+          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
 
       - name: Build APK
         env:
