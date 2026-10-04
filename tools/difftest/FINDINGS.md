@@ -462,13 +462,34 @@ C1004-041105 (Другой берег).
 - After the fix the repro is 18 of 18 steps equal (`r4-c041105`, against 17 of 18); the
   recorded repros of rounds 2-4 replay as before, rk1-day1 41 of 44.
 
+## 22. The events behind a shown window run when it is closed
+
+**Status: fixed** (`EventEngine::window_closed`, `Game::event_window_closed`; events.md §2).
+The manual cover run on РК1 (`runs/cover-res1`).
+
+- РК1 (knight): the hero enters the church at (47,27) (step 47); events 9 and 10 have texts,
+  19 ("the bandits' activation", global, no text) activates army 2. Razdor fired all three in
+  one scan: army 2 was active at step 48 already, its eight `Random(13)` wander-point draws
+  came before event 10's chord, and the stop's snap counted it (one `Random(3000)` more);
+  Razdor stayed one draw ahead after all windows were closed.
+- Frida (`events` preset) on the original: step 48 `EventOpen 8` (event 9, 0-based) and the
+  scan returns it as shown; step 49 (OK) `EventFinish 8`, `EventOpen 9`; step 50 (OK)
+  `EventFinish 9`, `EventOpen 18`, `EventFinish 18` at once. The scan (0x4abfbc) stops at a
+  shown window (0x4ac3b4); OK finishes it (0x4ab1ec) and its chain or a new scan follows.
+- Razdor's engine now holds the scan at a message window until the interface (or the replay)
+  reports it closed; the shown event's chain waits too. A replay needs as many `ok` as the
+  original for a run of windows (the РК3 carry-over test reads its chain one window at a
+  time).
+- After the fix `cover-res1` is 52 of 53 steps equal (47 before; the one left is step 47's
+  §5 frame noise); rk1-day1 41 of 44 and the recorded repros as before.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):
   arriving at (22,41) fires events 4 and 5; the original shows event 4's window and fires
-  event 5 when it is closed (its window next), Razdor counts both at once. With three `ok`
+  event 5 when it is closed (its window next), Razdor counted both at once. With three `ok`
   after it the run is equal at every step, generator included (run `r2-c174531-ext`): only
-  window timing. `known.py` classes such an `events_done` difference `timing`.
+  window timing. (Since §22 Razdor also fires event 5 only when 4's window is closed.) `known.py` classes such an `events_done` difference `timing`.
 
 - **Events done** and **event results while the window is up**: the original counts an event
   and applies its finishing results (an army switched off: step 9 `armies[id 14].active`)

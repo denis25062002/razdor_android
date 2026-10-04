@@ -528,6 +528,20 @@ fn other_shore_the_hero_is_scored_as_last_recounted() {
     assert_eq!(s.rng, 2_044_507_713);
 }
 
+/// FINDINGS.md §22 (РК1, `rk1-church.jsonl`: the ruins fought by presses, then the church at
+/// (47,27)): entering it fires event 9 (shown); 10 opens only when 9's window is closed, and
+/// 19, textless, activates army 2 only when 10's is: its wander-point draws come after the
+/// stop's snap and the chords, as in the original.
+#[test]
+fn rk1_church_the_events_behind_a_window_wait_for_it() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-church.jsonl")).unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions[..51]).unwrap();
+    let army2 = |k: usize| states[k].armies.iter().find(|a| a.id == 2).and_then(|a| a.active);
+    assert_eq!((army2(48), army2(49), army2(50)), (Some(false), Some(false), Some(true)), "{notes:?}");
+    assert_eq!((states[48].rng, states[49].rng, states[50].rng), (3_123_160_699, 1_297_700_690, 4_186_434_394));
+}
+
 /// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
 /// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
 /// last recount, 85, as the original's victory gives (450 → 610), though none of its units
@@ -699,6 +713,12 @@ fn rk3_carry_over_flags_open_the_large_reward() {
 {{"op":"click_map","x":14,"y":189}}
 {{"op":"ok"}}
 {{"op":"click_map","x":63,"y":143}}
+{{"op":"ok"}}
+{{"op":"ok"}}
+{{"op":"ok"}}
+{{"op":"ok"}}
+{{"op":"ok"}}
+{{"op":"ok"}}
 {{"op":"ok"}}"#
         ))
         .unwrap()
@@ -708,11 +728,13 @@ fn rk3_carry_over_flags_open_the_large_reward() {
     let s = &states[0];
     assert_eq!((s.hero.gold, s.hero.mana, s.hero.units[0].level, s.hero.book.clone()), (3154, 1172, 4, vec![1, 11]));
     assert_eq!(s.hero.units.iter().map(|u| u.kind).collect::<Vec<_>>(), [2, 14, 28, 27]);
-    let s = &states[5];
+    // Each window of the chain is read in turn (an OK each): the scan goes on only as one
+    // closes (FINDINGS §22).
+    let s = &states[11];
     assert!([11, 13].iter().all(|e| s.events_done.contains(e)), "{:?}", s.events_done);
     assert_eq!(s.hero.pack, [93]);
     let (states, _) = replay(Source::Install(&dt), &list("")).unwrap();
-    let s = &states[5];
+    let s = &states[11];
     assert!(s.events_done.contains(&11) && !s.events_done.contains(&13), "{:?}", s.events_done);
     assert!(s.hero.pack.is_empty());
 }

@@ -658,7 +658,9 @@ impl App {
         let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
         if let Some(d) = self.dialogs.front().filter(|_| !held) {
             if let Some(close) = dialog::draw(d, &self.assets) {
-                let asked = self.dialogs.pop_front().is_some_and(|d| d.question);
+                let closed = self.dialogs.pop_front();
+                let asked = closed.as_ref().is_some_and(|d| d.question);
+                let read = closed.as_ref().is_some_and(|d| d.event.is_some() && !d.question);
                 // Closing a dialog while the triumph plays changes the map track at once
                 // (0x4c20b3).
                 if self.map_music.triumph {
@@ -670,6 +672,14 @@ impl App {
                     let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
                     next = next.or(after);
                 }
+                // A scenario event's window: the events after it run now (0x4ab1ec).
+                if let (true, Some(game)) = (read, self.game.as_mut()) {
+                    let events = game.event_window_closed();
+                    if !events.is_empty() {
+                        let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                        next = next.or(after);
+                    }
+                }
                 // The windows are read: the building he walked into while one opened is
                 // entered now (0x4bbc84).
                 if let (true, Some(game)) = (self.dialogs.is_empty(), self.game.as_mut()) {
@@ -679,6 +689,16 @@ impl App {
                         next = next.or(after);
                     }
                 }
+            }
+        }
+        // A scenario event's window the screen does not show (none queued) holds the
+        // event scan no longer.
+        let shown = self.dialogs.iter().any(|d| d.event.is_some() && !d.question);
+        if let Some(game) = self.game.as_mut() {
+            let events = game.release_unshown_window(shown);
+            if !events.is_empty() {
+                let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                next = next.or(after);
             }
         }
         // A fight decided on the map or in a building begins once the messages of that moment

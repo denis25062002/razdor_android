@@ -542,3 +542,5 @@ NEW candidates, and one from the manual resurrect check:
   after an arrival (`src/rules/events.rs`, the dialog queue the replay closes in
   `src/difftest.rs`). `known.py` classes the `events_done` and `active` fields `timing`, but
   not the generator: candidate.
+- **Resolved: confirmed with `--trace events` and fixed, FINDINGS.md §22** (`cover-res1`
+  52 of 53 steps equal).

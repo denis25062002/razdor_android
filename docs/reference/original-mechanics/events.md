@@ -77,6 +77,16 @@ The scan (0x4abfbc, §2) is started from these places. **code**
   lanterns, a shown army, a battle or a delay, a direct finish) takes over, and the scan is
   started again when it ends.
 
+So the events after a shown window, a silent one too, are not even checked until that window
+is closed: its OK finishes it (0x4c206c → 0x4ab1ec), then its chain runs or the scan starts
+again, finding the next event, whose own window waits for the next OK. Checked live (Frida on
+0x4abfbc, 0x4a8ae8, 0x4ab1ec; РК1, the hero entering the church at (47,27)): the scan opens
+event 9 (shown) and returns; OK finishes 9 and the new scan opens 10 (its chord); OK finishes
+10 and the new scan opens and finishes 19 at once (silent, it activates army 2: its wander
+points' draws come only now, and the stop's snap before them did not count it; FINDINGS.md
+§22). A building's local events stay candidates through these rescans (the entry mark is
+cleared only when the scan goes idle).
+
 **Noon.** If no event was taken in the pass, now ≥ the next noon and no world spell is being
 cast, the scan does the noon processing (Ranger healing, wages, the noon report; see
 [economy.md](economy.md)). **code**
@@ -586,6 +596,7 @@ world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag scr
 | Yes answer | Yes clears ask and sets once := byte 149 xor 1; with a message, ask is set back for later firings; without one, ask stays 0 (the write that misses) | Yes sets once := byte 149 xor 1; the question returns for later firings (§6.2) | Matches |
 | Ask with empty message | Yes finishes it at once: artifacts, units and spells never applied | Artifacts, units and spells are never applied (§6.2) | Matches |
 | When results apply | The window's results (gains, losses, units added, removed, spells) when it opens, then the finish's in the exe's order, then battle, spell, delay (`EventEngine::show`, `finish`) | Artifacts, units, spells when the window opens; the rest at OK (§6.1, §7.2) | Matches (the finish follows the opening at once: nothing happens while the window is up) |
+| Events behind a window | A message window holds the scan: the next events, and the shown event's chain, run when it is closed (`EventEngine::window_closed`, `Game::event_window_closed`; the interface and the replay call it at the window's OK) | The scan stops at a shown window and runs again after its OK (§2) | Matches; an event without texts that only shows lanterns, an army or a spell does not hold the scan in Razdor (the original waits for the animation) |
 | Flag test | Substring search of the one flag string; first `^` dropped; `/` negates; empty or `end_tutorial` passes | Substring of the flag string (§5) | Matches |
 | Flag action | `+X` appends X with a non-breaking space if not a substring yet; `-X` removes the first occurrence and the next character; counters only with `^`, their slips included; actions of ≤ 2 characters ignored | Same (§5) | Matches |
 | Engine flags | `Sea` added when the hero goes to sea and removed when he lands, `EnterShipyard` removed when he goes to sea (`Game::sea_changed`) | `Sea` aboard a ship, `EnterShipyard` in the ship logic | `Sea` matches; `EnterShipyard` is only removed at sea: its setting is left out (Razdor does not track the ship's shipyard; no shipped event tests it) |

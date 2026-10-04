@@ -193,6 +193,14 @@ impl Driver {
                     _ => {}
                 }
             }
+            // The player reads the window shown: the events after it run (0x4ab1ec).
+            if next.is_empty() && self.g.script().is_some_and(|s| s.holds_window()) {
+                next.extend(self.g.event_window_closed());
+                if !next.is_empty() {
+                    queue = next;
+                    continue;
+                }
+            }
             if self.g.foe.is_some() && self.g.pending_question().is_none() {
                 self.fight();
             }

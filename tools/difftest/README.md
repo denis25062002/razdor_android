@@ -44,6 +44,9 @@ still on, and is a no-op in the original). `lake-gang.jsonl`: Проклятое
 knight, two walks to the bandit gang (army 17) and the battle by presses, every press equal
 on both sides; it checks the loot of a beaten map army (FINDINGS §19). Built by playing
 Razdor's replay: walk toward the army's cell, strike the weakest enemy of the front row.
+`rk1-church.jsonl`: РК1 with the knight, the cover setup for `resurrect` (the ruins fought by
+a searched line of presses, the church at (47,27), its three event windows read, a raise and
+a sale); it checks the events behind a shown window (FINDINGS §22).
 
 Options: `--no-build`, `--exe PATH` (this Razdor binary, no build), `--reuse-original DIR`
 (take the original's side of an earlier run), `--real-music`, `--no-trace`, `--no-shots`,
@@ -248,7 +251,9 @@ How the actions are applied (`src/difftest.rs`):
 - `click_map`: both clicks of the original at once; the walk plays to its end, or until a
   message, a fight or a building window stops it. An open building window is closed first.
 - `wait`: 1 or 4 hours of 30-minute ticks; a message or the noon report stops it.
-- `ok` closes the front dialog, else the building window; `answer` the front question.
+- `ok` closes the front dialog, else the building window; `answer` the front question. A
+  scenario event's window closed runs the events behind it, as the original's OK does (the
+  scan holds at a shown window: FINDINGS §22).
 - `battle_auto`: the battle AI plays both sides to the end and the result box is closed.
 - `battle_act`, `battle_pass`: see "Battles" above.
 - `key`: `Escape`, `1`, `4`, `Return`/`space`; others are noted and skipped.

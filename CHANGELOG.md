@@ -560,6 +560,10 @@ old id, and their versions give both.
   building window, at an event, at noon, in the army window, after a spell), as in the
   original: after he leaves his town they still reckon with its defence until then, and
   avoid or chase him accordingly.
+- Scenario events wait for the window before them: when several events come at once, each one
+  after a message is checked and applied only once that message is closed, as in the original
+  (before, they all happened at once, so an army an event activates moved, and the time an
+  event shows was taken, before the earlier messages were read).
 
 ## 0.2.2 — 2026-10-01
 

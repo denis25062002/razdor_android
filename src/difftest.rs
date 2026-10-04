@@ -684,7 +684,7 @@ impl<'a> Runner<'a> {
     fn close_dialog(&mut self) {
         // Its OK, Yes or No button (`widgets::button`).
         self.av.sfx("InterfaceButtonDown");
-        self.dialogs.pop_front();
+        let closed = self.dialogs.pop_front();
         if self.triumph {
             let g = self.game.as_mut().expect("a game");
             let (pick, _) = g.music_rotate(self.music_pick);
@@ -692,6 +692,11 @@ impl<'a> Runner<'a> {
             self.av.music(crate::rules::music::ROTATION[pick]);
             self.triumph = false;
             self.ui_draws += 1;
+        }
+        // A scenario event's window: the events after it run now.
+        if closed.is_some_and(|d| d.id.is_some() && !d.question) {
+            let events = self.g().event_window_closed();
+            self.handle(events);
         }
     }
 
@@ -1242,6 +1247,11 @@ impl<'a> Runner<'a> {
             }
             let any = !events.is_empty();
             self.handle(events);
+            // An event window not on screen holds the scan no longer (the interface's net).
+            let shown = self.dialogs.iter().any(|d| d.id.is_some() && !d.question);
+            let released = self.g().release_unshown_window(shown);
+            let any = any || !released.is_empty();
+            self.handle(released);
             // The flights of a closed window's event come before the next window opens.
             self.fly_to_shown();
             self.cue();

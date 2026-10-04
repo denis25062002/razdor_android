@@ -524,6 +524,16 @@ pub struct EventEngine {
     /// An event whose test holds `end_tutorial` finished (0x4ac9fc).
     #[serde(default)]
     tutorial_done: bool,
+    /// An event's window is shown: the scan stopped at it (0x4ac3b4 opens the window and
+    /// the scan returns) and goes on only when it is closed ([`EventEngine::window_closed`]:
+    /// OK → Event_Finish 0x4ab1ec → its chain or a new scan). Not saved: a loaded game
+    /// scans afresh.
+    #[serde(skip)]
+    held: bool,
+    /// The chained event of a shown event, opened when its window is closed (the chain timer
+    /// 0x4af658 that Event_Finish starts).
+    #[serde(skip)]
+    held_chain: Option<EventId>,
     /// The unit type of each named character (1-based), for opcode 12.
     #[serde(skip)]
     named_units: Vec<u8>,
@@ -708,6 +718,8 @@ impl EventEngine {
             branch: None,
             random_digit: None,
             tutorial_done: false,
+            held: false,
+            held_chain: None,
             named_units: Vec::new(),
             next_map: String::new(),
             carry_over: [0; 7],
@@ -1123,6 +1135,28 @@ impl EventEngine {
         out
     }
 
+    /// The window of the shown event was closed: its chain, then the scan goes on (0x4c206c
+    /// OK → Event_Finish 0x4ab1ec → the chain timer or a new scan). Nothing when no event's
+    /// window holds the scan.
+    pub fn window_closed(&mut self, w: &mut dyn EventWorld) -> Vec<EventOutcome> {
+        let mut out = Vec::new();
+        if !std::mem::take(&mut self.held) {
+            return out;
+        }
+        if let Some(next) = self.held_chain.take() {
+            if self.ended.is_none() {
+                self.open(next, w, &mut out, 1);
+            }
+        }
+        self.run(w, &mut out);
+        out
+    }
+
+    /// An event's window is shown and holds the scan.
+    pub fn holds_window(&self) -> bool {
+        self.held
+    }
+
     /// The main hall's list where the hero stands (0x4beaac): the building's quests and
     /// rumours that pass the full check, in its list order. Villages, shipyards and event
     /// points have none (the scan fires their quests and rumours).
@@ -1160,7 +1194,7 @@ impl EventEngine {
 
     fn run(&mut self, w: &mut dyn EventWorld, out: &mut Vec<EventOutcome>) {
         let mut fired = 0;
-        while self.pending.is_none() && self.ended.is_none() {
+        while self.pending.is_none() && self.ended.is_none() && !self.held {
             let Some(id) = self.first_eligible(w) else { break };
             if fired == LOOP_GUARD {
                 out.push(EventOutcome::LoopGuard);
@@ -1174,7 +1208,7 @@ impl EventEngine {
             }
             self.open(id, w, out, 0);
         }
-        if self.pending.is_none() {
+        if self.pending.is_none() && !self.held {
             // The scan goes idle (0x4ac369): a last fired in the future is set back to now,
             // so the guard only holds within one scan; the meeting is over (0x4ac3a0).
             let now = w.now();
@@ -1317,6 +1351,11 @@ impl EventEngine {
         self.st_mut(id).set_answer_byte(0);
         let e = self.ev(id).clone();
         out.push(EventOutcome::Fired { event: id, message: !e.message.is_empty() });
+        // A message opens the window (0x4ac3b4) and the scan stops there; an event without
+        // one is finished at once and the scan goes on.
+        if !e.message.is_empty() {
+            self.held = true;
+        }
         let r = &e.results;
         // Opcode 6 gives the four artifacts to a unit instead (c278e8).
         if opcode(&e) != Some(6) {
@@ -1482,7 +1521,10 @@ impl EventEngine {
             return;
         }
         let next = r.chained_event;
-        if depth < CHAIN_DEPTH && self.event(next).is_some() {
+        if self.held && self.event(next).is_some() {
+            // Its window is up: the chain waits for it to be closed.
+            self.held_chain = Some(next);
+        } else if depth < CHAIN_DEPTH && self.event(next).is_some() {
             // A chained event is opened as it is: its done flag, window, guard, once flag,
             // class, place and conditions are not checked (0x4ab1ec, 0x4af658).
             self.open(next, w, out, depth + 1);
@@ -2164,7 +2206,22 @@ mod tests {
 
     fn tick_at(g: &mut EventEngine, w: &mut MockWorld, now: u64) -> Vec<EventId> {
         w.now = now;
-        fired(&g.tick(w))
+        let out = g.tick(w);
+        fired(&read(g, w, out))
+    }
+
+    /// A meeting, every window it opens read.
+    fn meet_read(g: &mut EventEngine, w: &mut MockWorld, army: ArmyId) -> Vec<EventOutcome> {
+        let out = g.meet(w, army);
+        read(g, w, out)
+    }
+
+    /// The player reads every window that opens (OK), the scan going on after each.
+    fn read(g: &mut EventEngine, w: &mut MockWorld, mut out: Vec<EventOutcome>) -> Vec<EventOutcome> {
+        while g.holds_window() {
+            out.extend(g.window_closed(w));
+        }
+        out
     }
 
     #[test]
@@ -2637,9 +2694,45 @@ mod tests {
         assert!(tick_at(&mut g, &mut w, 0).is_empty(), "a subordinate event never fires on its own");
         w.now = 100;
         let out = g.tick(&mut w);
+        let out = read(&mut g, &mut w, out);
         assert_eq!(fired(&out), vec![1, 2, 3]);
         assert!(out.contains(&EventOutcome::Fired { event: 2, message: true }));
         assert_eq!(w.log, vec![Fx::Gold(50), Fx::Gold(7)]);
+    }
+
+    /// FINDINGS §22 (РК1's church): a shown window stops the scan (0x4ac3b4); the events after
+    /// it, a textless one too, run only when it is closed (OK → 0x4ab1ec → a new scan), each
+    /// window in turn. The chain of a shown event waits for its window as well.
+    #[test]
+    fn a_shown_window_holds_the_scan_until_it_is_closed() {
+        let first = with_message(global());
+        let mut second = with_message(global());
+        (second.conditions.happened_yes_check, second.conditions.happened_yes) = (1, [1, 0]);
+        let mut silent = global();
+        (silent.conditions.happened_yes_check, silent.conditions.happened_yes) = (1, [2, 0]);
+        silent.results.activate_armies[0] = 2;
+        let mut g = engine(vec![first, second, silent]);
+        let mut w = MockWorld::new();
+        assert_eq!(fired(&g.tick(&mut w)), vec![1]);
+        assert!(g.holds_window());
+        assert!(fired(&g.tick(&mut w)).is_empty(), "time does not run the scan on");
+        assert_eq!(fired(&g.window_closed(&mut w)), vec![2]);
+        assert!(w.log.is_empty(), "the army waits for the second window");
+        assert_eq!(fired(&g.window_closed(&mut w)), vec![3]);
+        assert_eq!(w.log, vec![Fx::Activate(2)]);
+        assert!(!g.holds_window());
+        assert!(g.window_closed(&mut w).is_empty());
+
+        let mut shown = with_message(global());
+        shown.results.chained_event = 2;
+        let mut chained = global();
+        (chained.subordinate, chained.results.gold) = (1, 5);
+        let mut g = engine(vec![shown, chained]);
+        let mut w = MockWorld::new();
+        assert_eq!(fired(&g.tick(&mut w)), vec![1]);
+        assert!(w.log.is_empty());
+        assert_eq!(fired(&g.window_closed(&mut w)), vec![2]);
+        assert_eq!(w.log, vec![Fx::Gold(5)]);
     }
 
     /// РК1's ending on the "No" path: a local event chains the victory event, whose own
@@ -2717,12 +2810,12 @@ mod tests {
         let mut w = MockWorld::new();
         assert!(tick_at(&mut g, &mut w, 0).is_empty());
         w.now = 10;
-        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2]);
+        assert_eq!(fired(&meet_read(&mut g, &mut w, 1)), vec![1, 2]);
         assert!(tick_at(&mut g, &mut w, 20).is_empty(), "no meeting now");
         w.now = 30;
-        assert!(fired(&g.meet(&mut w, 2)).is_empty(), "another army");
+        assert!(fired(&meet_read(&mut g, &mut w, 2)).is_empty(), "another army");
         w.now = 40;
-        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2], "met again");
+        assert_eq!(fired(&meet_read(&mut g, &mut w, 1)), vec![1, 2], "met again");
 
         // "No meeting" ends the meeting: later events of the same run do not see it.
         let mut first = many(global());
@@ -2732,7 +2825,7 @@ mod tests {
         let mut g = engine(vec![first, second]);
         let mut w = MockWorld::new();
         w.now = 10;
-        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1]);
+        assert_eq!(fired(&meet_read(&mut g, &mut w, 1)), vec![1]);
     }
 
     /// The "meeting event waiting" mark (0x4a801a): set when every condition before the
@@ -2815,6 +2908,7 @@ mod tests {
         w.now = 10;
         assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
         let out = g.answer(&mut w, true);
+        let out = read(&mut g, &mut w, out);
         assert_eq!(fired(&out), vec![1, 2]);
         assert_eq!(w.log, vec![Fx::GiveItem(14), Fx::Gold(-150)]);
         assert_eq!(g.happened(1), Some(Answer::Yes));
@@ -2851,7 +2945,8 @@ mod tests {
             let mut g = engine(vec![e]);
             w.now = 0;
             assert_eq!(g.tick(&mut w), vec![EventOutcome::Question(1)]);
-            g.answer(&mut w, true);
+            let out = g.answer(&mut w, true);
+            read(&mut g, &mut w, out);
             w.now = DAY;
             let out = g.tick(&mut w);
             match again {
@@ -2918,8 +3013,10 @@ mod tests {
         assert_eq!(g.hall(&w), vec![1]);
         let out = g.take(&mut w, 1);
         assert_eq!(out, vec![EventOutcome::Fired { event: 1, message: true }, EventOutcome::QuestAdded(1)]);
+        read(&mut g, &mut w, Vec::new());
         w.now = 10;
-        g.take(&mut w, 1);
+        let out = g.take(&mut w, 1);
+        read(&mut g, &mut w, out);
         assert_eq!(g.journal(), &[1, 1], "no duplicate check");
         w.place = None;
         w.defeated.insert(4);
@@ -3158,7 +3255,7 @@ mod tests {
         let mut g = engine(vec![vanilla, edit, spell, two]);
         assert_eq!(g.extensions(), &[(2, Extension::Opcode(2))]);
         let mut w = MockWorld::new();
-        assert_eq!(fired(&g.meet(&mut w, 1)), vec![1, 2, 3, 4]);
+        assert_eq!(fired(&meet_read(&mut g, &mut w, 1)), vec![1, 2, 3, 4]);
         assert_eq!(w.log, vec![Fx::Spell(13), Fx::Gold(6), Fx::Patrol(3, 4)], "no gold for the opcode");
     }
 
@@ -3454,23 +3551,33 @@ mod real_maps {
             for slot in 0..12 {
                 w.now = start + day * 1440 + slot * 120;
                 w.place = places.get((day * 12 + slot) as usize).copied();
+                // Every window is read (OK), every question answered.
+                fn settle(g: &mut EventEngine, w: &mut MockWorld, out: &mut Vec<EventOutcome>, yes: &mut bool, questions: &mut usize) {
+                    for _ in 0..100 {
+                        if g.holds_window() {
+                            out.extend(g.window_closed(w));
+                            continue;
+                        }
+                        if g.pending_question().is_none() {
+                            break;
+                        }
+                        *questions += 1;
+                        out.extend(g.answer(w, *yes));
+                        *yes = !*yes;
+                    }
+                }
                 let mut out = g.tick(&mut w);
+                settle(&mut g, &mut w, &mut out, &mut yes, &mut run.questions);
                 for a in w.active.clone() {
                     if g.pending_question().is_none() {
                         out.extend(g.meet(&mut w, a));
+                        settle(&mut g, &mut w, &mut out, &mut yes, &mut run.questions);
                     }
                 }
                 for r in g.hall(&w) {
                     run.rumours += 1;
                     out.extend(g.take(&mut w, r));
-                }
-                for _ in 0..100 {
-                    if g.pending_question().is_none() {
-                        break;
-                    }
-                    run.questions += 1;
-                    out.extend(g.answer(&mut w, yes));
-                    yes = !yes;
+                    settle(&mut g, &mut w, &mut out, &mut yes, &mut run.questions);
                 }
                 run.loop_guards += out.iter().filter(|o| **o == EventOutcome::LoopGuard).count();
                 if g.ended().is_some() {
