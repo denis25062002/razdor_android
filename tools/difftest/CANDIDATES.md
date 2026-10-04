@@ -567,9 +567,9 @@ Results after the round's fixes (Razdor at the round's end against the recording
 |---|---|---|---|
 | РК2 | 6 | 6 / 6 | — (without РК1's herald the defeat event ends the map at once on both sides) |
 | РК3 | 8 | 8 / 8 | — (FINDINGS §25 fixed) |
-| РК4 | 8 | 2 / 2 | from step 2: an army 6 cells off with the generator equal, then other AI battles (below) |
-| РК5 | 16 | 12 / 12 | from step 12: two armies one cell off, one snap draw more (below) |
-| РК6 | 10 | 3 / 3 | from step 3: two arrivals in one frame of the original (frame noise, below) |
+| РК4 | 8 | 2 / 2 | from step 2: an army 6 cells off with the generator equal (§5 frame noise), then other AI battles (below); the garrisons' strengths fixed (FINDINGS §28) |
+| РК5 | 16 | 12 / 12 | from step 12: two armies one cell off, one snap draw more (§5 frame noise: the original's runs differ among themselves, below) |
+| РК6 | 10 | 3 / 3 | from step 3: two arrivals in one frame of the original (frame noise, confirmed by reruns, below) |
 | РК7 | 13 | 12 / 12 | step 11: the event's gold before its OK (window timing) (FINDINGS §26 fixed) |
 | ДС2 | 9 | 9 / 9 | — |
 | Обучающий2 | 8 | 8 / 8 | — (no building in reach) |
@@ -592,6 +592,14 @@ Results after the round's fixes (Razdor at the round's end against the recording
   army 9 fights another army in each (Razdor: army 6's swordsman; the original: an army of
   [10, 69] that beat army 6 first), so its losses differ. Not traced to a cause; the
   generator stays equal through step 3, which points at the frame timing of FINDINGS §5.
+- **Traced: frame noise (FINDINGS §5, third part), not a rule.** Frida `ai:21` against an
+  instrumented Razdor: same plans, same wander points, same banks and play times; the
+  original's arrivals each wait for the end of the frame they fall in, and while the hero
+  walks a frame is 120-375 centi-minutes, so each step loses part of one (gaps of 240-425
+  for plays of 225-300). Over the walk army 21 takes 48 steps in the original, 54 in
+  Razdor (the limit of short frames), both ending at the same minute. Five runs of the
+  original at its normal pace give (98, 49); a run slowed by heavy hooks (483ecc dumps)
+  gives (98, 51). Step 3's other battles follow from the positions.
 - Found on the way and **fixed: FINDINGS.md §27** (the off-screen battles' static side
   records).
 - **Open:** two garrisons (units of level 1, defence 5) start their off-screen battles with
@@ -607,6 +615,11 @@ Results after the round's fixes (Razdor at the round's end against the recording
 - Armies 13 and 21 one cell off and Razdor one `Random(3000)` ahead (the stop's snap counts
   one patroller more); the first 43 draws equal. Like FINDINGS §5's frame noise (an arrival
   at the step's end in one side only); not rerun. Left open.
+- **Rerun 2026-10-04: frame noise (FINDINGS §5), not a rule.** Three more runs of the
+  original (`m3-РК5-a/b/c`, trace `random,ai`) and the two recorded ones: step 10 is the same
+  in all five; at step 11 three give Razdor's state and two others of their own; at step 12
+  the five give four different states, and run `b` has Razdor's generator state (its one
+  `Random(3000)` more) with other army cells. Nothing to fix.
 
 ## Campaign: РК6, step 3 `click_map 91 198`
 
@@ -614,4 +627,8 @@ Results after the round's fixes (Razdor at the round's end against the recording
   original takes both in its frame at 9.0, in army order (18 first), so their wander-point
   draws swap (`Random(6)/(7)` and `Random(11)`), and everything after differs (army 5's
   purchases in its castle included). FINDINGS §5's frame noise; not a rule difference.
+- **Rerun 2026-10-04: confirmed noise.** Three more runs of the original (`m3-РК6-a/b/c`) and
+  the two recorded ones: steps 1-2 the same in all five; at step 3 they give four different
+  states, and run `a` has Razdor's generator state and army 5's purchases unit for unit
+  (army 26 one cell off). Nothing to fix.
 
