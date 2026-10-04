@@ -426,6 +426,18 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
 
 # Fifth round: forced coverage (`explore.py --cover`, 2026-10-04)
 
+`--cover`, every kind of the action list played on both sides in 12 episodes (0.37 h, the
+run stopped itself; five of the seven maps, the three classes; plus the `sell` episode of
+an interrupted first run). The model picked the forced action in 10 of 12 (heal and
+battle_act were scripted picks when its answer was no use). The original applied every
+forced pick but one; the pick's step compared equal step-local for wait, answer,
+battle_act, hire, heal, learn, cast and equip; sell and buy differed only by the market's
+write-back timing (C1004-050909); resurrect was equal in a separate run (РК1,
+`runs/cover-res1`) and downstream of §5 / C1004-052035 in its cover episode; battle_pass
+once had timing fields only (the hero's gold and mana) and once was not applied
+(C1004-053051: the battle was Razdor's only). `--summary --recount` prints the table. Four
+NEW candidates, and one from the manual resurrect check:
+
 ## C1004-050909: ДС1-С чего все начиналось, step 7 `buy 8`
 
 - Found 2026-10-04 by explore.py (hero 1); unconfirmed.
@@ -440,3 +452,91 @@ The explorer with the default model (Qwen3-Coder-30B-A3B) after FINDINGS §16-§
   100. `known.py` classes a market's goods `timing` while the original's building window
   stays open after a `buy` (Razdor's list must be the original's minus the bought items).
 
+## C1004-052035: Другой берег, step 20 `click_map 17 12`
+
+- Found 2026-10-04 by explore.py (hero 3); unconfirmed.
+- Repro: 21 actions (shrunk from 21, 2 tries): `~/.cache/razdor-difftest/explore/C1004-052035/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `clock`: 1777 / 1765
+- rng: Razdor is 9 draw(s) ahead of the original
+- rng: draws this step: Razdor 945, original 936; the n agree for the first 9
+- rng: original from there: Random(11) AI wander points 0x4a2594, Random(11) AI wander points 0x4a25d8, Random(11) AI wander points 0x4a2594, Random(11) AI wander points 0x4a25d8, Random(11) AI wander points 0x4a2594, Random(11) AI wander points 0x4a25d8, Random(11) AI wander points 0x4a2594, Random(11) AI wander points 0x4a25d8 ...
+- rng: Razdor from there: Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687 ...
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-052035/`.
+- Reading (not traced to a cause): a hero's route of another length. Both sides walk the
+  ranger from (37,38) to the church at (17,12) after the cover setup's resurrect episode and
+  arrive on the same cell, the original 12 minutes sooner (1765 against 1777). The step
+  ticks of the original (from the `ai` trace's step clock, `tick` with `new_tick`) and
+  Razdor's (an instrumented build) agree for 39 steps (995 … 1513); then the original steps
+  diagonally (18 min at 1525) where Razdor goes on north (12 min to (13,23), (13,22)) and
+  later pays a 30-minute diagonal ((13,22) → (12,21)): 57 steps against 58. The route is
+  fixed at the click, so the hero's planner gave another route: the mask (the explored
+  cells around (12..14, 20..24), world.md §1.3) or the flood's ties. Next: read the
+  original's planned route (the route buffer after the first click) and its explored image
+  at the click, against Razdor's `route_to` and fog there.
+
+## C1004-052338: Проклятое озеро, step 7 `buy 1`
+
+- Found 2026-10-04 by explore.py (hero 2); unconfirmed.
+- Repro: 8 actions (shrunk from 8, 2 tries): `~/.cache/razdor-difftest/explore/C1004-052338/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `hero.gold`: 203 / 202
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-052338/`.
+- **Cause: the rounding of a half in the relation price (a Razdor rule choice the original
+  as run contradicts).** The church's attitude gives the factor 1.1; item 98 costs 75, so
+  the price is 82.5 before rounding. Razdor (`relation_price`, `src/rules/economy.rs`,
+  exact decimal with half to even) charges 82; the original charged 83 (gold 285 → 202 in
+  both runs; the first purchase, item 77 at 150 × 1.1 = 165, was equal). economy.md
+  ("Relation price factor", halves) leaves this open between the x87's 64-bit mantissa
+  (1.1 widened from a double is a little above 1.1: 82.5000…01 rounds **up**) and single
+  precision (an exact half, to even). The running game here (Community exe under Wine 11)
+  shows the 64-bit case. Rule for the fixer, if the Wine run is taken as the reference:
+  `Round(base × m)` with m the double constant widened to 80 bits and a 64-bit mantissa, so
+  halves round **up** for 1.1 and 0.9, **down** for 1.7 and 1.45, to even for 1.25 and
+  0.75 (exact). Worth a check on Windows first: there the DirectX set-up may switch the
+  FPU to single precision (the reason economy.md left it open).
+
+## C1004-053051: Проклятое озеро, step 5 `click_map 51 80`
+
+- Found 2026-10-04 by explore.py (hero 2); unconfirmed.
+- Repro: 6 actions (shrunk from 6, 0 tries): `~/.cache/razdor-difftest/explore/C1004-053051/repro.jsonl`; `python -m tools.difftest.run --actions <it> --trace random`.
+- Step-local run, fields classed NEW (Razdor / original):
+  - `clock`: 592230393 / 592230301
+  - `hero.x`: 46 / 51
+  - `hero.y`: 79 / 80
+- rng: Razdor is 77 draw(s) ahead of the original
+- rng: draws this step: Razdor 426, original 349; the n agree for the first 0
+- rng: original from there: Random(7) AI wander points 0x4a2594, Random(7) AI wander points 0x4a25d8, Random(7) AI wander points 0x4a2594, Random(7) AI wander points 0x4a25d8, Random(7) AI wander points 0x4a2594, Random(7) AI wander points 0x4a25d8, Random(7) AI wander points 0x4a2594, Random(7) AI wander points 0x4a25d8 ...
+- rng: Razdor from there: Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687, Random(5) rules/ai.rs:1686, Random(5) rules/ai.rs:1687 ...
+- The original gave the same values on a second run (trace `random,ai,events`). Files: states, screenshots, `trace-around.jsonl` in `~/.cache/razdor-difftest/explore/C1004-053051/`.
+- **Downstream of FINDINGS §5, not a new difference.** At step 4 (`click_map 47 80`) two
+  armies (wander boxes 11 and 13 cells) re-plan in the same moment (42030) in the opposite
+  order (§5, arrival order; `known.py` classes it so); army 20 (Бандиты, neighbour) ends
+  that step at (51,80) in Razdor and (50,78) in the original. Step 5 clicks (51,80) (the
+  cover setup aimed at army 20 in Razdor's state): a battle in Razdor, an empty cell in the
+  original, so the hero, the clock and everything after part. The `ai` trace and the
+  logical-cell rule of C1004-035744 do not change step 4 (checked). `known.py` now classes
+  the fields of a click on an army that a known finding had put elsewhere on one side as
+  downstream of that finding.
+
+## Cover run (manual): РК1, a textless event queued behind a window fires at once in Razdor
+
+- Found 2026-10-04 while checking `resurrect` on the original (`runs/cover-res1`, the list
+  is the cover setup for РК1: the ruins fought by a searched line of presses, then the
+  church at (47,27)). The battle (steps 18-45), the resurrect (step 51) and the sale after
+  it compare equal; the one difference is the generator from step 48 on.
+- Reading (traced with the draw traces, not with `events`): entering the church fires
+  events 9 (text), 10 (text) and 19 ("- Активизация разбойников", a global event with no
+  text that activates army 2). The original opens 9; when it is closed (step 48) it draws
+  the window chord of 10 and the stop's snap (one `Random(3000)`, the patrollers then on the
+  map); 19 fires only when 10's window is closed (step 50: army 2's eight wander-point draws
+  `Random(13)`). Razdor, at the same step 48, applies 19 at once (army 2 active, its eight
+  `Random(13)` draws before the chord) and its stop snap then counts army 2 too: one
+  `Random(3000)` more. After all windows are closed Razdor stays one draw ahead.
+- Likely rule (to confirm with `--trace events`): events found by one scan are opened one at
+  a time; the next one, a textless one too, is processed only after the window before it is
+  closed (the event chain, 0x4af658 / Event_Finish 0x4ab1ec), so its results (here an army's
+  activation and with it the stop snap's draws) come later. Where: Razdor's event chain
+  after an arrival (`src/rules/events.rs`, the dialog queue the replay closes in
+  `src/difftest.rs`). `known.py` classes the `events_done` and `active` fields `timing`, but
+  not the generator: candidate.

@@ -184,6 +184,19 @@ class Matcher(unittest.TestCase):
         per = known.classify([{"step": 2, "diffs": [g]}], c)
         self.assertEqual(per[2][0]["class"], "new")   # closed: it must agree
 
+    def test_a_click_on_an_army_the_ai_order_moved(self):
+        acts = [{"op": "click_map", "x": 47, "y": 80}, {"op": "click_map", "x": 51, "y": 80}]
+        arm = lambda x, y: {"armies": [{"id": 20, "x": x, "y": y}]}
+        c = known.Context(acts, {}, [dict(arm(51, 80), step=0), dict(arm(45, 78), step=1)],
+                          [dict(arm(50, 78), step=0), dict(arm(47, 81), step=1)],
+                          [{"step": 0, "draws": [[11, 0, "0x4a2594", "AI wander points"], [13, 0, "0x4a2594", "AI wander points"]]},
+                           {"step": 1}],
+                          [{"step": 0, "draws": [[13, 0, "src/rules/ai.rs:1686"], [11, 0, "src/rules/ai.rs:1686"]]}, {"step": 1}])
+        per = known.classify([{"step": 0, "diffs": [["rng", 1, 2], ["armies[id 20].x", 51, 50]]},
+                              {"step": 1, "diffs": [["clock", 10, 9], ["hero.x", 46, 51]]}], c)
+        self.assertEqual(per[0][0]["class"], "known:5")
+        self.assertEqual([e["class"] for e in per[1]], ["downstream:5", "downstream:5"])
+
     def test_an_xp_difference_is_new(self):
         # FINDINGS §6 is fixed: Razdor pays the install's rate, so XP must agree again.
         c = ctx([{"op": "battle_act"}], [{"step": 0}], [{"step": 0}])

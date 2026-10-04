@@ -4,7 +4,9 @@ A small matcher over `run.py`'s output: each field that differs at a step of the
 run (each Razdor step starts from the original's generator state) is given a class:
 
 - `known:N`      a difference FINDINGS.md entry N explains (rules below, by field and context);
-- `downstream:N` a field a known finding has already thrown off earlier in the run (taint);
+- `downstream:N` a field a known finding has already thrown off earlier in the run (taint),
+                 also the walk or battle of a click on an army that finding had put on
+                 another cell on one side (C1004-053051);
 - `noise`        the original's frame noise (FINDINGS.md §5, first part): an AI army one cell
                  off while the generator agrees;
 - `timing`       a result of the event the original shows that it applies only at OK
@@ -162,6 +164,22 @@ class Context:
 
     def screen(self, step):
         return (self.orun.get(step, {}).get("meta") or {}).get("screen")
+
+    def clicked_army(self, step):
+        """The ids of the armies standing, on either side, on the cell `step` clicks (as the
+        step began) when the two sides have them on different cells."""
+        a = self.actions[step] if step < len(self.actions) else {}
+        if a.get("op") != "click_map":
+            return []
+        c = (a["x"], a["y"])
+        out = []
+        r = {x["id"]: x for x in self.r.get(step - 1, {}).get("armies", [])}
+        o = {x["id"]: x for x in self.o.get(step - 1, {}).get("armies", [])}
+        for k in sorted(set(r) & set(o)):
+            pr, po = (r[k].get("x"), r[k].get("y")), (o[k].get("x"), o[k].get("y"))
+            if pr != po and c in (pr, po):
+                out.append(k)
+        return out
 
     def bought_in_window(self, step):
         """Whether a `buy` was played since the original's building window opened (it stays
@@ -323,6 +341,15 @@ def classify(rows, ctx):
                     noise_armies.add(k)
             if cls is None and _army_id(p) in noise_armies and not rng_diff:
                 cls, why = "noise", "the army that was one cell off (frame noise) catching up"
+            if cls is None:
+                hit = ctx.clicked_army(step)
+                for k in hit:
+                    entry = next((en for rx, en in taint if re.match(rx, f"armies[id {k}].x")), None)
+                    if entry:
+                        cls, why = f"downstream:{entry}", (f"a click on army {k}'s cell, where FINDINGS §{entry} "
+                                                           "had put it on one side only")
+                        taint_all = entry
+                        break
             if cls is None:
                 cls, why = "new", ""
             res.append({"path": p, "razdor": a, "original": b, "class": cls, "why": why})

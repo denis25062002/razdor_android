@@ -1167,28 +1167,49 @@ def investigate(name, actions, info, hero, per, diff, ctx, razdor, exe, shrink_b
 
 # --- coverage -------------------------------------------------------------------------------
 def step_ops(acts, diff, per):
-    """Per op: the steps played, those the step-local run found equal (no field differs) and
-    those with a NEW difference."""
+    """Per op: the steps played, those the step-local run found equal (no field differs),
+    those whose differences are all explained (known, downstream, noise, timing: no `new`
+    class, also none carried from the step before) and those with a fresh NEW difference."""
     out = {}
     rows = {r["step"]: r for r in diff["local"]}
     for s, a in enumerate(acts):
         if s == 0 or s not in rows:
             continue
-        o = out.setdefault(a["op"], {"steps": 0, "equal": 0, "new": 0})
+        o = out.setdefault(a["op"], {"steps": 0, "equal": 0, "explained": 0, "new": 0})
         o["steps"] += 1
         if not rows[s]["diffs"]:
             o["equal"] += 1
-        if any(e["class"] == "new" for e in per.get(s, [])):
+        if not any(e["class"] == "new" for e in per.get(s, [])):
+            o["explained"] += 1
+        if any(e["class"] == "new" and not e["why"].startswith("unchanged") for e in per.get(s, [])):
             o["new"] += 1
     return out
 
 
-def coverage(log_path, cover_only=True):
+def recount(log_path, install=DEFAULT_INSTALL):
+    """`ops_steps` and the cover pick's `equal` of every cover episode in `log_path`,
+    computed again from its run folder with today's `known.py` (records are not changed)."""
+    out, infos = {}, {}
+    for line in open(log_path, encoding="utf-8"):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        d = os.path.join(RUNS, r.get("name", ""))
+        if "cover" not in r or not os.path.exists(os.path.join(d, "diff.json")):
+            continue
+        info = infos.get(r["map"]) or infos.setdefault(r["map"], MapInfo(os.path.join(install, "Maps_Rus", r["map"])))
+        per, diff, ctx = classify_run(d, info)
+        out[r["name"]] = step_ops(ctx.actions, diff, per)
+    return out
+
+
+def coverage(log_path, cover_only=True, ops=None):
     """Per action kind over `log.jsonl` (the cover episodes, or all): applied in Razdor,
     applied in the original (no note), compared equal step-local, NEW; cover episodes built
     around it (reached, picked by the model)."""
     from . import cover as C
-    fields = ("razdor", "original", "steps", "equal", "new", "episodes", "reached", "model",
+    fields = ("razdor", "original", "steps", "equal", "explained", "new", "episodes", "reached", "model",
               "pick_original", "pick_equal")
     t = {k: dict.fromkeys(fields, 0) for k in C.KINDS}
     row = lambda k: t.setdefault(k, dict.fromkeys(fields, 0))
@@ -1205,9 +1226,9 @@ def coverage(log_path, cover_only=True):
             row(k)["razdor"] += n
         for k, n in r.get("ops_original", {}).items():
             row(k)["original"] += n
-        for k, o in r.get("ops_steps", {}).items():
-            for f in ("steps", "equal", "new"):
-                row(k)[f] += o[f]
+        for k, o in ((ops or {}).get(r.get("name")) or r.get("ops_steps", {})).items():
+            for f in ("steps", "equal", "explained", "new"):
+                row(k)[f] += o.get(f, 0)
         c = r.get("cover")
         if c:
             k = c["kind"]
@@ -1220,10 +1241,10 @@ def coverage(log_path, cover_only=True):
 
 
 def coverage_table(t):
-    L = ["| kind | Razdor | original | steps diffed | equal | NEW | cover episodes | reached | model's pick | pick applied in original | pick equal |",
-         "|---|---|---|---|---|---|---|---|---|---|---|"]
+    L = ["| kind | Razdor | original | steps diffed | equal | explained | NEW | cover episodes | reached | model's pick | pick applied in original | pick equal |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for k, v in t.items():
-        L.append(f"| {k} | {v['razdor']} | {v['original']} | {v['steps']} | {v['equal']} | {v['new']} | "
+        L.append(f"| {k} | {v['razdor']} | {v['original']} | {v['steps']} | {v['equal']} | {v['explained']} | {v['new']} | "
                  f"{v['episodes']} | {v['reached']} | {v['model']} | {v['pick_original']} | {v['pick_equal']} |")
     return "\n".join(L)
 
@@ -1272,11 +1293,12 @@ def main(argv=None):
     ap.add_argument("--exe", help="this Razdor binary (no build)")
     ap.add_argument("--live-trace", default="random", help="Frida presets of the original played along")
     ap.add_argument("--summary", action="store_true", help="print the coverage table of log.jsonl and stop")
+    ap.add_argument("--recount", action="store_true", help="with --summary: classify the runs again")
     a = ap.parse_args(argv)
 
     log_path = os.path.join(EXPLORE, "log.jsonl")
     if a.summary:
-        print(coverage_table(coverage(log_path)))
+        print(coverage_table(coverage(log_path, ops=recount(log_path, a.install) if a.recount else None)))
         return
     from . import cover as C
     cover_kinds = None
