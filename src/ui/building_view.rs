@@ -499,6 +499,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
         } else if u.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
+        top_left_signs(&c, sq, &u, i > 0);
         super::spell_badges::draw(sq, &u.spells, u.drain, game.clock.total_minutes() as u64, &c);
         if super::unit_drag::dragged() == Some(i) {
             draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
@@ -559,9 +560,16 @@ pub fn back_row_def(c: &razdor::rules::content::Content, slot: Slot) -> i32 {
     }
 }
 
+/// The signs from a card's top left (493a64): the promotion for a unit of the hero's army
+/// (`own`, not the hero) that can take one, then a drunk potion.
+fn top_left_signs(c: &razdor::rules::content::Content, sq: Rect, u: &Unit, own: bool) {
+    let upgrade = own && u.upgrade_tree(c).iter().any(|&(_, _, ok)| ok);
+    chrome::card_signs(sq, true, &[(upgrade, "Sign-Upgrade", GREEN), (!u.potions.is_empty(), "sign-potion", GREEN)]);
+}
+
 /// The army screen's cards for `units` in the formation, `rel_y` below the content's top;
-/// `selected` is framed. Returns what the pointer is over.
-fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], selected: Option<usize>) -> Option<Hit> {
+/// `own`: the hero's army. `selected` is framed. Returns what the pointer is over.
+fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], own: bool, selected: Option<usize>) -> Option<Hit> {
     let k = chrome::k();
     let c = &game.content;
     let form = c.formation;
@@ -598,6 +606,7 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
         } else if u.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
+        top_left_signs(c, sq, u, own && i > 0);
         super::spell_badges::draw(sq, &u.spells, u.drain, game.clock.total_minutes() as u64, c);
         if selected == Some(i) {
             chrome::glow_frame(sq, Color::new(1.0, 0.85, 0.3, 0.95), false);
@@ -621,7 +630,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     let sel = view.garrison_sel.filter(|&(g, n)| if g { n < guards.len() } else { n < game.squad.len() });
     let mut hover = Vec::new();
     let guard_units: Vec<&Unit> = guards.iter().map(|s| &s.unit).collect();
-    let top = card_grid(game, assets, f, 32.0, &guard_units, sel.filter(|s| s.0).map(|s| s.1));
+    let top = card_grid(game, assets, f, 32.0, &guard_units, false, sel.filter(|s| s.0).map(|s| s.1));
     if let Some(Hit::Unit(j)) = top {
         let u = &guards[j].unit;
         let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
@@ -632,7 +641,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     chrome::divider(at(f, 250.0, 302.0, 584.0, 16.0));
     let squad = game.squad.clone();
     let army: Vec<&Unit> = squad.iter().collect();
-    let bottom = card_grid(game, assets, f, 330.0, &army, sel.filter(|s| !s.0).map(|s| s.1));
+    let bottom = card_grid(game, assets, f, 330.0, &army, true, sel.filter(|s| !s.0).map(|s| s.1));
     if let Some(Hit::Unit(i)) = bottom {
         let u = &squad[i];
         let lv = level_label(u.level, u.xp, u.xp_to_next(&c));

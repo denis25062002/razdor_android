@@ -654,22 +654,8 @@ impl BattleView {
         // left; poison (a negative regeneration), then the curse, from the top right; 23 px
         // apart, 1 px below the portrait's top. The spell badges along its bottom.
         let signs = self.signs.get(id).copied().unwrap_or_default();
-        let s = sq.w / 92.0;
-        let bs = 22.0 * s;
-        let mut bx = sq.x;
-        for (on, art, c) in [(f.potion, "sign-potion", GREEN), (signs.bless, "sign-bless", BLUE_TEXT)] {
-            if on {
-                chrome::badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
-                bx += 23.0 * s;
-            }
-        }
-        let mut bx = sq.x + 70.0 * s;
-        for (on, art, c) in [(f.poisoned(), "sign-poison", GREEN), (signs.curse, "sign-curse", PURPLE)] {
-            if on {
-                chrome::badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
-                bx -= 23.0 * s;
-            }
-        }
+        chrome::card_signs(sq, true, &[(f.potion, "sign-potion", GREEN), (signs.bless, "sign-bless", BLUE_TEXT)]);
+        chrome::card_signs(sq, false, &[(f.poisoned(), "sign-poison", GREEN), (signs.curse, "sign-curse", PURPLE)]);
         // The turn order (Razdor's) in the bottom right corner, clear of the spell badges.
         if let Some(n) = order {
             let (ox, oy) = (sq.x + sq.w - 16.0 * k, sq.y + sq.h - 16.0 * k);

@@ -1009,6 +1009,21 @@ pub fn glow_frame(r: Rect, color: Color, strong: bool) {
     }
 }
 
+/// The original's signs along a card portrait's top (493a64): those that are on, 22 px badges
+/// 23 px apart, 1 px below the portrait's top, from its left edge (`from_left`) or from the
+/// right one. `sq` is the portrait (92 px in the original).
+pub fn card_signs(sq: Rect, from_left: bool, signs: &[(bool, &str, Color)]) {
+    let s = sq.w / 92.0;
+    let bs = 22.0 * s;
+    let (mut bx, step) = if from_left { (sq.x, 23.0 * s) } else { (sq.x + 70.0 * s, -23.0 * s) };
+    for &(on, art, c) in signs {
+        if on {
+            badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
+            bx += step;
+        }
+    }
+}
+
 /// A small badge in a card corner (`sign-*`, `army-*`, `Sign-Upgrade`), or a coloured dot.
 pub fn badge(name: &str, cx: f32, cy: f32, size: f32, fallback: Color) {
     if let Some(t) = win(name) {

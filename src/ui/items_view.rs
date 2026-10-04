@@ -471,12 +471,10 @@ pub fn squad(
         } else if v.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
-        if i > 0 && v.upgrade_tree(&c).iter().any(|&(_, _, ok)| ok) {
-            chrome::badge("Sign-Upgrade", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, GREEN);
-        }
-        if i == 0 {
-            chrome::badge("SI_Helm", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, chrome::GOLD);
-        }
+        // The original's signs from the top left (493a64): the promotion, then a drunk potion
+        // (the hero's helm, Razdor's, in the first place).
+        let upgrade = i > 0 && v.upgrade_tree(&c).iter().any(|&(_, _, ok)| ok);
+        chrome::card_signs(sq, true, &[(i == 0, "SI_Helm", chrome::GOLD), (upgrade, "Sign-Upgrade", GREEN), (!v.potions.is_empty(), "sign-potion", GREEN)]);
         super::spell_badges::draw(sq, &v.spells, v.drain, game.clock.total_minutes() as u64, &c);
         if super::unit_drag::dragged() == Some(i) {
             draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));

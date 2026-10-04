@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The potion sign on the army and building cards:** a unit that drank a potion shows its
+  sign on the army screen and in the building windows too, as the original, next to the
+  promotion sign, in the battle signs' places (it showed only in battle).
 - **The card stat strip's attack label as the original's:** a shooter's attack is written "A:"
   (Razdor wrote "S:"), with the larger of its two attacks; "Pwr:" is kept for a caster without
   a melee attack or standing outside the four middle places of the front line.

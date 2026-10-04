@@ -10,7 +10,8 @@
 //! `menu:<map>`, `battle:<map>:<n>` (against the n-th army). `RAZDOR_SCENE_SHOW=x,y,r` shows
 //! a place as a lantern event does; `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
-//! puts the pointer there; `RAZDOR_SCENE_SPELLS=<id>,…` puts those spells on every unit. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
+//! puts the pointer there; `RAZDOR_SCENE_SPELLS=<id>,…` puts those spells on every unit; `RAZDOR_SCENE_POTION=1` gives every unit of the army a
+//! drunk potion. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
 //! test's action list played to that step.
 
 use razdor::rules::content::HeroClass;
@@ -156,6 +157,14 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         }
         for t in game.world.armies.iter_mut().flat_map(|a| a.troops.iter_mut()) {
             fill(&mut t.spells);
+        }
+    }
+    // `RAZDOR_SCENE_POTION=1`: every unit of the hero's army has drunk the install's first
+    // potion (the cards' potion sign; its effect is not applied).
+    if std::env::var("RAZDOR_SCENE_POTION").is_ok_and(|v| !v.is_empty()) {
+        let potion = game.content.items.iter().find(|d| d.kind == razdor::dt::data::ArtefactType::Potion).map(|d| razdor::rules::content::ItemId(d.id));
+        for u in game.squad.iter_mut() {
+            u.potions.extend(potion);
         }
     }
     // `RAZDOR_SCENE_SHOW=x,y,r`: an event shows that place (as a lantern does), to see the
