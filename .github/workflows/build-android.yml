@@ -27,10 +27,13 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
-      - name: Generate and fix Cargo.lock format
+      - name: Prepare dependencies for cargo-quad-apk
         run: |
           cargo generate-lockfile
+          cargo update -p encoding_rs --precise 0.8.33 || true
+          cargo fetch
           sed -i 's/^version = 4/version = 3/' Cargo.lock
+          find ~/.cargo/registry/src/ -name "Cargo.toml" -type f -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
