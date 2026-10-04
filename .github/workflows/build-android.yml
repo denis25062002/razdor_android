@@ -1,71 +1,70 @@
 name: Build Android APK
 
 on:
-workflow_dispatch:
-push:
-branches:
-- main
-- master
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
-build:
-runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
-```
-steps:
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-  - name: Checkout
-    uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
 
-  - name: Install Rust
-    uses: dtolnay/rust-toolchain@stable
-    with:
-      targets: aarch64-linux-android
+      - name: Install Android SDK and NDK
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
 
-  - name: Install Android SDK and NDK
-    shell: bash
-    run: |
-      "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-29" "ndk;25.2.9519653"
+      - name: Install cargo-quad-apk
+        run: cargo install cargo-quad-apk
 
-  - name: Install cargo-quad-apk
-    run: cargo install cargo-quad-apk
+      - name: Vendor and sanitize dependencies
+        run: |
+          cargo update -p encoding_rs --precise 0.8.33 || true
+          sed -i 's/version = 4/version = 3/' Cargo.lock || true
+          mkdir -p .cargo
+          cargo vendor > .cargo/config.toml
+          find vendor/ -name "Cargo.toml" -type f -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+          python3 -c '
+          import glob, json
+          for path in glob.glob("vendor/**/.cargo-checksum.json", recursive=True):
+              with open(path, "r") as f:
+                  data = json.load(f)
+              data["files"] = {}
+              with open(path, "w") as f:
+                  json.dump(data, f, indent=2)
+          '
 
-  - name: Configure NDK
-    shell: bash
-    run: |
-      NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
-      TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+      - name: Ensure assets directory exists
+        run: mkdir -p assets
 
-      echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
-      echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-      echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
-      echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+      - name: Configure NDK
+        run: |
+          NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+          TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar" || true
+          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib" || true
 
-      ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
-      ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+      - name: Build APK
+        env:
+          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+        run: cargo quad-apk build --release --offline
 
-      ls -l "$TOOLCHAIN/llvm-ar"
-      ls -l "$TOOLCHAIN/llvm-ranlib"
-      ls -l "$TOOLCHAIN/arm-linux-androideabi-ar"
-      ls -l "$TOOLCHAIN/arm-linux-androideabi-ranlib"
-
-  - name: Verify Rust target
-    run: rustup target list --installed
-
-  - name: Verify Android configuration
-    shell: bash
-    run: |
-      echo "Android configuration:"
-      grep -A10 'package.metadata.android' Cargo.toml || true
-
-  - name: Build APK
-    env:
-      RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
-    run: cargo quad-apk build --release --offline
-
-  - name: Upload APK
-    uses: actions/upload-artifact@v4
-    with:
-      name: razdor-engine-apk
-      path: target/**/*.apk
-```
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: razdor-engine-apk
+          path: target/**/*.apk
