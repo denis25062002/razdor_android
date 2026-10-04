@@ -755,3 +755,32 @@ fn ds1_services_sound_as_the_original() {
     assert_eq!(names(13), ["InterfaceCastSpell", "InterfaceCastSpell", "InterfaceCastSpell", "InterfaceButtonDown", "Item-Gold"]);
     assert_eq!(names(14), ["InterfacePanelDown", "Item-Amulet", "Item-Amulet"]);
 }
+
+/// PLAYTEST_NOTES 2026-10-03 §2, checked live (run `rk1-village-taken.jsonl`): on РК1 the AI
+/// army 9 takes the hero's start village (building 6) at 13:00 with its whole stock (owner 9,
+/// gold and mana 0); the hero who walks in the same day captures it back (owner 0, as the
+/// original's 0x4ad94c does) and gets no tribute, the stock being empty until midnight.
+/// Army 9 leaves the map once it has the village, so that the walk is not cut by a meeting
+/// (the two games' AI walks part there, FINDINGS §5).
+#[test]
+fn rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day() {
+    let Some(dt) = install() else { return };
+    let mut r = Runner::new(Source::Install(&dt));
+    let actions = parse_actions(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/difftest/rk1-village-taken.jsonl")).unwrap()).unwrap();
+    for a in &actions[..6] {
+        r.apply(a).unwrap();
+    }
+    let village = |r: &Runner| r.state(0).unwrap().buildings.into_iter().find(|b| b.id == 6).unwrap();
+    let v = village(&r);
+    assert_eq!((v.owner, v.gold, v.mana), (9, 0, 0), "army 9 took it and its stock");
+    let g = r.game.as_mut().unwrap();
+    crate::rules::events::EventWorld::deactivate_army(g, 9);
+    let gold = g.gold;
+    let day = g.clock.day_index();
+    r.apply(&actions[6]).unwrap();
+    while r.apply(&Action::Ok).is_ok() && !r.notes.last().is_some_and(|n| n.contains("nothing to close")) {}
+    let g = r.game().unwrap();
+    assert_eq!((g.tile(), g.clock.day_index()), ((26, 37), day), "in the village the same day");
+    let v = village(&r);
+    assert_eq!((v.owner, v.gold, g.gold), (0, 0, gold), "his again, and no tribute");
+}

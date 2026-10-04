@@ -364,6 +364,13 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
 - Mana stocks of castles, forts and towns are never collected.
 
 **Entering a village** (code, 0x4bbc84). Entering an unguarded village first captures it (world.md).
+Seen in the running game (diff test, memory of the building record): the hero's step into a
+neutral village sets its owner to the player (ДС1 village 13, Проклятое озеро villages 2 and 30),
+and one an AI army took sets it back (РК1, `rk1-village-taken.jsonl`: army 9 takes the hero's
+start village 6 at 13:00 with its whole stock; the hero walks in at 18:30 the same day, the
+owner becomes the player again and the village window pays nothing). So the tribute is only
+what is in stock: an army that came first the same day leaves nothing until the midnight
+refill. Razdor: the same (`rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day`).
 The events are scanned first; one that opens its window keeps the village pending (0x4ed42c)
 until it is read, and a walk that ends in the village as an event opens enters it only after
 that window (world.md §7.2): the offer rolls below come after the event's OK.

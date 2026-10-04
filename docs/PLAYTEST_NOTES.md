@@ -33,6 +33,20 @@ was seen on and what to check.
    0x4bbc84 and the capture in world.md against the original under Wine (enter a village, look
    at its owner and its tribute; then let an AI army take the tribute first and enter on the
    same day). Fix whichever side is wrong, on both branches.
+   Checked (2026-10-04, dt-original): **the original does capture the village**, and Razdor is
+   left as the original. Read live from the original's building records (owner +0x124, stock
+   +0x11e) in the diff test: the hero's step into a neutral village makes it the player's (ДС1
+   village 13: 255 → 0; Проклятое озеро villages 2 and 30: 255 → 0), and an AI army's capture
+   is undone the same way (`tools/difftest/rk1-village-taken.jsonl`, run n2-village-taken: on
+   РК1 army 9 takes the hero's start village 6 at 13:00, owner 9, gold 60 → 0, mana 15 → 0;
+   the hero walks in at 18:30 the same day: owner 0, the village window pays nothing, his gold
+   stays 100). The "only if nobody else took it that day" part already holds: the tribute is
+   the village's stock, which the army that came first emptied and which refills at midnight
+   (economy.md §3). Razdor does the same (test
+   `rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day`; in the free run the two
+   games' AI walks part before the village, FINDINGS §5, so army 9 meets Razdor's hero on the
+   way). If the wish stands (villages never change hands for the player), it is a change of
+   the original's rules, for dt-feat.
 
 3. **Missing animations: units in battle and levelling up.** Fights lack the units' animations,
    and a level-up has none. To check: which battle animations the original plays (attack,

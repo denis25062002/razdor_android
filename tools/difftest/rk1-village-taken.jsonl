@@ -1,0 +1,10 @@
+{"op": "new_game", "map": "РК1", "hero": 1}
+{"op": "ok"}
+{"op": "wait", "hours": 1}
+{"op": "wait", "hours": 1}
+{"op": "wait", "hours": 1}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 26, "y": 37}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "snapshot"}
