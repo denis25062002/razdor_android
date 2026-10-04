@@ -222,6 +222,38 @@ fn totals_and_spare_gold_as_the_original() {
     assert_eq!(t.strength, g.world.armies[0].troops.iter().map(|tr| tactical_modes(&c, tr, 0).1).sum::<i32>(), "the dead count in the strength");
 }
 
+/// The one-rebuild shortcuts give what the full unit gives: its stats, its HP and maximum,
+/// its tactical cost, wounded, dead and in a building alike.
+#[test]
+fn a_troops_stats_rebuilt_once_match_its_unit() {
+    let mut s = map();
+    let mut a = army(1, (30, 10), 4, ENEMY, 0, &[troop(4, 0, 2)]);
+    a.leader_unit = 6;
+    s.armies = vec![a];
+    let mut g = start(&s);
+    let c = g.content.clone();
+    g.world.armies[0].troops[1].hurt = 25;
+    g.world.armies[0].troops[2].died_at = Some(1);
+    for tr in &g.world.armies[0].troops {
+        let u = troop_unit(&c, tr);
+        let (v, stats) = crate::rules::game::troop_unit_stats(&c, tr);
+        assert_eq!((v.hp, stats.clone()), (u.hp, u.stats(&c)));
+        assert_eq!(troop_hp(&c, tr), (u.hp, u.max_hp(&c).max(1)));
+        for bd in [0, 3] {
+            assert_eq!(tactical_now(&c, tr, bd), u.tactical(&c, bd));
+        }
+    }
+}
+
+/// The sim cache's hasher tells keys apart and gives a key the same hash every time.
+#[test]
+fn the_sim_cache_hasher_is_stable() {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let h = BuildHasherDefault::<KeyHasher>::default();
+    assert_eq!(h.hash_one((1u32, 2i32, [3u8; 5])), h.hash_one((1u32, 2i32, [3u8; 5])));
+    assert_ne!(h.hash_one((1u32, 2i32)), h.hash_one((2u32, 1i32)));
+}
+
 /// The priorities of the shipped file for target model 0 (only those used here).
 fn priorities() -> AiTargets {
     AiTargets {

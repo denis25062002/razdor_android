@@ -2202,6 +2202,12 @@ pub(crate) fn archetype_of(hero: HeroClass) -> u8 {
 /// The unit of an army or garrison troop: its level and XP, its worn items, its pay and
 /// kind, its hit points (its maximum, items included, minus what it lacks; 0 dead).
 pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
+    troop_unit_stats(content, t).0
+}
+
+/// [`troop_unit`] with its current stats ([`Unit::stats`]), rebuilt once for both: the stats
+/// do not depend on the HP.
+pub(crate) fn troop_unit_stats(content: &Content, t: &Troop) -> (Unit, super::units::Stats) {
     let mut u = Unit::new(content, t.unit, t.slot);
     u.level = t.level.max(1);
     u.xp = t.xp;
@@ -2212,14 +2218,16 @@ pub(crate) fn troop_unit(content: &Content, t: &Troop) -> Unit {
     u.spells = t.spells;
     u.drain = t.drain;
     u.carry = t.carry;
-    u.heal_full(content);
+    // Healed full (`Unit::heal_full`), then its wounds.
+    let stats = u.stats(content);
+    u.hp = stats.max_hp();
     if t.alive() {
         u.hp = (u.hp - t.hurt).max(1);
     } else {
         u.hp = 0;
         u.died_at = t.died_at;
     }
-    u
+    (u, stats)
 }
 
 /// Writes what a world spell or a rebuild did to the unit of troop `t` back into it: its

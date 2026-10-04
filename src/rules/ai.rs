@@ -37,7 +37,7 @@ use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, UnitId, Wage
 use super::economy::{delphi_round, rear_service, relation_price};
 use super::events::ArmyId;
 use super::fog;
-use super::game::{troop_unit, Event, Foe, Game, HeroCells, TALKED};
+use super::game::{troop_unit, troop_unit_stats, Event, Foe, Game, HeroCells, TALKED};
 use super::items;
 use super::map::{step_minutes, Tile};
 use super::rng::Rng;
@@ -480,8 +480,8 @@ pub fn bars_army(a: &Army, l: &Location) -> bool {
 
 /// A troop's hit points and maximum (worn items included); 0 for a corpse.
 pub fn troop_hp(c: &Content, t: &Troop) -> (i32, i32) {
-    let u = troop_unit(c, t);
-    (u.hp, u.max_hp(c).max(1))
+    let (u, stats) = troop_unit_stats(c, t);
+    (u.hp, stats.max_hp().max(1))
 }
 
 /// Maximum HP of a troop.
@@ -494,7 +494,13 @@ pub fn troop_max_hp(c: &Content, t: &Troop) -> i32 {
 /// its record stands in, both at least 1.
 pub fn tactical_modes(c: &Content, t: &Troop, bd: i32) -> (i32, i32) {
     let u = troop_unit(c, t);
-    (super::experience::tactical(c, t.unit, &u.base_stats(c), bd), u.tactical(c, bd))
+    (super::experience::tactical(c, t.unit, &u.base_stats(c), bd), tactical_now(c, t, bd))
+}
+
+/// Mode 1 of [`tactical_modes`] alone: the tactical cost of its current stats.
+pub fn tactical_now(c: &Content, t: &Troop, bd: i32) -> i32 {
+    let (_, stats) = troop_unit_stats(c, t);
+    super::experience::tactical(c, t.unit, &stats, bd)
 }
 
 /// The "gain" of a unit's items (the original's tactical cost mode 2): its current tactical
@@ -547,7 +553,9 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
     let o = &c.options;
     let mut t = Totals::default();
     for tr in troops {
-        t.strength += tactical_modes(c, tr, bd).1;
+        // One rebuild of the record serves its strength and its HP.
+        let (u, stats) = troop_unit_stats(c, tr);
+        t.strength += super::experience::tactical(c, tr.unit, &stats, bd);
         let cost = c.unit(tr.unit).cost;
         if !tr.alive() {
             t.res_bill += fpu_round(cost as f64 * (o.resurect_const as f64 / 100.0));
@@ -557,7 +565,7 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
             t.wages += c.wage_for(tr.unit, tr.kind);
         }
         t.recruit_sum += fpu_round(cost as f64 / o.cost_recrut_div as f64);
-        let (hp, max) = troop_hp(c, tr);
+        let (hp, max) = (u.hp, stats.max_hp().max(1));
         t.max_living += max;
         if hp < max {
             t.missing += max - hp;
@@ -792,10 +800,52 @@ impl SimKey {
 pub struct SimCache {
     /// By the sides' units: the battles played, each with the old records it read (side,
     /// record, HP) and the records it left in place of its units.
-    played: std::collections::HashMap<SimKey, Vec<Played>>,
+    played: std::collections::HashMap<SimKey, Vec<Played>, std::hash::BuildHasherDefault<KeyHasher>>,
     entries: usize,
     /// The static sides as the last off-screen battle or side pass left them.
     pub(crate) records: SideRecords,
+}
+
+/// The cache's hasher: the multiply-rotate hash of the Rust compiler's own tables (FxHash),
+/// far cheaper than the default SipHash on the long unit lists of a [`SimKey`]; the cache
+/// is only looked up, never walked, so the order of its table does not matter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyHasher(u64);
+
+impl std::hash::Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        }
+        for &b in chunks.remainder() {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_u8(&mut self, v: u8) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_u16(&mut self, v: u16) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
 }
 
 /// A simulated battle in the cache: it plays the same from any side records that hold the
@@ -2336,10 +2386,10 @@ impl Game {
         for u in 0..n {
             for (k, &(_, item)) in goods.iter().enumerate() {
                 let t = self.world.armies[i].troops[u];
-                let before = tactical_modes(&c, &t, bd).1;
+                let before = tactical_now(&c, &t, bd);
                 let mut tried = t;
                 if wear(&c, &mut tried, item).is_some() {
-                    let after = tactical_modes(&c, &tried, bd).1;
+                    let after = tactical_now(&c, &tried, bd);
                     if after > before {
                         value[k][u] = item_gain(&c, &tried, bd);
                     }
@@ -2418,7 +2468,7 @@ impl Game {
                 let a = &self.world.armies[i];
                 let mut pick: Option<(usize, i32)> = None;
                 for (k, tr) in a.troops.iter().enumerate() {
-                    let v = tactical_modes(&c, tr, bd).1;
+                    let v = tactical_now(&c, tr, bd);
                     if !tr.alive() && !skipped[k] && v > pick.map_or(0, |p| p.1) {
                         pick = Some((k, v));
                     }
@@ -2478,7 +2528,7 @@ impl Game {
     fn role_order(c: &Content, troops: &[Troop], bd: i32) -> [u8; 3] {
         let (mut w, mut s, mut m) = (0i64, 0i64, 0i64);
         for t in troops {
-            let v = tactical_modes(c, t, bd).1 as i64;
+            let v = tactical_now(c, t, bd) as i64;
             match attack_kind(c, t.unit) {
                 4 => w += v,
                 7 => s += 2 * v,
@@ -2650,7 +2700,7 @@ impl Game {
         };
         let garrison = std::mem::take(&mut self.world.locations[l].garrison);
         pool.extend(garrison.into_iter().filter(|t| t.alive()).map(|t| (t, d)));
-        let cost: Vec<i32> = pool.iter().map(|(t, bd)| tactical_modes(&c, t, *bd).1).collect();
+        let cost: Vec<i32> = pool.iter().map(|(t, bd)| tactical_now(&c, t, *bd)).collect();
         let kind: Vec<u8> = pool.iter().map(|(t, _)| attack_kind(&c, t.unit)).collect();
         let role = |k: u8| match k {
             4 => Some(0),
