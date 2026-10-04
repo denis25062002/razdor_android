@@ -27,6 +27,11 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
+      - name: Generate and fix Cargo.lock format
+        run: |
+          cargo generate-lockfile
+          sed -i 's/^version = 4/version = 3/' Cargo.lock
+
       - name: Ensure assets directory exists
         run: mkdir -p assets
 
@@ -35,18 +40,17 @@ jobs:
           NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
           TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
           
-          # Экспортируем пути в окружение GitHub Actions для следующего шага
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-          # Создаем симлинки тулчейна для aarch64 (64-bit)
+          # Симлинки тулчейна для aarch64 (64-bit)
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
           
-          # Создаем симлинки тулчейна для armv7 (32-bit)
+          # Симлинки тулчейна для armv7 (32-bit)
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/arm-linux-androideabi-strip"
@@ -54,7 +58,6 @@ jobs:
       - name: Build APK
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
-        # Собираем чисто, в онлайн-режиме, без --offline и хаков
         run: cargo quad-apk build --release
 
       - name: Upload APK
