@@ -13,6 +13,8 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Save and load on the bottom bar as the original's:** save stands next to the message box and
+  load beside it, each with the original's picture; the two buttons had each other's action.
 - **Armies on the map step as in the original:** their walk frames follow the game time, so
   a figure no longer marches in place while the world stands still, and a step an army takes
   in place now stands for its time instead of hurrying its next steps along.

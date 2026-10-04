@@ -30,15 +30,18 @@ pub enum BarButton {
 }
 
 impl BarButton {
-    const LEFT: [BarButton; 4] = [BarButton::Menu, BarButton::Settings, BarButton::Save, BarButton::Load];
+    /// From the screen's left edge inwards, as the original's ids 1–4 (4d46e0): exit menu,
+    /// options, load, and save next to the message box.
+    const LEFT: [BarButton; 4] = [BarButton::Menu, BarButton::Settings, BarButton::Load, BarButton::Save];
     const RIGHT: [BarButton; 4] = [BarButton::Journal, BarButton::Squad, BarButton::Spells, BarButton::Map];
 
     fn icon(self) -> usize {
         match self {
             BarButton::Menu => 1,
             BarButton::Settings => 2,
-            BarButton::Save => 4,
-            BarButton::Load => 3,
+            // Crossed in the original's files: save (id 4) shows `icon_3`, load (id 3) `icon_4`.
+            BarButton::Save => 3,
+            BarButton::Load => 4,
             BarButton::Journal => 5,
             BarButton::Squad => 6,
             BarButton::Spells => 7,
@@ -468,6 +471,14 @@ pub fn time_panel() -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_left_buttons_stand_and_look_as_the_original() {
+        // 4d46e0: ids 1–4 from the edge inwards are exit, options, load, save; save shows
+        // icon_3 and load icon_4.
+        assert_eq!(BarButton::LEFT, [BarButton::Menu, BarButton::Settings, BarButton::Load, BarButton::Save]);
+        assert_eq!((BarButton::Save.icon(), BarButton::Load.icon()), (3, 4));
+    }
 
     /// The original's own layout: its bar at y = 682, the middle at 512, scale 1.
     fn at(x: f32, y: f32, shown: bool) -> Option<TimeButton> {
