@@ -28,9 +28,11 @@ jobs:
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
-      - name: Downgrade Cargo.lock version for cargo-quad-apk compatibility
+      - name: Prepare dependencies and patch Cargo manifests
         run: |
           sed -i 's/version = 4/version = 3/' Cargo.lock || true
+          cargo fetch --target aarch64-linux-android
+          find ~/.cargo/registry/src -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
       - name: Ensure assets directory exists
         run: mkdir -p assets
