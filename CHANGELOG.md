@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.0 — 2026-10-04
+
 Razdor now plays by the original Discord Times' own rules, read from the original game and
 checked against it running side by side: the map, the AI armies, battles, the economy,
 spells, items, scenario events and saves. Where the original has a bug, Razdor plays what
