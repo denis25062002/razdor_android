@@ -527,6 +527,11 @@ map or is destroyed during the ticks (0x4ae536).
   §6.4 scan) without opening its window.
 - Leaving onto a cell outside any building (or onto a bridge) clears it; a bridge counts as
   "the building the hero is on" for events but never as entered.
+- **A won garrison battle enters nothing**: the garrison is engaged before the step onto the
+  building (§4.2), so the hero stays outside; the building is captured but the entered
+  building stays none, no window opens. A click on it plans a route like any other (it is
+  not "the building he stands in"): he walks onto the clicked cell and the window opens on
+  arrival. **live** (РК1's ruins 8 from (34,24), battle.md §11).
 - When the walk ends inside a building other than a bridge or an obelisk (types 13–15), its
   window opens (0x4aed85 → 0x4bbc84), unless the arrival's event scan (0x4aed3a) opened an
   event's window: then the building is entered only when that window is read, and only if it
@@ -626,6 +631,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Village crossed on the way | an unguarded village (or an empty castle, fort or ruins) stepped on is his, with no window; the walk goes on | captured when crossed, no window, the walk goes on | Matches (Razdor showed a capture window that stopped the walk until 2026-10-03) |
 | Building under an event's window on the way | the walk an event's window cuts short ends on his cell; the clicked building he stands in opens after the windows (`Game::stop_for_reading`) | 0x4aed41 → 0x4ae5d8, pending 0x4aed64 | Matches (until 2026-10-04 Razdor left him on the map) |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
+| After a won garrison battle | Outside, on the cell he attacked from; not entered; a click on the building walks him in and its window opens on arrival | The same (live, РК1's ruins) | Matches |
 | Friendly meeting | talk counter per army: +1 per step off his cell, + relation + 1 per step wherever he is (relation ≥ 0), greets above 0, then −500; the events run, and only one that fires stops the walk; the last army in order acts | talk counters, −500 after each meeting, grow per AI step; walk stops only if an event fires | Matches |
 | Sight radii | 9/8/10 cells | same | none |
 | Explored edge | the original's half-cell stamps (`fog::stamp`): 241 / 293 / 349 cells for radius 8 / 9 / 10 | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | Matches |

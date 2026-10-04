@@ -28,6 +28,7 @@ PLANNED_X, PLANNED_Y = 0x68DCA8, 0x68DCAC  # i32 cell of the last planned route
 IDLE = 0x68DC62           # u8 1 while the map takes input (no walk, wait, glide)
 QUEUE0 = 0xB06F60         # i32 entries in deferred-call queue 0 (walks, waits, glides)
 DIALOG_EVENT = 0x68DC70   # i32 event shown in the event window, -1 none
+ENTERED = 0x68DC74       # i32 the building the hero is in (entered), 0 none (world.md §7.2)
 SCREEN = 0x4ECDC4         # ptr current screen (window) object
 MINIMAP_SHOWN = 0x68DC64  # u8
 NEXT_MUSIC = 0xAE123C     # i32 time (ms) of the next music change, which draws the RNG
@@ -358,7 +359,8 @@ class Game:
         return {"screen": self.screen(), "idle": self.idle(), "dialog_event": self.dialog_event(),
                 "camera": list(self.camera()), "time_cs": self.m.i32(TIME_CS),
                 "hero_class": self.m.i32(HERO_CLASS), "next_music_ms": self.m.i32(NEXT_MUSIC),
-                "now_ms": self.m.u32(NOW_MS), "event_count": self.m.i32(EVENT_COUNT)} | \
+                "now_ms": self.m.u32(NOW_MS), "event_count": self.m.i32(EVENT_COUNT),
+                "entered": self.m.i32(ENTERED)} | \
             ({"battle_raw": self.battle_raw()} if self.screen() == "battle" else {})
 
     def hold_music(self, ahead_ms=3_600_000):

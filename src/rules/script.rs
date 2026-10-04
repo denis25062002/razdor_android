@@ -2233,9 +2233,11 @@ mod tests {
     }
 
     /// РК2's mines: a fort's own event asks for the peasants once the fort is the player's.
-    /// Beating its garrison takes it and enters it, so the event is checked then.
+    /// Beating its garrison takes it but does not enter it (he stays on the cell he fought
+    /// from, as the original: world.md §7.2, checked on РК1's ruins), so the event waits
+    /// until he walks in.
     #[test]
-    fn a_building_taken_from_its_garrison_runs_its_own_events() {
+    fn a_building_taken_from_its_garrison_runs_its_own_events_once_entered() {
         let mut mine = ev(EventKind::Local);
         let c = &mut mine.conditions;
         (c.buildings_check, c.buildings, c.buildings_owner) = (1, [1, 0, 0], [1, 0, 0]);
@@ -2253,14 +2255,24 @@ mod tests {
         assert!(g.set_destination((5, 2)));
         walk(&mut g);
         assert!(matches!(g.foe, Some(Foe::Garrison(_))), "the garrison fights");
+        let before = g.tile();
         let mut b = g.start_battle();
         b.begin();
         for f in b.fighters.iter_mut().filter(|f| f.team == crate::rules::battle::Team::Enemy) {
             f.hp = 0;
         }
         g.resolve_battle(&b);
-        assert_eq!(fired(&g.drain_events()), vec![1]);
+        assert!(fired(&g.drain_events()).is_empty(), "not entered: its events wait");
+        assert_eq!((g.tile(), g.location), (before, None), "outside, on the cell he fought from");
+        assert!(g.world.locations[0].owned(), "taken");
+        assert!(g.set_destination((5, 2)), "a click on it walks him in");
+        let events = walk(&mut g);
+        assert_eq!(g.tile(), (5, 2));
+        assert_eq!(fired(&events), vec![1], "its event fires as he enters");
         assert!(g.gold >= gold + 9);
+        // Its window opens once the event's is read.
+        g.event_window_closed();
+        assert_eq!(g.enter_waiting_building(), vec![Event::Arrived(0)]);
     }
 
     /// РК1 → РК2 → РК3: the next map starts with the carried army and the flags (the

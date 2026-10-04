@@ -47,6 +47,10 @@ Razdor's replay: walk toward the army's cell, strike the weakest enemy of the fr
 `campaign/<map>.jsonl`: the openings of the later campaign maps (РК2–РК7, ДС2, Обучающий2)
 with the knight and no carry-over, each the opening windows read, a walk, a wait of an hour
 and the nearest building (built from Razdor's replay); `CANDIDATES.md` has their results.
+`rk1-ruins-won.jsonl`: `rk1-church.jsonl` up to the ruins' battle won, then a click on the
+ruins and two walks; it checks that a building taken from its garrison is not entered and a
+click walks into it (world.md §7.2). The run log's `meta.entered` is the building the hero is
+in (0x68dc74, −1 none).
 `rk1-castle-quest.jsonl`: РК1 with the knight, the castle's main hall: «Сообщение посыльного»
 taken (`take`), its window read, the building window closed; it checks where the flight to the
 quest's lantern plays (at the OK, over the world screen: interface.md §9.8).

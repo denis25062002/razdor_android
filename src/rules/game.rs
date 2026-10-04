@@ -1816,20 +1816,11 @@ impl Game {
     /// [`Game::drain_events`].
     pub fn resolve_battle(&mut self, battle: &Battle) -> BattleResult {
         crate::diag::play(&self.clock.label(), &format!("BATTLE log:\n  {}\nBATTLE ends: {:?} after {} turns", battle.log.join("\n  "), battle.outcome(), battle.round));
-        let garrison = match self.foe {
-            Some(Foe::Garrison(l)) => Some((l, self.world.locations[l].id)),
-            _ => None,
-        };
         let result = self.settle_battle(battle);
-        // A building taken from its garrison is entered: its events are checked now, as
-        // when the hero walks into it (the original opens its window, 4bbc84, which scans).
-        // He fought it from the cell before it and stays there.
-        if let (Some((l, id)), BattleResult::Victory { .. }) = (garrison, &result) {
-            self.location = Some(l);
-            if let Some(engine) = self.script.as_mut().filter(|_| id != 0) {
-                engine.visit(super::events::Place::Building(id));
-            }
-        }
+        // A building taken from its garrison is not entered: he fought it from the cell
+        // before it and stays there, outside it (the original's entered building 0x68dc74
+        // stays none, no window opens); a click on it walks him in (world.md §7.2, checked
+        // under Wine on РК1's ruins).
         let after = self.run_script();
         self.pending.extend(after);
         result

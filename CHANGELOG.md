@@ -13,6 +13,10 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **A building taken from its garrison is entered by walking in:** after the battle you stand
+  where you attacked from, as in the original, and a click on the building now walks you into
+  it and opens its window on arrival (it opened at once from outside, and the building's own
+  events ran without you entering).
 - **Spell badges on the unit cards:** the army screen, the building windows and the battle show,
   as the original, up to four round badges along the bottom of each unit's portrait, one per
   running spell that costs mana; hovering one shows the spell's picture, name, effect, the

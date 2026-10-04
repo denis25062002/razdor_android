@@ -858,6 +858,22 @@ fn rk1_day1_the_av_log_follows_the_original_where_razdor_plays_the_same() {
     assert!(after.len() == 1 && crate::rules::music::ROTATION.contains(&after[0].as_str()), "{after:?}");
 }
 
+/// РК1's ruins 8 (2×2 at (36,23)) won from (34,24) (`rk1-ruins-won.jsonl`, run q3-ruins): the
+/// hero stays outside, nothing is entered, no window; a click on the ruins walks him onto the
+/// clicked cell and their window opens there, as in the original (world.md §7.2).
+#[test]
+fn rk1_the_ruins_won_are_entered_by_walking_in() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(include_str!("../../tools/difftest/rk1-ruins-won.jsonl")).unwrap();
+    let r = replay_traced(Source::Install(&dt), &actions, None).unwrap();
+    let at = |k: usize| (r.states[k].hero.x, r.states[k].hero.y);
+    let screen = |k: usize| r.looks[k]["screen"].as_str().unwrap_or_default().to_string();
+    assert_eq!((at(47), screen(47).as_str()), ((34, 24), "map"));
+    assert_eq!(r.states[47].buildings.iter().find(|b| b.id == 8).map(|b| b.owner), Some(0), "taken");
+    assert_eq!((at(48), screen(48).as_str()), ((36, 23), "building"));
+    assert_eq!(r.states[48].clock, 624_298_126);
+}
+
 /// РК1's castle (`rk1-castle-quest.jsonl`, run q1-hall): «Сообщение посыльного» taken in the
 /// main hall; the flight to its lantern (2, at (45,28)) and back is logged at its window's
 /// OK, while the building window is still the screen after it, as the original plays it

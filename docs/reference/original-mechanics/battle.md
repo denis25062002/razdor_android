@@ -865,6 +865,14 @@ FINDINGS.md §7).
 - **Victory** otherwise, the turn limit included: loot and trophies (economy.md), the beaten
   field army destroyed, a garrison's building captured, the enemy's surrender mana added, then
   the player's XP (Community hook c2518f).
+- **A won garrison battle does not enter the building.** The hero stays on the cell he
+  attacked from (the garrison is engaged before his step onto the building, world.md §4.2);
+  the building is captured but not entered (0x68dc74 stays none), no building window opens
+  and its local events are not scanned. A click on it afterwards plans a route and walks him
+  in: the window opens on arrival (world.md §7.2). **live**: РК1's ruins 8 (2×2 at (36,23))
+  won from (34,24) in the diff test (run q3-ruins): after the result box the screen is the
+  world, the hero at (34,24), the ruins owner 0, entered −1; `click_map 36,23` walks him to
+  (36,23) and the building window opens (entered 8).
 
 ## Razdor now → original
 
@@ -925,6 +933,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
 | 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units); at map start the hero's army is then auto-arranged (`Game::arrange_at_load`), as the load's round trip does. The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
 | 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first, columns in plain order (`Formation::after_battle_slot`) | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
+| 49 | After a won garrison battle | He stays on the cell he attacked from; the building is the player's but not entered (`Game::resolve_battle`): no window, its events wait; a click on it walks him in and opens it | Stays on his cell; captured, not entered (0x68dc74 none), no window; a click walks him in (live, РК1 ruins) | 11 | Matches |
 | 48a | Armies during the battle | every fighting unit's HP written into its army record after each action (`Game::battle_write_back`, called by the battle screen and the replay); the grid only at the end | sides written into both armies after every action (0x4c4f8c, 0x4c57bc → 48bb10, 4988c0): HP and grid | 11 | HP matches; the grid at the end only (no reader during the battle) |
 
 ## Unknowns and open points
