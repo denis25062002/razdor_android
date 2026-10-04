@@ -6,7 +6,7 @@ use razdor::rules::battle::Team;
 use razdor::rules::content::{ArtefactType, Content, ItemId, Stat, UnitId};
 use razdor::rules::experience::is_percent_stat;
 use razdor::rules::game::{Game, PACK_SIZE};
-use razdor::rules::items::{bonus_name, EquipError};
+use razdor::rules::items::{bonus_name, EquipError, Given, ItemFrom};
 use razdor::rules::units::Unit;
 
 use super::assets::Assets;
@@ -146,6 +146,32 @@ fn use_pack_item(game: &mut Game, unit: usize, i: usize) -> Option<String> {
             cue(Cue::Item(kind));
         }
         done.err().map(equip_error)
+    }
+}
+
+/// An item dropped on squad member `to`'s card ([`Game::give_item`]): a potion is drunk,
+/// the hero's card sends anything else to the pack, another unit wears it. The message to
+/// show, if any.
+fn give_on_card(game: &mut Game, from: From, to: usize) -> Option<String> {
+    let c = game.content.clone();
+    let source = match from {
+        From::Pack(i) => ItemFrom::Pack(i),
+        From::Worn(unit, slot) => ItemFrom::Worn { unit, slot },
+    };
+    let item = match source {
+        ItemFrom::Pack(i) => game.pack.get(i).copied(),
+        ItemFrom::Worn { unit, slot } => game.squad.get(unit).and_then(|u| u.items[slot]),
+    }?;
+    let kind = c.item(item).kind;
+    let name = game.squad.get(to)?.name(&c).to_string();
+    match game.give_item(source, to) {
+        Ok(Given::Drunk(healed)) if healed > 0 => Some(cued(Cue::Item(kind), razdor::trf!("{name} drinks it: +{healed} hits.", name, healed))),
+        Ok(Given::Drunk(_)) => Some(cued(Cue::Item(kind), razdor::trf!("{name} drinks it. The effect lasts until the next battle ends.", name))),
+        Ok(_) => {
+            cue(Cue::Item(kind));
+            None
+        }
+        Err(e) => Some(equip_error(e)),
     }
 }
 
@@ -490,26 +516,24 @@ pub fn squad(
         } else {
             HELD.with(|c| c.set(None));
             let over_pack = !show_tree && content.contains(vec2(mx, my));
-            let target = if h.moved { card_under.or_else(|| sheet_rect.contains(vec2(mx, my)).then_some(sel)) } else { None };
-            match (h.from, h.moved) {
-                (From::Pack(i), false) => *message = use_pack_item(game, sel, i),
-                (From::Worn(unit, slot), false) => *message = game.unequip(unit, slot).err().map(equip_error),
-                (From::Pack(i), true) => {
-                    if let Some(t) = target {
-                        *message = use_pack_item(game, t, i);
+            // A drop on a card is the army window's (0x4979c4); on the unit panel, the hero
+            // window's: it wears the item.
+            let card = if h.moved { card_under } else { None };
+            let on_sheet = h.moved && card.is_none() && sheet_rect.contains(vec2(mx, my));
+            match (h.from, h.moved, card) {
+                (From::Pack(i), false, _) => *message = use_pack_item(game, sel, i),
+                (From::Worn(unit, slot), false, _) => *message = game.unequip(unit, slot).err().map(equip_error),
+                (from, true, Some(t)) => *message = give_on_card(game, from, t),
+                (From::Pack(i), true, None) if on_sheet => *message = use_pack_item(game, sel, i),
+                (From::Worn(unit, slot), true, None) if on_sheet && sel != unit => {
+                    let done = game.give(unit, slot, sel);
+                    if done.is_ok() {
+                        cue(Cue::Item(c.item(h.item).kind));
                     }
+                    *message = done.err().map(equip_error);
                 }
-                (From::Worn(unit, slot), true) => match target {
-                    Some(t) if t != unit => {
-                        let done = game.give(unit, slot, t);
-                        if done.is_ok() {
-                            cue(Cue::Item(c.item(h.item).kind));
-                        }
-                        *message = done.err().map(equip_error);
-                    }
-                    None if over_pack => *message = game.unequip(unit, slot).err().map(equip_error),
-                    _ => {}
-                },
+                (From::Worn(unit, slot), true, None) if over_pack => *message = game.unequip(unit, slot).err().map(equip_error),
+                _ => {}
             }
         }
     }

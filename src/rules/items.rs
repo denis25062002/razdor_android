@@ -422,6 +422,146 @@ pub fn describe(content: &Content, item: ItemId) -> String {
     parts.join(", ")
 }
 
+/// Where an item dropped on a unit's card was picked up on the army screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemFrom {
+    /// The pack, at this index.
+    Pack(usize),
+    /// Squad member `unit`'s item slot `slot`.
+    Worn { unit: usize, slot: usize },
+}
+
+/// What a drop on a card did ([`Game::give_item`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Given {
+    /// The potion was drunk: the HP gained.
+    Drunk(i32),
+    /// The hero's card: the item went (or stayed) in the pack.
+    ToPack,
+    /// Worn by the unit, in its lowest free slot.
+    Worn,
+}
+
+impl super::game::Game {
+    /// The army window's drop of an item on squad member `to`'s card (0x4c346c → 0x4979c4,
+    /// magic-items.md §5.2): a potion is drunk; on the **hero**'s card any other item goes
+    /// to the pack (the hero equips only through the hero window, here the unit panel's
+    /// slots); on another unit's the wear test runs and the item goes to its lowest free
+    /// slot. A refusal changes nothing (the original leaves the item on the cursor).
+    pub fn give_item(&mut self, from: ItemFrom, to: usize) -> Result<Given, EquipError> {
+        let item = match from {
+            ItemFrom::Pack(i) => self.pack.get(i).copied(),
+            ItemFrom::Worn { unit, slot } => self.squad.get(unit).and_then(|u| u.items.get(slot).copied().flatten()),
+        }
+        .ok_or(EquipError::NoSuchItem)?;
+        if to >= self.squad.len() {
+            return Err(EquipError::NoSuchItem);
+        }
+        let c = self.content.clone();
+        let kind = c.try_item(item).ok_or(EquipError::NoSuchItem)?.kind;
+        match (from, kind) {
+            (ItemFrom::Pack(i), ArtefactType::Potion) => self.drink(to, i).map(Given::Drunk),
+            (ItemFrom::Pack(_), _) if to == 0 => Ok(Given::ToPack),
+            (ItemFrom::Worn { unit, slot }, _) if to == 0 => self.unequip(unit, slot).map(|()| Given::ToPack),
+            (ItemFrom::Pack(i), _) => self.equip(to, i).map(|()| Given::Worn),
+            (ItemFrom::Worn { unit, slot }, _) => {
+                // Taken off first, as the original's held item is: dropped back on its own
+                // unit it goes to that unit's lowest free slot.
+                let taken = take_off(&c, &mut self.squad[unit], slot).ok_or(EquipError::NoSuchItem)?;
+                match slot_for(&c, &self.squad[to], taken) {
+                    Ok(free) => {
+                        put_on(&c, &mut self.squad[to], free, taken);
+                        Ok(Given::Worn)
+                    }
+                    Err(e) => {
+                        put_on(&c, &mut self.squad[unit], slot, taken);
+                        Err(e)
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod give_tests {
+    use super::*;
+    use crate::rules::content::HeroClass;
+    use crate::rules::game::Game;
+    use crate::rules::world::demo_unit;
+    use std::sync::Arc;
+
+    /// A demo game with the hero (squad 0) and a spearman (squad 1).
+    fn game() -> Game {
+        let mut g = Game::new(Arc::new(Content::builtin()), HeroClass::Knight);
+        g.world.armies.clear();
+        let taken: Vec<_> = g.squad.iter().map(|u| u.slot).collect();
+        let slot = g.content.formation.free_slot(&taken, crate::rules::formation::Row::Front).unwrap();
+        let spear = demo_unit(&g.content, "spearman");
+        g.squad.truncate(1);
+        g.squad.push(Unit::new(&g.content, spear, slot));
+        g
+    }
+
+    fn item(g: &Game, key: &str) -> ItemId {
+        g.content.item_by_key(key).unwrap()
+    }
+
+    #[test]
+    fn on_the_heros_card_an_item_goes_to_the_pack_and_a_potion_is_drunk() {
+        let mut g = game();
+        let (shield, potion) = (item(&g, "oak_shield"), item(&g, "heal_potion"));
+        // From another unit's slot: into the pack, not onto the hero.
+        g.pack = vec![shield];
+        g.equip(1, 0).unwrap();
+        let at = g.squad[1].items.iter().position(|i| *i == Some(shield)).unwrap();
+        assert_eq!(g.give_item(ItemFrom::Worn { unit: 1, slot: at }, 0), Ok(Given::ToPack));
+        assert_eq!(g.pack, vec![shield]);
+        assert!(!g.squad[1].items.contains(&Some(shield)) && !g.hero().items.contains(&Some(shield)));
+        // From the pack: it stays there.
+        assert_eq!(g.give_item(ItemFrom::Pack(0), 0), Ok(Given::ToPack));
+        assert_eq!(g.pack, vec![shield]);
+        assert!(!g.hero().items.contains(&Some(shield)));
+        // From the hero's own slot: back to the pack.
+        g.equip_at(0, 0, Some(2)).unwrap();
+        assert_eq!(g.give_item(ItemFrom::Worn { unit: 0, slot: 2 }, 0), Ok(Given::ToPack));
+        assert_eq!((g.pack.clone(), g.hero().items[2]), (vec![shield], None));
+        // A full pack refuses: the item stays worn.
+        g.equip_at(1, 0, Some(1)).unwrap();
+        g.pack = vec![potion; crate::rules::game::PACK_SIZE];
+        assert_eq!(g.give_item(ItemFrom::Worn { unit: 1, slot: 1 }, 0), Err(EquipError::PackFull));
+        assert_eq!(g.squad[1].items[1], Some(shield));
+        // A potion is drunk by the hero.
+        g.pack = vec![potion];
+        g.squad[0].hp = 10;
+        assert!(matches!(g.give_item(ItemFrom::Pack(0), 0), Ok(Given::Drunk(n)) if n > 0));
+        assert!(g.pack.is_empty() && g.hero().hp > 10);
+    }
+
+    #[test]
+    fn on_another_units_card_the_wear_test_runs_and_a_potion_is_drunk() {
+        let mut g = game();
+        let (shield, sword, potion) = (item(&g, "oak_shield"), item(&g, "short_sword"), item(&g, "heal_potion"));
+        g.pack = vec![shield, potion];
+        assert_eq!(g.give_item(ItemFrom::Pack(0), 1), Ok(Given::Worn));
+        assert_eq!((g.squad[1].items[0], g.pack.clone()), (Some(shield), vec![potion]), "the lowest free slot");
+        g.squad[1].hp = 5;
+        assert!(matches!(g.give_item(ItemFrom::Pack(0), 1), Ok(Given::Drunk(n)) if n > 0));
+        // From the hero's slot to the unit; a second shield is refused and stays put.
+        g.pack = vec![sword, item(&g, "oak_shield")];
+        g.equip_at(0, 1, Some(3)).unwrap();
+        assert_eq!(g.give_item(ItemFrom::Worn { unit: 0, slot: 3 }, 1), Err(EquipError::SameType));
+        assert_eq!(g.hero().items[3], Some(shield), "a refusal keeps the item where it was");
+        assert_eq!(g.give_item(ItemFrom::Pack(0), 1), Ok(Given::Worn));
+        assert!(g.squad[1].items.contains(&Some(sword)));
+        // Dropped back on its own unit: its lowest free slot.
+        let at = g.squad[1].items.iter().position(|i| *i == Some(sword)).unwrap();
+        g.squad[1].items.swap(at, 3);
+        assert_eq!(g.give_item(ItemFrom::Worn { unit: 1, slot: 3 }, 1), Ok(Given::Worn));
+        assert_eq!(g.squad[1].items[1], Some(sword));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
