@@ -46,20 +46,22 @@ jobs:
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-          # Вспомогательные симлинки
+          # Симлинки бинарных утилит NDK (включая readelf)
+          ln -sf "$TOOLCHAIN/llvm-readelf" "$TOOLCHAIN/aarch64-linux-android-readelf"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
           ln -sf "$TOOLCHAIN/aarch64-linux-android29-clang" "$TOOLCHAIN/aarch64-linux-android-clang"
           ln -sf "$TOOLCHAIN/aarch64-linux-android29-clang" "$TOOLCHAIN/aarch64-linux-android-gcc"
           
+          ln -sf "$TOOLCHAIN/llvm-readelf" "$TOOLCHAIN/arm-linux-androideabi-readelf"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/arm-linux-androideabi-strip"
           ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-clang"
           ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-gcc"
 
-          # Обертка линковщика для aarch64
+          # Скрипт-обертка линкера для aarch64
           cat << 'EOF' > "$TOOLCHAIN/aarch64-linux-android-ld"
           #!/usr/bin/env bash
           TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -82,7 +84,7 @@ jobs:
           EOF
           chmod +x "$TOOLCHAIN/aarch64-linux-android-ld"
 
-          # Обертка линковщика для armv7
+          # Скрипт-обертка линкера для armv7
           cat << 'EOF' > "$TOOLCHAIN/arm-linux-androideabi-ld"
           #!/usr/bin/env bash
           TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
