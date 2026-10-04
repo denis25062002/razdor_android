@@ -12,16 +12,22 @@ old id, and their versions give both.
 
 ## Unreleased
 
+Razdor now plays by the original Discord Times' own rules, read from the original game and
+checked against it running side by side: the map, the AI armies, battles, the economy,
+spells, items, scenario events and saves. Where the original has a bug, Razdor plays what
+the original evidently meant (see Fixed). Razdor's own extras stay, and a few new ones join
+them.
+
 ### New
 - **Custom battle**: a main-menu link opens a setup for a battle outside any campaign: both
   armies from the install's unit types (the demo's without an install), each unit with its
   level and items, the wide or vanilla formation, the battle AI's level and who plays each
-  side (you or the AI; the AI on both to watch). The battle runs on the normal battle screen;
-  its result box offers the same armies again, a change of armies or the main menu, and
-  counts the rounds. The setup is kept until the game closes; games and saves are untouched.
+  side (you or the AI; the AI on both to watch). Its result box offers the same armies
+  again, a change of armies or the main menu, and counts the rounds. Games and saves are
+  untouched.
 - **Watched quick battle** (W, or **Watch** under the unit panel): the AI plays both sides
   on the battle screen with the normal animations at 1×, 2× or 4× (S), skippable to the end
-  (Q) with the same result as the instant quick battle, and W again takes the control back.
+  (Q) with the same result as the instant quick battle; W again takes the control back.
 - **Inventory filter**: on the army screen's backpack and the market's lists, typing (or
   Ctrl+F) filters the items live by name, type, stats, bonus and description, in any case
   (Ё as Е), with the match lit; Enter takes the first match, Esc clears.
@@ -31,676 +37,198 @@ old id, and their versions give both.
 - **Cheat console** (~, Ё on a Russian layout, on the world map and in battle): `help`,
   `gold N`, `mana N`, `reveal`, `heal`, `xp N`, `level N`, `item`, `spell`, `unit <id or
   name> [level]`, `time H`, `win`, `lose`, `god` and `speed N`, with a scroll-back and the
-  earlier commands on Up / Down. Keys typed there do not reach the game. A game in which a
-  cheat worked is marked in its saves ("(cheats)" in the load list) and in the play log.
+  earlier commands on Up / Down. A game in which a cheat worked is marked in its saves
+  ("(cheats)" in the load list) and in the play log.
+- **Spell badges on the unit cards**: the army screen, the building windows and the battle
+  show, as the original, up to four round badges along each portrait, one per running spell
+  that costs mana; hovering one shows the spell's picture, name, effect, the unit's life loss
+  and the time left. In battle the potion, blessing, poison and curse signs sit where the
+  original puts them, and a unit that drank a potion shows its sign on the army and building
+  cards too.
+- **The wait and centre buttons**: hovering the time panel's message box on the idle map
+  shows the original's three buttons over it: wait 1 hour, centre the view on the hero, wait
+  4 hours. The centre button (and Tab) glides the view back to the hero.
+- **Stop a wait with a click or a key** (Razdor's choice; the original's waits always run to
+  their end): a left click anywhere or a key during a 1 h, 4 h or endless wait ends it after
+  the half hour under way and does nothing else. Space and a right click still end it at
+  once; the view keys (zoom, minimap, Tab) leave it running.
+- **Front-row width setting**: the settings window chooses 6 or 4 front-row cells (the
+  install's "wide front row" until chosen). It applies to new games and to the game under
+  way from its next battle; its saves record the width. With 4 the formation is the
+  original's 4-column one, drawn as the original draws it.
 
 ### Changed
-- **A ruins' garrison is weighed as in the original:** until its first battle the AI counts
-  its units without the treasure items they were handed at the start, so its armies judge
-  such ruins as the original's do.
-- **Hiring sounds the gold twice, as the original:** the coins ring as the hire button is
-  pressed and start again as it is let go.
-- **The victory report after a won battle comes 250 ms after the battle screen closes,** as in
-  the original (it came at once).
-- **The potion sign on the army and building cards:** a unit that drank a potion shows its
-  sign on the army screen and in the building windows too, as the original, next to the
-  promotion sign, in the battle signs' places (it showed only in battle).
-- **The card stat strip's attack label as the original's:** a shooter's attack is written "A:"
-  (Razdor wrote "S:"), with the larger of its two attacks; "Pwr:" is kept for a caster without
-  a melee attack or standing outside the four middle places of the front line.
-- **The hero's route crosses moving armies, as in the original:** only stationary guards, and
-  an army a meeting waits for standing next to you, close the way; any other army's cell can
-  be walked through, and stepping onto it while it is still there meets or fights it (every
-  army's cell was closed before, which sent some routes the long way round).
-- **Save and load on the bottom bar as the original's:** save stands next to the message box and
-  load beside it, each with the original's picture; the two buttons had each other's action.
-- **Armies on the map step as in the original:** their walk frames follow the game time, so
-  a figure no longer marches in place while the world stands still, and a step an army takes
-  in place now stands for its time instead of hurrying its next steps along.
-- **A building taken from its garrison is entered by walking in:** after the battle you stand
-  where you attacked from, as in the original, and a click on the building now walks you into
-  it and opens its window on arrival (it opened at once from outside, and the building's own
-  events ran without you entering).
-- **Spell badges on the unit cards:** the army screen, the building windows and the battle show,
-  as the original, up to four round badges along the bottom of each unit's portrait, one per
-  running spell that costs mana; hovering one shows the spell's picture, name, effect, the
-  unit's life loss and the time left, in the original's words. In battle the potion, blessing,
-  poison and curse signs now sit where the original puts them (Razdor's bleed and hero marks
-  are gone; the turn number moved to the bottom right).
-- **An item dropped on the hero's card goes to the pack** (a potion is drunk), from the pack or
-  from any unit, as in the original: the hero wears items through his panel's slots.
-- **The wait and centre buttons:** hovering the time panel's message box on the idle map shows
-  the original's three buttons over it, with its art and hints: wait 1 hour, centre the view
-  on the hero, wait 4 hours. The centre button (and Tab) glides the view back to the hero in
-  the original's 900 ms cosine; the map takes no input meanwhile.
-- **A click or a key stops a wait** (a Razdor choice, not the original's: its waits always run
-  to their end): a left click anywhere or any key during a 1 h, 4 h or endless wait ends it
-  after the half hour under way, and does nothing else.
-- **The front-row width setting applies at once:** a game under way switches to 6 or 4 cells from
-  its next battle (never during one), and its saves record the new width. Units on the two edge
-  cells a 4-wide row lacks move to free cells, their own row first; the others keep their cells.
-- **A quest taken in a building shows its places at once:** when the quest's message is
-  closed in the main hall, the camera flies to the places it marks and back over the map,
-  then the building window returns, as in the original (the flight waited until you left the
-  building).
-- **Sound effects never pile up:** a sound played again while it still plays starts over, as the
-  original's one buffer per sound does; sweeping the pointer over the main menu no longer stacks
-  its bell into a din. Overlapping ovals no longer count the pointer on two buttons at once,
-  which rang the bell every frame between them.
-- **A building reached under an event opens after it:** when an event's window stops the
-  walk inside the building you clicked, the building's window opens once the event is read,
-  as in the original (it left you on the map).
-- **Events checked as the building window closes:** after healing, raising, buying or selling
-  there, an event your purchase allows opens as you close the window, as in the original,
-  not at your next step.
-- **The front row's width in the settings:** the settings window chooses 6 or 4 front-row
-  cells for new games (the install's "wide front row" until chosen); a saved game keeps its
-  own. With 4 the formation is the original's 4-column one, drawn as the original draws it:
-  the front row's two edge places, like the back row's, are the reserve's.
-- **The view stays while you choose a route:** a click on the map with the hero off screen
-  no longer brings the view back to him; it follows him once he sets off, as in the original.
-- **The back row's ranged defence is shown:** a unit in the back row shows the `Row2Def`
-  bonus (+5) on its card ("D: 0/5") and on its panel ("0 + 5", with a building's defence
-  when there is one), as the original's card and panel do; the damage already counted it.
-- **Counterblows are seen and heard:** a unit that strikes back now lunges at its attacker
-  with the blow's effect and sound on it, after the first blow, as in the original; a unit
-  killed by a cursed victim gets the sorcery's effect.
-- **A won battle ends as in the original:** the battle screen stays 2.5 seconds with each
-  unit's experience on its card, then the victory report opens on the map; no result box to
-  click away. A level gained no longer plays the promotion sound (the original plays it only
-  in the promotion screen). A pass in battle is a short pause.
-- **Building windows sound as the original's:** the window and each tab switch play the
-  original's tab sound; the money buttons (buy, sell, hire, heal, raise, learn, a ship) play the
-  gold sound; a hired unit's card slides from the recruit into your army; healing plays the
-  cure with its effect on the card. A purchase no longer plays the item's sound, and gold
-  coming in (midnight income, a sale) no longer plays the gold sound by itself.
-- **The village's gold sound when you leave:** the tribute's gold sound plays as the village
-  window closes, with the window's button, not as it opens.
-- **World spells show where they land:** the camera glides to the army the spell is for (when
-  it is far) and the spell's effect plays over it.
-- **Places an event shows come right after its window:** the camera flies to them as soon as
-  that event's message is closed and back to the hero, and the next message waits for it; a
-  new map opens the fog around the hero.
-- Smaller sounds as in the original: the wait keys and the time panel click, the main menu
-  rings as the pointer comes onto an item, the scenario list is silent, Next and Start click,
-  choosing another class plays the menu sound, the bar's icons play the panel sound (their
-  windows open silent), and an item sounds as it is picked up and again as it is worn.
-- **Only the heroes the map offers:** the new-game hero window offers a class only when the
-  map gives it a start cell, greys the others and opens on the first one offered, as the
-  original does (before, any class could be started on any map).
-- **Battle experience at the install's rate:** XP is paid at the `HeroExpirienceModificator` of
-  your `_Global.ini`, as the original does (50 in the Community Update, half the gameplay
-  video's rate Razdor used before).
-- **Random numbers as in the original**: one generator, the original's (the C runtime's
-  `rand()`), started at 1 on every new map, so a fresh map's markets and every roll after
-  them come out the same each time. It is no longer saved: loading a save starts it the way
-  the original does (from the map's plants and its armies), so loading the same save twice
-  replays the same rolls. Saves of the previous format still load.
-- Midnight rolls building by building, each market's new goods before its barracks; a
-  barracks slot always rolls, even when it is certain to grow.
-- AI armies draw their four wander points as the original does: anywhere in their patrol
-  box (or on the whole map), not only on cells they can walk to.
-- The Community events' random flag (opcode 18) uses the Community's own generator.
-- Village offers roll as in the original: every roll is drawn until one is offered, also
-  the one for the kind offered last time, and a visit with no offer lets that kind come
-  back. The innkeeper and the priest compare with half the army rounded down, and the
-  priest counts the living units, not only the wounded ones.
-- A save load seeds the random numbers from the plants of the original's wider cell
-  array (8 columns past the map's edge), as the original does.
-- Battle magic as in the original: the target's protection rounds the power half to even,
-  and a strike the protection takes to nothing still deals the GodAnger or GodStrike bonus.
-  An undead caster's draining curse heals it by the whole amount, even when the target had
-  less left.
-- Vampirism heals only after melee and long strikes, never after a shot.
-- The invulnerable and ghosts still take 1 from any blow or shot, but GodAnger and GodStrike
-  add their 10 or 20 on top of it, as in the original. A unit with no attack of a kind
-  strikes back with its attack modifier (a blessing's attack counts), and a counter blow or
-  a preventive strike that kills the attacker sets off no death curse.
-- A caster in the reserve can heal and bless a reserve unit that a NoHeal weapon marked.
-- Any army led by a Knight-type unit takes 80% physical damage, an AI lord's as well.
-- Counter blows, preventive strikes, poison and bleeding no longer count as hit points lost
-  for the battle XP.
-- The space key in battle does what a click on the unit's own card does: one action, a
-  spell on itself when it can cast one, else a pass. It no longer skips the whole turn.
-- A front-row shooter or mage in the first or last column never sees a clear front, as in
-  the original: the shooter hits only the enemies next to it, the mage cannot cast.
-- A flying shooter or mage strikes in melee at the three front cells opposite instead of
-  shooting or casting there. A Ghost casts at them whatever its magic direction, as long as
-  it has magic power.
-- Rows collapse only after a death or a unit's last action, as in the original, never when
-  a battle or a turn starts. When a battle starts with nobody in the player's front row, his
-  back row moves up (and stays there); his reserve and the enemy do not move.
-- The wide row's blocked cells move forward with a collapsing row, and a blocked cell spoils
-  a "clear" front; the player's own battle grid has no blocked cells, as in the original.
-- A turn starts unit by unit: each unit's turn-start bonuses come before its own
-  regeneration or poison (Berserk reads the hit points it had before).
-- The turn-1 initiative of Artillery and FirstShot units is part of their initiative, not a
-  modifier: an Elemental mage of the AI may haste such a unit on turn 1, and the panel no
-  longer lists it under "this turn".
-- The battle AI follows the original's scores: Elemental mages weigh a front-row
-  haste by the blows needed to kill the enemies facing it, and a nearly dead Death mage with
-  no spell for itself passes. The halving for a single action counts only for back-row mages,
-  and a unit the AI counts as a warrior never steps back.
-- The battle AI moves as the original's: units in the reserve only move (or tend the
-  reserve), a front-row unit may keep its cell when that is where it scores best, and a unit
-  with nothing to do casts on itself when its own cell offers a spell.
-- A front-row caster of the battle AI with nothing better to do may heal or bless an ally in
-  the front row, in any column, when that ally's cell scores best among its moves. A unit
-  that wants to step back but finds no free cell behind it may instead step to the edge of
-  the front row (or spend the action) when an enemy stands at the far edge, as in the
-  original.
-- The enemy is arranged anew for every battle as the original does it: its strongest front
-  fighter in front, its shooters and mages behind, the rest by strength. Battles between AI
-  armies arrange both sides, and the AI's practice battles play by the same rules (no
-  Splash, the simple kill test).
-- Unpaid units sit out only the battles their side starts: an army that attacks the player
-  meets his whole army.
-- After a battle the army keeps the cells its units ended on; units that did not fight, then
-  the fallen, take free cells from the reserve forward.
-- Those units fill each row from its first column, as the original's write-back does, not
-  from the centre as a new unit does. A fallen or unpaid unit standing in the front row
-  keeps the back row from stepping up when the next battle starts.
-- Before every battle the original plays it once in secret, the AI on both sides, and the
-  losses it predicts feed the battle XP; Razdor does the same now, so the XP pool follows
-  the original's formula with the predicted loss and the worst turn's loss.
-- A new unit (hired, given by an event, or at the start of a map, for the AI too) takes the
-  first free cell of the reserve, then of the back row, then of the front row, whatever it
-  is, as in the original.
-- Community Splash as in the patch: the 80% malus counts in every battle and in the AI's
-  estimates, and the 40% loses one on a multiple of 5 (an attack of 10 gives 3). Each
-  neighbour gets the whole action again, in the order the units stand in their army: its
-  preventive strike and counter blow (at 40%), vampirism and the rest. The primary target
-  also strikes back at 40%, a splash heal reaches a NoHeal-marked neighbour, and off screen
-  heals and blessings still splash.
-- No preventive strike before a spell, only before blows and shots.
-- Stun takes the same 30% of the target's initiative with every hit; ArmorBreaker leaves
-  `x − x/4` of each defence (5 → 4, 1 → 1); FateGift saves a unit from a Neutralize blow;
-  Berserk is recomputed before Drying's loss; BloodThrist counts every killing hit and not a
-  target that fate saves.
-- A Poison mage poisons when its own power, cut by the target's protection as the patch
-  computes it (`× (99 − protection) / 100`, Elemental `/ 114`), is above 15, whatever Splash
-  or Potent do to the spell.
-- Assault's ×2/3 follows the patch's test of the attacker's building and initiative: from a
-  building of 1 to 127, or in the open while slowed (a negative initiative modifier).
-- A Suicide unit is not removed by its own blow: at 0 HP, with no actions left, it keeps its
-  side in the battle until a counter blow or the next turn start removes it, and its
-  vampirism can give it hit points back meanwhile.
-- The magic drain and floor are per unit type: a type without magic power of its own neither
-  drains nor floors, and an undead Death type with its own `MinMagicPower` gets no +25.
-- NoHeal's mark stays on the place in the army's list, so a death before the marked unit
-  passes the mark to the next one, as in the original.
-- Flock compares the two sides as they stood after the last action of the battle on screen
-  (battles between AI armies see that battle's counts too), and Hunger's count of removals is
-  shared by every battle and kept from one battle to the next.
-- Evasion is read as a byte, as in the patch.
-- An EternalGift change to a unit's initiative moves it in the turn order only from the next
-  turn, and Stun keeps taking 30% of the initiative the unit started the turn with. An
-  EternalGift blessing or curse on a unit cursed below 0 attack still changes that attack,
-  not its shot.
-- The battle AI scores a melee target with 0 Manevres with the patch's huge constant, its
-  32-bit wrap included, so it fixates on such a target or ignores it as the original does.
-- **The hero's route is planned as the original plans it**: a flood from the clicked cell
-  that prices each step by the cell he leaves and stops as soon as it reaches him, so a
-  route can be a little dearer than the cheapest (a diagonal first step, say). The walk goes
-  to the very cell clicked, also inside a building.
-- A click on an unexplored cell does nothing: the hero no longer feels his way into the dark.
-  Water is a target only with a ship; a click next to open ground no longer means it.
-- The route goes around only castles and forts whose attitude is 0 or less and ruins not
-  his; every other building, ill-disposed towns included, is crossed. At sea, bridges close
-  only when he clicks land or stands on one.
-- Stepping onto an army engages it, before he moves: a hostile one fights, a friend meets
-  him. Stepping onto a cell of a village, castle, fort, ruins or bridge meets the army that
-  lives there, or the garrison of an ill-disposed castle or fort (attitude 0 included) at its
-  gate; an empty one is taken, and so is every unguarded village stepped on, even when the
-  route only crosses it.
-- A building is entered on its second cell crossed (its events may fire) or where the walk
-  ends; its window opens only there.
-- AI armies attack or greet the hero only right after a step of his, never while he waits or
-  casts, and never step onto his cells: they stop next to him. A friendly army greets him
-  when its talk counter is above 0 (it grows as the army steps), then not for a long while.
-- AI armies pay for a step with the cell they leave; stationary guards bank no time.
-- A pursued army that goes out of reach ends the pursuit and the hero stops.
-- An event that fires when the hero steps onto an army takes the place of the battle: the
-  army then leaves him alone for a while. Going to sea or ashore makes the AI armies on that
-  side lose their banked time and plan again.
-- **Ships as in the original**: buying one puts no ship on the water; he steps out of the
-  shipyard onto the water to sail, and leaving it on foot loses the purchase. Landing parks
-  the ship on the water he left.
-- A plant, mountain or rock standing in the water blocks ships; overlapping hills are laid
-  in the original's row-by-row order.
-- The hero's sight, speed and casting time stay those of the class he started with, whatever
-  unit an event makes him; a Community speed event sets his speed.
-- Sight and lanterns explore exactly the original's cells (its soft half-cell stamp: the
-  archmage's 8 cells reach 8 more cells than before). A lantern without a radius lights
-  nothing.
-- The clock starts a minute after the map's start time, and the hero's first noon report is
-  always the next day's, even after a morning start.
-- The noon report comes in the first event check after 12:00 in which no event fired and no
-  spell is being read (so after a cast, not in the middle of it); midnight comes after the
-  armies have moved. A noon held up past midnight skips that day's own noon, as in the
-  original.
-- A friendly army's talk counter grows with each of its steps wherever the hero is, so it
-  greets him again sooner. A greeting no longer stops his walk unless one of its events
-  fires; an AI attack whose events fire brings no battle. Of several armies next to him,
-  the last in the map's order acts.
-- After a walk, AI armies keep off the cell in front of the hero (his last step's
-  direction) while he stands, as in the original. A pursued army that goes into the dark
-  ends the pursuit.
-- An event that moves an army to the hero puts it on his cheapest free neighbour (a road
-  before grass, a building only as a last resort), moves its home there too but keeps its
-  patrol area where it was, and leaves a waiting army off the map.
-- **The world-map AI as in the original**, its slips included. AI armies keep no goal: at
-  every step they may plan again (every few steps, or every step with anyone near), with
-  one flood from everything they want at once, and walk the way it gives. They score other
-  armies and the hero by a battle played in secret (aggression shifting it, a hostile one
-  worth more, a lost one a danger they route around), and every building by its village
-  gold, what they could buy, whether they can take it and its garrison; a stationary guard
-  they cannot beat closes a building to them.
-- AI armies still keep to the hero's roads on the original's flood (Razdor's choice since
-  0.2.0): castles and forts not their own or a friend's, ruins not theirs and buildings
-  they would assault are closed to their way, unless they head for it or stand in it.
-- Stationary guards no longer move, plan or get paid; an army with nothing to do steps in
-  place, and greets a friend or the hero standing next to it.
-- AI armies greet each other (and, after his step, the hero) by talk counters, and attack a
-  hostile neighbour only when their battle score says so; an enemy sheltering in a third
-  party's building is not attacked.
-- In a building an AI army assaults it if hostile (a tavern or church on its way too, a town
-  only at its worst attitude), takes villages, castles and forts it wins, makes altars and
-  ruins neutral, collects any village's gold (feudal lords), sells its pack and buys items
-  by what they add to its units' strength, heals by its units' hit points left, raises its
-  dead in towns and churches, hires by battle role and its leader's Nature, and buys and
-  deals out its own castles' garrisons.
-- AI armies keep their units' worn items, their dead (raised or dropped after a week) and
-  their pay; a feudal lord short of gold at its noon leaves its cheapest units unpaid, and
-  they stay out of the battles it starts. An army's noon comes at its first step after
-  12:00, from its income, its castles' stock and its villages.
-- Battles between AI armies: the loser's wage bill and gold go to the winner as in the
-  original, the loot of items to the side with more hit points left, worn by whoever they
-  help most; the AI's units are promoted by its own rolls, their items to the loot.
-- Beaten armies no longer retreat into their castle: they respawn after their days, whole
-  when an AI army beat them, the leader alone when the player did (unless the map says
-  whole); a rogue respawning at its ruins takes them over.
-- Armies placed on water are ships and plan like any army on the sea; ships with no patrol
-  of their own wander the whole sea.
-- Units with two upgrade options keep them in the first and third slot, as the original's
-  loader moves them.
-- Saves of the previous format still load; their AI armies start their plans afresh.
-- An AI army buys a good of negative price (a personal item) for its absolute price.
-- The AI rescores its battles against a feudal army after that army's noon, and against the
-  hero after his noon, an event that took effect and a visit to a building, as the original.
-- An army placed on water inside a building's footprint other than a bridge is a ship.
-- An AI army standing still that the hero's cell bars counts an idle plan or a step as the
-  original's path index says (an army that planned nothing in mid-path, or has no path at
-  all, counts it idle).
-- An army an event brings onto the map comes back with its dead raised and everyone paid,
-  takes its place among the armies in their order (it moves in its turn, not last), draws
-  its wander points, gets its home back when it stands in it, and the AI rescores it.
-- AI hiring scans a building's six barracks slots with their empty ones, as the original:
-  a unit hired from the sixth slot moves the scan on to the next role, which can lower the
-  cap to 8 units early; a slot's stock is the one that goes down.
-- An AI army beaten in a fight of its own step goes on with the rest of that step as the
-  original's record does: it may attack the next enemy with nobody and lose again, take a
-  village's gold, buy, heal or hire, and it comes back with all that when it respawns.
-- A beaten army that comes back (by its respawn or an event) is no longer "beaten" for the
-  events, and an army beaten by the player and then by an AI army counts as beaten by that
-  army only, as the original keeps one mark. An event can bring back a beaten army, even
-  one that would never respawn, and an event that removes a beaten army stops its respawn.
-- An army that respawns or that an event brings back takes its first step at once, for
-  free, as in the original.
-- **The noon payment as in the original.** Castles and forts pay the gold stock they have
-  grown since the last noon (×F/100), not a fixed income, and towns pay nothing; every
-  building with a maximum grows its stock at midnight. No building pays mana at noon, and
-  villages linked to the player's buildings give him their gold only.
-- Corpses draw no wage. Rear Service cuts the whole wage bill once at noon (by the stored
-  income), and the wages shown are the full bill. A short
-  noon refunds full wages, cheapest first, a corpse's too, never an elemental's; deserters
-  leave with their worn items.
-- With no mana at a noon (any army's), the Community's mana-short flag goes up; the
-  elementals go unpaid at that payment (or at the player's next one, when another army's
-  noon raised it), and the payment clears it.
-- The noon report shows the nominal income of the player's towns, castles and forts, the
-  bill and the gold before the payment, warns when they do not cover the wages, and is not
-  shown when there are neither wages nor income. A Ranger heals 20% more when it is shown;
-  a dead Medic still heals at midnight. Saves of the previous format still load.
-- Building tabs as in the original, with no attitude test: any building with a barracks
-  unit hires and heals (a tavern or altar too, an ill-disposed one too), unless a barracks
-  unit is not of ordinary Nature and the building lacks the "all types" flag; castles with
-  no barracks no longer heal. Only towns, markets and churches sell items; the obelisk has
-  no window. An ill-disposed village pays its tribute.
-- The player's dead are never buried by time: they can be raised in a town or church any
-  time, and come back paid.
-- Ruins keep only their first five goods as treasure.
-- The garrison as in the original: one click selects a unit, the second moves it to an
-  empty cell or swaps it with a unit of the other grid, free and unpaid as it was (the only
-  way into a full army). Taking back a unit that went unpaid and was parked for less than
-  a day costs one day's wage; the hero and named units stay with the army; corpses can be
-  left. Opening the tab sets the guards' paid marks.
-- Dismiss and Bury ask for a confirmation, and the unit leaves with its worn items; the
-  pack is not touched.
-- **Market stock as in the original.** A market keeps 12 places, the map's goods in theirs;
-  its random goods are drawn into the empty places from price bands walking down its window
-  (the first from the top half), by the original's type and school rules (churches sell
-  amulets and potions, towns and markets no potions, no Death items in towns and churches),
-  and are no longer sorted by price. A town's potions are healing potions plus, with more
-  than six goods to draw, one of five others; a town with only the map's goods gets a
-  healing potion each midnight. A market redraws 12 hours after its last restock at the
-  earliest, at a midnight. The map load caps the price window at the dearest item.
-- The market lists only items that can be sold, shows unaffordable prices in red, opens on
-  the goods when there are some, and a purchase no longer checks the pack's room. An AI
-  army shops (sells its pack) in a market even when its goods are gone.
-- A map's good of negative price (a personal item placed in a market) pays its buyer, as in
-  the original; an attitude outside −3..3 leaves a price unchanged; a dead Merchant still
-  bargains.
-- A market whose list of candidates runs out while drawing a good leaves that place empty
-  instead of taking the last refused good.
-- **World spells per unit, as in the original.** Every unit holds up to four lasting
-  spells of its own; a unit with no free slot is left alone by a spell, its instant heal or
-  wound included. A life-draining curse is now a lasting drain of the unit that compounds and
-  cuts its hit points twice (at once and through the new maximum); a lifting lowers it.
-- Enemy spells reach any army on explored ground, at any distance, friends included (but not
-  a friend with a meeting waiting, nor an army in a building); the spell is lost only if its
-  target leaves the map. The mana is paid when the spell lands, even below zero. An event
-  that fires while the hero casts ends the casting and the spell lands at once. The spell
-  card shows the original's casting time (half an hour short with a Caster or, for the
-  Archmage, an odd casting time). Only the first 15 spells of the book can be cast; events
-  may teach more.
-- An event's spell on the army resets its time instead of adding to it, a spell number past
-  the last spell casts the last one, and a spell that kills the whole army loses the game.
-  The dead keep their items.
-- **Stats rebuilt as the original:** the spells' flat changes come before every percent, the
-  initiative and actions are worked in hundredths (actions rounded half up), a percent on a
-  protection, regeneration or vampirism adds points both ways (protections 0–99), a unit with
-  no melee, ranged or magic attack at its level gains none from items, stats can go below 0,
-  and a hero at 1 HP has initiative 1. A unit carries one bonus: an item's replaces its own.
-  When the maximum HP changes, a wounded unit's hit points follow it proportionally.
-- Item wear rules as the original: an item of a magic school only for a unit of that school
-  (it no longer gives its school), holy items barred for Undead by Nature. Potions add up in
-  one block; a potion's protections replace what an earlier potion gave, and a
-  potion of 1000 healing or more raises the dead. An unknown item type reads as a potion.
-- Save format 7: spells, drains and hit point fractions are kept per unit; older saves load
-  with their army's spells moved onto its units.
-- An event that casts a spell while the hero reads one lands it after his. An event's spell
-  now lands after its other results (a unit it adds is hit too) and before its delay passes.
-- A spell that leaves someone of the army it hit alive gives its fallen hero or leader 1 HP
-  before the army is rebuilt. After a battle, the player's dead
-  units lose their spells.
-- An event whose "no meeting" byte is 1 teaches no spell, opcode or not. A spell's price in a
-  sanctuary is exactly its cost, a negative one included. Item types and spell targets are
-  read case-sensitively, as the original does.
-- **Scenario events as the original runs them:** conditions in its order and with its
-  rules: the squad count counts the dead, strength, squads, level, gold and mana are tested
-  only with "current stats", an army is inactive only while waiting (a destroyed one is
-  neither), "at home" means standing in its home building, an artifact in a slot is one copy,
-  an AI army's artifact must be worn, a named-character slot takes any unit of its type, and
-  owner 0 fails a unit or artifact check. The "hero at 1 HP" box is a condition, never a
-  result.
-- Event flags are the original's one string, tested by substring: a flag `AB` also holds
-  while `XAB1` is set; `+X` no longer adds a digit, counters need the `^` form. Boarding a
-  ship sets the flag `Sea`, landing clears it.
-- A Yes makes an answered event a once-event (unless "repeat after yes"); an asking event
-  with no message applies no items, units or spells on Yes. An event's items, units and
-  spells come first, then XP, gold (which no longer goes below 0), armies and the rest; a
-  delay drops the event's chain, and a victory or defeat event casts, fights and waits no
-  more. An event can fire again in the same minute on a later scan; one without a duration
-  waits 61 minutes.
-- Quests of a town or castle are taken in its main hall, with the rumours (they no longer
-  fire on entering); event points fire every event they list. A quest received twice is
-  listed twice in the journal, which shows the question and the time since it was received.
-- A unit joining a full army dismisses the weakest one; one taken from an army brings its
-  whole record and an emptied army leaves the map; a removed unit given to an army leads it
-  if it is a named character. The army moved next to the hero is always the "given to"
-  army. A patrol change re-centres the patrol box.
-- The next campaign map gets the hero's whole record (wounds and class too), the old gold
-  and mana instead of its own, and the old pack and army in place of its own. The tutorial
-  is offered at every new game until it is finished (or a save exists). Double spaces in
-  map texts are collapsed, `#HEROCLASS` is not filled any more, and titles end at `#`.
-- Community event opcodes as the patch: opcode mode needs "no meeting" = 1 and any patrol
-  value, the byte pokes and compares work on single bytes (across records, strict < and
-  >), opcode 18 draws the digit of the event's `^` flag, and a "no meeting" event with a
-  spell casts it.
-- Save format 8: the event flags are one string; older saves load with their flags joined.
-- A unit an event removes takes its worn items with it unless it goes to another army,
-  where it leads when the event's slot names a character (not when the unit has a name).
-  Going to sea also clears the flag `EnterShipyard`.
-- A Yes sets an event's once box to its "repeat after yes" byte with the lowest bit flipped,
-  as the original does. A named-squad check notes the units it takes in three places only,
-  so from the fourth on a unit can count twice.
-- Community opcodes reach an event's run-time bytes (last fired, times fired, the answer):
-  a poke can let a once-event fire again, and an answer byte other than 0 and 1 counts as
-  both "with Yes" and "with No".
-- Experience as the original: a level makes a wounded unit's HP follow its new maximum
-  (30 of 50 becomes 33 of 55), for the player's units and the AI's, and so does a
-  promotion, which now keeps every worn item on, even one the new class could not put on.
-  The XP of a won battle is paid after the potions have ended. An army whose map gives it
-  an XP correction of 0 pays no XP. A side that surrenders gets no XP, and an AI army
-  whose strength at the end of an AI battle is 0 is beaten even with a lone weak shooter
-  or mage standing; the stronger side, not the one with more HP, takes the loot. The
-  event condition on army strength counts the dead too, with the defence of the building
-  the hero stands in. The XP table takes `StartExpirience` and `LevelMultipler` as they
-  are, and a `CostMultipler` of 0 counts as 0.
-- After an AI battle only the survivors gain XP and roll for promotion, as in the
-  original: a fallen unit is no longer promoted, nor does it draw from the game's random
-  numbers. The player's units left in a building gain XP when its garrison holds out
-  against an AI army, and the AI's roll in the upgrade tree can promote them (their worn
-  items then go to the battle's loot), since the original keeps them in the garrison's
-  record; the worn items of those that fall go to the loot too. The XP an AI army's hires
-  get from the player's army uses the units' level value without the Community "at least
-  1".
-- The install's ini files are read by the original's rules: keys and section names are
-  exact (case-sensitive, a key is not trimmed), the last of a repeated key or section wins,
-  a section header may sit anywhere in its line, a line ends only at a carriage return, and
-  numbers are read the loose way (`1.5` reads 15, a minus anywhere negates). A key missing
-  from `_Global.ini` reads 0, not its usual value, and `DecSpellelemental` is spelt as the
-  exe asks for it. A unit is any section with a name, starting XP and cost, its upgrades
-  come from the section at its position, and an upgrade to a name no unit has is no option.
-  An item needs an icon, name, type and cost; a spell's id is its section's position and
-  any type but Life and Death is Elemental. Names of natures, schools and bonuses are exact
-  (`People` is the ordinary nature, so the AI hires such units alongside ordinary ones).
-- The front row is 4 wide when the install sets its wide-row option (`OptValue11`) to
-  anything but 1, as in the original; on, or not set, it stays 6 wide, Razdor's default.
-  The options count as on when they read 1, as in the original.
-- Maps load as the original loads them: an army stands exactly on its file's cell (two
-  shipped armies stand where they cannot walk), and only its "inactive" byte keeps it off
-  the map. Unit ids 1–3 listed among the troops of a hero preset, an army or a garrison
-  are skipped. A building whose owner byte is 0 is the player's, and one of the player's
-  faction is no longer his for that; a bridge flagged for the hero's class is given to him
-  too. Named characters keep their double spaces.
-- A map file is read leniently, as the original reads it: only the version byte of the
-  header is checked, the strings start at the header's text offset, a string may end at
-  the end of the data, trailing bytes and odd section sizes are ignored, an event picture's
-  size is a full 32-bit value, the container's magic is `A?pf` with its other layout and
-  its first scramble mode read too.
-- Autosaves take the original's 12 slots: the autosave before a battle reuses the one of
-  the same name, a noon autosave the one of the same name on the same map; otherwise a new
-  one is made, or the oldest is overwritten once there are 12.
-- The noon autosave is written only when the noon report opens: a noon with no wages and
-  no income makes none, as in the original.
-- Save format 9: a game keeps the front-row width it was started with, and a load plays on
-  with it whatever the option says now, as the original takes it from the save's header.
-  Older saves load with the wide row they were made with.
-- The map's mouse and keys as in the original, Razdor's own kept: a left click, a right
-  click, Space or any other key while the hero walks stops him at the end of the step he
-  is taking (no longer on the spot); Razdor's keys that only change the view (zoom, M,
-  Tab), the music or the help leave him walking. The tooltip of an army or a building
-  shows only while the right button is held still; held and moved, it drags the map as
-  before. Space or a right click still ends a wait or a reading at once and drops the
-  route shown, and Esc still closes the minimap first. While he walks the view stays on
-  him. The held arrow key and the mouse at a screen edge (5 px) scroll the idle map by the
-  original's scroll speed.
-- Esc in the main menu quits the game at once, and Back or Esc on the hero choice returns
-  to the main menu, as in the original. A Yes / No question takes Esc and Razdor's N as No
-  and any other key as Yes, except Tab, Alt and the Up and Down arrows.
-- A battle starts as soon as its window opens, as in the original: there is no deployment
-  step (the formation is the one set in the army window). Until anyone has acted, Quick
-  battle (Q / Enter) plays it out at once, as on the old deploy screen; later Finish
-  automatically (Q) plays out the rest.
-- The music as in the original, and its draws from the game's random numbers: a map
-  starts with `BkgMap2`, then a new track is drawn on a timer per track among the seven
-  map themes and the credits theme (never the same twice), each looping until the next.
-  Battles play `BkgBattle1` against a garrison and `BkgBattle2` against an army; the
-  triumph starts with a won battle's result and loops until a dialog is closed; the
-  credits play their own theme. An event's window, a village's and a shipyard's open with
-  one of the three chords drawn from the game's random numbers. Like the original, these
-  draws shift the rolls that follow.
-- Opening a window from the bar (or with its keys J, B, A, Esc) while the hero walks no
-  longer stops him on the spot: as in the original, he finishes the step under way when the
-  map is back, and a wait goes on.
-- F4 on the idle map waits without end, half an hour at a time, through any event's
-  message, until F5 is pressed (the Community's endless wait); F5 saves as before when no
-  such wait runs.
-- The map scrolls by the whole milliseconds since its last frame, as in the original, so
-  the first frame back from a window scrolls by the time spent in it.
-- Maps whose header time is 0 (ДС1, ДС2, Другой берег) start at minute 1 of year 0, as in
-  the original, not at a date of Razdor's choosing, so their events and noons keep the
-  original's times. An autosave in their first hour is named "less than an hour".
-- An army's own spell in the map (army byte 84, used by many shipped armies) is on every
-  one of its units from the start, for good, as in the original. An army record without
-  units is kept, so Проклятое озеро's army 44 can be given units and called up by its
-  event. A point marked active with a radius lights up at the start whatever its model
-  (РК1's point 3), and only towns, castles, forts and ruins read their garrison troops.
-- A building given to the player takes the hero's attitudes as the map lists them, his
-  attitude to his own side included.
-- The autosave before a battle is named by the army's or the building's name only, cut at
-  its first `#`, so armies named alike share an autosave as in the original; an install
-  that turns its autosave option (`OptValue8`) off gets none (without the option Razdor
-  autosaves, as before).
-- A loaded game's front-row width holds for the rest of the session: the next new game,
-  restart or campaign map is played with it, as in the original.
-- Restart on a campaign map starts it again with what the map before carried over (army,
-  gold, mana, book, pack, flags), as the original's restart snapshot, which saves keep.
-- When the hero stops (a walk's or a wait's end, an event or an AI army stopping him), every
-  AI army facing a next step with a patrol radius, outside buildings, draws its idle offset
-  from the game's generator as in the original, after the windows the stop opened; a run
-  into an army or a garrison draws none.
-- A building the hero walks into as an event's window opens is entered when the window is
-  read, as in the original: a village's offer rolls, its window and its tribute come after
-  the event, not with it.
-- A new map starts the hero's army in the formation the battle's auto-arrange gives it (the
-  best warrior in front, the shooters and mages behind), as the original's map load does,
-  not with the preset troops in the reserve.
-- The ruins' garrison wears the ruins' goods, as in the original: each of the first five goes
-  to the unit it helps most (else into the garrison's pack), so the guards fight with them;
-  beating them yields what they wore, then the pack.
-- AI armies arrive at the end of each step's play time, as the original's step clock plays
-  it, and their arrivals, with the wander points and plans they draw, come in the order of
-  their times, not army by army; a midnight inside a wait tick comes between them at its
-  moment, and a hero's step is one tick however long.
-- A village (or an empty castle, fort or ruins) taken on the way opens no window and does
-  not stop the walk, as in the original; its window opens only when the walk ends in it.
-- The hero's step time is worked out as he comes onto a cell, as in the original, with
-  whether he was at sea before it: his first step on the water after going to sea (or on a
-  map that starts him at sea) takes no time.
-- An AI army's first step in place after the map load times its play by the cell south of
-  it (the direction the map load gives every army), as in the original.
-- The AI judges the battles it simulates by the sides' strengths, as the original does, not
-  by their hit points: its fears and targets among armies and buildings change accordingly.
-- An AI army that starts the map in a building is counted, in the battles it simulates,
-  without that building's defence until it next arrives in a building or fights, as in the
-  original (its units' strengths are recounted only then).
-- A cautious AI army (negative aggression) discounts its own losses to a tenth only when it
-  lost no unit in the battle it simulates, as in the original.
-- During a battle the armies' units carry their battle HP after every action, as in the
-  original (the army record follows the battle, a fallen unit at 0), not only at its end.
-- The victory box opens with the event window's chord, which draws from the game's random
-  numbers, as in the original.
-- The noon report ends a wait, as an event's message does, and opens with the event
-  window's chord, as in the original; closing it no longer resumes the wait.
-- The ranger's first step on a new map takes his own speed, not the knight's, as in the
-  original (it was priced before his class was set: a few minutes too long).
-- A village's blessing or witch rolls its spell or mana as the offer is made, before the
-  question's chord, as in the original, not when it is accepted; the blessing is any of the
-  five blessing spells, as in the original.
-- An AI army arriving just as the hero finishes a step sees him on his new cell, facing his
-  step, as in the original: one standing right ahead of him stays put instead of walking off,
-  and the idle draws of the hero's stop count it as the original does.
-- An army the hero beats pays its gold share plus its wage bill as it last counted it, as in
-  the original, even when none of its units survives the battle (before, a gang wiped out
-  paid no wages at all).
-- While the hero is taking a step, AI armies see him on the cell he is leaving until the step
-  ends, as in the original: their distances, their plans (a patrol only hunts him inside its
-  area) and their contacts no longer jump ahead to the cell he steps to.
-- AI armies judge the hero's army with the strength it had when it was last counted (in a
-  building window, at an event, at noon, in the army window, after a spell), as in the
-  original: after he leaves his town they still reckon with its defence until then, and
-  avoid or chase him accordingly.
-- Scenario events wait for the window before them: when several events come at once, each one
-  after a message is checked and applied only once that message is closed, as in the original
-  (before, they all happened at once, so an army an event activates moved, and the time an
-  event shows was taken, before the earlier messages were read).
-- A price that comes to exactly half a gold piece after a building's attitude rounds the way
-  the original's arithmetic takes it: up at attitudes 0 and +2 (75 at 1.1 costs 83, not 82),
-  down at −3 and −2, to even at −1 and +3.
-- Accepting a village's furs, the witch's mana or the innkeeper's pay shows the result in a
-  window of its own, with its chord, as in the original (the blessing and the priest show
-  none).
-- AI armies attack or greet the hero when he ends a step, not in the middle of one, and still
-  do while he stands or waits after a walk, as in the original: a friendly army walking
-  beside him greets him when it catches him at a step's end, and one that reaches him while
-  he waits stops the wait with its meeting or its battle.
+- **The map and the hero's walk**
+  - The route is planned as the original plans it (a little dearer than the cheapest at
+    times) and goes to the very cell clicked, also inside a building. It goes around only
+    castles and forts whose attitude is 0 or less and ruins not his, and crosses moving
+    armies: only stationary guards, and an army a meeting waits for, close the way.
+  - A click on an unexplored cell does nothing; water is a target only with a ship. The view
+    stays where it is while you choose a route and follows the hero once he sets off.
+  - Stepping onto an army engages it before he moves (a hostile one fights, a friend meets
+    him); stepping onto a village, castle, fort, ruins or bridge meets the army that lives
+    there or the garrison at its gate, and an empty one is taken. A village taken on the way
+    opens no window and does not stop the walk.
+  - A building is entered on its second cell crossed or where the walk ends; its window opens
+    only there. After winning a building from its garrison you stand where you attacked
+    from, and a click on it walks you in. A building reached while an event's window opens
+    is entered once the window is read.
+  - Ships as in the original: buying one puts no ship on the water; he steps out of the
+    shipyard onto the water to sail, and landing parks the ship on the water he left.
+  - Sight and lanterns explore exactly the original's cells; the hero's sight, speed and
+    casting time stay his class's whatever unit an event makes him. His step time is set as
+    he comes onto a cell.
+  - Maps start a minute after their start time (maps without one at minute 1 of year 0), and
+    the first noon report is always the next day's.
+  - The map's keys and mouse as in the original, Razdor's own kept: a click or a key while he
+    walks stops him at the end of the step under way (the view keys, the music and the help
+    leave him walking); the right button held still shows the tooltip, held and moved it
+    drags the map; Space or a right click ends a wait or a reading at once; Esc closes the
+    minimap first. Opening a window while he walks lets him finish the step afterwards.
+  - F4 waits without end, half an hour at a time, until F5 (the Community's endless wait).
+    The map scrolls with the arrow keys and the screen edges at the install's scroll speed.
+  - Armies' walk frames follow the game time, so a figure no longer marches in place while
+    the world stands still.
+- **AI armies**
+  - The world-map AI is the original's: armies keep no goal and plan again as they step,
+    with one flood over everything they want; they score armies, the hero and buildings by
+    battles played in secret, judged by the sides' strengths as last counted. They still keep
+    to the hero's roads (Razdor's choice since 0.2.0).
+  - Their moves come at the end of each step's play time, in the order of those times. They
+    attack or greet the hero when he ends a step, and while he stands or waits after a walk
+    (an army reaching him then stops the wait); while he takes a step they see him on the
+    cell he is leaving. Stationary guards no longer move, plan or get paid.
+  - In a building an AI army assaults, captures, collects tribute, sells its pack and buys by
+    what helps its units, heals, raises its dead, hires by battle role and buys its castles'
+    garrisons, as the original; it keeps its worn items, its dead and its pay.
+  - Battles between AI armies, their loot and promotions, beaten armies' respawns, and armies
+    an event brings or moves follow the original's rules. A beaten army pays the wage bill it
+    last counted, even when none of its units survives.
+- **Battles**
+  - A battle starts as its window opens, with no deployment step. Until anyone has acted,
+    Quick battle (Q / Enter) plays it out at once; later Finish automatically (Q) plays out
+    the rest. Space does what a click on the unit's own card does.
+  - Rows collapse only after a death or a unit's last action; the wide row's blocked cells
+    move with them. The enemy is arranged anew for every battle as the original does, and
+    after a battle the army keeps the cells its units ended on.
+  - The battle AI's scores and moves, the turn start, initiative, Community bonuses (Splash,
+    Stun, ArmorBreaker, Berserk, Flock, Hunger, Poison, Assault, Suicide and the rest),
+    magic protection and drain, vampirism, counter blows and preventive strikes all follow
+    the original and the Community patch.
+  - A new unit takes the first free cell of the reserve, then the back row, then the front
+    row; a new map starts the hero's army auto-arranged, as the original's map load does.
+  - The battle XP follows the original's formula, with a secret pre-battle simulation and
+    the install's experience rate (`HeroExpirienceModificator`). The armies carry their
+    battle HP after every action.
+  - Counterblows are seen and heard: the unit strikes back with the blow's effect and sound.
+    A won battle stays on screen 2.5 seconds with each unit's experience on its card, then
+    the victory report opens on the map; a level gained plays no sound outside the
+    promotion screen. A pass is a short pause.
+  - The card's stat strip writes a shooter's attack "A:", as the original; the back row's
+    ranged defence bonus shows on the card and the panel.
+- **Economy, buildings and markets**
+  - Noon as in the original: castles and forts pay the stock they grew, towns nothing, no
+    building pays mana; corpses draw no wage; Rear Service cuts the whole bill once; a short
+    noon refunds full wages, cheapest first. The noon report shows the nominal income and
+    warns when the gold does not cover the wages; it ends a wait.
+  - Building tabs as in the original, without an attitude test; the garrison tab moves and
+    swaps units by clicks; Dismiss and Bury ask first. The player's dead can always be
+    raised in a town or church.
+  - Market stock as in the original: 12 places, random goods drawn by price bands and the
+    original's type and school rules, redrawn at a midnight 12 hours after the last restock.
+    Unaffordable prices show in red; a price of exactly half a gold rounds as the original's.
+  - Village offers roll as the original's, and the furs, the witch and the innkeeper show
+    their result in a window of their own.
+  - A ruins' garrison wears the ruins' goods and is weighed by the AI without them until its
+    first battle.
+- **Spells and items**
+  - World spells per unit: every unit holds up to four lasting spells; a life-draining curse
+    is a lasting drain. Enemy spells reach any army on explored ground; the mana is paid when
+    the spell lands; only the first 15 spells of the book can be cast.
+  - Stats are rebuilt as the original's (flat changes before percents, initiative and
+    actions in hundredths, one bonus per unit). Item wear rules, potions and a level's or
+    promotion's HP follow the original.
+  - An item dropped on the hero's card goes to the pack (a potion is drunk), as in the
+    original; the hero wears items through his panel's slots.
+- **Scenario events and campaigns**
+  - Conditions, flags (one string, tested by substring), Yes and No, delays, chains and the
+    Community opcodes run as the original runs them. Events after a window wait for it to
+    close; places an event shows are flown to right after its window, also from a building's
+    main hall, where quests are now taken.
+  - Events are checked as a building window closes (after a heal, raise or purchase).
+  - The next campaign map gets the hero's whole record and what the map carries over; a
+    restart replays that hand-over. The new-game hero window offers only the classes the map
+    gives a start cell, as the original.
+- **The install, maps and saves**
+  - The install's ini files and maps are read by the original's rules, as leniently as it
+    reads them; a key missing from `_Global.ini` reads 0.
+  - The front row is 4 wide when the install turns its wide-row option off; otherwise 6,
+    Razdor's default. A saved game keeps its width.
+  - Random numbers are the original's generator, started afresh on every map, so a map's
+    rolls come out the same each time; a load seeds it as the original does.
+  - Autosaves use the original's 12 slots and names; an install that turns autosaves off gets
+    none (without the option Razdor autosaves). Saves of every earlier format still load.
+- **Menus and windows**
+  - Esc in the main menu quits at once; Back or Esc on the hero choice returns to the main
+    menu. A Yes / No question takes Esc and Razdor's N as No and any other key as Yes. The
+    tutorial is offered at every new game until it is finished.
+  - The windows of one moment open one at a time, in the original's order; the victory
+    report comes a moment after the battle screen closes.
+- **Sound and music**
+  - The music, its tracks and the event, village and victory chords are the original's.
+  - Sounds as the original's: building windows, their money buttons and hires, the wait
+    keys, the main menu, the bar's icons and items picked up and worn. A sound played again
+    starts over instead of piling up.
+  - World spells show where they land: the camera glides to the army and the effect plays
+    over it.
 
 ### Fixed
 Bugs of the original game that Razdor reproduced while it followed the original one to one,
 now fixed with the rule the original evidently meant:
 - Battle: a side whose last action wins the battle no longer surrenders: a player whose
-  priests or mages kill the last enemy wins (the original's bug made it a defeat).
-- Battle: an EternalGift Life blessing raises the defences, as every blessing does (the
-  original's bug lowered them).
-- Battle: a Ghost casts with any magic power (the original's bug read only the power's low
-  byte, so a power of 128 to 256 could not cast).
-- Battle AI: the normal AI judges a kill by the target's own hit points (the original's bug
-  read its own unit at the target's place in the list), and a Life mage scores a curse on
-  both defences (the original's bug counted the melee defence twice).
-- Battle: bleeding with a negative attack sum bleeds nothing (the original's bug killed the
-  unit), the player's twelfth unit's death no longer stops the enemy's first unit bleeding,
-  a Poison mage no longer poisons through a protection above 99, an Evasion above 100 leaves
+  priests or mages kill the last enemy wins (the original made it a defeat).
+- Battle: an EternalGift Life blessing raises the defences, as every blessing does, and a
+  Ghost casts with any magic power (the original read only part of it).
+- Battle AI: the normal AI judges a kill by the target's own hit points (the original read
+  another unit, past its list even leftovers of an earlier battle), and a Life mage scores a
+  curse on both defences (the original counted the melee defence twice).
+- Battle: bleeding with a negative attack sum bleeds nothing (the original killed the unit),
+  the player's twelfth unit's death no longer stops the enemy's first unit bleeding, a
+  Poison mage no longer poisons through a protection above 99, an Evasion above 100 leaves
   1 damage, a Splash or Flock unit cursed below 0 attack no longer strikes for a huge amount,
-  and Bastion, Berserk and the damage stop at the largest value instead of wrapping negative
-  (all the original's unsigned or 32-bit slips).
-- Noon: with no mana, an enough-gold noon leaves only the elementals unpaid and pays
-  everyone else (the original's bug kept a unit unpaid though its wage was paid, until a
-  short-gold noon), and an AI army's wages are cut by its own Rear Service, not the
-  player's.
-- A unit whose Cost is 2 more than a multiple of 256 is raised for gold (the Community's bug
-  raised it for mana after checking the gold), and an elemental's healing is checked
-  against the mana it is paid in (the original's bug checked the gold).
-- The sanctuary refuses a spell to a book of 15 or more (the original's bug refused only a
-  book of exactly 15, so a book an event filled past 15 bought on).
-- A market whose list of candidates runs out leaves the place empty (the original's bug read
-  on past the list: the first item of the game), and a building's mana stock stops at its
-  maximum (the original's bug wrapped it past 255).
+  and Bastion, Berserk and the damage stop at the largest value instead of wrapping negative.
+- Noon: with no mana, an enough-gold noon leaves only the elementals unpaid and pays everyone
+  else, and an AI army's wages are cut by its own Rear Service, not the player's.
+- A unit whose Cost is 2 more than a multiple of 256 is raised for gold (the Community raised
+  it for mana after checking the gold), and an elemental's healing is checked against the
+  mana it is paid in.
+- The sanctuary refuses a spell to a book of 15 or more (the original refused only a book of
+  exactly 15).
+- A market whose list of candidates runs out leaves the place empty (the original gave the
+  game's first item), and a building's mana stock stops at its maximum instead of wrapping.
 - World spells: a spell the hero reads lands on its target even when an event casts a spell
-  meanwhile (the original's bug turned it onto his own army, for free), a new cast no longer
+  meanwhile (the original turned it onto his own army, for free), a new cast no longer
   raises a dead unit still holding the spell, and a spell on an enemy army that leaves a
-  survivor raises that army's fallen leader, not the player's fallen hero (both the
-  original's bugs). The Caster discount keeps a negative cost negative.
-- The crown is worn by the unit types its list names, the knights, royals and undead lords
-  (the original's off-by-one bug gave it to the next type of each), and a potion's magic
-  power takes effect (the original's bug never applied it).
-- The hero lands on the shore he walks onto: the landing test reads that cell (the
-  original's bug read a cell further south, so he could lose his ship or stop on the
-  water). A walk to the map's corner cell (0, 0) starts and the corner is priced like any
-  cell (the original's bug showed the route and never walked it), and a click on a planned
-  cell whose route was dropped plans it again (the original's bug made it do nothing until
-  a click elsewhere). The route planner keeps the lower of two targets on one cell (the
-  original's off-by-one bug kept a later one 1 above).
-- Events: a repeating question without a message asks again on its next firing (the
-  original's bug let it fire without its question), and `-X^` on a counter that is not set
-  changes nothing (the original's bug changed an unrelated flag). The Community event
-  generator keeps its limit when it retries (the original's slip could take a rejected
-  value).
-- XP: a gain levels up while the next level's need is covered (the original's bug compared
-  the previous need, so a `LevelMultipler` below 100 stopped a level early), and a huge
-  battle award no longer wraps around before the 5256 cap (the original's 32-bit slip).
-- AI armies: a unit raised again (a leader left at 1 hit point, a resurrection) counts from
-  its latest death if it falls again (the original's bug kept its first time of death, so
-  its corpse was dropped sooner), and an army shopping values its buyer again after each
-  purchase (the original's bug bought a second good of a kind the unit could no longer
-  wear, paid for and lost).
-- The noon autosave on day 9 of a month is named with its leading zero (the original's
-  padding slip printed `9`).
+  survivor raises that army's fallen leader, not the player's fallen hero. The Caster
+  discount keeps a negative cost negative.
+- The crown is worn by the unit types its list names (the original gave it to the next type
+  of each), and a potion's magic power takes effect.
+- The hero lands on the shore he walks onto (the original tested a cell further south, so he
+  could lose his ship). A walk to the map's corner cell (0, 0) starts, a click on a planned
+  cell whose route was dropped plans it again, and the route planner keeps the lower of two
+  targets on one cell.
 - A campaign's next map that does not offer the hero's class starts him where its first
-  offered hero would, keeping his class and record (the original's bug dropped him on cell
-  (0, 0) of the empty preset).
+  offered hero would, keeping his class and record (the original dropped him on cell (0, 0)
+  of the empty preset).
+- Events: a repeating question without a message asks again on its next firing (the original
+  fired it without its question), and `-X^` on a counter that is not set changes nothing.
+  The Community event generator keeps its limit when it retries.
+- XP: a gain levels up while the next level's need is covered (a `LevelMultipler` below 100
+  stopped a level early), and a huge battle award no longer wraps around before the cap.
+- AI armies: a unit raised again counts from its latest death if it falls again (the
+  original kept its first time of death), and an army shopping values its buyer again after
+  each purchase (the original paid for a good the unit could no longer wear).
+- The noon autosave on day 9 of a month is named with its leading zero.
 
 ## 0.2.2 — 2026-10-01
 
