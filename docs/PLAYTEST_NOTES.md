@@ -45,6 +45,23 @@ was seen on and what to check.
    ends it after the half hour under way (`Game::cut_wait`); the click or key does nothing
    else (no walk order, window or hotkey: `widgets::swallow_input`).
 
+## 2026-10-04, dt-original: other armies move roughly
+
+1. **"Other armies on the map move too roughly: they stay in one place too long and then
+   jump too far."** Done, as far as the original goes. Checked under Wine on РК1 (two 4-hour
+   waits with the armies' step clock read from memory every few ms, and screenshots): in the
+   original an army's step glides over its play time and **a step never reaches into the
+   next tick** (its play time is clamped to what is left of the tick, 0x4a399c; drawn by
+   0x4ad660). So an army whose bank pays a step only every few ticks also stands between its
+   steps there, and one fast army crosses several cells in a long tick: Razdor already drew
+   the same, and keeping that is parity. Two drawing details did differ and are fixed: the
+   walk frames ran on the wall clock whenever an army had a path, so figures marched in place
+   while time stood still or while they waited for their next step (the original's frames 3–6
+   follow the game time, engine.md §7), and a step in place took no time on the figure's walk,
+   so the steps after it came too early (world.md §5). If the motion still feels rough, the
+   next thing to compare is the hero's walking pace against the AI's under the same walk
+   (FINDINGS §5: the original's frame rate changes the AI's details). Commit 13a024d.
+
 ## 2026-10-04, dt-original: a building won from its garrison opens from outside
 
 1. **"When I fight an enemy garrison in a building and win, I end up standing next to the
