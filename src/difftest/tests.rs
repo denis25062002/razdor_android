@@ -542,6 +542,29 @@ fn rk1_church_the_events_behind_a_window_wait_for_it() {
     assert_eq!((states[48].rng, states[49].rng, states[50].rng), (3_123_160_699, 1_297_700_690, 4_186_434_394));
 }
 
+/// FINDINGS.md §25 (РК3 started without carry-over, the village at (14,189)): the furs
+/// offer's Yes shows its result in the event window again (0x4c2100, 0x4aca80), so the
+/// window's chord is drawn and an OK closes it, as in the original.
+#[test]
+fn rk3_the_furs_offer_shows_its_result_window() {
+    let Some(dt) = install() else { return };
+    let actions = parse_actions(
+        r#"{"op":"new_game","map":"РК3-Столица","hero":1}
+{"op":"ok"}
+{"op":"click_map","x":15,"y":198}
+{"op":"wait","hours":1}
+{"op":"click_map","x":14,"y":189}
+{"op":"answer","yes":true}
+{"op":"ok"}"#,
+    )
+    .unwrap();
+    let (states, notes) = replay(Source::Install(&dt), &actions).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(states[4].rng, 1_911_746_471);
+    assert_eq!((states[5].rng, states[5].hero.pack.clone()), (15_412_174, vec![135]));
+    assert_eq!(states[6].rng, 15_412_174);
+}
+
 /// FINDINGS.md §19: the bandit gang of Проклятое озеро (army 17: 150 gold, a leader, two
 /// robbers and a chieftainess) beaten by presses pays 150 div 2 plus its wage bill of the
 /// last recount, 85, as the original's victory gives (450 → 610), though none of its units

@@ -730,8 +730,14 @@ impl<'a> Runner<'a> {
             self.close_dialog();
             let g = self.g();
             if yes {
-                // Yes: the offer's results, the village emptied, no window (0x4ab966).
+                // Yes: the offer's results, the village emptied (0x4ab966); the furs, the
+                // witch and the innkeeper show their result in the event window again first
+                // (its chord; OK closes it).
+                let window = g.village_offer().is_some_and(|o| o.result_window());
                 g.accept_offer();
+                if window {
+                    self.dialogs.push_back(Dialog::message());
+                }
             } else {
                 // No: the village is entered again with no offer (0x4c2378): its window,
                 // the tribute taken.

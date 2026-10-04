@@ -257,6 +257,16 @@ pub enum VillageOffer {
     Innkeeper,
 }
 
+impl VillageOffer {
+    /// A Yes opens the event window again with the offer's result text, its chord drawn, and
+    /// its OK finishes the offer (0x4c2100: the offer record has a message): furs, the witch
+    /// and the innkeeper (0x4aca80 writes `VillageBonus3/4/5Result`). The blessing and the
+    /// priest have no message: their Yes finishes at once, no window.
+    pub fn result_window(self) -> bool {
+        matches!(self, VillageOffer::Furs | VillageOffer::Witch | VillageOffer::Innkeeper)
+    }
+}
+
 /// What accepting an offer gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OfferResult {
@@ -1010,6 +1020,15 @@ mod tests {
     /// even: a decimal half goes up for 1.1 and 0.9 (a little high), down for 1.7 and 1.45
     /// (a little low), to even for the exact 1.25 and 0.75. Проклятое озеро's church charged
     /// 83 for an item of 75 at 1.1.
+    /// FINDINGS §25: the offers whose record carries a result message (0x4aca80) open the
+    /// event window again at the Yes.
+    #[test]
+    fn furs_witch_and_innkeeper_show_a_result_window() {
+        use VillageOffer::*;
+        let shown: Vec<bool> = [Blessing, Priest, Furs, Witch, Innkeeper].map(VillageOffer::result_window).to_vec();
+        assert_eq!(shown, [false, false, true, true, true]);
+    }
+
     #[test]
     fn relation_factor_halves_follow_the_x87_product() {
         assert_eq!(relation_price(75, 0, false), 83);

@@ -521,6 +521,21 @@ original": "Mask: armies"). Candidate C1004-052035 (Другой берег).
 - After the fix the repro's gold is equal (`r4-c052338`; the two steps left are the market's
   goods while the window is open, harness timing, C1004-050909).
 
+## 25. A village's furs, witch and innkeeper show their result in a window
+
+**Status: fixed** (`VillageOffer::result_window`, the replay's and the interface's Yes;
+economy.md §3). Campaign round (РК3 started without carry-over, run `c1-РК3`).
+
+- РК3 (knight), step 5 (`answer yes` to the furs offer of the village at (14,189)): the
+  original draws the event window's chord (`Random(3)` at 0x4d1663) and stays on the event
+  window until the next OK; Razdor drew nothing and went back to the map. One draw behind.
+- 0x4aca80 builds the offer's event record: for 3 (furs), 4 (witch) and 5 (innkeeper) it writes
+  both the question and a result message (`VillageBonusNAsk`, `VillageBonusNResult`), for 1 and
+  2 only the question. The Yes (0x4c2100) opens the window again when the message is not
+  empty (its chord), and its OK finishes the offer (0x4ab966). РК1's and Проклятое озеро's
+  blessings (§17) have no message, hence no window there.
+- After the fix the РК3 run is 8 of 8 steps equal (`c2-РК3`).
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

@@ -409,7 +409,11 @@ that window (world.md §7.2): the offer rolls below come after the event's OK.
   the chooser's rolls and before the event window's chord; the answer draws nothing. The
   blessing's spell is 3 + 2·Rand(5) whatever spells the install has.
 - **Every option is a Yes/No question.** Yes applies it and **empties both stocks without paying
-  them**. No re-enters the village, which (being the village of the last offer) opens the plain
+  them**. The offer's event record (0x4aca80) carries a result message for 3, 4 and 5
+  (`VillageBonus3/4/5Result`), none for 1 and 2: so a Yes to the furs, the witch or the
+  innkeeper opens the event window again with that message (0x4c2100: its chord is drawn,
+  its OK finishes the offer, 0x4ab966), while a Yes to the blessing or the priest finishes at
+  once with no window. No re-enters the village, which (being the village of the last offer) opens the plain
   window, where the stocks can be taken.
 
 **Rumours** (unknown): no fixed rumour price exists in the code. Rumours are events, so their cost

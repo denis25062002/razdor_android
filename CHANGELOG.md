@@ -567,6 +567,9 @@ old id, and their versions give both.
 - A price that comes to exactly half a gold piece after a building's attitude rounds the way
   the original's arithmetic takes it: up at attitudes 0 and +2 (75 at 1.1 costs 83, not 82),
   down at −3 and −2, to even at −1 and +3.
+- Accepting a village's furs, the witch's mana or the innkeeper's pay shows the result in a
+  window of its own, with its chord, as in the original (the blessing and the priest show
+  none).
 
 ## 0.2.2 — 2026-10-01
 

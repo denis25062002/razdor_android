@@ -968,7 +968,14 @@ fn tribute(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut Op
             VillageOffer::Witch => tr("Instead: the witch's gift of mana").to_string(),
         };
         if button(x, by, (460.0 * k).min(w), 42.0 * k, &label, true) {
+            // The furs, the witch and the innkeeper show their result in the event window,
+            // with its chord (0x4c2100).
+            let window = offer.result_window();
             let result = game.accept_offer();
+            if window {
+                let k = game.event_chord();
+                cue(Cue::Event(k as u8));
+            }
             let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
             *message = result.map(|r| match r {
                 OfferResult::Paid(n) => trf!("The innkeeper pays off your {n} men.", n),

@@ -550,3 +550,16 @@ NEW candidates, and one from the manual resurrect check:
   not the generator: candidate.
 - **Resolved: confirmed with `--trace events` and fixed, FINDINGS.md §22** (`cover-res1`
   52 of 53 steps equal).
+
+# Campaign maps (fix round 4, 2026-10-04)
+
+РК2–РК7, ДС2 and Обучающий2 started on both sides as new games without carry-over (the
+original's side writes the later map's entry into the New-game list selection, README
+"`new_game`"); each list is the map's opening built from Razdor's replay: the opening windows
+read, a walk, a wait of an hour, the nearest building entered (runs `c1-<map>`).
+
+## Campaign: РК3, step 5 `answer yes` (the village furs offer)
+
+- The original draws the event window's chord after the Yes and shows the offer's result;
+  Razdor showed nothing. **Resolved: fixed, FINDINGS.md §25** (`c2-РК3` 8 of 8).
+
