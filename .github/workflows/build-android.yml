@@ -18,12 +18,9 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Add Android target explicitly
-        run: rustup target add aarch64-linux-android
-
-      - name: Install Android SDK Platform 29
+      - name: Install Compatible NDK (r25b) and SDK Platform 29
         run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29"
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
 
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
@@ -37,7 +34,7 @@ jobs:
           # 2. Понижаем версию формата lock-файла до 3
           sed -i 's/version = 4/version = 3/' Cargo.lock || true
 
-          # 3. Полностью удаляем edition = "2024" из всех залинкованных библиотек
+          # 3. Заменяем edition = "2024" во всех вендорных библиотеках на "2021"
           find vendor/ -name "Cargo.toml" -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
       - name: Ensure assets directory exists
@@ -47,8 +44,17 @@ jobs:
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
-          export NDK_HOME=$ANDROID_NDK_ROOT
-          export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
+          # Настраиваем пути к совместимому NDK 25.2
+          NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+          export ANDROID_NDK_ROOT="$NDK_PATH"
+          export NDK_HOME="$NDK_PATH"
+          export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
+          # Создаем симлинк на случай проверки устаревшего имени утилиты ar
+          cd "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          ln -sf llvm-ar arm-linux-androideabi-ar || true
+
+          cd "$GITHUB_WORKSPACE"
           cargo quad-apk build --release --offline
 
       - name: Upload APK Artifact
