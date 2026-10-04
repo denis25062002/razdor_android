@@ -5,19 +5,21 @@ tracks and timed animations from the Frida preset `av`, Razdor's from its replay
 (`src/av.rs`), compared step by step on the step-local run. The original's side was recorded
 on 2026-10-04 (folders `av-*` under `~/.cache/razdor-difftest/runs/`); Razdor's side is
 re-run on it with `--reuse-original <run>/original` (folders `av-*-final`, after the gaps
-below were closed):
+below were closed; last re-run 2026-10-04 as `av-*-gaps`, after the report's 250 ms and the
+hire's second gold sound):
 
 | run | list | steps | steps alike | sfx missing / extra | anim missing / extra |
 |---|---|---|---|---|---|
 | `av-rk1` | `rk1-day1.jsonl` (РК1, knight: village, events, waits, the ruins' battle, noon) | 44 | 44 | 0 / 0 | 0 / 0 |
-| `av-rk1-heal` | rk1-day1 then the church at (47,27): heal ×2, sell, learn | 49 | 48 | 1 / 1 | 0 / 0 |
+| `av-rk1-heal` | rk1-day1 then the church at (47,27): heal ×2, sell, learn | 49 | 49 | 0 / 0 | 0 / 0 |
 | `av-ds1-services` | `ds1-services.jsonl` (ДС1, knight: church: buy ×3, hire ×2, learn, sell, equip) | 15 | 15 | 0 / 0 | 0 / 0 |
 | `av-lake-cast` | `lake-cast.jsonl` (Проклятое озеро, archmage: re-entered building, village offer, hire ×2, two casts) | 25 | 23 | 2 / 2 | 0 / 0 |
 
-Before the fixes the same runs had 30, 29, 1 and 6 steps alike. The three steps left differ
-only in the chord a window drew (`Global-Event-k`, the game generator's `Random(3)`: rk1-heal
-step 41, lake steps 10 and 16): Razdor's generator is elsewhere at that moment, a rules
-matter (the draws before the window), not a sound missing.
+Before the fixes the same runs had 30, 29, 1 and 6 steps alike. The two steps left differ
+only in the chord a window drew (`Global-Event-k`, the game generator's `Random(3)`: lake
+steps 10 and 16): Razdor's generator is elsewhere at that moment, a rules matter (the draws
+before the window), not a sound missing. (rk1-heal step 41 had the same difference until the
+route-mask change of the same day.)
 
 Music: no difference in any run (map theme, battle theme, triumph, the track after the
 victory box).
@@ -39,8 +41,8 @@ Razdor or only Razdor's any more.
 | sfx | `InterfaceBarScroll` | 0 | 0 | never triggered yet | options slider test |
 | sfx | `MainMenuSelect-1` | 4 | 4 | both | hover of a main menu item (-2, -3 share its slot) |
 | sfx | `MainMenuPress` | 5 | 5 | both | press of a main menu item; class portrait |
-| sfx | `Global-Event-1` | 9 | 8 | both | event, village or shipyard window opens (Random(3)) |
-| sfx | `Global-Event-2` | 8 | 9 | both | as above |
+| sfx | `Global-Event-1` | 9 | 9 | both | event, village or shipyard window opens (Random(3)) |
+| sfx | `Global-Event-2` | 8 | 8 | both | as above |
 | sfx | `Global-Event-3` | 13 | 13 | both | as above |
 | sfx | `Global-Battle` | 2 | 2 | both | battle window opens |
 | sfx | `Unit-Upgrade` | 0 | 0 | never triggered yet | the promotion screen only (0x4b1af8) |
@@ -125,8 +127,11 @@ The gaps the first runs showed, by weight, and how Razdor plays them now (the in
    recruit into the army (200 ms) with `Card-Move`; a heal or raise plays `Battle-Cure` with
    the cure effect over the card (`unit_action`). The purchase's `Item-<type>` is gone, and so
    is the `Item-Gold` on any rise of the gold (midnight income, a sale's money). The market's
-   list switch plays the button sound (as before). The original's two `Item-Gold` per hire
-   are one sound restarted; Razdor plays it once (the replay logs both calls).
+   list switch plays the button sound (as before). A hire plays `Item-Gold` twice, as the
+   original's button (its press, 0x4c7370, and its click action on the release, 0x4c7380,
+   both with the restart flag): the press starts it and the release restarts the one buffer
+   (`audio::cue_on_release`); a press and release in one frame sound once. The replay logs
+   both calls.
 5. **Village tribute** (done). `Item-Gold` plays when the village window closes after the
    tribute was taken (its OK, Esc or a map click), with the window's button sound; not as it
    opens. The tribute itself is still taken on entering (the state's "window timing"

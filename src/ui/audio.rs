@@ -114,6 +114,26 @@ pub fn cued<T>(c: Cue, value: T) -> T {
     value
 }
 
+thread_local! {
+    static ON_RELEASE: RefCell<Option<Cue>> = const { RefCell::new(None) };
+}
+
+/// Asks for `c` again when the left mouse button that pressed a button is let go: the
+/// original's hire button plays `Item-Gold` on its press and again in its click action, which
+/// runs on the release (0x4c7370, 0x4c7380), so the one buffer restarts there.
+pub fn cue_on_release(c: Cue) {
+    ON_RELEASE.with(|r| *r.borrow_mut() = Some(c));
+}
+
+/// The cue waiting for the release, once the button is up (`held` false), else nothing.
+fn released_cue(waiting: &mut Option<Cue>, held: bool) -> Option<Cue> {
+    if held {
+        None
+    } else {
+        waiting.take()
+    }
+}
+
 /// The cues of this frame, each once, in order.
 fn take_cues() -> Vec<Cue> {
     let mut cues = CUES.with(|q| std::mem::take(&mut *q.borrow_mut()));
@@ -338,6 +358,10 @@ impl Audio {
 
     /// Plays this frame's cues and keeps the music of `mood` going.
     pub fn frame(&mut self, mood: Mood) {
+        let held = macroquad::input::is_mouse_button_down(macroquad::input::MouseButton::Left);
+        if let Some(c) = ON_RELEASE.with(|r| released_cue(&mut r.borrow_mut(), held)) {
+            cue(c);
+        }
         let cues = take_cues();
         if self.settings != self.saved {
             self.settings = self.settings.clamped();
@@ -473,6 +497,20 @@ mod tests {
         cue(Cue::Button);
         assert_eq!(take_cues(), [Cue::Button, Cue::Panel]);
         assert!(take_cues().is_empty());
+    }
+
+    /// The hire's second `Item-Gold` waits while the button is held and comes once, at the
+    /// release (a press and release in one frame give one play: the restart is at once).
+    #[test]
+    fn a_release_cue_waits_for_the_button_to_go_up() {
+        let mut waiting = Some(Cue::Gold);
+        assert_eq!(released_cue(&mut waiting, true), None);
+        assert_eq!(released_cue(&mut waiting, true), None);
+        assert_eq!(released_cue(&mut waiting, false), Some(Cue::Gold));
+        assert_eq!(released_cue(&mut waiting, false), None);
+        cue(Cue::Gold);
+        cue(Cue::Gold);
+        assert_eq!(take_cues(), [Cue::Gold]);
     }
 
     #[test]

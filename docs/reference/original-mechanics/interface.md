@@ -964,7 +964,7 @@ listed in the notes)
 | `Spell-Good` / `Spell-Evil` | a world spell lands on the player's army / on another army |
 | `Battle-*` | battle effects (§12); `Battle-Cure` also for healing or resurrecting in a building |
 | `Item-<type>` | an item is picked up, dropped or worn (by its type; type Item uses `Item-Item`) |
-| `Item-Gold` | press of the market trade button, the hire buttons, an event dialog button, taking a village's tribute, buying a ship |
+| `Item-Gold` | press of the market trade button, the hire buttons, an event dialog button, taking a village's tribute, buying a ship; a hire button plays it again in its click action, on the release (4c7370 press, 4c7380 click, both restarting the one buffer) |
 
 `Battle-Parry` is loaded by the Community patch but the shipped sound ini has no entry for
 it. **code**/**data**
@@ -1073,7 +1073,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 37 | Hover bells |  Matches: `MainMenuSelect-1` as the pointer comes onto an item  | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
 | 38 | `InterfaceCastSpell` |  Matches: world spell cast, the building window's opening and tab switches (Razdor's load window has no tabs)  | Spell book cast, building tab switch, load window tab switch | 14 |
 | 39 | `InterfaceBarScroll` | Unused | Options slider test sound | 14 |
-| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
+| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes; a hire plays it on the press and restarts it on the release, as the original's two calls  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
 | 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
 | 43 | Options window | Music and sound volume, battle AI, the front row's width for new games (6 or 4: a switch for `OptValue11`, which stays the default until chosen; a save keeps its own width) | Five sliders and eight checkboxes; slider test sound | 16 |

@@ -418,6 +418,9 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
         let pill = Rect::new(face.x + 4.0 * k, face.y + face.h + 2.0 * k, face.w - 8.0 * k, 17.0 * k);
         let hire = own_text("Army", "HireArmy", n_("Hire"));
         if chrome::pill_button(pill, &hire, can, true) {
+            // The original plays the gold on the press and again in the click action on the
+            // release (0x4c7370, 0x4c7380): the one buffer restarts.
+            super::audio::cue_on_release(Cue::Gold);
             let name = c.unit(r.unit).name.clone();
             *message = Some(match game.hire(r.unit) {
                 Ok(()) => {

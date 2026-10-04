@@ -13,6 +13,8 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Hiring sounds the gold twice, as the original:** the coins ring as the hire button is
+  pressed and start again as it is let go.
 - **The victory report after a won battle comes 250 ms after the battle screen closes,** as in
   the original (it came at once).
 - **The potion sign on the army and building cards:** a unit that drank a potion shows its
