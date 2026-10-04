@@ -3,6 +3,29 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-04, dt-original: spell badges on the unit cards, items dropped on the hero
+
+1. **"In the grid of units I don't see what buffs or debuffs (magic) they have on them."**
+   Done. The original (interface.md §9.4; 493a64, 49ece8, 49d044, 49b63c), checked under Wine
+   on Проклятое озеро (the archmage's «Укрепление Брони» on his army, the army window): every
+   card of the army, building and battle grids shows up to four 22 px badges 23 px apart along
+   the portrait's bottom, one per running spell with a mana cost, in slot order; hovering one
+   shows a 420 px box with the spell's 50 px picture, its name, the effect text (blue for a
+   spell on the own army, else red), "Отбирает жизнь: n %" when the unit has lost life to a
+   `p-LifeLose` spell, and "Осталось времени действия: 10 час" (days and hours; «Неизвестно»
+   from 40 000 minutes on; the month part's +1 quirk kept). Razdor now draws the same
+   (`rules::spell_hint`, `ui::spell_badges`, the badge composed from the install's
+   `Spell-*` and `si-*` art), and the battle cards' signs follow the original (potion and
+   blessing top left, poison and curse top right, the curse and blessing kept to the battle's
+   end); Razdor's bleed and hero badges went. Snapshots: `RAZDOR_SCENE_SPELLS`.
+2. **"When I drag an item from a unit onto the hero in the grid, it must go to the overall
+   inventory (the pack)."** Done. The original's army window (magic-items.md §5.2, 0x4c346c →
+   0x4979c4): a potion dropped on a card is drunk; on the hero's card any other item goes to
+   the pack; on another unit's the wear test runs and the item takes its first free slot; a
+   refusal leaves it on the cursor. Razdor's drop on a card now follows it
+   (`Game::give_item`); a drop on the unit panel still equips the selected unit, as the
+   original's hero window does.
+
 ## 2026-10-04, dt-original: the wait and centre buttons, and stopping a wait
 
 1. **"I don't see any way to centre the camera back on the hero. When I hover the bottom

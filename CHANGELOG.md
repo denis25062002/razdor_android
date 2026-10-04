@@ -13,6 +13,14 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Spell badges on the unit cards:** the army screen, the building windows and the battle show,
+  as the original, up to four round badges along the bottom of each unit's portrait, one per
+  running spell that costs mana; hovering one shows the spell's picture, name, effect, the
+  unit's life loss and the time left, in the original's words. In battle the potion, blessing,
+  poison and curse signs now sit where the original puts them (Razdor's bleed and hero marks
+  are gone; the turn number moved to the bottom right).
+- **An item dropped on the hero's card goes to the pack** (a potion is drunk), from the pack or
+  from any unit, as in the original: the hero wears items through his panel's slots.
 - **The wait and centre buttons:** hovering the time panel's message box on the idle map shows
   the original's three buttons over it, with its art and hints: wait 1 hour, centre the view
   on the hero, wait 4 hours. The centre button (and Tab) glides the view back to the hero in
