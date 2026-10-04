@@ -818,7 +818,8 @@ pub fn marble_button(r: Rect, label: &str, enabled: bool, hover: bool) {
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, color);
 }
 
-/// The small pill buttons of the barracks ("Hire" green, "Heal" blue).
+/// The small pill buttons of the barracks ("Hire" green, "Heal" blue). They pay: the
+/// press plays `Item-Gold` (interface.md §14).
 pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
     let hover = enabled && super::widgets::mouse_in(r.x, r.y, r.w, r.h);
     let name = if !enabled {
@@ -851,7 +852,7 @@ pub fn pill_button(r: Rect, label: &str, enabled: bool, green: bool) -> bool {
     shadow_text(label, r.x + (r.w - d.width) / 2.0, r.y + (r.h + d.offset_y) / 2.0 - 1.0, size, if enabled { WHITE } else { Color::new(0.8, 0.8, 0.8, 1.0) });
     let pressed = hover && super::widgets::clicked();
     if pressed {
-        super::audio::cue(super::audio::Cue::Button);
+        super::audio::cue(super::audio::Cue::Gold);
     }
     pressed
 }
@@ -872,13 +873,14 @@ pub enum CellIcon {
 }
 
 impl CellIcon {
-    /// The icon of `slot`: the outer columns of a six-wide formation are the tents.
+    /// The icon of `slot`: the reserve's cells (the outer places of the 2 × 6 grid) are the
+    /// tents.
     pub fn of(f: razdor::rules::formation::Formation, slot: razdor::rules::formation::Slot) -> CellIcon {
         use razdor::rules::formation::Row;
         let (_, col) = f.display(slot);
         match slot.row {
             Row::Reserve => CellIcon::Tent,
-            _ if f.cols >= 6 && (col == 0 || col + 1 == f.cols) => CellIcon::Tent,
+            _ if f.display_cols() >= 6 && (col == 0 || col + 1 == f.display_cols()) => CellIcon::Tent,
             Row::Front => CellIcon::Swords,
             Row::Back => CellIcon::Bow,
         }
@@ -1004,6 +1006,21 @@ pub fn glow_frame(r: Rect, color: Color, strong: bool) {
         let a = color.a * [0.95, 0.45, 0.2][i];
         let c = Color { a, ..color };
         draw_rectangle_lines(r.x - f * w * 0.7, r.y - f * w * 0.7, r.w + 2.0 * f * w * 0.7, r.h + 2.0 * f * w * 0.7, w, c);
+    }
+}
+
+/// The original's signs along a card portrait's top (493a64): those that are on, 22 px badges
+/// 23 px apart, 1 px below the portrait's top, from its left edge (`from_left`) or from the
+/// right one. `sq` is the portrait (92 px in the original).
+pub fn card_signs(sq: Rect, from_left: bool, signs: &[(bool, &str, Color)]) {
+    let s = sq.w / 92.0;
+    let bs = 22.0 * s;
+    let (mut bx, step) = if from_left { (sq.x, 23.0 * s) } else { (sq.x + 70.0 * s, -23.0 * s) };
+    for &(on, art, c) in signs {
+        if on {
+            badge(art, bx + bs / 2.0, sq.y + s + bs / 2.0, bs, c);
+            bx += step;
+        }
     }
 }
 

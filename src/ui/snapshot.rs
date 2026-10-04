@@ -13,7 +13,9 @@
 //! console after those commands; `RAZDOR_SCENE_FILTER=text` fills the inventory filter
 //! (army screen, market); `RAZDOR_SCENE_QUIET=1` drops
 //! the scenario's messages every frame, to see the screen under them; `RAZDOR_MOUSE=x,y`
-//! puts the pointer there.
+//! puts the pointer there; `RAZDOR_SCENE_SPELLS=<id>,…` puts those spells on every unit; `RAZDOR_SCENE_POTION=1` gives every unit of the army a
+//! drunk potion. `replay:<step>` with `RAZDOR_REPLAY=<actions.jsonl>`: the diff
+//! test's action list played to that step.
 //!
 //! Every map scene starts its map as a new game (`Game::from_scenario`): nothing is carried
 //! over from a campaign's map before, so a later map whose opening events check for what it
@@ -54,6 +56,39 @@ fn pointer() -> Option<(f32, f32)> {
     let s = std::env::var("RAZDOR_MOUSE").ok()?;
     let (x, y) = s.split_once(',')?;
     Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+/// `replay:<step>`: the action list `RAZDOR_REPLAY` (the diff test's, `razdor --replay`)
+/// played up to and including action `<step>` (all of it without a step), and its screen:
+/// the map, the building window or the battle. Dialogs still waiting are not shown.
+fn stage_replay(app: &mut App, step: Option<&str>) -> Result<(), String> {
+    use razdor::difftest::{read_action_list, Runner, Source};
+    let list = std::env::var("RAZDOR_REPLAY").map_err(|_| "RAZDOR_REPLAY names no action list")?;
+    let actions = read_action_list(std::path::Path::new(&list), None, None)?;
+    let last = match step {
+        Some(s) => s.parse::<usize>().map_err(|_| "bad step")?,
+        None => actions.len().saturating_sub(1),
+    };
+    let dt = app.assets.dt.as_ref().ok_or("no install")?;
+    let mut r = Runner::new(Source::Install(&dt.install));
+    for a in actions.iter().take(last + 1) {
+        r.apply(a)?;
+    }
+    let (mut game, battle, building) = r.into_view().ok_or("the list has no new_game")?;
+    game.pos = game.world.map.center(game.tile());
+    app.screen = match (battle, building) {
+        (Some(b), _) => Screen::Battle(Box::new(BattleView::new(*b))),
+        (None, true) => {
+            let loc = game.location.map(|l| &game.world.locations[l]).ok_or("no building")?;
+            Screen::Building(BuildingView::new(first_tab(loc, &game.content).ok_or("the building has no window")?))
+        }
+        (None, false) => Screen::WorldMap,
+    };
+    game.look_around();
+    app.assets.set_content(game.content.clone());
+    app.dt_content = Some(game.content.clone());
+    app.game = Some(game);
+    Ok(())
 }
 
 /// Sets up the scene of `RAZDOR_SCENE`, if any; a scene that cannot be set up is reported.
@@ -130,6 +165,7 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
             app.screen = Screen::CustomBattle(view);
             return Ok(());
         }
+        "replay" => return stage_replay(app, parts.next()),
         _ => {}
     }
     let map = parts.next().ok_or("no map named")?;
@@ -146,6 +182,33 @@ fn try_stage(app: &mut App, scene: &str) -> Result<(), String> {
         for (i, u) in game.squad.iter_mut().enumerate() {
             // A different share for each, to see the fill vary.
             u.hp = (u.max_hp(&content) * (pct - 15 * i as i32).clamp(0, 100) / 100).max(1);
+        }
+    }
+    // `RAZDOR_SCENE_SPELLS=<id>,<id>…`: those spells running on every unit of the hero's army
+    // and of the map's armies (the n-th for 10 h + n days), to see the cards' spell badges.
+    if let Ok(v) = std::env::var("RAZDOR_SCENE_SPELLS") {
+        let ids: Vec<u32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        let now = game.clock.total_minutes() as u64;
+        let slots: Vec<_> = ids.iter().enumerate().map(|(n, &spell)| razdor::rules::units::SpellSlot { spell, until: now + 600 + n as u64 * 1440 }).collect();
+        let fill = |spells: &mut [Option<razdor::rules::units::SpellSlot>]| {
+            for (slot, s) in spells.iter_mut().zip(&slots) {
+                *slot = Some(*s);
+            }
+        };
+        for u in &mut game.squad {
+            fill(&mut u.spells);
+            u.drain = 20;
+        }
+        for t in game.world.armies.iter_mut().flat_map(|a| a.troops.iter_mut()) {
+            fill(&mut t.spells);
+        }
+    }
+    // `RAZDOR_SCENE_POTION=1`: every unit of the hero's army has drunk the install's first
+    // potion (the cards' potion sign; its effect is not applied).
+    if std::env::var("RAZDOR_SCENE_POTION").is_ok_and(|v| !v.is_empty()) {
+        let potion = game.content.items.iter().find(|d| d.kind == razdor::dt::data::ArtefactType::Potion).map(|d| razdor::rules::content::ItemId(d.id));
+        for u in game.squad.iter_mut() {
+            u.potions.extend(potion);
         }
     }
     // `RAZDOR_SCENE_SHOW=x,y,r`: an event shows that place (as a lantern does), to see the

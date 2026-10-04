@@ -1,0 +1,8 @@
+{"op": "new_game", "map": "Обучающий2", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 7, "y": 2}
+{"op": "wait", "hours": 1}
+{"op": "click_map", "x": 9, "y": 7}
+{"op": "click_map", "x": 10, "y": 2}
+{"op": "ok"}
+{"op": "ok"}

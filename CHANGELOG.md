@@ -35,6 +35,102 @@ old id, and their versions give both.
   cheat worked is marked in its saves ("(cheats)" in the load list) and in the play log.
 
 ### Changed
+- **A ruins' garrison is weighed as in the original:** until its first battle the AI counts
+  its units without the treasure items they were handed at the start, so its armies judge
+  such ruins as the original's do.
+- **Hiring sounds the gold twice, as the original:** the coins ring as the hire button is
+  pressed and start again as it is let go.
+- **The victory report after a won battle comes 250 ms after the battle screen closes,** as in
+  the original (it came at once).
+- **The potion sign on the army and building cards:** a unit that drank a potion shows its
+  sign on the army screen and in the building windows too, as the original, next to the
+  promotion sign, in the battle signs' places (it showed only in battle).
+- **The card stat strip's attack label as the original's:** a shooter's attack is written "A:"
+  (Razdor wrote "S:"), with the larger of its two attacks; "Pwr:" is kept for a caster without
+  a melee attack or standing outside the four middle places of the front line.
+- **The hero's route crosses moving armies, as in the original:** only stationary guards, and
+  an army a meeting waits for standing next to you, close the way; any other army's cell can
+  be walked through, and stepping onto it while it is still there meets or fights it (every
+  army's cell was closed before, which sent some routes the long way round).
+- **Save and load on the bottom bar as the original's:** save stands next to the message box and
+  load beside it, each with the original's picture; the two buttons had each other's action.
+- **Armies on the map step as in the original:** their walk frames follow the game time, so
+  a figure no longer marches in place while the world stands still, and a step an army takes
+  in place now stands for its time instead of hurrying its next steps along.
+- **A building taken from its garrison is entered by walking in:** after the battle you stand
+  where you attacked from, as in the original, and a click on the building now walks you into
+  it and opens its window on arrival (it opened at once from outside, and the building's own
+  events ran without you entering).
+- **Spell badges on the unit cards:** the army screen, the building windows and the battle show,
+  as the original, up to four round badges along the bottom of each unit's portrait, one per
+  running spell that costs mana; hovering one shows the spell's picture, name, effect, the
+  unit's life loss and the time left, in the original's words. In battle the potion, blessing,
+  poison and curse signs now sit where the original puts them (Razdor's bleed and hero marks
+  are gone; the turn number moved to the bottom right).
+- **An item dropped on the hero's card goes to the pack** (a potion is drunk), from the pack or
+  from any unit, as in the original: the hero wears items through his panel's slots.
+- **The wait and centre buttons:** hovering the time panel's message box on the idle map shows
+  the original's three buttons over it, with its art and hints: wait 1 hour, centre the view
+  on the hero, wait 4 hours. The centre button (and Tab) glides the view back to the hero in
+  the original's 900 ms cosine; the map takes no input meanwhile.
+- **A click or a key stops a wait** (a Razdor choice, not the original's: its waits always run
+  to their end): a left click anywhere or any key during a 1 h, 4 h or endless wait ends it
+  after the half hour under way, and does nothing else.
+- **The front-row width setting applies at once:** a game under way switches to 6 or 4 cells from
+  its next battle (never during one), and its saves record the new width. Units on the two edge
+  cells a 4-wide row lacks move to free cells, their own row first; the others keep their cells.
+- **A quest taken in a building shows its places at once:** when the quest's message is
+  closed in the main hall, the camera flies to the places it marks and back over the map,
+  then the building window returns, as in the original (the flight waited until you left the
+  building).
+- **Sound effects never pile up:** a sound played again while it still plays starts over, as the
+  original's one buffer per sound does; sweeping the pointer over the main menu no longer stacks
+  its bell into a din. Overlapping ovals no longer count the pointer on two buttons at once,
+  which rang the bell every frame between them.
+- **A building reached under an event opens after it:** when an event's window stops the
+  walk inside the building you clicked, the building's window opens once the event is read,
+  as in the original (it left you on the map).
+- **Events checked as the building window closes:** after healing, raising, buying or selling
+  there, an event your purchase allows opens as you close the window, as in the original,
+  not at your next step.
+- **The front row's width in the settings:** the settings window chooses 6 or 4 front-row
+  cells for new games (the install's "wide front row" until chosen); a saved game keeps its
+  own. With 4 the formation is the original's 4-column one, drawn as the original draws it:
+  the front row's two edge places, like the back row's, are the reserve's.
+- **The view stays while you choose a route:** a click on the map with the hero off screen
+  no longer brings the view back to him; it follows him once he sets off, as in the original.
+- **The back row's ranged defence is shown:** a unit in the back row shows the `Row2Def`
+  bonus (+5) on its card ("D: 0/5") and on its panel ("0 + 5", with a building's defence
+  when there is one), as the original's card and panel do; the damage already counted it.
+- **Counterblows are seen and heard:** a unit that strikes back now lunges at its attacker
+  with the blow's effect and sound on it, after the first blow, as in the original; a unit
+  killed by a cursed victim gets the sorcery's effect.
+- **A won battle ends as in the original:** the battle screen stays 2.5 seconds with each
+  unit's experience on its card, then the victory report opens on the map; no result box to
+  click away. A level gained no longer plays the promotion sound (the original plays it only
+  in the promotion screen). A pass in battle is a short pause.
+- **Building windows sound as the original's:** the window and each tab switch play the
+  original's tab sound; the money buttons (buy, sell, hire, heal, raise, learn, a ship) play the
+  gold sound; a hired unit's card slides from the recruit into your army; healing plays the
+  cure with its effect on the card. A purchase no longer plays the item's sound, and gold
+  coming in (midnight income, a sale) no longer plays the gold sound by itself.
+- **The village's gold sound when you leave:** the tribute's gold sound plays as the village
+  window closes, with the window's button, not as it opens.
+- **World spells show where they land:** the camera glides to the army the spell is for (when
+  it is far) and the spell's effect plays over it.
+- **Places an event shows come right after its window:** the camera flies to them as soon as
+  that event's message is closed and back to the hero, and the next message waits for it; a
+  new map opens the fog around the hero.
+- Smaller sounds as in the original: the wait keys and the time panel click, the main menu
+  rings as the pointer comes onto an item, the scenario list is silent, Next and Start click,
+  choosing another class plays the menu sound, the bar's icons play the panel sound (their
+  windows open silent), and an item sounds as it is picked up and again as it is worn.
+- **Only the heroes the map offers:** the new-game hero window offers a class only when the
+  map gives it a start cell, greys the others and opens on the first one offered, as the
+  original does (before, any class could be started on any map).
+- **Battle experience at the install's rate:** XP is paid at the `HeroExpirienceModificator` of
+  your `_Global.ini`, as the original does (50 in the Community Update, half the gameplay
+  video's rate Razdor used before).
 - **Random numbers as in the original**: one generator, the original's (the C runtime's
   `rand()`), started at 1 on every new map, so a fresh map's markets and every roll after
   them come out the same each time. It is no longer saved: loading a save starts it the way
@@ -472,6 +568,75 @@ old id, and their versions give both.
   restart or campaign map is played with it, as in the original.
 - Restart on a campaign map starts it again with what the map before carried over (army,
   gold, mana, book, pack, flags), as the original's restart snapshot, which saves keep.
+- When the hero stops (a walk's or a wait's end, an event or an AI army stopping him), every
+  AI army facing a next step with a patrol radius, outside buildings, draws its idle offset
+  from the game's generator as in the original, after the windows the stop opened; a run
+  into an army or a garrison draws none.
+- A building the hero walks into as an event's window opens is entered when the window is
+  read, as in the original: a village's offer rolls, its window and its tribute come after
+  the event, not with it.
+- A new map starts the hero's army in the formation the battle's auto-arrange gives it (the
+  best warrior in front, the shooters and mages behind), as the original's map load does,
+  not with the preset troops in the reserve.
+- The ruins' garrison wears the ruins' goods, as in the original: each of the first five goes
+  to the unit it helps most (else into the garrison's pack), so the guards fight with them;
+  beating them yields what they wore, then the pack.
+- AI armies arrive at the end of each step's play time, as the original's step clock plays
+  it, and their arrivals, with the wander points and plans they draw, come in the order of
+  their times, not army by army; a midnight inside a wait tick comes between them at its
+  moment, and a hero's step is one tick however long.
+- A village (or an empty castle, fort or ruins) taken on the way opens no window and does
+  not stop the walk, as in the original; its window opens only when the walk ends in it.
+- The hero's step time is worked out as he comes onto a cell, as in the original, with
+  whether he was at sea before it: his first step on the water after going to sea (or on a
+  map that starts him at sea) takes no time.
+- An AI army's first step in place after the map load times its play by the cell south of
+  it (the direction the map load gives every army), as in the original.
+- The AI judges the battles it simulates by the sides' strengths, as the original does, not
+  by their hit points: its fears and targets among armies and buildings change accordingly.
+- An AI army that starts the map in a building is counted, in the battles it simulates,
+  without that building's defence until it next arrives in a building or fights, as in the
+  original (its units' strengths are recounted only then).
+- A cautious AI army (negative aggression) discounts its own losses to a tenth only when it
+  lost no unit in the battle it simulates, as in the original.
+- During a battle the armies' units carry their battle HP after every action, as in the
+  original (the army record follows the battle, a fallen unit at 0), not only at its end.
+- The victory box opens with the event window's chord, which draws from the game's random
+  numbers, as in the original.
+- The noon report ends a wait, as an event's message does, and opens with the event
+  window's chord, as in the original; closing it no longer resumes the wait.
+- The ranger's first step on a new map takes his own speed, not the knight's, as in the
+  original (it was priced before his class was set: a few minutes too long).
+- A village's blessing or witch rolls its spell or mana as the offer is made, before the
+  question's chord, as in the original, not when it is accepted; the blessing is any of the
+  five blessing spells, as in the original.
+- An AI army arriving just as the hero finishes a step sees him on his new cell, facing his
+  step, as in the original: one standing right ahead of him stays put instead of walking off,
+  and the idle draws of the hero's stop count it as the original does.
+- An army the hero beats pays its gold share plus its wage bill as it last counted it, as in
+  the original, even when none of its units survives the battle (before, a gang wiped out
+  paid no wages at all).
+- While the hero is taking a step, AI armies see him on the cell he is leaving until the step
+  ends, as in the original: their distances, their plans (a patrol only hunts him inside its
+  area) and their contacts no longer jump ahead to the cell he steps to.
+- AI armies judge the hero's army with the strength it had when it was last counted (in a
+  building window, at an event, at noon, in the army window, after a spell), as in the
+  original: after he leaves his town they still reckon with its defence until then, and
+  avoid or chase him accordingly.
+- Scenario events wait for the window before them: when several events come at once, each one
+  after a message is checked and applied only once that message is closed, as in the original
+  (before, they all happened at once, so an army an event activates moved, and the time an
+  event shows was taken, before the earlier messages were read).
+- A price that comes to exactly half a gold piece after a building's attitude rounds the way
+  the original's arithmetic takes it: up at attitudes 0 and +2 (75 at 1.1 costs 83, not 82),
+  down at −3 and −2, to even at −1 and +3.
+- Accepting a village's furs, the witch's mana or the innkeeper's pay shows the result in a
+  window of its own, with its chord, as in the original (the blessing and the priest show
+  none).
+- AI armies attack or greet the hero when he ends a step, not in the middle of one, and still
+  do while he stands or waits after a walk, as in the original: a friendly army walking
+  beside him greets him when it catches him at a step's end, and one that reaches him while
+  he waits stops the wait with its meeting or its battle.
 
 ### Fixed
 Bugs of the original game that Razdor reproduced while it followed the original one to one,

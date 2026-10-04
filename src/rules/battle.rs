@@ -52,7 +52,7 @@ const SPLASH_FRIENDLY: u8 = 4;
 /// `Suicide`: the regeneration its unit is left with, which removes it at the next turn start.
 const SUICIDE_REGEN: i32 = -99;
 /// A side has at most 12 battle records.
-const RECORDS: usize = 12;
+pub(crate) const RECORDS: usize = 12;
 /// The drain loader's floor for a type with magic power but no school: the unused slot of the
 /// floor table holds these bytes (c28480).
 const SCHOOLLESS_FLOOR: i32 = 16_777_215;
@@ -249,6 +249,12 @@ pub struct Fighter {
     pub mods: Buff,
     /// The items the unit wears (an enemy's too), for the panel.
     pub items: [Option<ItemId>; crate::rules::items::SLOTS],
+    /// The unit's lasting world spells and its life loss as the battle began, for the cards'
+    /// spell badges (the battle cards read the unit records, 493a64).
+    pub spells: [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS],
+    pub drain: i32,
+    /// Drank a potion before the battle (its sign on the card, unit +0xc4).
+    pub potion: bool,
     /// Blessed or cursed this turn.
     pub blessed: bool,
     pub cursed: bool,
@@ -314,6 +320,9 @@ impl Fighter {
             base,
             mods: Buff::default(),
             items: unit.items,
+            spells: unit.spells,
+            drain: unit.drain,
+            potion: !unit.potions.is_empty(),
             blessed: false,
             cursed: false,
             actions: 0,
@@ -560,6 +569,14 @@ pub struct Battle {
     /// whoever attacks, so this is for information only.
     pub attacker: Team,
     building_defence: [i32; 2],
+    /// The building defence the sides' unit strengths were worked out with, when it is not
+    /// [`Battle::building_defence`]: an AI army's cached strengths (+0x1ae) keep the defence
+    /// of its last recount (0x4a16d4), which the battle side copies as they are (49855c).
+    strength_defence: [Option<i32>; 2],
+    /// A side whose unit strengths were last counted from their level stats, without the
+    /// items they wear: a ruins' garrison recounted at the map load before its items are
+    /// given out (0x4b53dd, then 0x4a273c at 0x4b55aa), until its next recount.
+    bare_strengths: [bool; 2],
     /// A side whose army's first unit is of the Knight type (49855c): it takes
     /// [`KNIGHT_PERCENT`] of physical damage, an AI lord's army as well as the player's.
     knight: [bool; 2],
@@ -602,6 +619,17 @@ pub struct Battle {
     pub(crate) ai_level: u8,
     /// Mana a side's surrender gives the winner.
     surrender_mana: [i32; 2],
+    /// The HP of each side's unit records beyond its units, as the side's buffer held them
+    /// when the battle was set up (the off-screen battles' static sides 0xc081ac and
+    /// 0xc08a00 keep what their last use left there; 0 for the battle on screen), and each
+    /// side's count of units at the start: the killable test's wrong-side read (486d03)
+    /// can land beyond the units ([`Battle::set_side_records`]).
+    stale: [[i32; RECORDS]; 2],
+    start_count: [usize; 2],
+    /// The kill tests that read an old record (side, record index, damage, killable), for
+    /// the AI's cache of simulated battles: the battle plays the same from any records that
+    /// give the same answers.
+    stale_reads: std::cell::RefCell<Vec<(usize, usize, i32, bool)>>,
     /// The pre-simulation (48b75c): played before the first turn unless switched off.
     predict: bool,
     /// Each side's HP lost in the pre-simulation, the predicted loss of the XP pool (side +8).
@@ -705,6 +733,8 @@ impl Battle {
             log: Vec::new(),
             attacker,
             building_defence: [0; 2],
+            strength_defence: [None; 2],
+            bare_strengths: [false; 2],
             knight,
             cells,
             mean_initiative: [1.0; 2],
@@ -722,6 +752,9 @@ impl Battle {
             crippled: [[false; RECORDS]; 2],
             ai_level: 1,
             surrender_mana: [0; 2],
+            stale: [[0; RECORDS]; 2],
+            start_count: [0; 2],
+            stale_reads: Default::default(),
             predict: true,
             predicted: [0; 2],
             turn_lost: [0; 2],
@@ -918,6 +951,19 @@ impl Battle {
         self.building_defence[team.index()] = defence;
     }
 
+    /// The building defence `team`'s unit strengths count (an AI army's last recount, see
+    /// [`Battle::strength_defence`]); by default its [`Battle::building_defence`]. Set before
+    /// [`Battle::begin`].
+    pub fn set_strength_defence(&mut self, team: Team, defence: i32) {
+        self.strength_defence[team.index()] = Some(defence);
+    }
+
+    /// `team`'s unit strengths count its units' level stats, not the items they wear
+    /// ([`Battle::bare_strengths`]). Set before [`Battle::begin`].
+    pub fn set_bare_strengths(&mut self, team: Team) {
+        self.bare_strengths[team.index()] = true;
+    }
+
     pub fn is_deploying(&self) -> bool {
         self.deploying
     }
@@ -966,7 +1012,13 @@ impl Battle {
         // Strength at the start, from the stats the units bring (items, spells) and the
         // building they stand in.
         for f in &mut self.fighters {
-            f.tactical = experience::tactical(&self.content, f.unit, &f.base, self.building_defence[f.team.index()]);
+            let t = f.team.index();
+            let bd = self.strength_defence[t].unwrap_or(self.building_defence[t]);
+            f.tactical = if self.bare_strengths[t] {
+                experience::tactical(&self.content, f.unit, &Stats::of_level(&self.content, f.unit, f.level), bd)
+            } else {
+                experience::tactical(&self.content, f.unit, &f.base, bd)
+            };
             f.role = experience::role(&f.base);
         }
         for team in Team::BOTH {
@@ -2539,6 +2591,49 @@ impl Battle {
             return self.fighters[t].hp <= f.actions * dmg;
         }
         self.fighters[t].hp <= dmg
+    }
+
+    /// The kill tests on old side records so far (side 0 the player's, record, damage,
+    /// killable). The original's kill test read past the actor's living units onto a record
+    /// a death emptied or one an earlier battle left; Razdor's [`Battle::killable`] reads the
+    /// target's own HP, so this stays empty (the off-screen cache still asks for it).
+    pub(crate) fn stale_reads(&self) -> Vec<(usize, usize, i32, bool)> {
+        self.stale_reads.borrow().clone()
+    }
+
+    /// Each side's number of units at the start ([`Battle::set_side_records`]).
+    pub(crate) fn start_counts(&self) -> [usize; 2] {
+        self.start_count
+    }
+
+    /// The side buffers this off-screen battle is played from (0x4a0710: 49855c writes the
+    /// units into records 1..n of the static sides, the records beyond keep the HP their
+    /// last use left; 48b75c copies both whole): player side first. Call after the sides are
+    /// built.
+    pub(crate) fn set_side_records(&mut self, records: [[i32; RECORDS]; 2]) {
+        self.stale = records;
+        for team in [Team::Player, Team::Enemy] {
+            self.start_count[team.index()] = self.living_ids(team).len();
+        }
+    }
+
+    /// The side buffers as this battle leaves them (48bb10 copies its sides out): each side's
+    /// living units' HP in record order, 0 in the records its deaths emptied (and all of
+    /// them after a surrender), the records beyond as they were.
+    pub(crate) fn side_records(&self) -> [[i32; RECORDS]; 2] {
+        let mut out = self.stale;
+        for team in [Team::Player, Team::Enemy] {
+            let k = team.index();
+            let live = self.living_ids(team);
+            for (r, slot) in out[k].iter_mut().enumerate() {
+                if let Some(&i) = live.get(r) {
+                    *slot = self.fighters[i].hp.max(0);
+                } else if r < self.start_count[k] {
+                    *slot = 0;
+                }
+            }
+        }
+        out
     }
 
     /// The best cell by the original's picker (4860cc): rows front to back, columns in the

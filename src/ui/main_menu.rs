@@ -89,14 +89,29 @@ fn logo() {
     }
 }
 
+thread_local! {
+    /// The main menu item under the pointer at the last frame.
+    static HOVERED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 /// An oval button: the violet swirl, the frame (gold under the mouse) and its word. Returns
 /// true when clicked.
-fn oval(i: usize, label: &str) -> bool {
+fn oval(i: usize, label: &str, hot: Option<usize>) -> bool {
     let k = chrome::k();
     let c = video(button_centre(i));
     let size = OVAL * k;
-    let r = Rect::new(c.x - size.x / 2.0, c.y - size.y / 2.0, size.x, size.y);
-    let hover = !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
+    let r = oval_rect(i);
+    let hover = hot == Some(i);
+    // The bell as the pointer comes onto an item (interface.md §4, 0x4b9b3c); leaving clears
+    // the light.
+    HOVERED.with(|h| {
+        if hover && h.get() != Some(i) {
+            h.set(Some(i));
+            cue(Cue::MenuSelect);
+        } else if !hover && h.get() == Some(i) {
+            h.set(None);
+        }
+    });
     // Fire behind the button (the glow around the column of buttons in the video).
     if let Some(fl) = chrome::win_fx("MenuFlame", Fx::Glow) {
         let f = Rect::new(c.x - 190.0 * k, c.y - 130.0 * k, 380.0 * k, 260.0 * k);
@@ -177,12 +192,29 @@ pub fn backdrop() {
     logo();
 }
 
+/// The screen rectangle of oval button `i`.
+fn oval_rect(i: usize) -> Rect {
+    let k = chrome::k();
+    let c = video(button_centre(i));
+    let size = OVAL * k;
+    Rect::new(c.x - size.x / 2.0, c.y - size.y / 2.0, size.x, size.y)
+}
+
+/// The one button under the pointer: neighbouring ovals overlap by 20 px, and the original's
+/// hit test (0x4743c8) reports a single widget, the first in order. Without this the pointer in
+/// an overlap counted as on two buttons, which took the light from each other every frame and
+/// rang the bell each time.
+fn hot_button(pointer: Vec2, n: usize) -> Option<usize> {
+    (0..n).find(|&i| oval_rect(i).contains(pointer))
+}
+
 /// Draws the menu; returns what was picked.
 pub fn frame() -> Option<Pick> {
     backdrop();
     let mut pick = None;
+    let hot = if input_blocked() { None } else { hot_button(crate::ui::widgets::pointer().into(), BUTTONS.len()) };
     for (i, (p, label)) in BUTTONS.iter().enumerate() {
-        if oval(i, tr(label)) {
+        if oval(i, tr(label), hot) {
             pick = Some(*p);
         }
     }
@@ -305,18 +337,24 @@ pub fn expert_ai(audio: &super::audio::Settings) -> bool {
     audio.expert_ai.unwrap_or_else(|| chrome::ui_text("Options", "OptValue9").is_some_and(|v| razdor::dt::ini::loose_int(&v) == 1))
 }
 
+/// The front row's width for new games: the player's choice, else the install's "wide
+/// front row in battle" (`[Options] OptValue11`).
+pub fn wide_row(audio: &super::audio::Settings, install: bool) -> bool {
+    audio.wide_row.unwrap_or(install)
+}
+
 /// "Настройки звука, графики и геймплея", with what Razdor lets the player change: the
 /// music and sound volumes (saved at once) and the interface language. Returns true when
 /// closed.
-pub fn options(audio: &mut super::audio::Settings) -> bool {
+pub fn options(audio: &mut super::audio::Settings, install_wide: bool) -> bool {
     backdrop();
-    options_window(audio)
+    options_window(audio, install_wide)
 }
 
 /// The settings window alone (over the main menu, or over the map from the bar's gears).
-pub fn options_window(audio: &mut super::audio::Settings) -> bool {
+pub fn options_window(audio: &mut super::audio::Settings, install_wide: bool) -> bool {
     let title = own("Options", "Title", n_("Sound, graphics and gameplay settings"));
-    let (inner, closed) = window(&title, 594.0, 310.0);
+    let (inner, closed) = window(&title, 594.0, 368.0);
     let k = chrome::k();
     let rows = [
         (own("Options", "OptionSld0", n_("Background music volume")), audio.music_volume, true),
@@ -368,6 +406,19 @@ pub fn options_window(audio: &mut super::audio::Settings) -> bool {
     if over_ai && clicked() {
         cue(Cue::Button);
         audio.expert_ai = Some(!expert);
+    }
+    // The front row's width (Razdor's switch for the original's "wide front row in battle",
+    // which only the install's ini set): for the games started from now on.
+    let y = y + 58.0 * k;
+    chrome::shadow_text(tr("Front row in battle (new games)"), inner.x + 24.0 * k, y + 18.0 * k, 14.0 * k, chrome::CREAM);
+    let wide = wide_row(audio, install_wide);
+    let rr = Rect::new(ar.x, y, ar.w, ar.h);
+    let row_label = if wide { tr("6 cells") } else { tr("4 cells") };
+    let over_row = rr.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
+    chrome::marble_button(rr, row_label, true, over_row);
+    if over_row && clicked() {
+        cue(Cue::Button);
+        audio.wide_row = Some(!wide);
     }
     let ok = Rect::new(inner.x + inner.w - 120.0 * k, inner.y + inner.h - 44.0 * k, 96.0 * k, 28.0 * k);
     let over_ok = ok.contains(crate::ui::widgets::pointer().into()) && !input_blocked();

@@ -440,6 +440,12 @@ pub struct Location {
     /// The scenario's garrison (the owner's troops).
     pub garrison: Vec<Troop>,
     pub garrison_defence: i32,
+    /// Its garrison's unit strengths (+0x1ae) are still the ones of the map load's recount,
+    /// counted before the ruins' items were given to its units (0x4b53dd, 0x4b55aa): its
+    /// battles count them without those items until the garrison's next recount
+    /// (0x4a16d4: after a real battle, a garrison purchase or a reshuffle).
+    #[serde(default)]
+    pub strengths_bare: bool,
     /// The player's units left here (his castles and forts).
     pub stationed: Vec<Stationed>,
     pub recruits: Vec<Recruit>,
@@ -448,7 +454,12 @@ pub struct Location {
     pub shop: Option<Shop>,
     /// Ruins: treasure gold and items; the demo's camps: reward and loot rolls.
     pub treasure_gold: i32,
+    /// Ruins: the garrison's pack (its worn items are on its troops).
     pub treasure: Vec<ItemId>,
+    /// Ruins: the goods words of the building record, which the original keeps as the map
+    /// has them (only the diff test's state reads them).
+    #[serde(skip)]
+    pub map_goods: Vec<i32>,
     pub loot_rolls: u32,
     /// Spells taught here (1-based spell index).
     pub spells: Vec<u8>,
@@ -485,12 +496,14 @@ impl Location {
             tribute_mana: 0,
             garrison: Vec::new(),
             garrison_defence: 0,
+            strengths_bare: false,
             stationed: Vec::new(),
             recruits: Vec::new(),
             recruit_all_types: false,
             shop: None,
             treasure_gold: 0,
             treasure: Vec::new(),
+            map_goods: Vec::new(),
             loot_rolls: 0,
             spells: Vec::new(),
             events: Vec::new(),
@@ -993,8 +1006,21 @@ impl World {
             let goods = |n: usize| artifact_ids(content, b.artifact_slots[..n].iter().filter(|&&x| x != 0).map(|&x| u32::from(x)));
             let market = matches!(kind, LocationKind::Town | LocationKind::Market | LocationKind::Church);
             if kind == LocationKind::Ruins {
-                l.treasure = goods(5);
+                // The garrison's gold, and its items: with units, each of the first 5 goods
+                // goes to the unit it helps most, else into the garrison's pack (0x4a273c);
+                // with none, all into the pack (0x4b554e). The building's goods words stay as
+                // the map has them.
                 l.treasure_gold = b.price_max as i32;
+                l.map_goods = b.artifact_slots[..MARKET_PLACES].iter().filter(|&&x| x != 0).map(|&x| (x as i16).unsigned_abs() as i32).collect();
+                if l.garrison.is_empty() {
+                    l.treasure = goods(5);
+                } else {
+                    // Given after the garrison's recount: its strengths stay without them.
+                    l.strengths_bare = !goods(5).is_empty();
+                    for item in goods(5) {
+                        super::ai::give_item_to(content, &mut l.garrison, &mut l.treasure, item);
+                    }
+                }
             } else if market && (!goods(MARKET_PLACES).is_empty() || b.random_artifacts_for_sale > 0) {
                 let places = b.artifact_slots[..MARKET_PLACES].iter().map(|&x| Some(ItemId(u32::from(x))).filter(|&i| x != 0 && content.try_item(i).is_some())).collect();
                 l.shop = Some(Shop::from_map(places, b.random_artifacts_for_sale as usize, (b.price_min as i32, b.price_max as i32), content.dearest_item()));
@@ -1258,6 +1284,7 @@ impl World {
             l.owner_name.clone_from(&f.owner_name);
             l.description.clone_from(&f.description);
             l.services = f.services;
+            l.map_goods.clone_from(&f.map_goods);
             for (r, fr) in l.recruits.iter_mut().zip(&f.recruits) {
                 r.slot = fr.slot;
             }
@@ -2005,7 +2032,9 @@ mod real_maps {
             let (village, _) = g.world.nearest_location(g.tile(), |l| l.kind == LocationKind::Village).expect("a village");
             let target = g.world.locations[village].tile;
             let start = g.clock.total_minutes();
-            let events = g.walk_through_fog(target);
+            let mut events = g.walk_through_fog(target);
+            // An event's window at the village (РК1's) is read: then it is entered.
+            events.extend(g.enter_waiting_building());
             assert!(!g.moving() || g.foe.is_some(), "{prefix}: the walk ends");
             assert!(g.clock.total_minutes() > start);
             let arrived = events.contains(&Event::Arrived(village)) && g.location == Some(village);

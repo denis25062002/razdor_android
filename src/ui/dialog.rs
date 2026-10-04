@@ -59,8 +59,14 @@ pub struct Dialog {
     /// Units that joined / left the army.
     pub joined: Vec<UnitId>,
     pub left: Vec<UnitId>,
+    /// It is shown in the original's event window, which opens with a chord (a draw of the
+    /// game's generator, 0x4d15d0): the events' dialogs, the victory box and the noon report.
+    pub chord: bool,
     /// Its opening sound has played.
     pub cued: bool,
+    /// Not shown before this clock time (seconds, `get_time`): the won battle's report comes
+    /// 250 ms after the battle screen closes (the chained step 0x4af658).
+    pub not_before: Option<f64>,
 }
 
 impl Dialog {
@@ -76,8 +82,15 @@ impl Dialog {
             picture: None,
             joined: Vec::new(),
             left: Vec::new(),
+            chord: false,
             cued: false,
+            not_before: None,
         }
+    }
+
+    /// It still waits for its time ([`Dialog::not_before`]) at clock `now`.
+    pub fn waiting(&self, now: f64) -> bool {
+        self.not_before.is_some_and(|t| now < t)
     }
 
     /// Adds a line to the blue notice.
@@ -91,6 +104,8 @@ impl Dialog {
     /// The 12:00 report: gold, mana, income and wages (video notes §5).
     pub fn day_report(game: &Game, r: &DayReport) -> Dialog {
         let mut d = Dialog::new(tr("Report on resources, income and expenses"));
+        // The original shows it in the event window, which opens with its chord.
+        d.chord = true;
         d.text.push(tr("The report shows your gold, the daily income of your castles and the wages paid to your army.").into());
         d.resources = vec![
             (Resource::Gold, format!("{} = {}", tr("Gold"), r.gold)),
@@ -115,21 +130,13 @@ impl Dialog {
         d
     }
 
-    /// A castle or fort taken without a fight.
-    pub fn captured(game: &Game, l: usize) -> Dialog {
-        let loc = &game.world.locations[l];
-        let mut d = Dialog::new(tr("A new stronghold"));
-        d.text.push(trf!("Nobody defends {place}. You take it: it pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));
-        d.resources.push((Resource::Income, trf!("Income + {n}", n = game.daily_income())));
-        d
-    }
-
     /// The window after a won battle: gold and mana taken, a captured building, the loot.
     pub fn victory(game: &Game, result: &BattleResult) -> Option<Dialog> {
         let BattleResult::Victory { reward, mana, lost, loot, left_behind, level_ups, captured } = result else {
             return None;
         };
         let mut d = Dialog::new(tr("Victory over the enemy!"));
+        d.chord = true;
         if let Some(l) = captured {
             let loc = &game.world.locations[*l];
             d.text.push(trf!("You have taken {place}. It pays you {gold} gold a day from now on.", place = loc.name, gold = loc.gold_income));
@@ -317,4 +324,21 @@ pub fn draw(d: &Dialog, assets: &Assets) -> Option<Close> {
     }
     let ok = button(x + w / 2.0 - 60.0, by, 120.0, 38.0, "OK", true);
     (ok || key(KeyCode::Enter) || key(KeyCode::Escape)).then_some(Close::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The won battle's report waits its 250 ms after the screen closes (0x4af658), then shows.
+    #[test]
+    fn a_dialog_with_a_time_waits_for_it() {
+        let gap = razdor::av::BATTLE_REPORT_GAP_MS as f64 / 1000.0;
+        assert_eq!(gap, 0.25);
+        let d = Dialog { not_before: Some(10.0 + gap), ..Dialog::new("report") };
+        assert!(d.waiting(10.0));
+        assert!(d.waiting(10.2));
+        assert!(!d.waiting(10.25));
+        assert!(!Dialog::new("now").waiting(0.0));
+    }
 }

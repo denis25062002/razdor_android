@@ -31,13 +31,13 @@ use std::sync::Arc;
 
 use crate::dt::dtm::Army as DtArmy;
 
-use super::battle::{Battle, Outcome, Team};
+use super::battle::{Battle, Outcome, Team, RECORDS};
 use super::clock::MINUTES_PER_DAY;
 use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, UnitId, WageKind};
 use super::economy::{delphi_round, rear_service, relation_price};
 use super::events::ArmyId;
 use super::fog;
-use super::game::{troop_unit, Event, Foe, Game, HeroCells, TALKED};
+use super::game::{troop_unit, troop_unit_stats, Event, Foe, Game, HeroCells, TALKED};
 use super::items;
 use super::map::{step_minutes, Tile};
 use super::rng::Rng;
@@ -227,6 +227,36 @@ pub struct AiMind {
     /// Its stored step cost is 0 (a respawn or an activation sets it so): its next step costs
     /// nothing, so it arrives at once (0x4a399c charges the stored cost).
     pub free_step: bool,
+    /// The original's direction of its next step (+0x1710) is 8, "none": its path has no
+    /// next cell. The map load writes 5 there (so false), the AI's setup 8 for a stationary
+    /// guard, and the step clock the next step's direction (8 with no next cell) after every
+    /// call that starts or ends a step (0x4a399c). Only the stop's idle draw reads it
+    /// ([`Game::armies_snap`]).
+    pub facing_none: bool,
+    /// Where that direction points while it has no path: the offset of the cell the step
+    /// clock prices as "the step after" a step in place (0x4a399c reads the cell one step
+    /// along +0x1710 from where it stands, 8 being no offset). The map load's 5 points south,
+    /// so a fresh record's first step in place is followed by the cell south of it; every
+    /// arrival sets it from its path (none with no next cell), and a respawn keeps it.
+    pub stand_facing: Option<Tile>,
+    /// The building defence its units' cached strengths (+0x1ae) were last worked out with:
+    /// the recount (0x4a16d4) runs at its arrivals in a building (not a bridge), on leaving
+    /// one, after its AI battles and at a respawn, with the defence (+0x378c) of that moment.
+    /// The map load recounts before it writes the defence (0x4a1ff0), so an army standing
+    /// in a building at the start scores with 0 until its next recount. Its battle sides
+    /// copy those strengths (49855c), so its simulated battles and its XP pools count them.
+    pub strength_bd: i32,
+    /// Its gold wage bill (+0x16e0) as the same recount (0x4a16d4) last worked it out: the
+    /// wages of the units living then. The player's loot adds it (0x4c50ec), and his battle
+    /// recounts nobody, so a gang he wipes out still pays the bill of its last recount.
+    pub wage_bill: i32,
+    /// The step weights its path buffer holds, node by node (the original's direction field
+    /// of each path point read through the table 0x4ecfd4): a path read writes the weight of
+    /// every step out of a node but the last, whose entry keeps what an earlier, longer path
+    /// left there (0 = direction 0, weight 3, in the zeroed buffer of a fresh record). Only
+    /// the step clock's play time reads it ([`Game::ai_start`]).
+    #[serde(skip)]
+    pub path_weights: Vec<u8>,
     /// Healing keeps it standing until this minute.
     pub busy_until: f64,
     /// Game minute of its next noon.
@@ -258,6 +288,23 @@ pub struct AiMind {
     #[cfg(test)]
     #[serde(skip)]
     pub scripted: bool,
+}
+
+/// The direction the map load writes into every army record (+0x1710 := 5, south, as the
+/// offset of the cell it points at; tables 0x4ecf8c / 0x4ecfb0).
+const LOAD_FACING: Tile = (0, 1);
+
+/// A step the step clock started, arriving at the end of its play time.
+struct Pending {
+    uid: u32,
+    next: Option<Tile>,
+    moves: bool,
+    minutes: f32,
+}
+
+/// Game minutes in the original's centi-minutes.
+fn cmin(minutes: f32) -> i64 {
+    (minutes as f64 * 100.0).round() as i64
 }
 
 /// What an AI army's arrival does to the hero.
@@ -433,8 +480,8 @@ pub fn bars_army(a: &Army, l: &Location) -> bool {
 
 /// A troop's hit points and maximum (worn items included); 0 for a corpse.
 pub fn troop_hp(c: &Content, t: &Troop) -> (i32, i32) {
-    let u = troop_unit(c, t);
-    (u.hp, u.max_hp(c).max(1))
+    let (u, stats) = troop_unit_stats(c, t);
+    (u.hp, stats.max_hp().max(1))
 }
 
 /// Maximum HP of a troop.
@@ -447,7 +494,13 @@ pub fn troop_max_hp(c: &Content, t: &Troop) -> i32 {
 /// its record stands in, both at least 1.
 pub fn tactical_modes(c: &Content, t: &Troop, bd: i32) -> (i32, i32) {
     let u = troop_unit(c, t);
-    (super::experience::tactical(c, t.unit, &u.base_stats(c), bd), u.tactical(c, bd))
+    (super::experience::tactical(c, t.unit, &u.base_stats(c), bd), tactical_now(c, t, bd))
+}
+
+/// Mode 1 of [`tactical_modes`] alone: the tactical cost of its current stats.
+pub fn tactical_now(c: &Content, t: &Troop, bd: i32) -> i32 {
+    let (_, stats) = troop_unit_stats(c, t);
+    super::experience::tactical(c, t.unit, &stats, bd)
 }
 
 /// The "gain" of a unit's items (the original's tactical cost mode 2): its current tactical
@@ -500,7 +553,9 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
     let o = &c.options;
     let mut t = Totals::default();
     for tr in troops {
-        t.strength += tactical_modes(c, tr, bd).1;
+        // One rebuild of the record serves its strength and its HP.
+        let (u, stats) = troop_unit_stats(c, tr);
+        t.strength += super::experience::tactical(c, tr.unit, &stats, bd);
         let cost = c.unit(tr.unit).cost;
         if !tr.alive() {
             t.res_bill += fpu_round(cost as f64 * (o.resurect_const as f64 / 100.0));
@@ -510,7 +565,7 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
             t.wages += c.wage_for(tr.unit, tr.kind);
         }
         t.recruit_sum += fpu_round(cost as f64 / o.cost_recrut_div as f64);
-        let (hp, max) = troop_hp(c, tr);
+        let (hp, max) = (u.hp, stats.max_hp().max(1));
         t.max_living += max;
         if hp < max {
             t.missing += max - hp;
@@ -518,6 +573,15 @@ pub fn totals(c: &Content, troops: &[Troop], bd: i32) -> Totals {
         }
     }
     t
+}
+
+impl Game {
+    /// The recount (0x4a16d4) of army `i`'s wage bill (+0x16e0): the wages of its living
+    /// units now.
+    pub(crate) fn recount_bill(&mut self, i: usize) {
+        let bill = army_wages(&self.content, &self.world.armies[i].troops);
+        self.world.armies[i].mind.wage_bill = bill;
+    }
 }
 
 /// Daily gold wages of an AI army's living troops (the leader and event units draw none).
@@ -555,8 +619,14 @@ fn gain_with(c: &Content, t: &Troop, item: ItemId, bd: i32) -> Option<i32> {
 /// gain it raises most (strictly above 0, the first of equals), else into the pack (lost
 /// when the pack is full).
 pub fn give_item(c: &Content, a: &mut Army, item: ItemId) {
+    give_item_to(c, &mut a.troops, &mut a.items, item);
+}
+
+/// [`give_item`] for any record, an army's or a garrison's (0x4a273c takes either): its
+/// troops and its pack.
+pub fn give_item_to(c: &Content, troops: &mut [Troop], pack: &mut Vec<ItemId>, item: ItemId) {
     let mut best: Option<(usize, i32)> = None;
-    for (k, t) in a.troops.iter().enumerate() {
+    for (k, t) in troops.iter().enumerate() {
         if let Some(v) = gain_with(c, t, item, 0) {
             if v > best.map_or(0, |b| b.1) {
                 best = Some((k, v));
@@ -565,9 +635,9 @@ pub fn give_item(c: &Content, a: &mut Army, item: ItemId) {
     }
     match best {
         Some((k, _)) => {
-            wear(c, &mut a.troops[k], item);
+            wear(c, &mut troops[k], item);
         }
-        None if a.items.len() < MAX_ARMY_ITEMS => a.items.push(item),
+        None if pack.len() < MAX_ARMY_ITEMS => pack.push(item),
         None => {}
     }
 }
@@ -622,6 +692,9 @@ pub struct SimResult {
     pub theirs: i64,
     pub theirs_left: i64,
     pub turn: u32,
+    /// The scoring side ended with fewer units than it started with (its living count, side
+    /// +0 after the end's copy, below its start count +4; a surrendered side counts none).
+    pub own_lost_units: bool,
 }
 
 /// One side of a battle between AI sides: its units (their spells in their slots) and its
@@ -629,12 +702,18 @@ pub struct SimResult {
 pub struct Side {
     pub units: Vec<Unit>,
     pub defence: i32,
+    /// The defence its unit strengths count (an army's last recount, [`AiMind::strength_bd`];
+    /// a garrison's and the hero's are their defence).
+    pub strength_defence: i32,
+    /// Its strengths count the units' level stats, not their items (a ruins' garrison not
+    /// recounted since the map load, [`Location::strengths_bare`]).
+    pub bare: bool,
 }
 
 /// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
 /// engine on both sides, AI mode 0, both sides auto-arranged, each with its own building
 /// defence; played to its end.
-fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
+fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool, records: SideRecords) -> Battle {
     let side: Vec<(usize, &Unit)> = a.units.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
     let mut bt = Battle::new(c.clone(), &side, &b.units, Team::Player);
     bt.set_simulation();
@@ -647,8 +726,16 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     if b.defence > 0 {
         bt.set_building_defence(Team::Enemy, b.defence);
     }
+    bt.set_strength_defence(Team::Player, a.strength_defence);
+    bt.set_strength_defence(Team::Enemy, b.strength_defence);
+    for (team, s) in [(Team::Player, a), (Team::Enemy, b)] {
+        if s.bare {
+            bt.set_bare_strengths(team);
+        }
+    }
     bt.auto_arrange(Team::Player);
     bt.auto_arrange(Team::Enemy);
+    bt.set_side_records(records);
     bt.begin();
     let mut steps = 0;
     while bt.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
@@ -658,20 +745,40 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     bt
 }
 
-/// The HP totals of a played battle (each side's start and end, the end capped at the
-/// start) and its last turn.
-fn sim_result(bt: &Battle, na: usize, a: &[Unit], b: &[Unit]) -> SimResult {
-    let left = |fs: &[super::battle::Fighter]| -> i64 { fs.iter().map(|f| f.hp.max(0) as i64).sum() };
-    let hp = |us: &[Unit]| -> i64 { us.iter().map(|u| u.hp.max(0) as i64).sum() };
-    let (own, theirs) = (hp(a), hp(b));
-    let na = na.min(bt.fighters.len());
-    SimResult { own, own_left: left(&bt.fighters[..na]).min(own), theirs, theirs_left: left(&bt.fighters[na..]).min(theirs), turn: bt.round }
+/// The side strengths of a played battle (483ecc, experience.md §3): each side's at the
+/// start (+0x7ec, as the battle's set-up worked it out) and at the end (+0x7e8, the end's
+/// recount, 48bb10), and its last turn. The score's caps (end at most start) are the
+/// reader's.
+fn sim_result(bt: &Battle) -> SimResult {
+    SimResult {
+        own: bt.start_of(Team::Player).strength,
+        own_left: bt.strength_now(Team::Player),
+        theirs: bt.start_of(Team::Enemy).strength,
+        theirs_left: bt.strength_now(Team::Enemy),
+        turn: bt.round,
+        own_lost_units: bt.fighters.iter().filter(|f| f.team == Team::Player && f.alive() && !f.surrendered).count() < bt.start_of(Team::Player).count,
+    }
 }
 
-/// Plays a simulated battle (the AI's scoring) and returns its HP totals.
+/// Plays a simulated battle (the AI's scoring, 0x4a0710) and returns its side strengths.
 pub fn simulate(c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
-    let bt = fight(c, a, b, false);
-    sim_result(&bt, a.units.len(), &a.units, &b.units)
+    let bt = fight(c, a, b, false, [[0; RECORDS]; 2]);
+    sim_result(&bt)
+}
+
+/// The two static sides of the off-screen battles (0xc081ac attacker, 0xc08a00 defender):
+/// the HP of each of their 12 unit records as their last use left them. 49855c writes an
+/// army's units into records 1..n and leaves the rest; a battle copies its sides back out
+/// (48bb10). The killable test's wrong-side read (486d03) reads the records beyond a side's
+/// units, so an off-screen battle depends on what came before it (never cleared, not
+/// saved).
+pub type SideRecords = [[i32; RECORDS]; 2];
+
+/// Writes `hps` into records 1..n of side `k` (49855c), the rest left as they were.
+fn fill_records(r: &mut SideRecords, k: usize, hps: impl IntoIterator<Item = i32>) {
+    for (slot, hp) in r[k].iter_mut().zip(hps) {
+        *slot = hp;
+    }
 }
 
 /// What a simulated battle depends on: each side's units (type, level, HP, worn items),
@@ -683,36 +790,122 @@ pub struct SimKey {
 }
 
 /// A side of a [`SimKey`]: (type, level, HP, worn items, spells, drain) of each unit, the
-/// defence.
+/// defence and the defence its strengths were counted with.
 type UnitKey = (u32, i32, i32, [Option<ItemId>; items::SLOTS], [Option<crate::rules::units::SpellSlot>; crate::rules::units::SPELL_SLOTS], i32);
-type SideKey = (Vec<UnitKey>, i32);
+type SideKey = (Vec<UnitKey>, i32, i32, bool);
 
 impl SimKey {
     fn of(a: &Side, b: &Side) -> SimKey {
-        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence);
+        let side = |s: &Side| (s.units.iter().map(|u| (u.def.0, u.level, u.hp, u.items, u.spells, u.drain)).collect(), s.defence, s.strength_defence, s.bare);
         SimKey { sides: [side(a), side(b)] }
     }
 }
 
 /// Simulated battles already played (not saved): the AI rescores the same matchups often.
+/// A result depends on the side records it starts from too ([`SideRecords`]), which it
+/// leaves changed: both are kept with it.
 #[derive(Clone, Debug, Default)]
-pub struct SimCache(std::collections::HashMap<SimKey, SimResult>);
+pub struct SimCache {
+    /// By the sides' units: the battles played, each with the old records it read (side,
+    /// record, HP) and the records it left in place of its units.
+    played: std::collections::HashMap<SimKey, Vec<Played>, std::hash::BuildHasherDefault<KeyHasher>>,
+    entries: usize,
+    /// The static sides as the last off-screen battle or side pass left them.
+    pub(crate) records: SideRecords,
+}
+
+/// The cache's hasher: the multiply-rotate hash of the Rust compiler's own tables (FxHash),
+/// far cheaper than the default SipHash on the long unit lists of a [`SimKey`]; the cache
+/// is only looked up, never walked, so the order of its table does not matter.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyHasher(u64);
+
+impl std::hash::Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().expect("8 bytes")));
+        }
+        for &b in chunks.remainder() {
+            self.write_u64(b as u64);
+        }
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+
+    fn write_u8(&mut self, v: u8) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_u16(&mut self, v: u16) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(v as u64);
+    }
+
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
+}
+
+/// A simulated battle in the cache: it plays the same from any side records that hold the
+/// same values where it read them.
+#[derive(Clone, Debug)]
+struct Played {
+    reads: Vec<(usize, usize, i32, bool)>,
+    result: SimResult,
+    counts: [usize; 2],
+    left: SideRecords,
+}
 
 /// Entries the cache holds before it starts afresh.
 const SIM_CACHE_SIZE: usize = 50_000;
 
 impl SimCache {
     fn get(&mut self, c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
+        self.stage(a, b);
         let key = SimKey::of(a, b);
-        if let Some(&r) = self.0.get(&key) {
+        let records = self.records;
+        if let Some(p) = self.played.get(&key).and_then(|v| v.iter().find(|p| p.reads.iter().all(|&(k, i, dmg, killable)| (records[k][i] <= dmg) == killable))) {
+            let (r, counts, left) = (p.result, p.counts, p.left);
+            for k in 0..2 {
+                self.records[k][..counts[k]].copy_from_slice(&left[k][..counts[k]]);
+            }
             return r;
         }
-        if self.0.len() >= SIM_CACHE_SIZE {
-            self.0.clear();
+        if self.entries >= SIM_CACHE_SIZE {
+            self.played.clear();
+            self.entries = 0;
         }
-        let r = simulate(c, a, b);
-        self.0.insert(key, r);
+        let bt = fight(c, a, b, false, records);
+        let r = sim_result(&bt);
+        let left = bt.side_records();
+        let reads = bt.stale_reads();
+        self.played.entry(key).or_default().push(Played { reads, result: r, counts: bt.start_counts(), left });
+        self.entries += 1;
+        self.records = left;
         r
+    }
+
+    /// The sides of a battle are written into the static sides: the attacker's units into
+    /// the first, the defender's into the second (0x4a0710 → 49855c).
+    fn stage(&mut self, a: &Side, b: &Side) {
+        fill_records(&mut self.records, 0, a.units.iter().map(|u| u.hp));
+        fill_records(&mut self.records, 1, b.units.iter().map(|u| u.hp));
+    }
+
+    /// An army passed through the first static side and back to rearrange it (49855c,
+    /// 4988c0: a respawn, an arrival's garrison reshuffle).
+    pub(crate) fn pass_through(&mut self, hps: impl IntoIterator<Item = i32>) {
+        fill_records(&mut self.records, 0, hps);
     }
 }
 
@@ -722,9 +915,8 @@ impl SimCache {
 /// - Nothing happened, or the battle ran to `BattleEndTurn` (even one wiped out on that very
 ///   turn): 0.
 /// - The aggression shifts both results: `B1 −= Round(g·B0/100)` (not below 0) and
-///   `A1 += Round(g·A0/100)`, a tenth of that for a negative `g` *(guess: the original then
-///   divides by 1000 unless A's unit count is below a side-record value of unknown meaning;
-///   Razdor takes the ÷1000 always)*; A1 not below 0.
+///   `A1 += Round(g·A0/100)`, a tenth of that (÷1000) for a negative `g` when A lost no unit
+///   (its living count at the end is not below its start count); A1 not below 0.
 /// - A win (`A1 > 0` and `A1 > B1`): `Round((1 − A1/A0)·30·ZeroDensity·A0/B0 + 1)` after a
 ///   loss, `Round(A0/B0 + 1)` without; at least 1.
 /// - A loss: `−5 − Round(√(B0/A0)·ZeroDensity·speedA/speedC)`, not below −50.
@@ -739,7 +931,9 @@ pub fn army_score(s: SimResult, g: i32, r: i8, attack_army: i32, zero_density: i
     }
     let g = g as i64;
     b1 = (b1 - fpu_round((g * b0) as f64 / 100.0) as i64).max(0);
-    let div = if g >= 0 { 100.0 } else { 1000.0 };
+    // A negative aggression counts a tenth unless the side lost a unit (0x4a08f8 compares
+    // the side's living count with its start count).
+    let div = if g >= 0 || s.own_lost_units { 100.0 } else { 1000.0 };
     a1 = (a1 + fpu_round((g * a0) as f64 / div) as i64).max(0);
     let zd = zero_density as f64;
     let mut v = if a1 > 0 && a1 > b1 {
@@ -903,9 +1097,11 @@ impl Game {
         }
     }
 
-    fn cell_of(&self, p: Party) -> Tile {
+    /// Where `p` stands for the AI: the hero's logical cell, the cell he leaves while he
+    /// steps (his record's cell 0x75c064 until the walk timer ends the step, 0x4ae8cc).
+    fn cell_of(&self, p: Party, hero: &HeroCells) -> Tile {
         match p {
-            Party::Hero => self.tile(),
+            Party::Hero => hero.at,
             Party::Army(j) => self.world.armies[j].tile(&self.world.map),
         }
     }
@@ -959,13 +1155,15 @@ impl Game {
         let a = &self.world.armies[i];
         let fought: Vec<usize> = (0..a.troops.len()).filter(|&k| a.troops[k].alive() && (!attacking || !a.troops[k].unpaid)).collect();
         let units = fought.iter().map(|&k| troop_unit(c, &a.troops[k])).collect();
-        (Side { units, defence: a.mind.defence }, fought)
+        (Side { units, defence: a.mind.defence, strength_defence: a.mind.strength_bd, bare: false }, fought)
     }
 
-    /// The hero's side as a target: all his living units.
+    /// The hero's side as a target: all his living units, their strengths as his last recount
+    /// counted them ([`Game::recount_hero`]: the defence he stood in then).
     fn hero_side(&self) -> Side {
         let units = self.squad.iter().enumerate().filter(|(k, u)| *k == 0 || u.alive()).map(|(_, u)| u.clone()).collect();
-        Side { units, defence: self.hero_defence() }
+        let defence = self.hero_defence();
+        Side { units, defence, strength_defence: self.hero_strength_bd, bare: false }
     }
 
     // ------------------------------------------------------------------------------------
@@ -1185,7 +1383,7 @@ impl Game {
         let loc = &self.world.locations[l];
         let mut units: Vec<Unit> = loc.garrison.iter().filter(|t| t.alive()).map(|t| troop_unit(c, t)).collect();
         units.extend(loc.stationed.iter().filter(|s| s.unit.alive()).map(|s| s.unit.clone()));
-        Side { units, defence: loc.garrison_defence }
+        Side { units, defence: loc.garrison_defence, strength_defence: loc.garrison_defence, bare: loc.strengths_bare }
     }
 
     /// Army `i` scores every building afresh.
@@ -1233,10 +1431,18 @@ impl Game {
         for &i in &ids {
             let cell = self.world.armies[i].tile(&self.world.map);
             let standing = self.world.location_covering(cell);
+            let bill = army_wages(&self.content, &self.world.armies[i].troops);
             {
                 let m = &mut self.world.armies[i].mind;
                 m.standing = standing;
                 m.clean.clear();
+                // The recount comes before the defence is written (0x4a1ff0): a fresh record
+                // counts none; a save's its loaded one.
+                m.strength_bd = if from_save { m.defence } else { 0 };
+                // A save keeps its bill; one from before Razdor kept it counts it afresh.
+                if !from_save || m.wage_bill == 0 {
+                    m.wage_bill = bill;
+                }
                 if !from_save {
                     m.income = 0;
                     m.village_avg = 0;
@@ -1261,6 +1467,13 @@ impl Game {
                 m.income = a.ai.extra_income;
                 m.village_avg = 50;
                 m.village_today = 50;
+                // A stationary guard faces no direction (0x4a1ff0); the others face the map
+                // load's direction 5, south.
+                if stationary(a) {
+                    a.mind.facing_none = true;
+                } else {
+                    a.mind.stand_facing = Some(LOAD_FACING);
+                }
             }
         }
         // The armies waiting off the map get their records set up too (a building score is 0
@@ -1277,7 +1490,7 @@ impl Game {
                 if noon < now {
                     noon += day;
                 }
-                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, ..AiMind::default() };
+                a.mind = AiMind { standing, defence, next_noon: noon, income: a.ai.extra_income, village_avg: 50, village_today: 50, buildings: vec![0; locations.len()], no_path: true, facing_none: stationary(a), stand_facing: (!stationary(a)).then_some(LOAD_FACING), ..AiMind::default() };
             }
         }
         let incomes: Vec<(u8, i32)> = self.world.locations.iter().filter(|l| l.kind.capturable()).filter_map(|l| match l.owner {
@@ -1328,61 +1541,190 @@ impl Game {
     // The driver and the step clock
     // ------------------------------------------------------------------------------------
 
-    /// The AI's part of a slice of `minutes` (0x4ade3c): beaten armies whose time has come
-    /// return, then every army the AI steers, in order, banks the minutes and takes the steps
-    /// they cover; a stationary guard does nothing at all and a healing one stands still.
-    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells) {
-        let now = self.clock.total_minutes();
-        self.ai_respawns(now);
+    /// The armies as the hero stops (0x4ad8a0), once the stop has opened its windows (the
+    /// interface calls it after their chords; a battle's start and the next tick do too):
+    /// every army the AI steers, in id order, ends a step under way (Razdor has none: its
+    /// steps end as they start) and, when it faces a next step (direction below 8), has a
+    /// patrol radius above 0 and stands in no building, restarts its idle animation at a
+    /// `Random(3000)` ms offset. The offset only times the sprite; the draw is what counts.
+    pub fn armies_snap(&mut self) {
+        if !std::mem::take(&mut self.snap_due) {
+            return;
+        }
+        for k in 0..self.world.armies.len() {
+            let a = &self.world.armies[k];
+            if managed(a) && !a.mind.facing_none && a.patrol_radius > 0 && a.mind.standing.is_none() {
+                let _idle_offset_ms = self.rng.random(super::rng::ARMY_IDLE_DRAW);
+            }
+        }
+    }
+
+    /// The snap of a stop that comes before the stop's windows (an AI army's attack or
+    /// greeting, 0x4ade3c); the stop has no other.
+    pub(crate) fn snap_now(&mut self) {
+        self.snap_due = true;
+        self.armies_snap();
+        self.snapped = true;
+    }
+
+    /// The AI's part of a tick of `minutes` (0x4ade3c, called every frame): beaten armies
+    /// whose time has come return, then every army the AI steers banks the tick (a stationary
+    /// guard does nothing at all, a healing one stands still) and walks by the step clock
+    /// (0x4a399c, [`Game::ai_start`]): a step starts when the bank covers it and arrives at
+    /// the end of its play time, the next step starting only after the arrival. The arrivals
+    /// of all the armies come in the order of their times; arrivals at the same moment (the
+    /// same frame) in army order. This is the original's order at a steady frame rate as the
+    /// frames get short: each frame runs the armies in order, a call makes at most one
+    /// arrival, and the next step starts at the next frame. A midnight inside the tick comes
+    /// after the arrivals up to its moment (0x4a1998 ends the frame's advance); the clock
+    /// reads each arrival's moment. `start` is the tick's first minute, `midnights` the
+    /// midnights in it; the ones after the last arrival are returned.
+    /// `hero` are the hero's cells while the tick plays, `hero_end` those once his step has
+    /// ended: the arrivals at the tick's very end come in the frame where the walk timer has
+    /// already ended his step (0x4ae8cc), so they see him on his new cell, facing the step he
+    /// took (0x4ae8e0), before the AI's advance of that frame (0x4ade3c).
+    pub(crate) fn ai_move(&mut self, minutes: f32, hero: &HeroCells, hero_end: &HeroCells, start: f64, midnights: &[f64]) -> Vec<f64> {
+        let end = self.clock.total_minutes();
+        self.ai_respawns(end);
+        let tick = cmin(minutes);
+        // The tick's start: every army banks it, the step clock's window opens.
+        let mut queue: BTreeSet<(i64, u32, u8, u32)> = BTreeSet::new();
+        let mut totals: BTreeMap<u32, i64> = BTreeMap::new();
         let uids: Vec<u32> = self.world.armies.iter().filter(|a| managed(a)).map(|a| a.uid).collect();
         for uid in uids {
             let Some(i) = self.army_by_uid(uid) else { continue };
             let a = &mut self.world.armies[i];
-            if stationary(a) || now <= a.mind.busy_until {
+            if stationary(a) || end <= a.mind.busy_until {
                 continue;
             }
             a.budget = (a.budget + minutes).min(super::world::AI_BUDGET_CAP);
+            totals.insert(uid, cmin(a.budget));
+            let id = a.id;
             if self.is_foe(i) {
                 continue;
             }
-            self.ai_walk(uid, hero);
+            queue.insert((0, 0, id, uid));
+        }
+        let mut pending: BTreeMap<u32, Pending> = BTreeMap::new();
+        let mut midnights: Vec<f64> = midnights.to_vec();
+        while let Some((t, seq, id, uid)) = queue.pop_first() {
+            let at = start + t as f64 / 100.0;
+            // A midnight comes after the calls of the moment it falls in (0x4a1998).
+            while midnights.first().is_some_and(|&m| m < at) {
+                let m = midnights.remove(0);
+                self.clock.set_total_minutes(m);
+                self.midnight();
+            }
+            self.clock.set_total_minutes(at);
+            let goes_on = |g: &Game| t < tick && g.army_by_uid(uid).is_some_and(|i| !g.is_foe(i));
+            if let Some(p) = pending.remove(&uid) {
+                // The arrival, as its play time runs out; the next step starts at the next
+                // frame, within this tick only.
+                self.ai_finish(&p, if t >= tick { hero_end } else { hero });
+                if goes_on(self) {
+                    queue.insert((t, seq + 1, id, uid));
+                }
+                continue;
+            }
+            let total = totals.get(&uid).copied().unwrap_or(0);
+            let Some((p, play)) = self.ai_start(uid, hero, tick, total, tick - t) else { continue };
+            if play < 1 {
+                // A play time under one centi-minute runs out in the call that starts it. A
+                // step of no cost that took no time steps no further this tick: the original
+                // takes one such step per frame *(Razdor has no frames: it stops there)*.
+                self.ai_finish(&p, hero);
+                if p.minutes > 0.0 && goes_on(self) {
+                    queue.insert((t, seq + 1, id, uid));
+                }
+                continue;
+            }
+            pending.insert(uid, p);
+            queue.insert((t + play, 0, id, uid));
+        }
+        self.clock.set_total_minutes(end);
+        midnights
+    }
+
+    /// Army `uid` takes, one after another, every step its bank covers (tests: the steps of
+    /// one army alone, each arriving at once).
+    #[cfg(test)]
+    pub(crate) fn ai_walk(&mut self, uid: u32, hero: &HeroCells) {
+        loop {
+            let Some((p, _)) = self.ai_start(uid, hero, 3000, 3000, 3000) else { return };
+            self.ai_finish(&p, hero);
+            // A cell of no cost would step forever: once.
+            if p.minutes <= 0.0 || self.army_by_uid(uid).is_none_or(|i| self.is_foe(i)) {
+                return;
+            }
         }
     }
 
-    /// Army `uid` takes the steps its bank covers (0x4a399c, ai.md §2): a step costs
-    /// `cost(cell left) × speed` minutes, ×1.5 diagonally; with no path it steps in place on
-    /// its own cell's cost. A step into one of the hero's cells spends its time but the army
-    /// stays where it is. Every step, taken or not, is an arrival ([`Game::ai_arrival`]).
-    fn ai_walk(&mut self, uid: u32, hero: &HeroCells) {
-        loop {
-            let Some(i) = self.army_by_uid(uid) else { return };
-            let (need, next, moves) = {
-                let w = &self.world;
-                let a = &w.armies[i];
-                let map = &w.map;
-                let here = a.tile(map);
-                let next = a.path.first().copied();
-                let to = next.unwrap_or(here);
-                let left = self.ai_cost(a, here);
-                let need = match next {
-                    _ if a.mind.free_step => 0.0,
-                    Some(t) => step_minutes(map.grid, here, t, left, a.speed.max(1)),
-                    None => left as f32 * a.speed.max(1) as f32,
-                };
-                (need, next, !hero.cells.contains(&Some(to)))
+    /// The start of army `uid`'s next step by the step clock (0x4a399c), when its bank
+    /// covers it: `cost(cell left) × speed` minutes, ×1.5 diagonally; with no path it steps
+    /// in place on its own cell's cost (no diagonal factor); after a respawn or an activation
+    /// the stored cost is 0. The bank pays it. Whether a step into one of the hero's cells
+    /// moves is decided now. Its play time (centi-minutes): the cost scaled by the tick over
+    /// the bank as the tick began (`total`) when what is left in the bank also covers the
+    /// step after it, else the rest of the tick's `window`; never more than the window. The
+    /// step after is charged on the cell this step enters, times the weight its path buffer
+    /// holds for that node when the path goes on from it, raw when it does not.
+    fn ai_start(&mut self, uid: u32, hero: &HeroCells, tick: i64, total: i64, window: i64) -> Option<(Pending, i64)> {
+        let i = self.army_by_uid(uid)?;
+        let (need, next, moves, after) = {
+            let w = &self.world;
+            let a = &w.armies[i];
+            let map = &w.map;
+            let here = a.tile(map);
+            let next = a.path.first().copied();
+            let to = next.unwrap_or(here);
+            let left = self.ai_cost(a, here);
+            let speed = a.speed.max(1);
+            let need = match next {
+                _ if a.mind.free_step => 0.0,
+                Some(t) => step_minutes(map.grid, here, t, left, speed),
+                None => left as f32 * speed as f32,
             };
-            if self.world.armies[i].budget < need {
-                return;
-            }
-            self.world.armies[i].budget -= need;
-            self.world.armies[i].mind.free_step = false;
-            self.ai_stepped(i, next, moves, need);
-            self.ai_arrival(uid, hero);
-            // A cell of no cost would step forever: once per slice.
-            if need <= 0.0 || self.army_by_uid(uid).is_none_or(|i| self.is_foe(i)) {
-                return;
-            }
+            // With no path the step after is priced on the cell its direction points at
+            // (the map load's south, or none).
+            let ahead = match (next, a.mind.stand_facing) {
+                (None, Some(d)) => (here.0 + d.0, here.1 + d.1),
+                _ => to,
+            };
+            let raw = self.ai_cost(a, ahead) as i64 * speed as i64 * 100;
+            let after = match (next, a.path.get(1)) {
+                // The path goes on from the cell it enters: that step's weight.
+                (Some(t), Some(&u)) => raw * map.grid.weight(t, u) as i64 / 2,
+                // It enters the path's last cell: whatever weight the buffer holds there.
+                (Some(_), None) => {
+                    let weight = a.mind.path_weights.get(a.mind.walked.max(0) as usize + 1).copied().unwrap_or(0);
+                    let weight = if weight == 0 { map.grid.direction_weight(0) as i64 } else { weight as i64 };
+                    raw * weight / 2
+                }
+                (None, _) => raw,
+            };
+            (need, next, !hero.cells.contains(&Some(to)), after)
+        };
+        let a = &mut self.world.armies[i];
+        if a.budget < need {
+            return None;
         }
+        a.budget -= need;
+        a.mind.free_step = false;
+        let cost = cmin(need);
+        let play = if cmin(a.budget) >= after {
+            if total > 0 { cost * tick / total } else { 0 }
+        } else {
+            window
+        };
+        Some((Pending { uid, next, moves, minutes: need }, play.min(window)))
+    }
+
+    /// The arrival of a step [`Game::ai_start`] began: the step clock's bookkeeping, the
+    /// re-plan and the arrival rules ([`Game::ai_stepped`], [`Game::ai_arrival`]).
+    fn ai_finish(&mut self, p: &Pending, hero: &HeroCells) {
+        let Some(i) = self.army_by_uid(p.uid) else { return };
+        self.ai_stepped(i, p.next, p.moves, p.minutes);
+        self.ai_arrival(p.uid, hero);
     }
 
     /// Cost units of cell `t` on army `a`'s map: LAND, or SHIP for a ship army (0 closed).
@@ -1411,6 +1753,13 @@ impl Game {
         let on_path = next.is_some() || (!moves && !a.mind.no_path && a.mind.walked == 0);
         if moves {
             a.mind.walked += 1;
+        }
+        // For drawing, every step takes its time on the figure's walk: one in place, or one
+        // the hero's cell barred, stands for its play time (0x4a399c plays each in turn).
+        let stays = !(moves && next.is_some() && on_path);
+        if stays {
+            a.walk.points.push(a.pos);
+            a.walk.minutes.push(minutes);
         }
         let renew = match next {
             Some(t) if on_path => {
@@ -1493,7 +1842,7 @@ impl Game {
             if p == Party::Army(i) {
                 continue;
             }
-            let d = grid.octile(here, self.cell_of(p));
+            let d = grid.octile(here, self.cell_of(p, hero));
             if 0 < d && d <= reach {
                 replan = true;
             }
@@ -1512,7 +1861,13 @@ impl Game {
         if replan {
             self.ai_plan(i, &dist, hero);
         }
-        if let Some(c) = self.ai_arrive(uid) {
+        // The step clock ends by setting the direction of the next step from the path, 8
+        // when it has no next cell (0x4a399c), before the arrival rules run (0x4ade3c).
+        let here = self.world.armies[i].tile(&self.world.map);
+        let a = &mut self.world.armies[i];
+        a.mind.facing_none = a.path.is_empty();
+        a.mind.stand_facing = a.path.first().map(|t| (t.0 - here.0, t.1 - here.1));
+        if let Some(c) = self.ai_arrive(uid, hero) {
             if let Some(i) = self.army_by_uid(uid) {
                 self.world.armies[i].mind.contact = Some(c);
             }
@@ -1620,7 +1975,7 @@ impl Game {
             if self.ignored(p) {
                 v = 0;
             }
-            let cell = self.cell_of(p);
+            let cell = self.cell_of(p, hero);
             if v < 1 {
                 if v < 0 && a.sails() == self.afloat(p) {
                     repulsion(&mut mult, w, h, cell, f, -v);
@@ -1645,15 +2000,15 @@ impl Game {
         let parties = self.parties();
         for &p in &parties {
             if self.guard(p) {
-                if let Some(k) = idx(self.cell_of(p)) {
+                if let Some(k) = idx(self.cell_of(p, hero)) {
                     mult[k] = 0;
                 }
             }
         }
         let grid = self.world.map.grid;
         for &p in parties.iter().filter(|&&p| p != Party::Hero) {
-            if (a.ai.ignored || self.ignored(p)) && grid.octile(here, self.cell_of(p)) < NEAR_IGNORED {
-                if let Some(k) = idx(self.cell_of(p)) {
+            if (a.ai.ignored || self.ignored(p)) && grid.octile(here, self.cell_of(p, hero)) < NEAR_IGNORED {
+                if let Some(k) = idx(self.cell_of(p, hero)) {
                     mult[k] = 0;
                 }
             }
@@ -1671,7 +2026,7 @@ impl Game {
         let reach = o.ai_get_path_distance;
         for &(p, d) in dist {
             if 0 < d && d <= reach {
-                field.erase(self.cell_of(p));
+                field.erase(self.cell_of(p, hero));
                 field.erase(self.next_cell(p, hero));
             }
         }
@@ -1683,6 +2038,16 @@ impl Game {
         a.mind.no_path = false;
         match path {
             Some(path) => {
+                let grid = self.world.map.grid;
+                let w = &mut a.mind.path_weights;
+                if w.len() < path.len() + 1 {
+                    w.resize(path.len() + 1, 0);
+                }
+                let mut from = here;
+                for (k, &t) in path.iter().enumerate() {
+                    w[k] = grid.weight(from, t) as u8;
+                    from = t;
+                }
                 a.path = path;
                 a.mind.countdown = reach;
                 a.mind.walked = 0;
@@ -1728,8 +2093,10 @@ impl Game {
     /// collect a village's gold, hire, heal or raise its dead; it leaves the map at the end,
     /// and what it did to the hero then is dropped *(guess: the original would open a
     /// battle or a meeting with the beaten army)*.
-    pub(crate) fn ai_arrive(&mut self, uid: u32) -> Option<Contact> {
-        let result = self.ai_arrive_rules(uid);
+    pub(crate) fn ai_arrive(&mut self, uid: u32, hero: &HeroCells) -> Option<Contact> {
+        // An attack on the hero counts only in the frame his step ends (his step flag
+        // 0x75e0c7, 0x4ade3c): not while he waits or stands, nor mid-step.
+        let result = self.ai_arrive_rules(uid, hero).filter(|c| *c != Contact::Attack || hero.boundary);
         let i = self.army_by_uid(uid)?;
         if self.world.armies[i].mind.fallen {
             self.world.armies[i].mind.fallen = false;
@@ -1739,7 +2106,7 @@ impl Game {
         result
     }
 
-    fn ai_arrive_rules(&mut self, uid: u32) -> Option<Contact> {
+    fn ai_arrive_rules(&mut self, uid: u32, hero: &HeroCells) -> Option<Contact> {
         let now = self.clock.total_minutes();
         let i = self.army_by_uid(uid)?;
         let mut result = None;
@@ -1757,7 +2124,10 @@ impl Game {
             self.world.armies[i].troops.retain(|t| t.died_at.is_none_or(|d| d as f64 + window >= now));
         }
         // Contacts.
-        let hero_step = self.step_from.is_some();
+        // The hero's step flag (0x75e0c7) is set only in the frame where his step ends (the
+        // walk timer, 0x4ae977) and cleared at the next: an attack or a greeting counts only
+        // for an arrival in that frame (0x4ade3c), the tick's end of his step.
+        let hero_step = hero.boundary;
         let here = self.world.armies[i].tile(&self.world.map);
         let parties: Vec<(Party, u32)> = self.parties().into_iter().map(|p| (p, self.key_of(p))).collect();
         for (p, key) in parties {
@@ -1776,7 +2146,7 @@ impl Game {
             if r >= 0 {
                 self.add_talk(i, key, r as i32 + 1);
             }
-            let there = self.cell_of(p);
+            let there = self.cell_of(p, hero);
             if (here.0 - there.0).abs() >= 2 || (here.1 - there.1).abs() >= 2 {
                 continue;
             }
@@ -1835,6 +2205,8 @@ impl Game {
             if m.standing.is_some() {
                 m.standing = None;
                 m.defence = 0;
+                m.strength_bd = 0;
+                self.recount_bill(i);
             }
             return result;
         };
@@ -1968,7 +2340,11 @@ impl Game {
         if changed {
             self.mark_dirty(uid);
         }
-        self.world.armies[i].mind.countdown = 0;
+        // Its strengths are recounted with the defence it has here now (0x4a79c5).
+        self.recount_bill(i);
+        let m = &mut self.world.armies[i].mind;
+        m.strength_bd = m.defence;
+        m.countdown = 0;
         self.set_stored_building(i, l, 0);
     }
 }
@@ -2031,10 +2407,10 @@ impl Game {
         let mut price = vec![0i32; goods.len()];
         // The gain of good `item` on troop `t`, if it can wear it.
         let gain = |t: &Troop, item: ItemId| {
-            let before = tactical_modes(&c, t, bd).1;
+            let before = tactical_now(&c, t, bd);
             let mut tried = *t;
             wear(&c, &mut tried, item)?;
-            Some(if tactical_modes(&c, &tried, bd).1 > before { item_gain(&c, &tried, bd) } else { 0 })
+            Some(if tactical_now(&c, &tried, bd) > before { item_gain(&c, &tried, bd) } else { 0 })
         };
         for u in 0..n {
             for (k, &(_, item)) in goods.iter().enumerate() {
@@ -2119,7 +2495,7 @@ impl Game {
                 let a = &self.world.armies[i];
                 let mut pick: Option<(usize, i32)> = None;
                 for (k, tr) in a.troops.iter().enumerate() {
-                    let v = tactical_modes(&c, tr, bd).1;
+                    let v = tactical_now(&c, tr, bd);
                     if !tr.alive() && !skipped[k] && v > pick.map_or(0, |p| p.1) {
                         pick = Some((k, v));
                     }
@@ -2179,7 +2555,7 @@ impl Game {
     fn role_order(c: &Content, troops: &[Troop], bd: i32) -> [u8; 3] {
         let (mut w, mut s, mut m) = (0i64, 0i64, 0i64);
         for t in troops {
-            let v = tactical_modes(c, t, bd).1 as i64;
+            let v = tactical_now(c, t, bd) as i64;
             match attack_kind(c, t.unit) {
                 4 => w += v,
                 7 => s += 2 * v,
@@ -2312,6 +2688,8 @@ impl Game {
                             ai_hire_gain(&c, &mut self.rng, &mut t, xp, &mut pool);
                         }
                         self.world.locations[l].garrison.push(t);
+                        // The garrison is recounted with its new unit (0x4a704e).
+                        self.world.locations[l].strengths_bare = false;
                         self.ai_stats.hired += 1;
                         bought = true;
                         scan.done = true;
@@ -2351,7 +2729,7 @@ impl Game {
         };
         let garrison = std::mem::take(&mut self.world.locations[l].garrison);
         pool.extend(garrison.into_iter().filter(|t| t.alive()).map(|t| (t, d)));
-        let cost: Vec<i32> = pool.iter().map(|(t, bd)| tactical_modes(&c, t, *bd).1).collect();
+        let cost: Vec<i32> = pool.iter().map(|(t, bd)| tactical_now(&c, t, *bd)).collect();
         let kind: Vec<u8> = pool.iter().map(|(t, _)| attack_kind(&c, t.unit)).collect();
         let role = |k: u8| match k {
             4 => Some(0),
@@ -2465,6 +2843,15 @@ impl Game {
             }
         }
         self.world.locations[l].garrison = held;
+        // Recounted, then passed through the first side (0x4a7972).
+        self.world.locations[l].strengths_bare = false;
+        // The army, then the garrison, are passed through the first static side and back
+        // (0x4a7923, 0x4a7989: 49855c, 4988c0).
+        let army_hp: Vec<i32> = self.world.armies[i].troops.iter().map(|t| troop_unit(&c, t).hp).collect();
+        let held_hp: Vec<i32> = self.world.locations[l].garrison.iter().map(|t| troop_unit(&c, t).hp).collect();
+        let mut sims = self.sims.borrow_mut();
+        sims.pass_through(army_hp);
+        sims.pass_through(held_hp);
     }
 }
 
@@ -2555,9 +2942,10 @@ impl Game {
         if empty {
             return true;
         }
-        let att_totals = self.army_totals(att);
+        // The loot reads each record's wage bill (+0x16e0) of its last recount.
+        let att_bill = self.world.armies[att].mind.wage_bill;
         let def_wages = match def {
-            Defender::Army(j) => self.army_totals(j).wages,
+            Defender::Army(j) => self.world.armies[j].mind.wage_bill,
             Defender::Garrison(_) => 0,
         };
         let (side_a, fought_a) = self.army_side(att, true);
@@ -2574,7 +2962,14 @@ impl Game {
             Defender::Garrison(l) => (0..self.world.locations[l].stationed.len()).filter(|&k| self.world.locations[l].stationed[k].unit.alive()).collect(),
             Defender::Army(_) => Vec::new(),
         };
-        let bt = fight(&c, &side_a, &side_b, true);
+        // The battle is played from the static sides and leaves them changed (0x4a0710).
+        let bt = {
+            let mut sims = self.sims.borrow_mut();
+            sims.stage(&side_a, &side_b);
+            let bt = fight(&c, &side_a, &side_b, true, sims.records);
+            sims.records = bt.side_records();
+            bt
+        };
         let na = side_a.units.len();
         drop((side_a, side_b));
         self.ai_stats.battles += 1;
@@ -2633,7 +3028,7 @@ impl Game {
         if a_beaten {
             let (style, gold) = (self.world.armies[att].ai.style, self.world.armies[att].gold);
             if def_lordly {
-                let mut take = if style == Style::Feudal { att_totals.wages } else { 0 };
+                let mut take = if style == Style::Feudal { att_bill } else { 0 };
                 let g = if gold < o.min_victory_gold { gold } else { gold / o.victory_gold_div.max(1) };
                 take += g;
                 self.world.armies[att].gold -= g;
@@ -2759,6 +3154,21 @@ impl Game {
                     }
                 }
             }
+        }
+        // Both records are recounted (0x4a4c68 → 0x4a16d4), with the defence each has now.
+        if let Defender::Garrison(l) = def {
+            self.world.locations[l].strengths_bare = false;
+        }
+        for i in [Some(att), match def {
+            Defender::Army(j) => Some(j),
+            Defender::Garrison(_) => None,
+        }]
+        .into_iter()
+        .flatten()
+        {
+            self.recount_bill(i);
+            let m = &mut self.world.armies[i].mind;
+            m.strength_bd = m.defence;
         }
         // Reports, and the beaten leave the map.
         let a_name = army_name(&self.world.armies[att]);
@@ -2916,6 +3326,9 @@ impl Game {
             m.wander = [(0, 0); WANDER_POINTS];
             m.wander[0] = army.post;
             m.just_respawned = true;
+            // Recounted with the defence its record kept (0x4a28d0).
+            m.strength_bd = m.defence;
+            m.wage_bill = army_wages(&self.content, &army.troops);
             m.walked = 0;
             m.no_path = true;
             m.free_step = true;
@@ -2926,6 +3339,9 @@ impl Game {
             // so the events' "beaten" conditions no longer hold for it.
             self.beaten_armies.remove(&army.id);
             self.ai_beaten.remove(&army.id);
+            // Rearranged through the first static side and back (0x4a28d0: 49855c, 4988c0).
+            let hps: Vec<i32> = army.troops.iter().map(|t| troop_unit(&self.content, t).hp).collect();
+            self.sims.borrow_mut().pass_through(hps);
             let uid = army.uid;
             self.insert_army(army);
             self.mark_dirty(uid);
@@ -3068,7 +3484,7 @@ impl Game {
 /// already dead), or the HP it lacks against its maximum. Razdor fixes the original's bug
 /// (0x4a4c68 sets the time only when it is 0, and a raised unit kept its first one): a unit
 /// raised again counts from its latest death.
-fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
+pub(crate) fn write_hp(c: &Content, t: &mut Troop, hp: i32, now: u64) {
     if hp <= 0 {
         if t.died_at.is_none() {
             (t.died_at, t.kept_death) = (Some(now), None);

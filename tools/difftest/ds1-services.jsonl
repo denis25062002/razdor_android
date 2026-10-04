@@ -1,0 +1,15 @@
+{"op":"new_game","map":"ДС1-С чего все начиналось","hero":1}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"click_map","x":96,"y":18}
+{"op":"click_map","x":87,"y":19}
+{"op":"buy","slot":0}
+{"op":"buy","slot":0}
+{"op":"buy","slot":6}
+{"op":"hire","slot":0}
+{"op":"hire","slot":1}
+{"op":"learn","slot":0}
+{"op":"sell","slot":0}
+{"op":"equip","slot":0,"unit":0}

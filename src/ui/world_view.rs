@@ -14,6 +14,7 @@ use razdor::trf;
 use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
 use razdor::rules::game::{Event, Foe, Game};
+use razdor::rules::magic::{CastOutcome, CastTarget};
 use razdor::rules::town::first_tab;
 use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
 use razdor::rules::world::{Army, Location, LocationKind, Troop};
@@ -23,7 +24,7 @@ use super::audio::{cue, Cue};
 use super::building_view::BuildingView;
 use super::dialog::Dialog;
 use super::dt_art::DtArt;
-use super::game_bar::{self, BarButton, Look};
+use super::game_bar::{self, BarButton, Look, TimeButton};
 use super::minimap;
 use super::saves::{self, Back, LoadView, SaveView};
 use super::story;
@@ -57,8 +58,14 @@ pub struct MapView {
     /// Places the scenario's events have shown (lanterns, shown armies), first in line: the
     /// camera flies to each in turn and its uncovered cells fade in from the fog.
     shows: VecDeque<Showing>,
-    /// After the last shown place: when the camera set off back to the hero, and from where.
+    /// After an event's last shown place: when the camera set off back to the hero, and from
+    /// where.
     returning: Option<(f64, (f32, f32))>,
+    /// The fog opening around the hero at a map start (0x4af83c), over everything else.
+    opening: Option<Showing>,
+    /// The camera's glides to a spell's target and the spells' effects on the armies, in
+    /// order (0x4afa98, 0x4af2f8).
+    spell_fx: VecDeque<SpellFx>,
     /// The route a first click on the map shows, as in the original (interface.md §7.3): the
     /// spot clicked, the route, and where the hero stood. A second click on the same spot
     /// sets off; a move of the hero drops it.
@@ -69,11 +76,17 @@ pub struct MapView {
     last_frame_ms: Option<i64>,
     /// A right-button drag of the map (a Razdor extra), from its press until its release.
     grab: Option<Grab>,
+    /// The building window that stepped aside for the flights of an event read in it: it
+    /// comes back as it was once the camera is back on the hero.
+    pub(super) back_to: Option<super::building_view::BuildingView>,
+    /// The view gliding back to the hero (the centre button or Tab, 0x4af96c): when it set
+    /// off and from where. The map takes no input meanwhile.
+    centring: Option<(f64, (f32, f32))>,
 }
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, preview: None, last_frame_ms: None, grab: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None, grab: None }
     }
 }
 
@@ -239,6 +252,8 @@ const SHOW_REST: f64 = 0.4;
 struct Showing {
     /// World position of the place.
     at: (f32, f32),
+    /// The event that showed it: shown once its window is closed.
+    event: Option<u16>,
     /// The fog as it was before the place was uncovered (soft edges and all), one darkness
     /// per cell, and the texture it is drawn from: over the map until the reveal, so the
     /// place pops out of the dark without any hint before.
@@ -268,7 +283,12 @@ impl Showing {
             t
         });
         let reach = shown.cells.iter().map(|&t| (Vec2::from(map.center(t)) - Vec2::from(at)).length()).fold(0.0, f32::max) + SHOW_RIM + 1.0;
-        Showing { at, before, mask, reach, started: None }
+        Showing { at, event: shown.event, before, mask, reach, started: None }
+    }
+
+    /// Its event's window is closed (a place shown with no window waits for all of them).
+    fn free(&self, dialogs: &VecDeque<Dialog>) -> bool {
+        shown_free(self.event, dialogs.iter().map(|d| d.event))
     }
 
     /// How far the reveal has come: 0 until the camera arrives, 1 when it is open.
@@ -298,7 +318,178 @@ impl MapView {
     pub fn forget_shows(&mut self) {
         self.shows.clear();
         self.returning = None;
+        self.opening = None;
+        self.spell_fx.clear();
         self.preview = None;
+        self.back_to = None;
+    }
+
+    /// A map starts: the fog opens around the hero (0x4af83c), the places of the last game
+    /// forgotten.
+    pub fn open_around_hero(&mut self, game: &Game) {
+        self.forget_shows();
+        let (at, r) = (game.tile(), game.sight_radius() + 1);
+        let cells = (at.1 - r..=at.1 + r).flat_map(|y| (at.0 - r..=at.0 + r).map(move |x| (x, y))).filter(|&t| game.fog.explored(t)).collect();
+        let mut s = Showing::new(game, &razdor::rules::game::Shown { at, cells, event: None });
+        // No flight: the fog opens at once.
+        s.started = Some((get_time() - SHOW_PAN, s.at));
+        self.opening = Some(s);
+    }
+
+    /// The camera is on its way to an event's places (or back): the next window waits until
+    /// it is there (the original queues the glides at the event's OK, before its next step).
+    pub fn holds_dialogs(&self, dialogs: &VecDeque<Dialog>) -> bool {
+        self.returning.is_some() || self.shows.front().is_some_and(|s| s.free(dialogs)) || !self.spell_fx.is_empty()
+    }
+
+    /// A place an event showed is due now (its window is closed), in `game.shown` or in
+    /// line: a building window steps aside for its flight.
+    pub fn shows_due(&self, game: &Game, dialogs: &VecDeque<Dialog>) -> bool {
+        let due = |event: Option<u16>| shown_free(event, dialogs.iter().map(|d| d.event));
+        self.shows.front().is_some_and(|s| due(s.event)) || game.shown.first().is_some_and(|s| due(s.event))
+    }
+
+    /// The camera is flying to the shown places or back to the hero.
+    pub fn flying(&self) -> bool {
+        !self.shows.is_empty() || self.returning.is_some()
+    }
+}
+
+/// A place shown by `event` may be flown to: that event's window is no longer among the
+/// open windows `open` (their events); a place shown with no event waits for every window.
+fn shown_free(event: Option<u16>, mut open: impl Iterator<Item = Option<u16>>) -> bool {
+    match event {
+        Some(id) => !open.any(|e| e == Some(id)),
+        None => open.next().is_none(),
+    }
+}
+
+/// What the building window does about an event's flights (`App`): it steps aside for the
+/// world map when a shown place is due, and comes back once the camera is back on the hero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BuildingFlight {
+    Stay,
+    StepAside,
+    ComeBack,
+}
+
+/// `in_building`: the building window is the screen; `aside`: it stepped aside for the
+/// flights; `due`: a shown place is due; `flying`: the camera is on its way.
+pub(super) fn building_flight(in_building: bool, aside: bool, due: bool, flying: bool) -> BuildingFlight {
+    if in_building && due {
+        BuildingFlight::StepAside
+    } else if !in_building && aside && !flying {
+        BuildingFlight::ComeBack
+    } else {
+        BuildingFlight::Stay
+    }
+}
+
+impl MapView {
+}
+
+/// A world spell's part on the map: the camera's glide to the target army when it is more
+/// than 300 px away (0x4afa98, 900 ms cosine), then the spell's effect over it (0x4af2f8).
+#[derive(Clone, Copy, Debug)]
+enum SpellFx {
+    /// To this army (`None`: the hero's), from where the camera was when it set off.
+    Look { army: Option<u32>, started: Option<(f64, (f32, f32))> },
+    /// The effect `art` over this army (`None`: the hero's).
+    Effect { army: Option<u32>, art: &'static str, started: Option<f64> },
+}
+
+/// The glide's length, and the spell effect's.
+const GLIDE_SECS: f64 = 0.9;
+/// The glide's length in the original's whole ms (0x4af96c).
+const GLIDE_MS: i64 = 900;
+
+/// How far a glide has come after `ms` whole ms, 0 to 1: the original's cosine ease in its
+/// whole steps, `round(900 × (1 − cos(π t / 900)) / 2) / 900` (0x4af96c).
+fn glide_ease(ms: i64) -> f32 {
+    let t = ms.clamp(0, GLIDE_MS) as f64;
+    let e = (GLIDE_MS as f64 * (1.0 - (std::f64::consts::PI * t / GLIDE_MS as f64).cos()) / 2.0).round();
+    (e / GLIDE_MS as f64) as f32
+}
+const SPELL_FX_SECS: f64 = 0.8;
+
+thread_local! {
+    /// What the spell book and the events asked the map to show, taken by its next frame.
+    static SPELL_FX: std::cell::RefCell<Vec<SpellFx>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The camera goes to `target` (a spell's): queued for the map.
+pub(super) fn look_at(target: CastTarget) {
+    let army = match target {
+        CastTarget::Own => None,
+        CastTarget::Army(uid) => Some(uid),
+    };
+    SPELL_FX.with(|q| q.borrow_mut().push(SpellFx::Look { army, started: None }));
+}
+
+/// Spell `s` lands on `target`: its effect over the army, queued for the map.
+pub(super) fn spell_effect(s: &razdor::rules::content::SpellDef, target: CastTarget) {
+    let (army, art) = match target {
+        CastTarget::Own => (None, "Spells/S-Swirl.ugs"),
+        CastTarget::Army(uid) => (
+            Some(uid),
+            match s.school {
+                Some(razdor::rules::content::MagicSchool::Life) => "Spells/S-Light-Front.ugs",
+                Some(razdor::rules::content::MagicSchool::Death) => "Spells/S-Fog.ugs",
+                _ => "Spells/S-Fire.ugs",
+            },
+        ),
+    };
+    SPELL_FX.with(|q| q.borrow_mut().push(SpellFx::Effect { army, art, started: None }));
+}
+
+/// Where army `uid` (the hero for `None`) stands now, in world units.
+fn army_pos(game: &Game, army: Option<u32>) -> Option<(f32, f32)> {
+    match army {
+        None => Some(game.display_pos()),
+        Some(uid) => game.world.armies.iter().find(|a| a.uid == uid).map(|a| a.pos),
+    }
+}
+
+/// The original's distance in its pixels between two world positions (0x4826f8): the larger
+/// difference plus half the smaller.
+fn glide_distance(game: &Game, a: (f32, f32), b: (f32, f32)) -> f32 {
+    let rh = game.world.map.grid.row_height();
+    let dx = ((a.0 - b.0) * PX).abs();
+    let dy = ((a.1 - b.1) / rh * 22.0).abs();
+    dx.max(dy) + dx.min(dy) / 2.0
+}
+
+/// Plays the front of the spells' queue: the camera's glide, then the effect.
+fn play_spell_fx(game: &Game, view: &mut MapView, now: f64) {
+    SPELL_FX.with(|q| view.spell_fx.extend(q.borrow_mut().drain(..)));
+    let here = view.look.unwrap_or(game.display_pos());
+    let Some(front) = view.spell_fx.front_mut() else { return };
+    let done = match front {
+        SpellFx::Look { army, started } => match army_pos(game, *army) {
+            None => true,
+            Some(to) => {
+                let (t0, from) = match started {
+                    Some(s) => *s,
+                    // Close enough: no glide (0x4afa98).
+                    None if glide_distance(game, here, to) <= 300.0 => {
+                        view.spell_fx.pop_front();
+                        return;
+                    }
+                    None => *started.insert((now, here)),
+                };
+                let p = ((now - t0) / GLIDE_SECS).clamp(0.0, 1.0);
+                let e = ((1.0 - (std::f64::consts::PI * p).cos()) / 2.0) as f32;
+                view.look = Some((from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e));
+                if p >= 1.0 && army.is_none() {
+                    view.look = None;
+                }
+                p >= 1.0
+            }
+        },
+        SpellFx::Effect { started, .. } => now - *started.get_or_insert(now) >= SPELL_FX_SECS,
+    };
+    if done {
+        view.spell_fx.pop_front();
     }
 }
 
@@ -423,7 +614,7 @@ impl Camera {
     /// The fog still over places being shown, as dark as each one's fade has left it.
     /// The fog kept over places being shown. The one being revealed opens like an iris: a
     /// circle from its centre out to its edges, with a soft rim, clears the old fog.
-    fn draw_showing(&self, game: &Game, shows: &VecDeque<Showing>, now: f64) {
+    fn draw_showing<'s>(&self, game: &Game, shows: impl IntoIterator<Item = &'s Showing>, now: f64) {
         let (tl, br) = self.fog_corners(game);
         let map = &game.world.map;
         let (w, h) = (game.fog.w, game.fog.h);
@@ -686,13 +877,22 @@ enum Stand {
 /// Draws a map figure (or ship) at world `pos`, heading towards `next`, drawn at one
 /// sprite pixel per map pixel whatever its frame size. Returns false if the install has no
 /// such sprite.
-fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, cam: &Camera, stand: Stand) -> bool {
+/// The hero's walk frame: 8 frames at 10 a second while he has a step to take, else 0.
+fn hero_frame(next: Option<(f32, f32)>) -> u32 {
+    if next.is_some() {
+        (get_time() * 10.0) as u32 % 8
+    } else {
+        0
+    }
+}
+
+fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, frame: u32, cam: &Camera, stand: Stand) -> bool {
     let Some(sheet) = art.and_then(|a| a.figure_sheet(stem)) else { return false };
     let n = sheet.width() / 8.0;
     let p = cam.to_screen(pos);
     let heading = next.map_or(Vec2::ZERO, |n| cam.to_screen(n) - p);
     let row = facing_row(heading);
-    let frame = if next.is_some() { ((get_time() * 10.0) as i32 % 8) as f32 } else { 0.0 };
+    let frame = frame.min(7) as f32;
     let size = n * cam.scale / PX;
     let dest = match stand {
         Stand::Feet => {
@@ -730,12 +930,14 @@ fn draw_ship(cam: &Camera, pos: (f32, f32), sail: Color) {
 fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let next = a.path.first().map(|&t| game.world.map.center(t));
     let pos = game.army_display_pos(a);
+    // Its walk frames run by game time (engine.md §7), not by the clock on the wall.
+    let frame = game.army_walk_frame(a).unwrap_or(0);
     if a.sails() {
-        if !draw_figure(art, ship_stem(a.ship), pos, next, cam, Stand::Afloat) {
+        if !draw_figure(art, ship_stem(a.ship), pos, next, frame, cam, Stand::Afloat) {
             let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
             draw_ship(cam, pos, sail);
         }
-    } else if !draw_figure(art, figure_stem(a.model), pos, next, cam, Stand::Feet) {
+    } else if !draw_figure(art, figure_stem(a.model), pos, next, frame, cam, Stand::Feet) {
         let c = cam.to_screen(pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
@@ -759,12 +961,12 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let c = cam.to_screen(game.display_pos());
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
     if game.aboard() {
-        if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), game.display_pos(), next, cam, Stand::Afloat) {
+        if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), game.display_pos(), next, hero_frame(next), cam, Stand::Afloat) {
             draw_ship(cam, game.display_pos(), HERO_SAIL);
         }
         return;
     }
-    if !draw_figure(art, figure_stem(model), game.display_pos(), next, cam, Stand::Feet) {
+    if !draw_figure(art, figure_stem(model), game.display_pos(), next, hero_frame(next), cam, Stand::Feet) {
         assets.draw_unit(game.hero().def, Team::Player, c.x, c.y - 10.0, 30.0);
     }
 }
@@ -828,7 +1030,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera, preview: Option<&[Tile
             Drawable::Ship => {
                 if let Some(ship) = game.ship {
                     let at = map.center(ship.tile);
-                    if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), at, None, cam, Stand::Afloat) {
+                    if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), at, None, 0, cam, Stand::Afloat) {
                         draw_ship(cam, at, HERO_SAIL);
                     }
                 }
@@ -879,7 +1081,7 @@ fn formation_grid(game: &Game, assets: &Assets, troops: &[Troop], team: Team, x:
     let f = game.content.formation;
     let lines = f.display_lines();
     for r in 0..lines {
-        for col in 0..f.cols {
+        for col in 0..f.display_cols() {
             let Some(slot) = f.at_display(r, col) else { continue };
             let (cx, cy) = (x + col as f32 * (cell + 3.0), y + (lines - 1 - r) as f32 * (cell + 3.0));
             let sq = Rect::new(cx, cy, cell, cell);
@@ -985,7 +1187,7 @@ fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
     let cell = (46.0 * k).round();
     let f = game.content.formation;
     // `formation_grid` spaces its cells 3 px apart.
-    let grid_w = f.cols as f32 * (cell + 3.0) - 3.0;
+    let grid_w = f.display_cols() as f32 * (cell + 3.0) - 3.0;
     let grid_h = if t.troops.is_empty() { 0.0 } else { f.display_lines() as f32 * (cell + 3.0) + 8.0 * k };
     // Names in Benguiat, larger; the rest small.
     let big = |c: Color| c == TIP_NAME || c == TIP_NOTE;
@@ -1123,6 +1325,7 @@ fn describe(event: &Event, game: &Game) -> Option<String> {
 /// next screen, if any.
 pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let mut next = None;
+    let mut tribute = false;
     for event in events {
         play_event(game, &event);
         if let Some(m) = describe(&event, game) {
@@ -1140,11 +1343,27 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
                 }
             }
             Event::NewDay(r) => dialogs.push_back(Dialog::day_report(game, &r)),
-            Event::Captured(l) => dialogs.push_back(Dialog::captured(game, l)),
-            Event::Met(_) | Event::Battle(_) | Event::Tribute { .. } | Event::SpellCast { .. } => {}
-            Event::LevelUp(..) => cue(Cue::Upgrade),
+            // A building taken on the way opens no window and does not stop the walk
+            // (0x4ad94c); the village's own window opens when he ends his walk in it.
+            // The tribute's gold sound plays as the village window closes (`building_view`).
+            Event::Tribute { .. } => tribute = true,
+            // A spell read to its end: the camera to an enemy target, then the effect.
+            Event::SpellCast { spell, target, outcome } => {
+                if let (Some(s), CastOutcome::Done { .. }) = (game.spell(spell).cloned(), outcome) {
+                    if !matches!(target, CastTarget::Own) {
+                        look_at(target);
+                    }
+                    spell_effect(&s, target);
+                }
+            }
+            Event::Captured(_) | Event::Met(_) | Event::Battle(_) => {}
+            // A level gained is silent: `Unit-Upgrade` is the promotion screen's (0x4b1af8).
+            Event::LevelUp(..) => {}
             Event::Script(o) => story::show(game, &o, message, dialogs),
         }
+    }
+    if let Some(Screen::Building(v)) = next.as_mut() {
+        v.tribute_paid |= tribute;
     }
     // The tutorial's end mark (0x4ac9fc): kept in the settings, so it is not offered again.
     if game.script().is_some_and(|s| s.tutorial_done()) {
@@ -1205,7 +1424,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
 
 /// The bottom bar of the map: its buttons and keys. Returns the next screen and whether the
 /// minimap was toggled.
-fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool) -> (Option<Screen>, bool) {
+fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool, time_buttons: bool) -> (Option<Screen>, bool, Option<TimeButton>) {
     let idle = game.foe.is_none();
     let modal = input_blocked();
     let look = |b: BarButton| match b {
@@ -1214,7 +1433,7 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
         BarButton::Map if minimap_open => Look::Glow,
         _ => Look::Normal,
     };
-    let mut pressed = game_bar::draw(game, look);
+    let (mut pressed, timed) = game_bar::draw_with_time(game, look, time_buttons);
     // The bar's keys (Razdor's) act as its buttons, also while the hero walks or waits: the
     // key held has cut his walk (`frame`), as the original's any key does.
     if pressed.is_none() {
@@ -1254,7 +1473,18 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool)
     if matches!(next, Some(Screen::Save(_))) && game.moving() {
         game.stop();
     }
-    (next, pressed == Some(BarButton::Map))
+    (next, pressed == Some(BarButton::Map), timed)
+}
+
+/// Where the camera looks (`None`: on the hero) after this frame's input: the walk locks it
+/// on the hero (0x4ae8a8) unless an event's places are being shown; otherwise it stays where
+/// the player put it, a planning click included (the original's click moves no camera).
+fn camera_look(look: Option<(f32, f32)>, walking: bool, showing: bool) -> Option<(f32, f32)> {
+    if walking && !showing {
+        None
+    } else {
+        look
+    }
 }
 
 /// What Esc on the map presses: Razdor's Esc closes the minimap first (the original opens the
@@ -1303,7 +1533,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 
     // The original's world frame acts on the map only while it is idle (interface.md §7.3,
     // 0x4cc1ff): while the hero walks or waits, it only watches for the stop.
-    let idle = !game.moving() && !game.waiting() && game.reading().is_none();
+    // The glide back to the hero takes no input either (0x4af96c).
+    let idle = !game.moving() && !game.waiting() && game.reading().is_none() && view.centring.is_none();
     // The whole milliseconds since the map's last frame (the original's timeGetTime).
     let now_ms = (get_time() * 1000.0) as i64;
     let dt_ms = now_ms - view.last_frame_ms.unwrap_or(now_ms);
@@ -1336,16 +1567,30 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         view.returning = None;
         view.look = None;
     }
-    if key(KeyCode::Tab) {
-        view.look = None;
+    // Tab: the centre button's glide (Razdor's key), when the view is off the hero; while
+    // he walks (Razdor's key works then too) the view is on him already.
+    if view.centring.is_none() && view.look.is_some() && key(KeyCode::Tab) {
+        if idle {
+            view.centring = Some((get_time(), view.look.unwrap_or(game.display_pos())));
+        } else {
+            view.look = None;
+        }
+    }
+    if let Some((t0, from)) = view.centring {
+        let ms = ((get_time() - t0) * 1000.0) as i64;
+        let to = game.display_pos();
+        let e = glide_ease(ms);
+        view.look = Some((from.0 + (to.0 - from.0) * e, from.1 + (to.1 - from.1) * e));
+        if ms >= GLIDE_MS {
+            view.centring = None;
+            view.look = None;
+        }
     }
     if idle && dialogs.is_empty() && view.grab.is_none() {
         scroll(game, view, dt_ms);
     }
     // While he walks the view is locked on him (interface.md §8).
-    if game.moving() && view.shows.is_empty() {
-        view.look = None;
-    }
+    view.look = camera_look(view.look, game.moving(), !view.shows.is_empty());
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     let on_minimap = view.minimap && minimap::outer(&game.world.map, cam.view).contains(Vec2::from(crate::ui::widgets::pointer()));
     let clock = game_bar::time_panel();
@@ -1363,6 +1608,14 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         // F5 held ends the Community endless wait (0xc27802).
         if game.endless_waiting() && held_key() == Some(KeyCode::F5) {
             game.end_endless_wait();
+        }
+        // A left click anywhere or a key press during a wait ends it after the half hour
+        // under way, and does nothing else *(Razdor's choice: the original's waits run to
+        // their end)*. Razdor's view keys leave it running, as they leave a walk, and Space
+        // is Razdor's stop, which ends it at once (below).
+        if game.waiting() && (clicked() || (any_key_pressed() && get_keys_pressed().into_iter().any(|k| cuts_walk(k) && k != KeyCode::Space))) {
+            game.cut_wait();
+            swallow_input();
         }
     } else if clicked() && !on_minimap {
         if let Some(screen) = hovered.and_then(|t| reopen_here(game, t)) {
@@ -1385,7 +1638,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
                     MapClick::Planned => {}
                 }
             }
-            view.look = None;
+            // The view stays where it is while the route is chosen; it goes back to the
+            // hero once he sets off (below), as the original's click (0x4cc3ad-0x4cca39)
+            // leaves the camera alone and only the walk locks it (0x4ae8a8).
         }
     }
     // Razdor's stop: Space, or a right click on the map (the right button dragged moves the
@@ -1393,7 +1648,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     let right_click = if game.moving() {
         right_clicked() && !on_minimap && !on_clock && cam.view.contains(Vec2::from(pointer()))
     } else {
-        grab_map(game, view, &cam, on_minimap || on_clock)
+        grab_map(game, view, &cam, on_minimap || on_clock || view.centring.is_some())
     };
     if key(KeyCode::Space) || right_click {
         razdor_stop(game);
@@ -1419,35 +1674,49 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for shown in std::mem::take(&mut game.shown) {
         view.shows.push_back(Showing::new(game, &shown));
     }
-    if dialogs.is_empty() {
-        if let Some(front) = view.shows.front_mut() {
-            let here = view.look.unwrap_or(game.display_pos());
-            let (t0, from) = *front.started.get_or_insert((now, here));
-            let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
-            let ease = p * p * (3.0 - 2.0 * p);
-            view.look = Some((from.0 + (front.at.0 - from.0) * ease, from.1 + (front.at.1 - from.1) * ease));
-            if now - t0 > SHOW_PAN + SHOW_FADE + SHOW_REST {
-                view.shows.pop_front();
-                if view.shows.is_empty() {
-                    view.returning = view.look.map(|at| (now, at));
-                }
-            }
-        } else if let Some((t0, from)) = view.returning {
-            let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
-            let ease = p * p * (3.0 - 2.0 * p);
-            let to = game.display_pos();
-            view.look = Some((from.0 + (to.0 - from.0) * ease, from.1 + (to.1 - from.1) * ease));
-            if p >= 1.0 {
-                view.returning = None;
-                view.look = None;
+    // An event's places are shown once its own window is closed, before the next window
+    // opens (`App` holds it meanwhile); after its last one the camera flies back.
+    if let Some((t0, from)) = view.returning {
+        let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
+        let ease = p * p * (3.0 - 2.0 * p);
+        let to = game.display_pos();
+        view.look = Some((from.0 + (to.0 - from.0) * ease, from.1 + (to.1 - from.1) * ease));
+        if p >= 1.0 {
+            view.returning = None;
+            view.look = None;
+        }
+    } else if let Some(front) = view.shows.front_mut().filter(|s| s.free(dialogs)) {
+        let event = front.event;
+        let here = view.look.unwrap_or(game.display_pos());
+        let (t0, from) = *front.started.get_or_insert((now, here));
+        let p = ((now - t0) / SHOW_PAN).clamp(0.0, 1.0) as f32;
+        let ease = p * p * (3.0 - 2.0 * p);
+        view.look = Some((from.0 + (front.at.0 - from.0) * ease, from.1 + (front.at.1 - from.1) * ease));
+        if now - t0 > SHOW_PAN + SHOW_FADE + SHOW_REST {
+            view.shows.pop_front();
+            if view.shows.front().is_none_or(|s| s.event != event) {
+                view.returning = view.look.map(|at| (now, at));
             }
         }
+    } else {
+        play_spell_fx(game, view, now);
+    }
+    if view.opening.as_ref().is_some_and(|s| s.progress(now) >= 1.0) {
+        view.opening = None;
     }
 
     let cam = Camera::looking_at(game, view.zoom, view.look.unwrap_or(game.display_pos()));
     draw_world(game, assets, &cam, view.preview.as_ref().map(|p| p.1.as_slice()));
     cam.draw_fog(game);
-    cam.draw_showing(game, &view.shows, now);
+    cam.draw_showing(game, view.opening.iter().chain(&view.shows), now);
+    // A spell's effect over the army it landed on.
+    if let Some(SpellFx::Effect { army, art, started: Some(t0) }) = view.spell_fx.front() {
+        if let Some(at) = army_pos(game, *army) {
+            let c = cam.to_screen(at);
+            let t = ((now - t0) / SPELL_FX_SECS) as f32;
+            super::chrome::effect(art, c, cam.cell_size().x * 3.0, t, WHITE);
+        }
+    }
     // The shown route's travel time, at its end.
     if let Some(end) = view.preview.as_ref().and_then(|p| p.1.last().map(|&e| (e, game.travel_minutes(&p.1)))) {
         let c = cam.cell_centre(end.0);
@@ -1471,13 +1740,22 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     for (i, (line, color)) in notes.iter().enumerate() {
         super::chrome::shadow_text(line, 10.0, 22.0 + i as f32 * 18.0, 16.0, *color);
     }
-    // Waiting: 1 / 4, or a click on the time panel (left 1 h, right 4 h). Waits play in real
-    // time, a 30-minute tick every 150 ms (`Game::tick`).
+    // Waiting: the buttons over the message box (interface.md §6), 1 / 4, or a click on the
+    // time panel off the buttons (left 1 h, right 4 h). Waits play in real time, a 30-minute
+    // tick every 150 ms (`Game::tick`).
     let can_wait = idle && game.foe.is_none();
+    // The three buttons show on the idle map only: no walk, wait, flight or glide.
+    let time_buttons = can_wait && view.shows.is_empty() && view.returning.is_none() && view.spell_fx.is_empty();
+    let (bar_top, bar_mid, bar_scale) = game_bar::time_layout();
+    let on_button = game_bar::time_button_at(Vec2::from(pointer()), time_buttons, bar_top, bar_mid, bar_scale).is_some();
+    let on_clock = on_clock && !on_button;
+    // The original's wait buttons play the button sound (interface.md §14).
     if can_wait && (key(KeyCode::Key1) || (on_clock && clicked())) {
+        cue(Cue::Button);
         game.begin_wait(1);
     }
     if can_wait && (key(KeyCode::Key4) || (on_clock && right_clicked())) {
+        cue(Cue::Button);
         game.begin_wait(4);
     }
     // Community F4 (the held key, 0xc277d2): a wait without end; F5 ends it (`frame`'s
@@ -1492,8 +1770,16 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         }
     }
 
-    let (bar, toggle_map) = bottom_bar(game, message, view.minimap);
+    let (bar, toggle_map, timed) = bottom_bar(game, message, view.minimap, time_buttons && !game.waiting());
     next = next.or(bar);
+    // A time button pressed (its sound played): a wait, or the view's glide back to the hero
+    // (0x4b9448: 2 or 8 ticks, 0x4af96c).
+    match timed {
+        Some(TimeButton::Wait1) => game.begin_wait(1),
+        Some(TimeButton::Wait4) => game.begin_wait(4),
+        Some(TimeButton::ShowHero) => view.centring = Some((get_time(), view.look.unwrap_or(game.display_pos()))),
+        None => {}
+    }
     if toggle_map {
         view.minimap = !view.minimap;
     }
@@ -1527,6 +1813,56 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The centre button's glide (0x4af96c): 900 ms, the cosine ease in the original's
+    /// whole steps of 1/900.
+    #[test]
+    fn the_glide_is_the_originals_900_ms_cosine() {
+        assert_eq!(glide_ease(0), 0.0);
+        assert_eq!(glide_ease(-5), 0.0);
+        assert_eq!(glide_ease(450), 0.5);
+        assert_eq!(glide_ease(900), 1.0);
+        assert_eq!(glide_ease(2000), 1.0);
+        // round(900 × (1 − cos(π/9)) / 2) = round(27.14) = 27.
+        assert_eq!(glide_ease(100), 27.0 / 900.0);
+        // Slow at both ends, symmetric, never backwards.
+        assert!((glide_ease(800) - (1.0 - glide_ease(100))).abs() < 1e-6);
+        assert!((1..=900).all(|t| glide_ease(t) >= glide_ease(t - 1)));
+    }
+
+    /// A planning click keeps the view where it was scrolled; the walk brings it back to
+    /// the hero, unless an event's places are being shown.
+    #[test]
+    fn the_view_follows_the_hero_only_while_he_walks() {
+        let away = Some((100.0, 200.0));
+        assert_eq!(camera_look(away, false, false), away);
+        assert_eq!(camera_look(away, true, false), None);
+        assert_eq!(camera_look(away, true, true), away);
+        assert_eq!(camera_look(None, false, false), None);
+    }
+
+    #[test]
+    fn a_shown_place_waits_for_its_own_window() {
+        assert!(!shown_free(Some(6), [Some(6)].into_iter()), "the quest's message is still open");
+        assert!(shown_free(Some(6), [Some(7), None].into_iter()), "other windows do not hold it");
+        assert!(!shown_free(None, [None].into_iter()), "a place with no event waits for all");
+        assert!(shown_free(None, std::iter::empty()));
+    }
+
+    #[test]
+    fn a_building_window_steps_aside_for_the_flights_and_comes_back() {
+        use BuildingFlight::*;
+        // The quest's message open in the building: nothing due yet.
+        assert_eq!(building_flight(true, false, false, false), Stay);
+        // Its OK: the place is due, the window steps aside for the map (0x4af96c).
+        assert_eq!(building_flight(true, false, true, false), StepAside);
+        // On the map, the camera on its way: the window waits.
+        assert_eq!(building_flight(false, true, false, true), Stay);
+        // Back on the hero: the window comes back as it was.
+        assert_eq!(building_flight(false, true, false, false), ComeBack);
+        // A map with no window aside stays the map.
+        assert_eq!(building_flight(false, false, false, false), Stay);
+    }
 
     #[test]
     fn the_scroll_step_follows_the_scroll_speed() {

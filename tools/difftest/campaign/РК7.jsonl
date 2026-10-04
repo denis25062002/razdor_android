@@ -1,0 +1,13 @@
+{"op": "new_game", "map": "РК7-Конец", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 59, "y": 152}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "answer", "yes": true}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "wait", "hours": 1}
+{"op": "ok"}
+{"op": "ok"}

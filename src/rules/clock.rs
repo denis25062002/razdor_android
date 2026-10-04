@@ -50,6 +50,12 @@ impl Clock {
         self.minutes
     }
 
+    /// Sets the time without the day's moments (the AI's tick reads the moment of each of
+    /// its arrivals, `rules::ai`).
+    pub(crate) fn set_total_minutes(&mut self, minutes: f64) {
+        self.minutes = minutes;
+    }
+
     fn whole(&self) -> u64 {
         self.minutes as u64
     }

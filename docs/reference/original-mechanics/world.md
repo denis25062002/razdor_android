@@ -135,9 +135,11 @@ Clicking an unexplored cell does nothing.
    sea).
 4. The mask closes:
    - cells of armies that **patrol with radius 0** (patrol flag +0x16bb set, radius +0x16bc
-     = 0; stationary guards) and are on the map, except the clicked army;
-   - cells of armies with a **meeting event waiting** (+0x3826) standing at distance exactly 1
-     of the hero (§4.1 distance, i.e. any of the 8 neighbours), except the clicked army;
+     = 0; stationary guards) and are on the map (+0x16a1), except the clicked army (0x4cc583);
+     friend or foe, only the army's own cell;
+   - cells of armies with a **meeting event waiting** (+0x3826) on the map standing at distance
+     exactly 1 of the hero (§4.1 distance, i.e. any of the 8 neighbours), except the clicked
+     army (0x4cc601);
    - footprints of castles and forts whose attitude to the player (+0x152) is ≤ 0, and of
      ruins whose owner is not the player — except the clicked building and the one he stands
      in;
@@ -171,9 +173,22 @@ closed or unreachable the chase ends and **the hero stops** on the cell he has r
 - Hero step time (centi-minutes) = `cost of the cell he leaves × speed × 100`, ×1.5 on a
   diagonal step (0x497c68, 0x4ae954). The cost is read on LAND, or on MIXED at sea. All
   products are exact integers (×150 for a diagonal).
+- **When the cost is read** (0x497c68): as he comes onto a cell, not as he leaves it, and on
+  the map his at-sea flag chose **before** that cell updates the flag (the flag is set from
+  the cell's terrain after the read, 0x496d28). So the first water cell he comes onto from
+  land or a building is priced on LAND, where water costs 0, and **the step after it takes no
+  time**; so is the start cell of a map that starts him on the water (the map load puts him
+  on his cell, 0x4b2504, before he is at sea). The cell is priced again, with the flag as it
+  then stands, at the end of a walk (0x4ae5d8), after a battle (0x4c50ec, 0x4c56a8), when a
+  Community event moves him (0xc27862) and at a save load (0x4b771c, which reprices a hero at
+  sea on MIXED). Landing clears the flag before the step (0x4ad94c), so a landing is priced
+  normally. Checked in the running game (Тихая пристань: the step time read 0 after the load,
+  1000 centi-minutes for each shallow step after; FINDINGS.md §9).
 - Speed by class (0x4b4300): **knight 5, archmage 5, ranger 4** → the ranger's steps take 80%
   of the time. Minutes per orthogonal grass step: 25 (ranger 20).
-- The class values (sight, speed, cast divisor) are set when the map is started (0x4b4300).
+- The class values (sight, speed, cast divisor) are set when the map is started (0x4b4300),
+  before the map load puts the hero on his cell (0x4b5913 → 0x497c68): his first step is
+  priced at his class's speed (a ranger's at 4).
   The save writes and reads class, sight and speed (0x4b66d8 / 0x4b771c); the cast divisor is
   not saved but recomputed from the loaded class (archmage 2, others 1; 0x4b78b2). No event
   result changes the class, so a changed hero unit does not change these values.
@@ -210,6 +225,37 @@ on its cost.
 - Hero walking animation: frame `(t div (WalkDelay/2)) & 3` + 3, where t is the real time
   since the **walk** started (not since the step), so the 4 frames cycle over two steps
   (0x4ae8f2, 0x4ad314). At sea the ship figure cycles 8 frames by real time (ms div 100).
+
+### 2.2.1 The stop: the armies' snap and their idle draws (0x4ad8a0)
+
+When the hero stops, every AI army 1..N on the map, in index order, ends a step under way (its
+remaining play time is set to 0, so it arrives at the next call of the step clock) and, when
+all three hold, restarts its idle animation with a **`Random(3000)`** ms offset (the time is
+stored with it; it only paces the sprite, but the draw shifts every later roll):
+- its direction of the next step (+0x1710) is below 8: the step clock writes there the
+  direction of the next step of its path after every call that starts or ends a step, 8 when
+  the path has no next cell (a path of one cell, or its end); the map load writes 5 and the
+  AI's setup 8 for a stationary guard (0x4a399c, 0x4a1ff0);
+- its patrol radius (+0x16bc) is above 0 (the patrol flag is not read);
+- it stands in no building (+0x3788 = 0).
+
+The stops that snap, each once, in the frame that stops (code; the draw order confirmed in the
+running game with the diff test's trace):
+- the end of a walk (0x4ae5d8, then 0x4ad8a0 at the end of the walk frame, 0x4af2bc): after
+  the AI's advance, the event scan and, with no event, the village's offer rolls (0x4bbc84,
+  economy.md §3); after an event's window has opened (its chord, 0x4ac3b4);
+- an AI army's attack on the hero during a walk (0x4ade3c): before the attack's event scan and
+  the battle; a greeting whose events fired: after the scan, before the event's window;
+- the end of a wait, or a wait an event ended (0x4ae24c sets the flag, 0x4ae42f / Community
+  0xc27802 / 0xc2782b call 0x4ad8a0 after the AI's advance, the scan and the event's window);
+  the Community endless wait going on under an event's dialog does not snap;
+- the hero's next cell found blocked at a step boundary (0x4ad94c from 0x4ae776, then
+  0x4ae784): only when no frame fell inside the step before (a frame longer than WalkDelay;
+  the walk's timer is stamped with the time it starts, so a walk at a steady frame rate never
+  takes this path).
+A run into an army or a garrison found in the first frame of the step (0x4ad94c from 0x4aeab7,
+the case at a steady frame rate) snaps the armies' sprites (0x4ad660) but makes no idle
+draws, nor does the battle or meeting that follows.
 
 ### 2.3 Ships
 
@@ -282,7 +328,10 @@ Checked for the cell he is about to enter, before he moves (§2.2):
    garrison record: an empty garrison means the building is **captured** (owner = player,
    the hero's faction and attitudes copied); otherwise the garrison is engaged. An unguarded
    **village is captured** by stepping on any of its cells — also when the route only passes
-   through it.
+   through it. A capture on the way opens no window and does not stop the walk: the owner,
+   attitude and faction are set and the step goes on (0x4ad94c; checked in the running game
+   with the diff test, FINDINGS.md §8). The building's own window opens only if the walk ends
+   in it (§7.2).
 4. No engagement and the hero is at sea: if the cell is land, or a building other than a
    bridge, the route is cut so that he walks onto that cell and stops; he leaves the sea and
    the ship is parked on the water cell he leaves (§8). Bug, code: the "is it land" test reads
@@ -310,12 +359,20 @@ distance > 0 (0x4a399c). A greeting in a frame takes the place of any attack in 
 armies, the last in army order acts (the loop keeps overwriting its pick, 0x4ade3c). An attack
 also runs the event scan with the attacker first; the battle opens only if no event fired.
 
-Both the attack and the greeting are acted on only in a frame where the hero has **just
-finished a step** (the hero's "arrived" flag, set only by the walk timer, 0x4ae977; tested in
-0x4ade3c). So while he waits or casts, AI armies move and bank time but never attack or
-greet him; an AI step that ends next to him in another frame is ignored (it is tested again
-after its next step). A greeting runs the event scan with that army as the met army; only
-an event that fires stops the walk.
+Both the attack and the greeting are acted on only while the hero's step flag (0x75e0c7) is
+set (tested in 0x4ade3c; for a greeting 0x4a548c tests it too, so without it the talk counters
+are left alone). Only the walk timer writes it: it clears it at the top of every frame of a
+walk (0x4ae71e) and sets it in the frame where a step ends and the next begins (0x4ae975),
+before the armies advance in that frame. So during a walk an AI step that ends next to him
+counts only in the frame his step ends (in Razdor's ticks: an arrival at the end of his
+step); one in another frame is ignored (it is tested again after its next step). Nothing
+clears the flag when the walk is over: after a walk that ran to its end, or stopped at a
+step's end (an event, a greeting, an attack), it stays set while he stands, waits or casts,
+so an army arriving next to him then attacks or greets him, and the meeting's event or the
+battle ends the wait (РК7, FINDINGS.md §26). It is clear before his first walk on the map and
+after a walk stopped before its step began (stepping onto an army or a guarded cell,
+0x4ad94c). A greeting runs the event scan with that army as the met army; only an event that
+fires stops the walk or the wait.
 
 ### 4.4 View, patrol and planning ranges
 
@@ -346,10 +403,56 @@ What the world needs:
   otherwise the rest of the window, never longer than what is left of the window; when the
   play time runs out the army arrives and may take the next step. Stationary guards (patrol
   flag with radius 0) are skipped entirely.
+- **Frames, arrivals and their order** (0x4a399c, 0x4ade3c; checked in the running game with
+  the diff test's trace): every frame runs the armies 1..N in order, each one call of the
+  step clock with the frame's game time `dt`. A call first starts a step when the army is
+  ready (the window and the bank as they stand at the frame's start), then takes `dt` off
+  the window and the play time; the army arrives when its play time drops below 1
+  centi-minute, the rest of the frame's time is dropped, and its next step can start only at
+  the next frame. So a call makes at most one arrival, a play time that the frame already
+  covers arrives in the call that starts it, and the arrivals of a tick come in the order of
+  the frames their play times end in, army by army within a frame. The draws an arrival
+  makes (wander points, plans, the arrival rules) follow that order. A midnight comes at the
+  end of the frame it falls in, after that frame's arrivals (0x4a1998 ends the advance).
+  The tick of a hero's step is that whole step (one bank, one window), however long.
+- **How an army is drawn** (0x4ad660, from the per-frame advance 0x4ade3c): between the cell
+  it leaves and the next one by its step's play time, `left / total` of the way back from the
+  next cell (+0x1718 the play time left, +0x1698 its total), so it glides over exactly its
+  play time. A step never reaches into the next tick: its play time is clamped to what is
+  left of the window (+0x37e8 in the record, reset to the tick at each tick), so an army
+  whose bank pays a step only every few ticks glides over one tick and stands over the
+  others (its bank fills). Checked live on РК1 (a memory poll every few ms during two 4-hour
+  waits: every step's total within 3000 centi-minutes, army 1 one cell a tick, army 9 up to
+  six). Razdor draws the same ([`Walk`]: the steps of each stretch over its real time, steps
+  in place standing for their time).
+- **The frame rate decides the details**: there is no frame cap but the display's vertical
+  sync, and a tick plays over WalkDelay of real time, so a tick has WalkDelay ÷ frame time
+  frames (about 9 at 60 Hz with the shipped WalkSpeed; about 17 under the diff test's
+  display). Each step's arrival waits for the end of a frame and its successor for the next
+  frame, so with coarse frames an army may fit one step fewer into a tick, two arrivals may
+  fall into one frame (then they come in army order), and a midnight may fall before or after
+  a tick's last arrivals: runs of the same actions differ there (FINDINGS.md §5). The frames
+  are an effect of the machine, not a rule; Razdor plays the order the frames converge to as
+  they get short: every arrival at the exact end of its play time, the next step starting at
+  that moment, arrivals of the same moment and a midnight's place in army order as above.
 - **The hero's cells are never entered**: if an AI step would go onto the hero's cell or the
   cell he is stepping to, the army spends the time but stays put (and is then in contact).
   The test is his cell plus his direction (0x75c050), which only a step writes: while he
   stands after a walk, the cell ahead of him in his last step's direction stays closed too.
+  His cell is his *logical* cell: during a step the cell he leaves (plus the direction: the
+  cell he steps to); in the frame where the step ends the walk timer first moves it to the new
+  cell and sets the direction to the step just taken (0x4ae8cc, 0x4ae8e0), and only then do
+  the armies advance (0x4ade3c). So an army arriving at the very end of the hero's step (its
+  play time the rest of the tick) sees him on his new cell with the cell **ahead** of him
+  closed, not the cell he came from; the planner's erase (ai.md §7) reads the same two cells.
+  An army standing right ahead of him then erases its own cell and stays (a one-cell path).
+  Everything else the AI computes from "the hero's cell" reads the same record cell
+  (`army(0)+0x1724`, 0x75c064): an arrival's distances (the re-plan within
+  `AIGetPathDistance`, the talk counts, ai.md §2), the planner's rescoring range, his seed
+  and its patrol-box test, the cone and the erase (ai.md §7), and the arrival rules'
+  adjacency (0x4a548c, ai.md §8). So an army arriving while he is mid-step sees him on the
+  cell he leaves: a patroller whose box holds the cell he steps to but not the one he leaves
+  does not seed him (ДС1, FINDINGS.md §20).
 - AI armies stand at the centre of their home building's footprint `(x0 + sx div 2,
   y0 + sy div 2)` when they respawn.
 - Boarding or leaving the sea (§8) empties the banks and route countdowns of the AI armies on
@@ -366,7 +469,11 @@ What the world needs:
   the clock runs smoothly (`Round(elapsed / WalkDelay × 3000)` centi-minutes). Starting a wait
   drops the route. Each tick starts a new AI tick of 30 minutes.
 - After each tick the events are scanned (the point under the hero counts); an event that
-  fires ends the wait. Community F4 = endless ticks until F5 (0xc277d2, 0xc27802); in that mode
+  fires ends the wait. So does the noon report: the scan opens it in the event window (with
+  the window's chord) and counts it as a fired event (0x4abfbc), so the wait ends there and
+  its stop draws the idle offsets (§2.2.1); closing the report does not resume it. Checked in
+  the running game (rk1-day1 step 42: the four-hour wait stopped at noon an hour in;
+  FINDINGS.md §15). Community F4 = endless ticks until F5 (0xc277d2, 0xc27802); in that mode
   an event's dialog opens without ending the wait (0xc2782b; whether the modal dialog pauses
   the ticks is **unknown**).
 - Event delays use the same ticks: hours × 2.
@@ -432,8 +539,29 @@ map or is destroyed during the ticks (0x4ae536).
   §6.4 scan) without opening its window.
 - Leaving onto a cell outside any building (or onto a bridge) clears it; a bridge counts as
   "the building the hero is on" for events but never as entered.
+- **A won garrison battle enters nothing**: the garrison is engaged before the step onto the
+  building (§4.2), so the hero stays outside; the building is captured but the entered
+  building stays none, no window opens. A click on it plans a route like any other (it is
+  not "the building he stands in"): he walks onto the clicked cell and the window opens on
+  arrival. **live** (РК1's ruins 8 from (34,24), battle.md §11).
 - When the walk ends inside a building other than a bridge or an obelisk (types 13–15), its
-  window opens (0x4aed85 → 0x4bbc84).
+  window opens (0x4aed85 → 0x4bbc84), unless the arrival's event scan (0x4aed3a) opened an
+  event's window: then the building is entered only when that window is read, and only if it
+  is the building under the clicked cell (0x4ed430 = 0x68dc74 → pending 0x4ed42c; else nothing
+  is entered). The event's OK (0x4c206c → Event_Finish 0x4ab1ec), with no chained event,
+  enters the pending building (0x4bbc84), which scans the events again first (0x4bbd34; one
+  that opens its window keeps the building pending) and only then rolls a village's offer
+  (economy.md §3) and opens the building's window with its chord. So in a village reached as
+  an event fires, the order is: the event's chord, the stop's idle draws (§2.2.1), then after
+  the OK the offer rolls and the village window's chord; its stock is paid when that window
+  is closed.
+- **An event's window on the way** (0x4aed41): when the scan after a step opens an event's
+  window (not the noon report) before the route's end, the walk ends there (0x4ae5d8, the
+  arrival repeated, so a building he is on counts as entered) and the same rule applies: the
+  clicked building he now stands in waits for the window (0x4aed64 → 0x4ed42c) and its window
+  opens after the OK. Seen on РК1 (diff-test runs r3-c004157 and rk1-h2-minimap): the
+  archmage's walk to (47, 45) stops at (45, 45) inside that building on event 4, and the
+  building's window follows its OK. **code**
 - Event scan order (0x4abfbc): global events, then the event point under the hero (a single
   cell), then the building he is in (only local events there, except in villages and
   shipyards where all its events count).
@@ -503,17 +631,19 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, seed rules of 0x482984 (a seed on the walker's cell dropped); cell (0,0) priced as any and a seed above an earlier one refused (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties; cell (0,0) keeps the bare mask as its cost and is never walked to (0x4cc99f), and a seed exactly 1 above an earlier one overwrites it (bugs) | Matches (hero); Razdor fixes the original's bugs (cell (0,0), the seed off-by-one) |
 | Click into the dark | not a target, nothing happens (`Game::can_target`) | not a valid target, nothing happens | Matches |
 | First / second click | first click shows the route, second click walks (`world_view.rs`) | same | none |
-| Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
+| Mask: armies | the cells of stationary guards and of armies with a meeting event waiting next to him, except the army clicked or chased; moving armies are crossed and met on the step (`Game::plan_from`) | only stationary guards and meeting-waiting armies next to him | Matches (until 2026-10-04 every army's cell was closed, a player's request since withdrawn) |
 | Mask: buildings | castles/forts with attitude ≤ 0, ruins not his (`Location::bars_hero`) | castles/forts with attitude ≤ 0, ruins not his only | Matches |
 | Mask: bridges at sea | closed only when clicking land or standing on a bridge; a bridge is no target at sea | only when clicking land or standing in a bridge | Matches |
-| Hero step time | cost of the cell left × speed, ×1.5 diagonal | same | none |
+| Hero step time | cost of the cell left × speed, ×1.5 diagonal, the cost read as he comes onto the cell with the at-sea flag before it (`Game::step_base`): the first step after going to sea, or from a map's start on the water, is free | same | Matches |
 | AI step time | cost of the cell **left** (`step_army`) | cost of the cell **left** | Matches |
 | AI never enters the hero's cells | a step onto his cell or the one he steps from, or, standing, the cell ahead of him in his last step's direction (`Game::facing`), spends its time, the army stays | his cell plus his direction, which a stop does not clear; waits in place, then contact | Matches |
 | Stationary guards' clock | skipped (no bank) | skipped | Matches |
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
 | Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
-| Village crossed on the way | an unguarded village stepped on is his | an unguarded village is captured when crossed | Matches |
+| Village crossed on the way | an unguarded village (or an empty castle, fort or ruins) stepped on is his, with no window; the walk goes on | captured when crossed, no window, the walk goes on | Matches (Razdor showed a capture window that stopped the walk until 2026-10-03) |
+| Building under an event's window on the way | the walk an event's window cuts short ends on his cell; the clicked building he stands in opens after the windows (`Game::stop_for_reading`) | 0x4aed41 → 0x4ae5d8, pending 0x4aed64 | Matches (until 2026-10-04 Razdor left him on the map) |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |
+| After a won garrison battle | Outside, on the cell he attacked from; not entered; a click on the building walks him in and its window opens on arrival | The same (live, РК1's ruins) | Matches |
 | Friendly meeting | talk counter per army: +1 per step off his cell, + relation + 1 per step wherever he is (relation ≥ 0), greets above 0, then −500; the events run, and only one that fires stops the walk; the last army in order acts | talk counters, −500 after each meeting, grow per AI step; walk stops only if an event fires | Matches |
 | Sight radii | 9/8/10 cells | same | none |
 | Explored edge | the original's half-cell stamps (`fog::stamp`): 241 / 293 / 349 cells for radius 8 / 9 / 10 | half-cell rule; `r + 0.62` fits the sight radii; archmage gets 8 more cells | Matches |
@@ -532,7 +662,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Ship lost by walking out on land | yes, from the shipyard | yes (from the shipyard, or where the misread cell is water) | Razdor fixes the original's bug (the misread cell) |
 | Move army to hero | lowest-score neighbour in direction order (cost, +50 000 building, +100 000 taken), position and post move, the patrol box stays (`Army::box_centre`), a waiting army stays off the map | lowest-score free neighbour (building cells only as a fallback), home moves too, not activated | Matches |
 | Event lantern radius 0 | nothing revealed | nothing revealed (radius 0 skipped) | Matches |
-| AI attack while waiting | never: AI attacks and greetings only after a step of his; an attack's events run first and one that fires means no battle; no attack in a step with a greeting | never: AI attacks and greetings only in the frame the hero finishes a step | Matches |
+| AI attack while waiting | AI attacks and greetings while his step flag is set: at the end of a step of his, and after a walk while he stands or waits (`Game::step_flag`, `HeroCells::boundary`); an attack's events run first and one that fires means no battle; no attack in a step with a greeting | the same: the flag (0x75e0c7) is written only by the walk timer (§4.3) | Matches |
 | Chase target unreachable | chase ends and the hero stops, also when the army's cell is in the dark; the new plan keeps the original click's buildings | chase ends and the hero stops (target cell tested after the fog is laid) | Matches |
 | Show army reveal | 3 cells | 3 cells (6 half-cells), growing | none |
 | Minimap size | 400×400 frame | 200 px under 100 cells wide, else 400 | small |

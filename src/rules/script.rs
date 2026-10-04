@@ -78,7 +78,23 @@ impl Game {
         let Some(mut engine) = self.script.take() else { return Vec::new() };
         let out = engine.tick(self);
         self.script = Some(engine);
+        // A check that fires nothing goes idle, which drops the wish for a check at the
+        // building window's close (0x4ac3a6).
+        if !out.iter().any(|o| matches!(o, EventOutcome::Fired { .. } | EventOutcome::Question(_))) {
+            self.scan_on_close = false;
+        }
         self.script_events(out)
+    }
+
+    /// A window over the map was closed (not by opening another one, 0x4b8d28(0)): after a
+    /// heal, a raise or a trade in the building window the events are checked now
+    /// (0x4b8f63), so one those changes allow opens as the window closes, not at the next
+    /// step.
+    pub fn window_closed(&mut self) -> Vec<Event> {
+        if !self.scan_on_close {
+            return Vec::new();
+        }
+        self.run_script()
     }
 
     fn script_events(&mut self, out: Vec<EventOutcome>) -> Vec<Event> {
@@ -87,6 +103,7 @@ impl Game {
         // the AI's armies marked to be rescored (0x4ab1ec → 0x497240(0, 1)).
         if out.iter().any(|o| matches!(o, EventOutcome::Fired { .. })) {
             self.mark_dirty(super::ai::HERO);
+            self.recount_hero();
         }
         let mut events: Vec<Event> = out.into_iter().map(Event::Script).collect();
         let effects = std::mem::take(&mut self.effect_events);
@@ -113,6 +130,28 @@ impl Game {
         let out = engine.answer(self, yes);
         self.script = Some(engine);
         self.script_events(out)
+    }
+
+    /// A scenario event's window was closed (its OK): the events after it, which the
+    /// original scans only now (0x4c206c → 0x4ab1ec → the chain or a new scan), run.
+    pub fn event_window_closed(&mut self) -> Vec<Event> {
+        let Some(mut engine) = self.script.take() else { return Vec::new() };
+        let out = engine.window_closed(self);
+        self.script = Some(engine);
+        if out.is_empty() {
+            return Vec::new();
+        }
+        self.script_events(out)
+    }
+
+    /// The interface shows no scenario event's window (`shown` false) though the engine waits
+    /// for one to be closed, and no event waits to be drained: the scan goes on as if it had
+    /// been closed (a safety net for an outcome the screen did not turn into a window).
+    pub fn release_unshown_window(&mut self, shown: bool) -> Vec<Event> {
+        if shown || !self.pending.is_empty() || !self.script.as_ref().is_some_and(|s| s.holds_window()) {
+            return Vec::new();
+        }
+        self.event_window_closed()
     }
 
     /// The question waiting for an answer, if any.
@@ -337,7 +376,7 @@ impl Game {
         let dark: Vec<(i32, i32)> = if self.fog.enabled { square(&self.fog).into_iter().filter(|&t| !self.fog.explored(t)).collect() } else { Vec::new() };
         self.reveal(at.0, at.1, r);
         let cells: Vec<(i32, i32)> = dark.into_iter().filter(|&t| self.fog.explored(t)).collect();
-        self.shown.push(super::game::Shown { at, cells });
+        self.shown.push(super::game::Shown { at, cells, event: None });
     }
 }
 
@@ -686,6 +725,12 @@ impl EventWorld for Game {
         }
     }
 
+    fn shown_by(&mut self, event: EventId) {
+        for s in self.shown.iter_mut().filter(|s| s.event.is_none()) {
+            s.event = Some(event);
+        }
+    }
+
     /// radius := max(0, radius + delta), and the patrol box is recomputed around the army's
     /// home cell (0x4ab51b): a box an event left behind (move to the hero) follows it again.
     fn change_patrol(&mut self, army: ArmyId, delta: i8) {
@@ -982,6 +1027,9 @@ impl EventWorld for Game {
         self.path.clear();
         self.goal = None;
         self.location = None;
+        // His next step is priced on his new cell (0x497c68, from the Community's 0xc27862).
+        let cost = if self.aboard() { self.world.mixed_cost(t) } else { self.world.map.cost(t).unwrap_or(0) };
+        self.step_base = Some(u32::from(cost) * self.hero_speed());
         self.look_around();
     }
 }
@@ -1217,6 +1265,15 @@ mod tests {
     const DAY: u16 = 1440;
 
     /// A once-event of `kind`, open all day every day.
+    /// The opening events drained and every window read (OK), the scan going on after each.
+    fn read(g: &mut Game) -> Vec<Event> {
+        let mut events = g.drain_events();
+        while g.script().is_some_and(|s| s.holds_window()) {
+            events.extend(g.event_window_closed());
+        }
+        events
+    }
+
     fn ev(kind: EventKind) -> DtEvent {
         DtEvent { kind: kind as u8, repeat: DAY, duration: DAY, once: 1, message: "m".into(), title: "t".into(), ..DtEvent::default() }
     }
@@ -1344,7 +1401,7 @@ mod tests {
         sleeper.home_building = 1;
         s.armies = vec![army(1, 2, 9, 0, &[troop(4, 0, 1)]), sleeper, army(5, 14, 2, 0, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         let k = g.world.inactive.iter().position(|a| a.id == 3).unwrap();
         g.world.inactive[k].troops[0].died_at = Some(1);
         g.world.inactive[k].troops[0].hurt = 5;
@@ -1412,7 +1469,7 @@ mod tests {
         let heal = SpellDef { time_cast: Some(4), cost_mana: 10, delta_fixed_hits: Some(10), ..ck::spell(1, 0) };
         let c = Content::new(base.units.clone(), base.items.clone(), vec![heal], base.options.clone(), base.formation);
         let mut g = Game::from_scenario(Arc::new(c), &s, HeroClass::Knight);
-        g.drain_events();
+        read(&mut g);
         (g.mana, g.spells) = (100, vec![1]);
         g.squad[1].hp = 5;
         let t0 = g.clock.total_minutes();
@@ -1450,7 +1507,7 @@ mod tests {
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 5, name: "Aide".into() }];
         s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert_eq!(g.unit_label(&g.squad[2]), "Aide");
         assert_eq!(g.squad.len(), 4);
         g.wait(1);
@@ -1473,7 +1530,7 @@ mod tests {
         let mut s = world(vec![]);
         s.armies = vec![army(2, 12, 10, 1, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         g.squad[1].items[0] = Some(ItemId(7));
         EventWorld::remove_unit(&mut g, 1, false, None);
         assert!(g.pack.is_empty(), "the items went with the unit");
@@ -1517,7 +1574,7 @@ mod tests {
         assert_eq!((g.squad.last().unwrap().def, g.squad.last().unwrap().level), (UnitId(5), 1));
 
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         let k = g.world.armies.iter().position(|a| a.id == 2).unwrap();
         (g.world.armies[k].troops[0].level, g.world.armies[k].troops[0].xp) = (3, 9);
         EventWorld::add_unit(&mut g, 5, 0, Some(2));
@@ -1547,7 +1604,7 @@ mod tests {
         homed.home_building = 1;
         s.armies = vec![homed, army(4, 14, 2, -2, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert!(EventWorld::army_at_home(&g, 4), "no home");
         let k = g.world.armies.iter().position(|a| a.id == 3).unwrap();
         g.world.armies[k].mind.standing = Some(0);
@@ -1591,9 +1648,42 @@ mod tests {
         assert!(fired(&g.drain_events()).is_empty(), "not at the start: the hero is elsewhere");
         assert!(g.set_destination((9, 2)));
         let events = walk(&mut g);
-        assert!(events.contains(&Event::Arrived(0)));
         assert_eq!(fired(&events), vec![1]);
         assert_eq!(g.gold, 125);
+        // Its window open, the town is entered only once it is read (0x4ed42c).
+        assert!(!events.contains(&Event::Arrived(0)));
+        assert_eq!(g.enter_waiting_building(), vec![Event::Arrived(0)]);
+        assert!(g.enter_waiting_building().is_empty(), "once");
+    }
+
+    #[test]
+    fn a_village_entered_as_an_event_opens_waits_for_it_to_be_read() {
+        // 0x4ae6dc: the arrival's event scan opens the event's window; the village he
+        // clicked waits (0x4ed42c) and is entered when the window is read (0x4bbc84): only
+        // then the offer rolls and the tribute.
+        let e = ev(EventKind::Local);
+        let mut s = world(vec![e]);
+        s.header.heroes[0] = hero(2, 2, 100, &[]);
+        let mut v = building(BuildingType::Village, 9, 2, (1, 1));
+        (v.gold_per_day, v.gold_max, v.relations) = (25, 60, [1, 0, 0, 0]);
+        v.event_slots[0] = 1;
+        v.event_count = 1;
+        s.buildings = vec![v];
+        let mut g = start(&s);
+        read(&mut g);
+        assert!(g.set_destination((9, 2)));
+        crate::rules::rng::trace::start();
+        let events = walk(&mut g);
+        let rolls = |d: &[crate::rules::rng::trace::Draw]| d.iter().filter(|d| d.site.file().ends_with("economy.rs")).count();
+        assert_eq!(fired(&events), vec![1]);
+        assert!(!events.iter().any(|e| matches!(e, Event::Arrived(_) | Event::Tribute { .. })), "{events:?}");
+        assert_eq!((g.gold, rolls(&crate::rules::rng::trace::take())), (100, 0), "no tribute, no offer rolls yet");
+        let entered = g.enter_waiting_building();
+        let draws = crate::rules::rng::trace::take();
+        crate::rules::rng::trace::stop();
+        assert_eq!(entered.first(), Some(&Event::Arrived(0)));
+        assert!(rolls(&draws) > 0, "the offer rolls now");
+        assert!(g.village_offer().is_some() || g.gold == 125, "the offer, or the tribute");
     }
 
     #[test]
@@ -1605,7 +1695,7 @@ mod tests {
         p.event_count = 1;
         s.points = vec![p];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert!(g.set_destination((11, 2)));
         let events = walk(&mut g);
         assert_eq!(fired(&events), vec![1]);
@@ -1634,7 +1724,7 @@ mod tests {
         assert!(!g.world.armies[0].mind.clean.contains(&crate::rules::ai::HERO));
 
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         g.world.armies[0].mind.clean.insert(crate::rules::ai::HERO);
         let events = g.answer_question(false);
         assert!(g.world.armies[0].mind.clean.contains(&crate::rules::ai::HERO), "declined: no effect");
@@ -1692,7 +1782,7 @@ mod tests {
         town.event_count = 2;
         s.buildings = vec![town];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         g.set_hero_name("Ivan");
         let opened = g.clock.total_minutes() as u64;
         let messages = g.journal_rows(Tab::Messages);
@@ -1704,6 +1794,7 @@ mod tests {
         walk(&mut g);
         assert!(g.journal.find(EntryKind::Quest, 2).is_none(), "a building's quest is taken in its hall");
         g.take_hall_entry(2).unwrap();
+        read(&mut g);
         let arrived = g.clock.total_minutes() as u64;
         assert!(arrived > opened);
         assert_eq!(g.journal.find(EntryKind::Quest, 2).map(|e| (e.minutes, e.title.as_str())), Some((arrived, "The mill")));
@@ -1793,7 +1884,7 @@ mod tests {
         s.header.victory_event = 1;
         s.armies = vec![army(2, 3, 2, -2, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert_eq!(g.script_end(), None);
         // He walks into the hostile army next door; the player wins.
         assert!(g.set_destination((3, 2)));
@@ -1876,7 +1967,7 @@ mod tests {
         (guard.patrols, guard.patrol_radius) = (1, 0);
         s.armies = vec![guard];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert!(g.set_destination((6, 2)));
         let events = walk(&mut g);
         assert_eq!(fired(&events), vec![1]);
@@ -1894,6 +1985,34 @@ mod tests {
         assert_eq!(g.foe, Some(Foe::Army(0)));
     }
 
+    #[test]
+    fn an_army_with_a_meeting_waiting_next_to_the_hero_closes_his_route() {
+        // World.md §1.3 (0x4cc601): an army a meeting event waits for closes its cell when it
+        // stands next to the hero (any of the 8 neighbours), unless it is the army clicked;
+        // further away, or without the event, it is walked through like any moving army.
+        let mut talk = ev(EventKind::Global);
+        talk.conditions.meet_army = 2;
+        let routes = |events: Vec<DtEvent>, at: (u16, u16), to: (i32, i32)| {
+            let mut s = world(events);
+            let mut friend = army(2, at.0, at.1, 1, &[troop(4, 0, 1)]);
+            (friend.patrols, friend.patrol_radius) = (1, 5);
+            s.armies = vec![friend];
+            let mut g = start(&s);
+            read(&mut g);
+            g.fog = crate::rules::fog::Fog::disabled(16, 12);
+            (g.route_to(to), g.route_to(g.world.armies[0].tile(&g.world.map)))
+        };
+        let (route, clicked) = routes(vec![talk.clone()], (3, 2), (4, 2));
+        assert!(!route.is_empty() && !route.contains(&(3, 2)), "{route:?}");
+        assert_eq!(clicked, vec![(3, 2)], "the army clicked stays open");
+        let (route, _) = routes(vec![talk.clone()], (3, 3), (4, 4));
+        assert!(!route.contains(&(3, 3)), "a diagonal neighbour too: {route:?}");
+        let (route, _) = routes(vec![talk], (4, 2), (6, 2));
+        assert!(route.contains(&(4, 2)), "two cells away: {route:?}");
+        let (route, _) = routes(vec![], (3, 2), (4, 2));
+        assert_eq!(route, vec![(3, 2), (4, 2)], "no meeting waits for it");
+    }
+
     /// The hero walks from (2, 2) to (8, 4) while army 2 (`attitude`) steps from (5, 2) to
     /// (4, 2), next to him after his first step, to (3, 3); an event fires on meeting it.
     fn walk_past_army_with_event(attitude: i8) -> (Game, Vec<Event>) {
@@ -1902,7 +2021,7 @@ mod tests {
         let mut s = world(vec![talk]);
         s.armies = vec![army(2, 5, 2, attitude, &[troop(4, 0, 1)])];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         let a = &mut g.world.armies[0];
         a.mind.scripted = true;
         a.path = vec![(4, 2)];
@@ -1994,7 +2113,7 @@ mod tests {
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 5, name: "Aide".into() }];
         s.events.push(op(12, 0, 1, 1));
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         assert_eq!(g.squad[1].items[0], Some(ItemId(7)));
         assert_eq!(g.pack, Vec::<ItemId>::new(), "the item is worn, not given");
         assert_eq!((g.squad[1].def, g.squad[1].named), (UnitId(5), 1), "replaced by type 3, then named character 1 of type 5");
@@ -2033,7 +2152,7 @@ mod tests {
         fort.garrison[0] = troop(4, 0, 1);
         s.buildings = vec![fort];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         let a = g.world.armies.iter().find(|a| a.id == 2).unwrap();
         assert_eq!(a.troops.iter().map(|t| t.unit).collect::<Vec<_>>(), vec![UnitId(5), UnitId(3)]);
         assert_eq!(a.speed, Army::speed_for(-3, 5), "5 − (−3) = 8");
@@ -2142,9 +2261,11 @@ mod tests {
     }
 
     /// РК2's mines: a fort's own event asks for the peasants once the fort is the player's.
-    /// Beating its garrison takes it and enters it, so the event is checked then.
+    /// Beating its garrison takes it but does not enter it (he stays on the cell he fought
+    /// from, as the original: world.md §7.2, checked on РК1's ruins), so the event waits
+    /// until he walks in.
     #[test]
-    fn a_building_taken_from_its_garrison_runs_its_own_events() {
+    fn a_building_taken_from_its_garrison_runs_its_own_events_once_entered() {
         let mut mine = ev(EventKind::Local);
         let c = &mut mine.conditions;
         (c.buildings_check, c.buildings, c.buildings_owner) = (1, [1, 0, 0], [1, 0, 0]);
@@ -2157,19 +2278,29 @@ mod tests {
         fort.event_count = 1;
         s.buildings = vec![fort];
         let mut g = start(&s);
-        g.drain_events();
+        read(&mut g);
         let gold = g.gold;
         assert!(g.set_destination((5, 2)));
         walk(&mut g);
         assert!(matches!(g.foe, Some(Foe::Garrison(_))), "the garrison fights");
+        let before = g.tile();
         let mut b = g.start_battle();
         b.begin();
         for f in b.fighters.iter_mut().filter(|f| f.team == crate::rules::battle::Team::Enemy) {
             f.hp = 0;
         }
         g.resolve_battle(&b);
-        assert_eq!(fired(&g.drain_events()), vec![1]);
+        assert!(fired(&g.drain_events()).is_empty(), "not entered: its events wait");
+        assert_eq!((g.tile(), g.location), (before, None), "outside, on the cell he fought from");
+        assert!(g.world.locations[0].owned(), "taken");
+        assert!(g.set_destination((5, 2)), "a click on it walks him in");
+        let events = walk(&mut g);
+        assert_eq!(g.tile(), (5, 2));
+        assert_eq!(fired(&events), vec![1], "its event fires as he enters");
         assert!(g.gold >= gold + 9);
+        // Its window opens once the event's is read.
+        g.event_window_closed();
+        assert_eq!(g.enter_waiting_building(), vec![Event::Arrived(0)]);
     }
 
     /// РК1 → РК2 → РК3: the next map starts with the carried army and the flags (the
@@ -2191,7 +2322,8 @@ mod tests {
         s.next_map = "Next.DTm".into();
         s.header.carry_over = [1, 1, 1, 1, 1, 1, 1];
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Herald".into() }];
-        let g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage);
+        let mut g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage);
+        read(&mut g);
         let next = g.next_map().expect("a victory with a next map");
         assert_eq!(next.flags, "Band\u{a0}");
         assert_eq!(next.class, HeroClass::Archmage);

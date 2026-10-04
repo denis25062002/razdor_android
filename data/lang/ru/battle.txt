@@ -146,7 +146,6 @@ XP {xp} / {need} = Опыт {xp} / {need}
 # Card strip under a portrait: the Russian original keeps these Latin labels (the video
 # shows "A: 45  D: 35/40", "Mnvr: 1  Ini: 12", "Hits: 70", "Pwr: 58").
 A: {v} = A: {v}
-S: {v} = S: {v}
 Pwr: {power} = Pwr: {power}
 D: {blow}/{shot} = D: {blow}/{shot}
 Mnvr: {mn} = Mnvr: {mn}
@@ -335,3 +334,17 @@ Rounds won: {won}, lost: {lost} = Побед: {won}, поражений: {lost}
 Again (Enter) = Ещё раз (Enter)
 Change armies (Esc) = Сменить армии (Esc)
 Main menu = Главное меню
+
+# Spell badges on the unit cards and their hint (ui/spell_badges.rs)
+Lowers hits (- hits) = Уменьшает жизнь (-хиты)
+Physical attack = Физическая атака
+Physical defence = Физическая защита
+Magic power = Сила магии
+Magic immunity = Иммунитет к магии
+Poison (- hits) = Отравление (-хиты)
+Drains life = Отбирает жизнь
+Time left: = Осталось времени действия:
+Unknown = Неизвестно
+month = месяц
+day = день
+hour = час

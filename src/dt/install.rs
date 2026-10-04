@@ -471,6 +471,25 @@ mod tests {
     }
 
     #[test]
+    fn real_maps_offer_the_classes_with_a_start_cell() {
+        let Some(dt) = install() else { return };
+        // Of the shipped maps only Устье Трейна leaves a class without a start cell: its
+        // archmage, though that preset still names a start building and a troop. The original
+        // greys his portrait and opens the window on the knight (checked live under Wine).
+        let mut short: Vec<(String, [bool; 3])> = Vec::new();
+        for m in &dt.maps {
+            let h = m.load().expect("map loads").header;
+            assert!(h.first_offered_class().is_some(), "{}: no class offered", m.name);
+            if h.offered_classes() != [true; 3] {
+                short.push((m.name.clone(), h.offered_classes()));
+            }
+        }
+        assert_eq!(short.len(), 1, "{short:?}");
+        assert!(short[0].0.starts_with("Устье"), "{short:?}");
+        assert_eq!(short[0].1, [true, false, true]);
+    }
+
+    #[test]
     fn real_maps_parse_and_roundtrip() {
         let Some(dt) = install() else { return };
         assert_eq!(dt.maps.len(), 15);

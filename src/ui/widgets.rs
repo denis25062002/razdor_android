@@ -134,6 +134,28 @@ pub fn set_pointer(at: Option<(f32, f32)>) {
     POINTER.with(|p| p.set(at));
 }
 
+thread_local! {
+    /// This frame's click and key presses were taken (a wait cut by them): nothing else
+    /// acts on them.
+    static SWALLOWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The rest of this frame sees no click and no key press ([`clicked`], [`key`],
+/// [`held_key`], the global keys); cleared by [`track_held_key`] at the next frame.
+pub fn swallow_input() {
+    SWALLOWED.with(|s| s.set(true));
+}
+
+/// This frame's presses were taken ([`swallow_input`]).
+pub fn input_swallowed() -> bool {
+    SWALLOWED.with(|s| s.get())
+}
+
+/// A key went down this frame (any key, Alt and F10 aside, as the held key).
+pub fn any_key_pressed() -> bool {
+    !input_blocked() && !input_swallowed() && get_keys_pressed().iter().any(|k| !matches!(k, KeyCode::LeftAlt | KeyCode::RightAlt | KeyCode::F10))
+}
+
 pub fn set_input_blocked(blocked: bool) {
     BLOCKED.with(|b| b.set(blocked));
 }
@@ -148,15 +170,15 @@ pub fn mouse_in(x: f32, y: f32, w: f32, h: f32) -> bool {
 }
 
 pub fn clicked() -> bool {
-    !input_blocked() && is_mouse_button_pressed(MouseButton::Left)
+    !input_blocked() && !input_swallowed() && is_mouse_button_pressed(MouseButton::Left)
 }
 
 pub fn right_clicked() -> bool {
-    !input_blocked() && is_mouse_button_pressed(MouseButton::Right)
+    !input_blocked() && !input_swallowed() && is_mouse_button_pressed(MouseButton::Right)
 }
 
 pub fn key(k: KeyCode) -> bool {
-    !input_blocked() && is_key_pressed(k)
+    !input_blocked() && !input_swallowed() && is_key_pressed(k)
 }
 
 thread_local! {
@@ -168,6 +190,7 @@ thread_local! {
 /// that went down, and any key going up clears it (so with two keys down, letting one go
 /// leaves none held). Alt and F10 are system keys and never become the held key.
 pub fn track_held_key() {
+    SWALLOWED.with(|s| s.set(false));
     let up = !get_keys_released().is_empty();
     let down = get_keys_pressed().into_iter().find(|k| !matches!(k, KeyCode::LeftAlt | KeyCode::RightAlt | KeyCode::F10));
     HELD_KEY.with(|h| {
@@ -188,7 +211,7 @@ pub fn forget_held_key() {
 
 /// The held key as the original sees it ([`track_held_key`]); none while input is blocked.
 pub fn held_key() -> Option<KeyCode> {
-    if input_blocked() {
+    if input_blocked() || input_swallowed() {
         None
     } else {
         HELD_KEY.with(|h| h.get())
@@ -200,7 +223,7 @@ pub fn held_key() -> Option<KeyCode> {
 /// Down arrows, which do nothing. N answers No, as it did in Razdor before the parity pass
 /// (the original takes it for Yes). `None` while no such key went down this frame.
 pub fn answer_key() -> Option<bool> {
-    if input_blocked() {
+    if input_blocked() || input_swallowed() {
         return None;
     }
     answer_of(get_keys_pressed().into_iter())
@@ -253,11 +276,16 @@ pub fn tooltip_panel(r: Rect) {
 
 /// Draws a button and returns true when it was clicked this frame.
 pub fn button(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool) -> bool {
+    button_sounding(x, y, w, h, label, enabled, super::audio::Cue::Button)
+}
+
+/// [`button`] with its own press sound (the money buttons play `Item-Gold`).
+pub fn button_sounding(x: f32, y: f32, w: f32, h: f32, label: &str, enabled: bool, sound: super::audio::Cue) -> bool {
     let hover = enabled && mouse_in(x, y, w, h);
     super::chrome::marble_button(Rect::new(x, y, w, h), label, enabled, hover);
     let pressed = hover && clicked();
     if pressed {
-        super::audio::cue(super::audio::Cue::Button);
+        super::audio::cue(sound);
     }
     pressed
 }

@@ -1,0 +1,11 @@
+{"op":"new_game","map":"РК1","hero":1}
+{"op":"ok"}
+{"op":"click_map","x":47,"y":45}
+{"op":"ok"}
+{"op":"take","slot":0}
+{"op":"ok"}
+{"op":"snapshot"}
+{"op":"snapshot"}
+{"op":"ok"}
+{"op":"snapshot"}
+{"op":"snapshot"}

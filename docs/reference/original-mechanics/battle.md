@@ -481,9 +481,19 @@ column c:
   `HP ≤ actionsLeft × dmg`.
 - Otherwise the test is meant to be `HP ≤ dmg`, but the code (486d03 melee, 486feb shots) reads
   the HP of the unit **with the target's list index on the actor's own side**. So the normal
-  enemy AI, and every AI army off-screen, judges "killable" from an unrelated own unit's HP
-  When that index is past the end of the actor's own list, the slot read is empty or stale.
-  **code**; not yet seen in play.
+  enemy AI, and every AI army off-screen, judges "killable" from an unrelated own unit's HP.
+  When that index is past the end of the actor's own list, the record read is one the side
+  holds beyond its units: a record a death emptied this battle (a removal shifts the records
+  down and zeroes the last, 489f69) reads 0; one beyond the side's units at the start holds
+  whatever was there before the battle. The off-screen battles (0x4a0710) are played from
+  two static sides, 0xc081ac (attacker) and 0xc08a00 (defender), copied whole into the battle
+  (48b75c) and back out at its end (48bb10); 49855c writes an army's units into records
+  1..n and leaves the others, and nothing clears them. So a record beyond the units holds
+  the HP the last battle, or army passed through that side (an arrival's garrison
+  reshuffle, a respawn: 49855c + 4988c0 on the first side), left there: an off-screen
+  battle's targets depend on the battles before it. Checked in the running game (Frida on
+  48b75c and 0x4a0710, РК4's opening: the records of the first 269 off-screen battles, the
+  map load's included, are the ones this model gives; FINDINGS.md §27).
 
 **No randomness.**
 - The picker would add `rand((max − min) × B+9 / 100)` from the game's own LCG (4832fc), but
@@ -543,7 +553,11 @@ stops after the **first action of turn 25**: 24 full turns plus one action. **co
 - **Column count.** The global at 4ed044 is 6 when `[Options] OptValue11 = 1`, else 4 (read at
   4b8a46). The width is stored in the save header at new game (4b25a2) and restored on load
   (4b77f3). **code**
-- **Vanilla (4 columns):** 3 rows × 4 columns, 12 cells.
+- **Vanilla (4 columns):** 3 rows × 4 columns, 12 cells. On screen they take the same 2 × 6
+  places (492940): the front row the middle four of the first line, the back row the middle
+  four of the second, and the reserve the four ends (columns 1, 2, 3, 4 at the first line's
+  right end, the second line's left end, its right end and the first line's left end), so the
+  front row's two edge places are reserve cells as the back row's are. **code**
 - **Wide (6 columns)** (48395c). The grid blocks cells by filling them with −1:
   - front row: 6 cells;
   - back row: 4 cells, columns 2–5;
@@ -773,7 +787,9 @@ it into every unit of that side (48b75c). Physical damage adds the **target's** 
 3 × (4 or 6) grid, the one the player's side uses in battle (step 4 above). **code**
 - **Adding a unit** (495ce0). Hiring in a building (4c7380), AI hiring (4a548c), the starting
   units at map load (4b2504) and units given by events (4a8e66, 4a8fe5) all go through it. Garrisons
-  use it too.
+  use it too. At map load the formations it builds do not last: the load then auto-arranges
+  every army, the hero's included, through a battle side and back (0x49855c, 483b3c, 0x4988c0;
+  saves-data.md §10.1 step 9).
   - It refuses when the army already has 12 units. The new unit gets the next number n.
   - With 6 columns it first writes the −1 blocks into the six unused cells (back row columns 1
     and 6, reserve columns 1, 2, 5, 6). This is unconditional: a unit standing in one of those
@@ -826,7 +842,12 @@ with the same engine and no screen. **code**
 ## 11. End of battle
 
 **During the battle** the screen syncs the sides back after every action (48bb10 without the
-wrap-up). **code**
+wrap-up) **and writes them into the army records** (4988c0 for both sides, as at the end, step
+3 below): after the player's action (0x4c4f8c), after each of the enemy's (0x4c57bc) and
+when a card's move ends (0x4b0284). So the armies' units carry their battle HP as the battle
+goes on (a fallen unit 0), and their grids the battle's cells. **code**; checked in the
+running game (rk1-day1: the knight's army record read 63 HP right after the blow of step 22;
+FINDINGS.md §7).
 
 **Wrap-up** (48bb10 with the flag, from 4c50ec). **code**
 1. Both side strengths are recomputed and the XP shares are rolled (experience.md §3).
@@ -844,6 +865,14 @@ wrap-up). **code**
 - **Victory** otherwise, the turn limit included: loot and trophies (economy.md), the beaten
   field army destroyed, a garrison's building captured, the enemy's surrender mana added, then
   the player's XP (Community hook c2518f).
+- **A won garrison battle does not enter the building.** The hero stays on the cell he
+  attacked from (the garrison is engaged before his step onto the building, world.md §4.2);
+  the building is captured but not entered (0x68dc74 stays none), no building window opens
+  and its local events are not scanned. A click on it afterwards plans a route and walks him
+  in: the window opens on arrival (world.md §7.2). **live**: РК1's ruins 8 (2×2 at (36,23))
+  won from (34,24) in the diff test (run q3-ruins): after the result box the screen is the
+  world, the hero at (34,24), the ruins owner 0, entered −1; `click_map 36,23` walks him to
+  (36,23) and the building window opens (entered 8).
 
 ## Razdor now → original
 
@@ -894,7 +923,7 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 38 | AI framework, melee/shot scores and moves | As section 4, in integers; the poison bonus for vanilla Poison only, a kill replacing the doubled score; reserve units go straight to the moves; the moves' weights as 489549 (3·\|MP\| support, unfloored front-row pull with the own cell a candidate, reserve mages tending any reserve target by its wound, the second-column start only for non-warriors; a front-row caster's fallback may pick an ally's front cell it can tend, in any column); the fallback is the own cell (pass or self-cast) | Same | 4 | Matches |
 | 39 | AI shot "Manevres 1 ÷2" | Only to back-row mage targets | Only to back-row mage targets | 4 | Matches |
 | 40 | AI front-row retreat | Stat test and a non-warrior role; a lone unit only as a mage by role; the edge rule (score 1 on the first or last front cell) when no back cell is free | Also needs a non-warrior role; the 4ed390 edge rule | 4 | Matches |
-| 41 | AI "killable" (normal level, off-screen) | The target's own HP ≤ dmg | Reads the own unit with the target's index (bug; an empty record past the list: HP 0) | 4 | Razdor fixes the original's bug |
+| 41 | AI "killable" (normal level, off-screen) | The target's own HP ≤ dmg; the off-screen battles still carry the static sides' old records (`SideRecords`), which nothing reads then | Reads the own unit with the target's index (bug; past the list a record a death emptied, or one an earlier off-screen battle left) | 4 | Razdor fixes the original's bug |
 | 42 | AI Life scoring | As the code read (486bb9): heal, bless by rows with or without enemy shooters, the curse value on both defences (DB and DS) on the strike power, the cursed flag | Medium confidence; the curse value's second term compares DS but adds DB (slip) | 4 | Matches the reading; Razdor fixes the original's bug (DS/DB) |
 | 42a | AI Elemental scoring | Main and alternative per side, cells scanned row by row; front-row haste scaled by hits-to-kill; the ÷10 rule with its exceptions; strike whenever a slow is impossible, slow + strike with a spare action; ×10 with an all-Ghost side; the turn's mean initiative | Front-row haste scaled by hits-to-kill (4863e8); ÷10 rule has GodAnger/GodStrike and school exceptions; strike whenever a slow is impossible, slow + strike summed with a spare action; ×10 strike with an all-Ghost side | 4 | Matches |
 | 42b | AI Death scoring | As section 4 on the strike power; the self-target passes when no self-cast is offered; a threat of no damage is the role's minimum; blessings weigh the target's actions | Same, except the self-target: the original picks its own cell even with no self-cast on offer (a pass) | 4 | Matches |
@@ -902,8 +931,10 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 | 44 | Off-screen battle | `set_simulation` (no Splash follow-ups but for heals and blessings, AI mode 0), both sides auto-arranged with the wide blocks, attacker paid only | Same flags; auto-arranged formations; attacker paid only | 10 | Matches |
 | 45 | AI target-scoring battle (`ai::simulate`) | Mode 0, no Splash follow-ups but for heals and blessings, both sides auto-arranged, the defending player with all his living units | Same engine as the off-screen battle: mode 0, no Splash | 10 | Matches |
 | 46 | Community bonuses (Hunger … FateGift) | As section 7; the turn start runs unit by unit (bonuses, then drain and regeneration) | Same | 7 | Matches |
-| 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units). The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
+| 47 | New unit's formation cell | Reserve, then back, then front, columns in the preferred order, for everyone (`Formation::new_unit_slot`: hiring, AI hiring, map start, event units); at map start the hero's army is then auto-arranged (`Game::arrange_at_load`), as the load's round trip does. The unused wide cells stay blocked: a formation has no cells outside the 12 | Reserve, then back, then front, for everyone; 6 columns re-block the unused cells, and the battle-end clean-up unblocks them | 9 | Matches (the unblocked cells after a battle are not modelled; their effect on the army screen is unknown) |
 | 48 | Formation after a battle | The battle grid as it ended; units without a cell (on a cell outside the formation, sat out, then the dead) take free cells, reserve first, columns in plain order (`Formation::after_battle_slot`) | Rebuilt from the battle grid, blocks restored, units not in it placed reserve first (4988c0) | 11 | Matches |
+| 49 | After a won garrison battle | He stays on the cell he attacked from; the building is the player's but not entered (`Game::resolve_battle`): no window, its events wait; a click on it walks him in and opens it | Stays on his cell; captured, not entered (0x68dc74 none), no window; a click walks him in (live, РК1 ruins) | 11 | Matches |
+| 48a | Armies during the battle | every fighting unit's HP written into its army record after each action (`Game::battle_write_back`, called by the battle screen and the replay); the grid only at the end | sides written into both armies after every action (0x4c4f8c, 0x4c57bc → 48bb10, 4988c0): HP and grid | 11 | HP matches; the grid at the end only (no reader during the battle) |
 
 ## Unknowns and open points
 - **Wide-row quirks on screen.** What the screen shows when the player's side uses a cell that is
@@ -911,7 +942,8 @@ were implemented and tested earlier (`src/rules/battle/tests.rs`, `rowN_…`); t
 - **Deployment.** Whether the original battle screen lets the player rearrange units before the
   first action (nothing seen in the window's open handler).
 - **AI kill-test bug in play.** The wrong-side "killable" reading (486d03, 486feb) is read in the
-  code; it has not been confirmed by watching the AI. Razdor fixes it (row 41).
+  code and confirmed in the running game through the off-screen battles' old records
+  (FINDINGS.md §27). Razdor fixes it (row 41).
 - **AI magic scoring.** Life magic scoring is medium confidence; Elemental and Death were read
   in full (section 4). Why the Elemental ÷10 rule reads the caster's direction is unknown.
 - **Low-confidence hooks.** Flock's army-size source and Assault's damage test are medium

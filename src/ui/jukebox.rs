@@ -15,10 +15,8 @@ pub use razdor::rules::music::ROTATION as MAP;
 
 pub const MENU: &str = "BkgMenuMain";
 pub const AUTHORS: &str = "BkgAuthors";
-/// The battle themes: against a building's garrison, against an army.
-pub const BATTLE: [&str; 2] = ["BkgBattle1", "BkgBattle2"];
-pub const TRIUMPH: &str = "BkgTriumph";
-pub const DEFEAT: &str = "BkgDefeat";
+/// The battle themes, the triumph and the defeat piece (shared with the replay's log).
+pub use razdor::av::{BATTLE, DEFEAT, TRIUMPH};
 
 /// What the current screen wants to hear.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

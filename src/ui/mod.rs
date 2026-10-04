@@ -22,6 +22,7 @@ pub mod new_game;
 pub mod saves;
 pub mod screens;
 pub mod snapshot;
+pub mod spell_badges;
 pub mod spellbook;
 pub mod story;
 pub mod terrain;
@@ -39,6 +40,7 @@ use std::sync::Arc;
 use razdor::dt::dtm::Scenario;
 use razdor::i18n::tr;
 use razdor::rules::content::Content;
+use razdor::rules::formation::Formation;
 use razdor::rules::events::EventOutcome;
 use razdor::rules::game::{Foe, Game};
 use razdor::rules::save::{self, Install};
@@ -152,8 +154,6 @@ pub struct App {
     map_music: MapMusic,
     /// The screen of the last frame, to hear windows open and battles begin.
     last_screen: Option<std::mem::Discriminant<Screen>>,
-    /// Gold at the end of the last frame of this game (`None` right after a new game or load).
-    last_gold: Option<i32>,
     /// The play log's last screen and message, to write each change once.
     play_last: (&'static str, Option<String>),
     /// The map editor, kept while a test play runs.
@@ -190,7 +190,7 @@ impl App {
             })
             .collect();
         let audio = Audio::new(assets.dt.as_ref().map(|d| &d.install));
-        App {
+        let mut app = App {
             assets,
             demo,
             dt_content,
@@ -205,7 +205,6 @@ impl App {
             audio,
             map_music: MapMusic::default(),
             last_screen: None,
-            last_gold: None,
             play_last: ("", None),
             editor: None,
             test_play: false,
@@ -215,7 +214,9 @@ impl App {
             console_held: false,
             lang: razdor::i18n::lang(),
             quit: false,
-        }
+        };
+        app.follow_row_setting();
+        app
     }
 
     /// Opens the map editor (the title screen's button and `--editor`).
@@ -299,8 +300,7 @@ impl App {
                 self.dialogs.clear();
                 self.message = Some(tr("Test play: Esc > Main menu returns to the editor.").to_string());
                 self.map_view.reset();
-                self.map_view.forget_shows();
-                self.last_gold = None;
+                self.map_view.open_around_hero(&game);
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "editor test play"));
                 self.game = Some(game);
                 self.test_play = true;
@@ -320,7 +320,6 @@ impl App {
                 self.load_error = None;
                 self.map_view.reset();
                 self.map_view.forget_shows();
-                self.last_gold = None;
                 razdor::diag::play(&game.clock.label(), &play_game_line(&game, "loaded"));
                 self.dt_content = saves::session_content(self.dt_content.take(), &game);
                 if let Some(q) = game.pending_question() {
@@ -359,11 +358,11 @@ impl App {
                 screens::start_game(&self.demo, None, old.start_class(), &name)
             }
         };
+        self.map_view.open_around_hero(&game);
         self.game = Some(game);
         self.dialogs.clear();
         self.message = None;
         self.map_view.reset();
-        self.last_gold = None;
         self.screen = Screen::WorldMap;
     }
 
@@ -423,47 +422,76 @@ impl App {
                 (Screen::Building(_), Some(g)) => g.location.is_some_and(|l| matches!(g.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard)),
                 _ => false,
             };
+            // The side windows sound only as their panel icon is pressed (`game_bar`).
             match self.screen {
                 Screen::Building(_) if chord_window => {
                     let k = self.game.as_mut().map_or(0, |g| g.event_chord());
                     audio::cue(Cue::Event(k as u8));
                 }
+                // The building window opens on its first tab, highlighted (interface.md §14).
+                Screen::Building(_) => audio::cue(Cue::CastSpell),
                 Screen::Battle(_) | Screen::CustomBattle(_) => audio::cue(Cue::BattleHorn),
-                Screen::Building(_)
-                | Screen::Squad { .. }
-                | Screen::Journal(_)
-                | Screen::Spellbook { .. }
-                | Screen::Menu(_)
-                | Screen::Settings
-                | Screen::Save(_)
-                | Screen::Load(_) => audio::cue(Cue::Panel),
                 _ => {}
             }
         }
         self.last_screen = Some(now);
-        let new_game = matches!(self.screen, Screen::ScenarioSelect | Screen::TutorialOffer | Screen::ClassSelect { .. });
-        let gold = self.game.as_ref().filter(|_| !new_game).map(|g| g.gold);
-        if let (Some(before), Some(after)) = (self.last_gold, gold) {
-            if after > before {
-                audio::cue(Cue::Gold);
-            }
-        }
-        self.last_gold = gold;
-        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued) {
+        // A window waits while the camera flies to the places of the event before it.
+        let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
+        if let Some(d) = self.dialogs.front_mut().filter(|d| !d.cued && !held && !d.waiting(clock)) {
             d.cued = true;
-            if d.event.is_some() {
+            if d.event.is_some() || d.chord {
                 let k = self.game.as_mut().map_or(0, |g| g.event_chord());
                 audio::cue(Cue::Event(k as u8));
             } else {
                 audio::cue(Cue::Panel);
             }
         }
+        // A stop's snap of the armies and its idle draws, after the chords of the windows the
+        // stop opened (0x4ad8a0).
+        if let Some(g) = self.game.as_mut() {
+            g.armies_snap();
+        }
         // N: music on/off (not while typing or answering a question: there any key answers).
-        if !self.help && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
+        // A key that cuts a wait on the map does nothing else (`world_view::frame`).
+        let cuts_wait = matches!(self.screen, Screen::WorldMap) && self.dialogs.is_empty() && self.game.as_ref().is_some_and(|g| g.waiting());
+        if !self.help && !cuts_wait && hotkeys::shortcuts_allowed(self.guard()) && is_key_pressed(KeyCode::N) {
             self.audio.settings.music_muted = !self.audio.settings.music_muted;
         }
         let mood = self.mood();
         self.audio.frame(mood);
+    }
+
+    /// An event read in a building window (a quest taken in the main hall) shows its places
+    /// at once, as the original does: its OK queues the camera's glides (0x4ab1ec → 0x4af96c,
+    /// 0x4af83c) and they play over the world map, then the building window comes back as it
+    /// was, without a sound (checked live on РК1, interface.md §9.8). `leaving`: the screen
+    /// changes this frame anyway.
+    fn fly_from_building(&mut self, leaving: bool) {
+        if leaving {
+            self.map_view.back_to = None;
+            return;
+        }
+        let Some(game) = self.game.as_ref() else { return };
+        let in_building = matches!(self.screen, Screen::Building(_));
+        let on_map = matches!(self.screen, Screen::WorldMap);
+        let aside = self.map_view.back_to.is_some();
+        let due = in_building && self.map_view.shows_due(game, &self.dialogs);
+        match world_view::building_flight(in_building, aside && on_map, due, self.map_view.flying()) {
+            world_view::BuildingFlight::StepAside => {
+                if let Screen::Building(view) = std::mem::replace(&mut self.screen, Screen::WorldMap) {
+                    self.map_view.back_to = Some(view);
+                }
+                self.map_view.reset();
+            }
+            world_view::BuildingFlight::ComeBack => {
+                if let Some(view) = self.map_view.back_to.take() {
+                    self.screen = Screen::Building(view);
+                }
+            }
+            world_view::BuildingFlight::Stay => return,
+        }
+        // Silent both ways: the map has no sound of its own, the window is not opened anew.
+        self.last_screen = Some(std::mem::discriminant(&self.screen));
     }
 
     /// The current screen, by what its keys do.
@@ -491,7 +519,7 @@ impl App {
     fn guard(&self) -> hotkeys::Guard {
         hotkeys::Guard {
             typing: hotkeys::typing(self.place(), widgets::typing()) || self.console.open || self.console_held,
-            dialog: !self.dialogs.is_empty(),
+            dialog: !self.dialogs.is_empty() || self.map_view.back_to.is_some(),
             game: self.game.is_some(),
             foe: self.game.as_ref().is_some_and(|g| g.foe.is_some()),
             endless: self.game.as_ref().is_some_and(|g| g.endless_waiting()),
@@ -625,6 +653,26 @@ impl App {
         }
     }
 
+    /// The install's "wide front row in battle" (`OptValue11`; wide without an install).
+    fn install_wide_row(&self) -> bool {
+        self.assets.dt.as_ref().is_none_or(|d| d.install.settings.wide_row)
+    }
+
+    /// The front row's width of the settings, at once: new games take it, and so does the game
+    /// under way from its next battle (not during one; its saves then record the new width).
+    fn follow_row_setting(&mut self) {
+        let wide = main_menu::wide_row(&self.audio.settings, self.install_wide_row());
+        let want = if wide { Formation::WIDE } else { Formation::VANILLA };
+        if let Some(c) = self.dt_content.as_mut().filter(|c| c.formation != want) {
+            *c = Arc::new(c.with_formation(want));
+        }
+        if !matches!(self.screen, Screen::Battle(_)) {
+            if let Some(g) = self.game.as_mut() {
+                g.set_formation(want);
+            }
+        }
+    }
+
     pub fn frame(&mut self) {
         chrome::begin_frame();
         widgets::track_held_key();
@@ -642,6 +690,8 @@ impl App {
         if let Some(g) = self.game.as_mut() {
             g.improved_ai = main_menu::expert_ai(&self.audio.settings);
         }
+        // The front row's width from the settings: the next new game uses it.
+        self.follow_row_setting();
         if matches!(self.screen, Screen::Editor) {
             self.editor_frame();
             return;
@@ -658,10 +708,12 @@ impl App {
         let console_next = entered.and_then(|line| self.run_cheat(&line));
         // A dialog or the key list on top: the screen below is drawn but takes no input.
         let guard = self.guard();
-        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help || held);
+        // The flights of an event read in a building window take no input either.
+        widgets::set_input_blocked(!self.dialogs.is_empty() || self.help || held || self.map_view.back_to.is_some());
         let mut restart = false;
         let mut custom_round = false;
         let custom_content = self.custom_content();
+        let install_wide = self.install_wide_row();
         let mut next = match (&mut self.screen, &mut self.game) {
             (Screen::MainMenu, _) => match main_menu::frame() {
                 Some(main_menu::Pick::NewGame) if new_game::tutorial_map(&self.scenarios).is_some() => Some(Screen::TutorialOffer),
@@ -681,7 +733,7 @@ impl App {
                 None => None,
             },
             (Screen::Authors(started), _) => main_menu::authors(*started).then_some(Screen::MainMenu),
-            (Screen::Options, _) => main_menu::options(&mut self.audio.settings).then_some(Screen::MainMenu),
+            (Screen::Options, _) => main_menu::options(&mut self.audio.settings, install_wide).then_some(Screen::MainMenu),
             (Screen::ScenarioSelect, _) => new_game::scenario_select(&self.scenarios, self.dt_content.is_some()),
             (Screen::TutorialOffer, _) => new_game::tutorial_offer(&self.scenarios),
             (Screen::ClassSelect { scenario }, game) => {
@@ -716,7 +768,7 @@ impl App {
             },
             (Screen::Settings, Some(game)) => {
                 world_view::backdrop_lit(game, &self.assets, Some(game_bar::BarButton::Settings));
-                main_menu::options_window(&mut self.audio.settings).then_some(Screen::WorldMap)
+                main_menu::options_window(&mut self.audio.settings, install_wide).then_some(Screen::WorldMap)
             }
             (Screen::Save(view), Some(game)) => saves::save_screen(game, &self.assets, view, &mut self.message),
             (Screen::Load(view), game) => saves::load_screen(game.as_ref(), &self.assets, view, &mut self.pending_load, &self.load_error),
@@ -758,6 +810,8 @@ impl App {
             }
             (_, None) => Some(Screen::MainMenu),
         };
+        // A spell badge's hint over the screen that drew it (under the dialogs).
+        spell_badges::flush();
         widgets::set_input_blocked(false);
         next = next.or(console_next);
         // "Варианты выхода из битвы" chose.
@@ -781,7 +835,7 @@ impl App {
             next = self.custom_round();
         }
         // F1: the key list; F5 / F9: quick save and load (when the screen did not move on).
-        let pressed = |k: hotkeys::Global| next.is_none() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
+        let pressed = |k: hotkeys::Global| next.is_none() && !widgets::input_swallowed() && hotkeys::allowed(place, k, guard) && is_key_pressed(k.key());
         if self.help {
             if hotkeys::help_overlay(place) {
                 self.help = false;
@@ -796,9 +850,13 @@ impl App {
             self.quick_load();
             return;
         }
-        if let Some(d) = self.dialogs.front() {
+        let held = matches!(self.screen, Screen::WorldMap) && self.map_view.holds_dialogs(&self.dialogs);
+        let clock = macroquad::prelude::get_time();
+        if let Some(d) = self.dialogs.front().filter(|d| !held && !d.waiting(clock)) {
             if let Some(close) = dialog::draw(d, &self.assets) {
-                let asked = self.dialogs.pop_front().is_some_and(|d| d.question);
+                let closed = self.dialogs.pop_front();
+                let asked = closed.as_ref().is_some_and(|d| d.question);
+                let read = closed.as_ref().is_some_and(|d| d.event.is_some() && !d.question);
                 // Closing a dialog while the triumph plays changes the map track at once
                 // (0x4c20b3).
                 if self.map_music.triumph {
@@ -810,8 +868,36 @@ impl App {
                     let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
                     next = next.or(after);
                 }
+                // A scenario event's window: the events after it run now (0x4ab1ec).
+                if let (true, Some(game)) = (read, self.game.as_mut()) {
+                    let events = game.event_window_closed();
+                    if !events.is_empty() {
+                        let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                        next = next.or(after);
+                    }
+                }
+                // The windows are read: the building he walked into while one opened is
+                // entered now (0x4bbc84).
+                if let (true, Some(game)) = (self.dialogs.is_empty(), self.game.as_mut()) {
+                    let events = game.enter_waiting_building();
+                    if !events.is_empty() {
+                        let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                        next = next.or(after);
+                    }
+                }
             }
         }
+        // A scenario event's window the screen does not show (none queued) holds the
+        // event scan no longer.
+        let shown = self.dialogs.iter().any(|d| d.event.is_some() && !d.question);
+        if let Some(game) = self.game.as_mut() {
+            let events = game.release_unshown_window(shown);
+            if !events.is_empty() {
+                let after = world_view::handle_events(game, events, &mut self.message, &mut self.dialogs);
+                next = next.or(after);
+            }
+        }
+        self.fly_from_building(next.is_some());
         self.console.draw();
         // A fight decided on the map or in a building begins once the messages of that moment
         // are read (the original shows a meeting's words over the map, then the battle).
@@ -866,8 +952,28 @@ impl App {
             if matches!(self.screen, Screen::WorldMap) && !matches!(next, Screen::WorldMap) {
                 self.map_view.drop_grab();
             }
+            // A window over the map closed: after a heal, a raise or a trade in the building
+            // window the events are checked now (0x4b8d28(0) → 0x4b8f63).
+            let side_window = matches!(
+                self.screen,
+                Screen::Building(_) | Screen::Squad { .. } | Screen::Journal(_) | Screen::Spellbook { .. } | Screen::Menu(_) | Screen::Settings | Screen::Save(_) | Screen::Load(_)
+            );
+            if let (true, true, Some(g)) = (matches!(next, Screen::WorldMap), side_window, self.game.as_mut()) {
+                let events = g.window_closed();
+                if !events.is_empty() {
+                    let _ = world_view::handle_events(g, events, &mut self.message, &mut self.dialogs);
+                }
+            }
+            // The army window opens: it recounts the hero's army (0x4d1814).
+            if let (Screen::Squad { .. }, false, Some(g)) = (&next, matches!(self.screen, Screen::Squad { .. }), self.game.as_mut()) {
+                g.army_window_opened();
+            }
             if matches!(self.screen, Screen::ClassSelect { .. }) {
                 self.message = None;
+                // A map starts: the fog opens around the hero.
+                if let (Screen::WorldMap, Some(g)) = (&next, self.game.as_ref()) {
+                    self.map_view.open_around_hero(g);
+                }
             }
             // A field that had the keyboard (the inventory filter) lets it go with its screen,
             // and the backpack's filter does not stay for the next game or the next visit.

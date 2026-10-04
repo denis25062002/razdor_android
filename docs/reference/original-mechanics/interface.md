@@ -162,13 +162,32 @@ icon in its fourth column by the map header byte 0x120: 1 castle, 2 helm, 3 swor
 5 tutorial (pictures `SI_Castle`, `SI_Helm`, `SI_Swords`, `SI_Skull`, `SI_Tutorial`); 0 gives
 no icon. The icons are set on all rows the first time, then again on the old and the new row
 whenever the selection changes. **code** (4c1968, pictures loaded at 4dc118) Start
-copies the chosen map's header, enables each hero class that the map defines, and opens the
-hero window on the last enabled class (4c1804). Back or Esc returns to the main menu. **code**
+copies the chosen map's header and enables each hero class whose preset has a start cell
+(start x or start y non-zero; gold, troops or a start building alone do not count). It walks
+the classes from the ranger down to the knight and opens the hero window on the last one it
+enables, that is the **first** offered class in knight, archmage, ranger order; with none
+offered it returns to the main menu instead (4c1804). Back or Esc returns to the main menu.
+**code**
 
 **Hero choice** (4d7d30, 4c1458). Three class portraits, a name field (default from the
 interface ini), and three text boxes. Choosing a class redraws the portraits, shows the class
 texts and plays a 200 ms highlight animation that starts with `MainMenuPress` (4b2044).
 Cancel or Esc returns to the **main menu**, not to the scenario list. **code** (4c0fd4, 4c8584)
+
+**A class the map does not offer cannot be picked.** Its portrait is drawn with the second
+greyed copy (`65bce4[i]`) and its enabled byte (portrait widget +0xd, `65bc01 + i·0x4b`) is
+0; the frame's hit test (4743c8) never reports a widget whose enabled byte is 0, so the
+press handlers (4c17c0 / 4c17d4 / 4c17ec, the widgets' +0x2f, which call 4c1458 with no check
+of their own) cannot run for it, and hovering it does nothing. The window's frame (4c8584)
+reads no key but Esc; the name field's keys only edit the name. Start (4c1000) does not check
+the class, but the class (`68dccc`) can only have been set by the opening or by a click on an
+enabled portrait, and the next opening resets it. **code**, checked in the running game
+(Устье Трейна, whose archmage preset has no start cell: the window opens on the knight, a
+click on the archmage and the arrow, Tab, Space, digit, Home and End keys leave the pick
+unchanged, the ranger can be picked and starts on his preset's cell). The only way the
+original plays a class a map does not offer is a campaign: the next map keeps the class the
+campaign was started with and never looks at whether that map offers it (saves-data.md
+§10.4, §15).
 
 **Name field** (47a624–47ae5c). A typed character is accepted only if the font has a glyph
 for it (the 150-glyph sheet order) and the text still fits inside the field less its margins;
@@ -272,7 +291,10 @@ it takes in the time line. **code**
 
 **While the hero walks** (map not idle) a left click or **any key held** cuts the route so
 that it ends at the cell of the step in progress: the hero finishes that step and stops.
-**code** (4cd132)
+**code** (4cd132). **A wait is not cut**: checked under Wine on РК1 (2026-10-04), a 4-hour
+wait ran its full 240 minutes after a left click on the map, a left click on the bottom
+panel, a right click, the A key or Space; the Community endless wait (F4) went on after a
+click and a key, and only F5 ended it.
 
 While the map is not idle (walking, waiting, a glide or an event) the world frame skips
 everything else: no hover, no tooltips, no scrolling of any kind, no Esc and no Community
@@ -361,6 +383,13 @@ checks test the held key, not a latched press. **code** (c26ae3–c26bfc, c277d2
   Between
   steps it moves with his sprite. Any manual scrolling is overridden while he walks. **code**
   (4ae8a8, 4aea50)
+- **A click on the map moves no camera.** The planning click (§7.3) leaves the view where the
+  player scrolled it, the hero off screen included, so the second click can be made on the
+  same place; the view goes back to the hero only when he sets off, by the walk lock above.
+  The click handler writes the camera only for a minimap drag and the arrow keys
+  (4ccf5a-4cd00f). **code**; checked under Wine on РК1 (view scrolled 400 px away from the
+  hero: the first click left the camera at (210, 440) with the route drawn, the second set
+  him off and the camera jumped to (608, 440)). Razdor: the same.
 - **Glides** (4af96c): the view moves to the same placement as the walk lock (target
   `(x × 32 − 448, y × 22 − 352)`, the same numbers as above) in 900 ms on a cosine ease: progress
   `e = round(900 × (1 − cos(π t / 900)) / 2)`, position `start + (target − start) × e / 900`
@@ -446,7 +475,7 @@ font picture's own). **code**
 | 9 | Community: bleed, evasion | | see below |
 | 10 | Vampirism (`SVampirizm`) | with "%" | |
 | 11 | Initiative (`SInitiative`) | never below 0 | |
-| 12 | Manevres (`SManevres`) | never below 0 | |
+| 12 | Manevres (`SManevres`) |  0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep; Matches: an event's places right after its window closes, then back to the hero, the next window waiting; the fog opens around the hero at a map start  | |
 | 13 | Wage (`DailyPayment`) | the recruit wage of the type's Cost (4a163c) | in a game only; not for a hero class, a named character, a unit of wage kind 3 (event units) or a unit whose level nature is Undead; bold orange |
 
 In "v + n" the colour still compares only v (the defence without the building) with the level
@@ -576,6 +605,27 @@ more remain. The duration (49d044) is months, days and hours joined by ", " (no 
 hour a fixed word). It writes the month count plus one, but the 40 000-minute cut-off means a
 month (43 200 minutes) is never reached. **code**
 
+Details (**code**, and seen under Wine on Проклятое озеро, «Укрепление Брони» on the army):
+- **Which and where.** The four slots are walked in order; a slot shows a badge when its end is
+  after the game time and its spell's `CostMana` is above 0, and only shown badges advance the
+  position: badge n at (card + 1 + 23·n, card + 0x47), 22×22, so along the portrait's bottom
+  edge. In battle a unit with 0 HP (and a hidden unpaid one) shows none; outside battle a dead
+  unit's card keeps them.
+- **The picture** (49ac64): the spell's 100×100 picture (its `Icon1..3` layers added, less their
+  `ColorC`; `Spell-IconMask` subtracted; `Spell-Frame` laid in through `Spell-FrameAlpha`) is
+  shrunk to 20×20 at (1, 1) of a 22×22 surface; `si-mask` is drawn over it with white as the
+  colour key (black corners), then the `si-border` ring through its alpha. On the card it is laid
+  in through `si-alpha` (the round mask); under the pointer it is **added** onto the card
+  instead (brighter). The same composed surface, with the alpha of `si-alpha`, is what the
+  editor writes as `Graphics/Editor/*.spi`.
+- **The hint** (kind 4, 420 px): the spell's 50×50 picture on the left; the name in the title
+  font; the effect text of §9.3 (49b63c) blue for `Target=Hero`, else red; then, when the unit's
+  life loss (unit +0x1bf) is above 0 and the spell's `p-LifeLose` is not 0, "`LifeLost`: n %" in
+  red; then "`RemainedTimeOfEffect` " and the duration (time left in hundredths of a minute,
+  capped at 4 320 000, divided by 100), or `RemainedTimeOfEffectAll` from 4 000 000 on, in the
+  pale yellow font. Words: `[Skills]` and `[Time]` (`cMounth`, `cDay`, `cHour`, `cLessAtHour`)
+  of the interface ini; each part of the duration is "n word".
+
 ### 9.5 Card stat strip and the building panel (49462c)
 
 Under each card of the army, building and battle grids three short lines are drawn, starting
@@ -703,6 +753,17 @@ wage total. **code**
   bar, and the Take Quest button, shown but disabled. Selecting a row enables it (4ba754). Take
   Quest (4bb798) prepares the selected quest's event and opens its event dialog (4a8ae8,
   4ac3b4). **code**
+- **An event read in the building window shows its places at once.** The event window's OK
+  (Event_Finish 0x4ab1ec) queues the glide to each shown place (4af96c), its reveal (4af83c),
+  the glide back and the event chain (4af658); they play over the **world screen** (the
+  building window steps aside: the screen pointer is the world's, 0x674a20, while they run),
+  then the scan runs and the building window comes back on the tab it was on, without a
+  sound; closing it later moves nothing. Checked under Wine on РК1 (the castle's quest
+  «Сообщение посыльного», lantern 2, taken in the main hall: screen event → world at the OK,
+  camera y 440 → 264 in about 0.9 s, the reveal, back to 440, then the building window again
+  at about 2.7 s; Frida hooks on 4af96c/4af83c fire inside that step, none after the Exit).
+  Razdor: the same (the building window steps aside for the flights, input off meanwhile).
+  **live**
 - **Tab buttons** (4bb6c8 enter, 4bb734 leave): hovering a tab lights it (normal → lit picture)
   and repaints the left panel the first time; leaving restores every lit tab. Pressing a tab
   (4ba770) plays the click sound and shows it pressed; the release switches the tab (4ba854).
@@ -903,7 +964,7 @@ listed in the notes)
 | `Spell-Good` / `Spell-Evil` | a world spell lands on the player's army / on another army |
 | `Battle-*` | battle effects (§12); `Battle-Cure` also for healing or resurrecting in a building |
 | `Item-<type>` | an item is picked up, dropped or worn (by its type; type Item uses `Item-Item`) |
-| `Item-Gold` | press of the market trade button, the hire buttons, an event dialog button, taking a village's tribute, buying a ship |
+| `Item-Gold` | press of the market trade button, the hire buttons, an event dialog button, taking a village's tribute, buying a ship; a hire button plays it again in its click action, on the release (4c7370 press, 4c7380 click, both restarting the one buffer) |
 
 `Battle-Parry` is loaded by the Community patch but the shipped sound ini has no entry for
 it. **code**/**data**
@@ -983,9 +1044,9 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 8 | Arrow keys | Matches: the held arrow scrolls (only the last key down counts) | Held arrow scrolls | 7.6 |
 | 9 | Zoom | Wheel and +/− (extra) | None | 7.7 |
 | 10 | Camera while walking | Locked on the hero while he walks (centred on him; the original's off-centre placement is presentation, left out) | Locked on the hero (his cell at column 14, row 16) while he walks | 8 |
-| 11 | Centre on hero | Tab | Centre button on the message box, 900 ms cosine glide | 6, 8 |
-| 12 | Shown places | 0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep | 900 ms cosine glide, only when farther than 300 px | 8 |
-| 13 | Waiting | Keys 1 and 4; time panel left / right click (extras); Matches: F4 endless wait, F5 ends it (`Game::begin_endless_wait`; the minutes of the tick under way are dropped) | Two buttons that appear over the message box (1 h, 4 h); Community F4 endless wait, F5 ends it | 6, 7.7 |
+| 11 | Centre on hero | Matches: the centre button over the message box (`game_bar::TimeButton::ShowHero`, the install's art and `cp_ShowHero` hint), a 900 ms glide on the original's rounded cosine (`world_view::glide_ease`) during which the map takes no input; Tab does the same when the view is off the hero (extra key) | Centre button on the message box, 900 ms cosine glide | 6, 8 |
+| 12 | Shown places | 0.8 s pan, 1.2 s fade, 0.4 s rest, smoothstep; Matches: an event read in a building window flies at its OK over the map, then the window comes back | 900 ms cosine glide, only when farther than 300 px; in a building window at the OK, over the world screen, then the window again | 8, 9.8 |
+| 13 | Waiting | Matches: the 1 h and 4 h buttons appear over the message box when it is hovered on the idle map, its text hidden, with their art, `cp_Wait1Hour` / `cp_Wait4Hour` hints and the button sound (`game_bar::time_button_at`); F4 endless wait, F5 ends it (`Game::begin_endless_wait`; the minutes of the tick under way are dropped). Extras: keys 1 and 4, time panel left / right click off the buttons; a left click anywhere or a key press during any wait ends it after the half hour under way and does nothing else (`Game::cut_wait`, the user's wish) | Two buttons that appear over the message box (1 h, 4 h); Community F4 endless wait, F5 ends it; nothing else stops a wait | 6, 7.7 |
 | 14 | Minimap | M or the panel button opens a minimap window | Overlay in the top right corner, 200 or 400 px, toggled by the panel button and saved; left-drag on it moves the view | 6, 7.6 |
 | 15 | Hotkeys | F1 key list, F2 language, F5 quick save (not during the endless wait), F9 quick load, N music, letters for windows (extras); F4 / F5 endless wait as the original | Community F1 newest autosave, F2 newest own save, F3 save, F4/F5 endless wait; no letters | 7.7 |
 | 16 | Panel icon order | Left Menu, Settings, Save, Load; right Journal, Squad, Spells, Map | Left from the centre: Save, Load, Options, Exit menu; right from the centre: Hero, Army, Spell book, Minimap | 6 |
@@ -998,8 +1059,8 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 23 | Quick battle (Q) | Plays the battle under way out at once (extra the user asked for; kept) | None | 12 |
 | 24 | Battle input timing | Matches: acts on the press of a card (the hover hint is presentation) | Acts on the press of a card; hover hint predicts the effect | 12 |
 | 25 | AI pacing | 0.45 s delay before each AI action | No delay: the AI acts as soon as the previous animation ends | 12 |
-| 26 | Strike animation | 0.7 s; moves 0.25 s | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
-| 27 | Battle end | Result box at once | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |
+| 26 | Strike animation |  0.7 s lunge and effect; Matches: a counterblow or preventive strike adds the target's lunge back and the effect and sound on the actor, a DeathCurse death of the killer the sorcery on it; pass 0.1 s; moves 0.25 s  | Slide 1.8 ms per px (capped) + 350 ms effect; counters add a second slide and effect; pass 100 ms; card slide ≤ 200 ms | 12 |
+| 27 | Battle end |  Matches: a win holds the screen 2.5 s with the experience on the cards, then the screen closes and the report follows 250 ms later (`Dialog::not_before`); a defeat or a battle nobody won shows Razdor's result box  | 2.5 s hold with the busy pointer, then the screen closes and the report follows 250 ms later | 12 |
 | 28 | Music crossfade | No crossfades (presentation, left out); tracks loop until changed | 2000 ms crossfade on screen changes, 4000 ms in the rotation; tracks loop | 13 |
 | 29 | Map music order | Matches: `rules::music::rotate` with the game's generator, timed per pick; checked by the map and its windows, the map waiting while the triumph plays | Uniform pick among eight (the seven map tracks and `BkgAuthors`), never the previous pick, changed on a timer per track (40–122.8 s, see §13) | 13 |
 | 30 | First map track | Matches: `BkgMap2`, its first change from the load's draw (`Game::take_music_wait`) | Always `BkgMap2` | 13 |
@@ -1007,27 +1068,29 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 32 | Triumph | Matches: starts with the result, loops, the world map waits for it; closing a dialog draws the next map track | Starts at the win (during the 2.5 s hold), loops until the report is closed, then a random map track; the world map does not change it meanwhile | 13 |
 | 33 | `BkgAuthors` | Matches: the credits theme and pick 3 of the rotation | The credits theme, and part of the map rotation | 4, 13 |
 | 34 | Event chord | Matches: `Random(3)` of the game's generator (`Game::event_chord`) for event dialogs and the village and shipyard windows, drawn when the dialog comes up (several dialogs of one moment draw after that moment's rolls) | One of three at random (game generator), also for the village and shipyard windows | 14 |
-| 35 | `InterfacePanelDown` | Every window or non-event dialog opening | Only the press of a bottom panel icon | 14 |
-| 36 | `MainMenuPress` | Picking a scenario or a class | Pressing a main-menu item; choosing a class | 14 |
-| 37 | Hover bells | Unused | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
-| 38 | `InterfaceCastSpell` | World spell cast | Spell book cast, building tab switch, load window tab switch | 14 |
+| 35 | `InterfacePanelDown` |  Matches: the press of a bar icon; the side windows open silent (Razdor's own non-event dialogs still play it)  | Only the press of a bottom panel icon | 14 |
+| 36 | `MainMenuPress` |  Matches: pressing a main-menu item; a class portrait that changes the class (Next and Start: the button sound)  | Pressing a main-menu item; choosing a class | 14 |
+| 37 | Hover bells |  Matches: `MainMenuSelect-1` as the pointer comes onto an item  | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
+| 38 | `InterfaceCastSpell` |  Matches: world spell cast, the building window's opening and tab switches (Razdor's load window has no tabs)  | Spell book cast, building tab switch, load window tab switch | 14 |
 | 39 | `InterfaceBarScroll` | Unused | Options slider test sound | 14 |
-| 40 | `Item-Gold` | Whenever gold goes up | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
+| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes; a hire plays it on the press and restarts it on the release, as the original's two calls  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
 | 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
-| 43 | Options window | Music and sound volume, battle AI | Five sliders and eight checkboxes; slider test sound | 16 |
+| 43 | Options window | Music and sound volume, battle AI, the front row's width for new games (6 or 4: a switch for `OptValue11`, which stays the default until chosen; a save keeps its own width) | Five sliders and eight checkboxes; slider test sound | 16 |
 | 44 | Loading | Razdor's own start-up | Logo slides, a loading bar that takes at least 4 s, first-run sound conversion | 3 |
 | 45 | Info card colours | Compares the value with its start-of-battle value (blue above, red below) | Compares the shown value with the level value (no items): blue above, red below the level **or** the current value | 9.1 |
-| 46 | Info card values | "base + bonus" split for what items add; "v + n" for building defence on both defences | Only the shown value; "v + n" for the building defence on both defences and `Row2Def` on ranged defence in the back row | 9.1 |
+| 46 | Info card values | "base + bonus" split for what items add; "v + n" for building defence on both defences and `Row2Def` on ranged defence in the back row | Only the shown value; "v + n" for the building defence on both defences and `Row2Def` on ranged defence in the back row | 9.1 |
 | 47 | Info card magic | Own formula set (strike and curses for ToEnemy, heal and blessings for ToAlly; Death heals 0) | Ten lines from 49f8a0 by school, nature and direction (Death heals for Undead, Elemental and Hero natures; Life also strikes and curses; Life and Death write the two Atk/Def numbers in opposite orders) | 9.1 |
 | 48 | Info card wage | Shown when the wage is above 0 | Recruit wage of the type's Cost; hidden for hero classes, named characters, wage kind 3 and Undead | 9.1 |
-| 49 | Card stat strip | "A:", "S:" or "Pwr:" by class; D colour by the sum of both defences against the start value | "Pwr:" for a caster outside the front or with no melee, else "A:" with the larger attack; colours against the current value; D colour from one defence only | 9.5 |
+| 49 | Card stat strip | Labels match: "Pwr:" for a caster (attack kind 0x11) with no melee attack or outside the places 1–4, else "A:" with the larger attack (`unit_sheet::attack_piece`); the attack line blue when any of the three attacks is above, red when any is below; `Row2Def` on r in the back row as the original; colours against the start-of-battle value (none outside battle); D colour by the sum of both defences | "Pwr:" for a caster outside the front or with no melee, else "A:" with the larger attack; colours against the current value; D colour from one defence only | 9.5 |
 | 50 | Formation editing | Drag a card onto another cell (swap or move) | Click to select, click another unit to swap at once, click an empty cell to slide there; acts on the press; the hero may go anywhere | 9.6 |
 | 51 | Item text | Kind name, then f-, d-, p- values and the bonus, comma-joined | Name, usage line by type and school, description, then "label value" entries with "=" (f-), "+" (d-), "%" (p-), potion heal/revive rules, defence merging with its lost-value quirks, bonus name | 9.2 |
 | 52 | Spell text | Effect summary, school, mana and casting time, duration and target | Name, effect entries (heal/curse label by the sign of DeltaFixedHits, AB = AS and DB = DS merged), `Mana`/`Reading`, duration; red when unaffordable, blue for own-army spells | 9.3 |
 | 53 | Pack scrolling | Wheel by one row over the whole 256-slot pack | Scroll bar over `max(0, length div 5 − 4)` rows of the used part, rounded | 9.7 |
 | 54 | Army window right side | Gear, pack and promotion views | Pack when nothing or the hero is selected, the promotion tree for any other unit (greyed with a lock when it cannot be promoted) | 9.7 |
 | 55 | Panel icon hover | (see row 42) | A hint box with the icon's name only when hints are on; nothing otherwise | 6, 10 |
+| 56 | Spell badges | Matches: up to four badges along the portrait's bottom on the army, building and battle cards, from the units' slots (running spells with a mana cost, slot order), composed from the install's art (a coloured disc without one), added on hover; the hint with the picture, name, effect text (49b63c), `LifeLost` line and time left with the original's words and quirks (`spell_hint`, `ui::spell_badges`); the box is Razdor's parchment, flipped and clamped to the screen | Four 22 px badges 23 px apart at card + 0x47; 420 px hint box | 9.4 |
+| 57 | Battle card signs | Matches: potion and blessing from the top left, poison and curse from the top right, 23 px apart; the curse and blessing signs set as a magic or a blessing effect ends on the card and kept to the battle's end (the turn order number, Razdor's, moved to the bottom right). The army and building cards show the promotion (the hero's army) and then the potion sign from the top left in the same places (`chrome::card_signs`; the hero's helm, Razdor's, takes the first place); their payment sign is still Razdor's and they show no poison sign yet | `Sign-*` badges by the unit's potion, +0xc9, regeneration < 0, +0xc5; outside battle (493a64) also `Sign-Upgrade` first from the left (the hero's army, a promotion to take) and `Sign-Payment` first from the right (unpaid), poison on any card | 12 |
 
 ## Unknowns
 

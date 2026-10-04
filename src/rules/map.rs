@@ -1030,7 +1030,11 @@ impl TileMap {
             }
             std::mem::swap(&mut batch, &mut s.buckets[value as usize]);
             let order = &mut s.order;
-            batch.sort_by_key(|&n| order.label(n as usize));
+            // The labels are unique: an unstable sort gives the same order, and a batch
+            // often comes in order already.
+            if !batch.is_sorted_by_key(|&n| order.label(n as usize)) {
+                batch.sort_unstable_by_key(|&n| order.label(n as usize));
+            }
             for &node in &batch {
                 let node = node as usize;
                 let (i, d) = (s.order.cell(node), value);

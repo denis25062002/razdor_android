@@ -446,7 +446,7 @@ mod tests {
 
     /// Labels the Russian original itself shows in Latin (the battle cards' stat strip).
     const ORIGINAL_LATIN: &[&str] =
-        &["A: {v}", "S: {v}", "Pwr: {power}", "D: {blow}/{shot}", "Mnvr: {mn}", "Ini: {ini}", "Hits: {hp}/{max}", "Hits: {max}"];
+        &["A: {v}", "Pwr: {power}", "D: {blow}/{shot}", "Mnvr: {mn}", "Ini: {ini}", "Hits: {hp}/{max}", "Hits: {max}"];
 
     #[test]
     fn the_catalog_is_russian() {

@@ -1,0 +1,44 @@
+{"op": "new_game", "map": "РК1", "hero": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 40, "y": 32}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "wait", "hours": 1}
+{"op": "ok"}
+{"op": "click_map", "x": 38, "y": 28}
+{"op": "ok"}
+{"op": "click_map", "x": 36, "y": 23}
+{"op": "ok"}
+{"op": "ok"}
+{"op": "wait", "hours": 4}
+{"op": "ok"}
+{"op": "wait", "hours": 4}
+{"op": "ok"}
+{"op": "wait", "hours": 4}
+{"op": "ok"}
+{"op": "click_map", "x": 36, "y": 23}
+{"op": "battle_pass"}
+{"op": "battle_pass"}
+{"op": "battle_act", "side": 2, "row": 1, "col": 4}
+{"op": "battle_act", "side": 2, "row": 1, "col": 4}
+{"op": "battle_act", "side": 2, "row": 1, "col": 4}
+{"op": "battle_act", "side": 2, "row": 1, "col": 4}
+{"op": "battle_pass"}
+{"op": "battle_pass"}
+{"op": "battle_act", "side": 2, "row": 1, "col": 3}
+{"op": "battle_act", "side": 2, "row": 1, "col": 3}
+{"op": "battle_act", "side": 2, "row": 1, "col": 3}
+{"op": "battle_act", "side": 2, "row": 1, "col": 2}
+{"op": "battle_pass"}
+{"op": "battle_pass"}
+{"op": "battle_act", "side": 2, "row": 1, "col": 5}
+{"op": "battle_act", "side": 2, "row": 1, "col": 5}
+{"op": "battle_act", "side": 2, "row": 1, "col": 5}
+{"op": "battle_act", "side": 2, "row": 1, "col": 2}
+{"op":"battle_auto"}
+{"op":"ok"}
+{"op":"ok"}
+{"op":"wait","hours":4}
+{"op":"ok"}
+{"op":"wait","hours":4}
+{"op":"ok"}

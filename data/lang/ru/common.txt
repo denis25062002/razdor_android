@@ -36,3 +36,6 @@ FPS hidden = FPS: скрыт
 Improved enemy AI in battle = Улучшенный интеллект противника в бою
 Easy = Лёгкий
 Expert = Эксперт
+Front row in battle (new games) = Первый ряд в бою (для новых игр)
+6 cells = 6 клеток
+4 cells = 4 клетки

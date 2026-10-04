@@ -202,6 +202,16 @@ pub struct HeroPreset {
 }
 
 impl HeroPreset {
+    /// Whether the new-game hero window offers this class: its start x or start y is not 0,
+    /// whatever else the preset holds (0x4c1804). A class without it cannot be picked in the
+    /// original: its portrait is greyed and takes no click (the hit test 0x4743c8 skips a
+    /// disabled widget), the window has no keys but Esc (0x4c8584), and it opens on an
+    /// offered class. The only way to play it is a campaign's next map, which keeps the
+    /// class the campaign was started with without looking at that map's preset (0x4b5b64).
+    pub fn offered(&self) -> bool {
+        self.x != 0 || self.y != 0
+    }
+
     fn read(r: &Rec) -> HeroPreset {
         HeroPreset {
             unknown_0: r.u32(0),
@@ -292,6 +302,19 @@ pub struct Header {
 }
 
 impl Header {
+    /// The classes the new-game hero window offers, knight, archmage, ranger
+    /// ([`HeroPreset::offered`]).
+    pub fn offered_classes(&self) -> [bool; 3] {
+        self.heroes.each_ref().map(HeroPreset::offered)
+    }
+
+    /// The class the hero window opens on: the first offered one (0x4c1804 walks the
+    /// classes from the ranger down and keeps the last it enables). None: no class is
+    /// offered, and the original goes back to the main menu instead of opening the window.
+    pub fn first_offered_class(&self) -> Option<usize> {
+        self.offered_classes().iter().position(|&o| o)
+    }
+
     pub fn kind(&self) -> ScenarioKind {
         match self.scenario_kind {
             0 => ScenarioKind::Standalone,
@@ -2063,6 +2086,22 @@ mod tests {
         assert_eq!((s.set.as_deref(), s.require_set.as_deref(), s.raw.as_str()), (Some("A B"), Some("C"), "+A B=C"));
         let s = f("T%").unwrap();
         assert_eq!(s, FlagScript::default());
+    }
+
+    #[test]
+    fn a_class_is_offered_only_with_a_start_cell() {
+        let mut h = Header::default();
+        assert_eq!((h.offered_classes(), h.first_offered_class()), ([false; 3], None));
+        // Gold, troops and a start building do not offer a class; x or y alone does.
+        h.heroes[0].gold = 500;
+        h.heroes[0].start_building = 26;
+        h.heroes[0].troops[0] = Troop { unit: 9, level: 0, count: 1 };
+        h.heroes[1].y = 3;
+        h.heroes[2].x = 7;
+        assert_eq!(h.offered_classes(), [false, true, true]);
+        assert_eq!(h.first_offered_class(), Some(1), "the window opens on the first offered class");
+        h.heroes[0].x = 1;
+        assert_eq!(h.first_offered_class(), Some(0));
     }
 
     #[test]

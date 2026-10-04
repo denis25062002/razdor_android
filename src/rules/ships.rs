@@ -254,6 +254,12 @@ impl Game {
         if nb.is_some() && nb == ob && building(nb).is_some_and(|l| w.locations[l].kind == LocationKind::Shipyard) && self.plans_at_sea() {
             at_sea = true;
         }
+        // His next step is priced now, on the map the at-sea flag chooses before the water
+        // below him updates it (0x497c68): stepping off land onto the water, that is LAND,
+        // where water costs 0.
+        let cost = if at_sea { w.mixed_cost(new) } else { w.map.cost(new).unwrap_or(0) };
+        self.step_base = Some(u32::from(cost) * self.hero_speed());
+        let w = &self.world;
         if nb.is_none() {
             at_sea = is_water(w.map.surface(new));
         }
@@ -424,6 +430,27 @@ mod tests {
         assert_eq!(g.step_time((14, 5), (15, 5)), 10.0);
         assert_eq!(g.step_time((14, 5), (15, 6)), 15.0, "diagonal ×1.5");
         assert_eq!(g.step_time((9, 5), (10, 5)), 30.0);
+    }
+
+    /// The step time is set as he comes onto a cell (0x497c68), priced on the map his at-sea
+    /// flag chose before that cell updated it: the first water cell is priced on LAND, where
+    /// water costs 0, so the step after it takes no time; from there on MIXED.
+    #[test]
+    fn the_first_step_after_going_to_sea_takes_no_time() {
+        let mut g = at_yard(&strait());
+        g.rent_ship().unwrap();
+        let yard = u32::from(g.world.map.cost((9, 5)).unwrap()) * g.hero_speed();
+        assert!(g.set_destination((12, 5)));
+        let t0 = g.clock.total_minutes();
+        walk_until_stopped(&mut g);
+        // Off the yard (its LAND cost, as when he came in), (10,5) → (11,5) free, then a
+        // coastal step of 5.
+        assert_eq!(g.clock.total_minutes() - t0, (yard + 5) as f64);
+        // At the walk's end he is put on his cell again: the next step is priced on MIXED.
+        assert!(g.set_destination((13, 5)));
+        let t1 = g.clock.total_minutes();
+        walk_until_stopped(&mut g);
+        assert_eq!(g.clock.total_minutes() - t1, 5.0);
     }
 
     #[test]

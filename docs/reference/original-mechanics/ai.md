@@ -58,9 +58,19 @@ Every frame of game time, armies 1..N in index order:
    200 minutes) and takes a step when the bank covers `cost(cell it leaves) × speed` minutes,
    ×1.5 on a diagonal. The cost map is LAND for land armies and SHIP for ship armies (§13).
    If the next cell is the player's cell or the player's next cell, the step's time is spent
-   but the army stays where it is.
+   but the army stays where it is. "The player's cell" here and in §7–8 is his record cell
+   (`army(0)+0x1724`): while he steps, the cell he leaves, until the walk timer ends the step
+   (world.md §5).
 3. When the step ends on a cell ("arrival"), the army may **re-plan** (§7) and then runs its
-   **arrival** rules (§8–9).
+   **arrival** rules (§8–9). A step arrives when its play time runs out (world.md §5): the
+   arrivals of all the armies, and the draws they make, come in the order of their times, the
+   armies' order only for arrivals in the same frame; an army's next step starts in the frame
+   after its arrival. The play time of a step whose bank does not cover the step after it is
+   the rest of the window, so it arrives at the tick's end; the step after is charged on the
+   cell this step enters, times the weight of the direction stored with that path point,
+   which for the path's last point is whatever an earlier, longer path left in the army's
+   path buffer (zeroed at a map or save load: direction 0, weight 3; 0x482fe8 never writes
+   the last point's direction).
 
 Details of the step clock that matter for the AI:
 - **Stationary guards do nothing at all**: no banking, no steps, no planning, no arrival rules,
@@ -69,6 +79,15 @@ Details of the step clock that matter for the AI:
 - An army with no path (or a path of one cell) still "steps in place": every time its bank
   covers the cost of its own cell (no diagonal factor) it arrives again, counts one more
   **idle plan**, picks four new wander points and re-plans. A real step resets the idle count.
+- **The step after a step in place** is priced, for the play time, on the cell one step along
+  the army's direction (+0x1710, tables 0x4ecf8c / 0x4ecfb0) from where it stands: the step
+  clock reads `cell + offset(direction)` whatever the path. Every arrival and every plan set
+  the direction from the path (8, no offset, when it has no next cell), but the map load
+  writes 5 (south) into every record and the AI's set-up 8 only for stationary guards, so a
+  fresh army's first step in place is followed by the cell **south** of it; a respawn keeps
+  the direction the army died with (0x4a28d0 does not write it). Checked in the running game
+  (Проклятое озеро: army 13 on a cell of cost 4 with a cheaper cell south of it played its
+  first step in 20 minutes, not the whole window; FINDINGS.md §10).
 - On every arrival the army computes the octile distance to every other army on the map
   (the player included) and adds 1 to its **talk counter** towards each of them (§8). An army
   standing on the very same cell has distance 0 and is treated as absent here: no +1, and it
@@ -99,17 +118,57 @@ this function (§6, §9.1).
 **code** (0x4a0710, 0x4a08f8).
 
 **Simulation.** The scoring army fights the other side with the full battle engine, the AI
-playing both sides, to the end. The scoring side takes only its **living, paid** units; the
+playing both sides, to the end, from the two static sides that keep what earlier battles
+left beyond their units (battle.md, "Killable"): so the same two armies can fight out
+differently after other battles. Razdor fixes the original's bug: its kill test reads the
+target's own HP, so the old records no longer change a battle. The scoring side takes only its **living, paid** units; the
 other side all its living units. Each side keeps its building defence bonus (the defence of
-the building it stands in, §9.1). The result is the HP total of each side before (A0, B0) and
-after (A1, B1, each capped at its start value), and the turn the battle ended on.
+the building it stands in, §9.1). The result is each side's **strength** (483ecc,
+experience.md §3: the units' strengths scaled by their HP, by rows) at the start (A0, B0: side
++0x7ec, from the battle's set-up) and at the end (A1, B1: +0x7e8, recounted by the end
+0x48bb10; each capped at its start value), and the turn the battle ended on. Not hit points:
+checked in the running game (Проклятое озеро, army 9 of five units with 240 HP: A0 = 296;
+FINDINGS.md §11).
+
+**The unit strengths are the army's cached ones.** A battle side copies each unit's strength
+from its army record (+0x1ae, 49855c), which only the army's recount (0x4a16d4) writes, with
+the building defence (+0x378c) the army has at that moment. The recount runs at its arrival
+in a building other than a bridge (the end of the arrival rules, 0x4a79c5), when it arrives
+outside after standing in one (+0x378c cleared first), after each of its AI battles
+(0x4a4c68), at a respawn (0x4a28d0) and at a save load; not on its arrivals in the open.
+The map load's set-up (0x4a1ff0) recounts **before** it writes +0x378c, so an army that
+starts in a building is counted without its defence until its next recount, while its
+battles get the defence (the side's +0x844 reads +0x378c). Checked in the running game
+(Проклятое озеро: army 2 starts in a building of defence 15: its side strength is 877 at the
+load, 1764 after its first arrival there; FINDINGS.md §12). Garrisons are recounted with
+their defence at the load (0x4b2504, 0x4b53dd), so theirs always count it; but a ruins'
+garrison is recounted there **before** the ruins' goods are given to its units (0x4a273c at
+0x4b55aa), so its strengths count the units without those items until its next recount: a
+real battle (0x4a4c68, the player's 0x4d21fd), a garrison purchase (0x4a704e) or a reshuffle
+(0x4a7972). Checked in the running game (РК4: a garrison with a ring on one unit fights its
+off-screen battles at B0 552, not 617; FINDINGS.md §28). A spell that leaves someone
+alive in an army recounts it too (0x4900fc → 0x497240).
+
+The player's side (army 0) is copied the same way. His +0x378c is the defence of the
+building he stands in when it is his, else 0, written when he comes onto a cell (0x497c68);
+his recount runs at the map load's end (0x4b5b64), at every event window closed (Event_Finish
+0x4ab1ec, the victory and noon reports and the village window included), at his noon
+(0x4abfbc), in a building window on the hire and garrison tabs and at its close (0x4ba854;
+the hire tab 0x4bd3a4), when his army window opens (0x4d1814) and after a spell on his army
+(0x4900fc); not when he walks. So after he walks out of his town an AI army still scores him
+with the town's defence until the next of those (Другой берег: B0 928 in the open, his
+units' +0x1ae counted with 15; FINDINGS.md §21). The battle's own defence is the one of
+where he stands.
 
 **Score of army A against army C** (computed for A, cached per pair, §7.1):
 1. If nothing happened (A1 = A0 and B1 = B0) or the battle ran to `BattleEndTurn`: score 0.
 2. Aggression g (A's byte 69, in percent) shifts both results: `B1 −= Round(g·B0/100)` (not
    below 0) and `A1 += Round(g·A0/100)`. For a negative g the second term uses 1000 instead of
-   100 (a tenth of the effect) unless A's unit count is below a side-record header value whose
-   meaning is unknown (see Unknowns). A1 is then floored at 0.
+   100 (a tenth of the effect) unless side A lost a unit: its living count at the end (the
+   side record's first word, 0xc081ac) below its start count (+4, 0xc081b0; experience.md
+   §0); a surrendered side counts none. A1 is then floored at 0. Checked in the running game
+   (Проклятое озеро, army 2 with aggression −25: A1 shifted by −219 = Round(−25·877/100)
+   after losing units, by −22 after none; FINDINGS.md §13).
 3. **Win** if A1 > 0 and A1 > B1:
    - if A1 < A0: `s = Round((1 − A1/A0) × 30·ZeroDensity × A0/B0 + 1)`;
    - else (no loss): `s = Round(A0/B0 + 1)`;
@@ -165,8 +224,8 @@ church, smithy or obelisk (types 5, 7, 8, 15). Then:
 - Otherwise a simulated fight against the garrison (with its defence). Unless nothing
   happened or it timed out (then base stays): a feudal army counts as winning when
   `A1 + Round(g·A0/100)` is still ≥ 1 (always ÷100 here, never the ÷1000 variant of §4; the
-  garrison's result is not compared); a rogue when the garrison's HP left is at most
-  `B0 div 2`. No win → −100000 (forbidden). A win adds
+  garrison's result is not compared); a rogue when the garrison's strength left is at
+  most `B0 div 2`. No win → −100000 (forbidden). A win adds
   `Round(((1 − A1/A0) + B1/B0) × 30·ZeroDensity + 1)` (unshifted results), at least 1.
 - A building with no income and an empty garrison: ×50.
 - A stationary guard (any army, the player included) standing in the building that A cannot
@@ -233,8 +292,11 @@ Seeds are (cell, value) pairs; values are capped at 32766.
    row): the army's four wander points, each with `Random[model]`.
 
 **Wander points** (0x4a2550): four points; for a patrolling army `x0 + Rand(x1 − x0 + 1)` then
-`y0 + Rand(y1 − y0 + 1)` inside its box, otherwise `Rand(width)` then `Rand(height)` anywhere on
-the map; a point equal to the army's cell is dropped, and a point in column 0, or on a cell the
+`y0 + Rand(y1 − y0 + 1)` inside its box (draws returning to 0x4a2594 / 0x4a25d8), otherwise
+`Rand(width)` then `Rand(height)` anywhere on the map (0x4a2624 / 0x4a264d; the width and height
+are the planner's, +0x376a / +0x376e, the map's size); the box is the one the loader writes
+(+0x16c0..+0x16cc: the start cell ± radius, clamped to the map), checked in the running game on
+РК1 (17 × 14, 40 × 40 and the whole 50 × 50 map for armies 1, 9 and 14, the same as Razdor's); a point equal to the army's cell is dropped, and a point in column 0, or on a cell the
 obstacle pass of §7.3 has closed, is not seeded.
 New points are drawn when a path ends or is blocked, after a meeting, and at respawn (then
 cleared and the first one set to the army's start cell).
@@ -287,7 +349,9 @@ army routes around armies it cannot beat instead of avoiding them as a goal.
   overwrites the cell's value (0x482984, an off-by-one); the earlier, lower seed still expands
   from its own value, so only the seed cell's own value ends 1 higher.
 - Then every cell of an army (or the player) within `AIGetPathDistance` cells, and the cell
-  that army steps to next, is erased from the flood, so the path never steps onto them.
+  that army steps to next, is erased from the flood, so the path never steps onto them
+  (for the player: his logical cell and that cell plus his direction, world.md §5; an erase
+  of the planning army's own cell leaves it nothing lower to step to, so it stands).
 - **Path**: from the army's cell, repeatedly step to the neighbour with the smallest non-zero
   flood value below the current one (direction order 0..7, the first of equals wins), until
   none is lower. No seed reachable → a one-cell path (the army stays and counts idle plans).
@@ -315,10 +379,11 @@ on the map, the player included:
     as well. With the player and a counter ≤ 0 only the player's side is reset.
 
 ### 8.1 Attacking the player
-An attack or greeting of the player takes effect only once the player has started a step
-since entering the walk routine (a flag set when each hero step starts, 0x4ae975, and cleared
-when the walk routine is entered, 0x4ae71e); before his first step on the map, armies cannot
-attack or greet him. If several armies attack in one frame, the last one in index order is the
+An attack or greeting of the player takes effect only while his step flag is set (0x75e0c7:
+set in the frame where a step of his ends and the next begins, 0x4ae975, cleared at the top of
+every frame of the walk timer, 0x4ae71e, and written nowhere else): during a walk only in the
+frame his step ends; after a walk, while he stands, waits or casts, until his next walk
+(world.md §4.3); before his first walk on the map, never. If several armies attack in one frame, the last one in index order is the
 foe; likewise the last greeting army is the one met. **A greeting wins over an attack**: if any
 army greeted the player in a frame, the event scan runs for the greeting and no attack of that
 frame is carried out (0x4ade3c). An attack stops the player, runs the event scan, and starts
@@ -560,7 +625,10 @@ after the parity pass.
 | Stationary guards | Never bank, step, plan, arrive or get a noon | Never step, plan, arrive or get a noon (§2) | Matches |
 | Relation | §3 for every decision of the AI (`relation_between`), factions not compared | Two-sided rule of §3, factions not compared | Matches |
 | Range | Pair scores cached per army with dirty flags (marked after battles, respawns, hiring, healing, a feudal noon; the hero's after his battles, his noon, a fired event, a building's window); only those within `AIDistance[style]` rescored, the others still seeded | Range limits *rescoring*; cached scores of armies out of range still attract (§7.1) | Matches |
-| Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression the ÷1000 always *(guess: the header value is unknown)* | §4 exactly | Matches |
+| Army score | §4 (`army_score`): shifted results, relation scaling, negative scores; for a negative aggression ÷1000 only when the side lost no unit | §4 exactly | Matches (÷1000 always until 2026-10-03) |
+| Simulated battle results | the sides' strengths at the start and the end (`simulate`) | side strengths +0x7ec / +0x7e8 (483ecc) | Matches (Razdor counted hit points until 2026-10-03) |
+| Cached unit strengths | an army's sides count its units with the defence of its last recount (`AiMind::strength_bd`): 0 from the map load, the building's after an arrival in it, an AI battle or a respawn | +0x1ae per unit, written by 0x4a16d4 only | Matches |
+| A ruins' garrison's strengths | counted from its units' level stats, without the items the load gave them, until its first recount (a battle, a purchase, a reshuffle; `Location::strengths_bare`) | recounted at the load before the items (0x4b53dd, 0x4b55aa) | Matches (until 2026-10-04 Razdor counted the items) |
 | Danger | Two repulsion cones per danger on the multiplier map (`repulsion`, the original's box), ×5 slope for guards, same medium only | Repulsion cones around losing matchups (§7.4), ×5 slope for guards | Matches |
 | Peasants | Score armies and buildings (no assault, villages ×3), talk and wander | Peasants score armies, buildings (no assault, ×3 villages), talk and wander like others (§6, §7) | Matches |
 | Building score | The four parts of §6 (`Game::building_score`); −1 forbids and closes the footprint | The four parts of §6, smallest positive wins; −1 forbids and blocks the footprint | Matches |
@@ -583,20 +651,23 @@ after the parity pass.
 | Noon | At its first arrival after 12:00; its base income, its castles' and forts' stock and its linked villages'; today's income with the castles' income; feudal wages (its own Rear Service); others all paid | Lazily at the first arrival after noon; peasants get income too; no hiring at noon (§14); the player's Rear Service cuts AI wages (bug, economy.md §1) | Matches; Razdor fixes the original's bug (Rear Service) |
 | Midnight | Medic 10% (with the economy's midnight), village average, every building rescored | Medic armies heal 10%; armies rescore buildings (§14) | Matches |
 | Ships | An army placed on water (not a bridge) is a ship for good; the same AI on the SHIP map | Same AI on the SHIP map (§13) | Matches |
+| Arrival order | Each tick (a hero's whole step, or a wait tick) the armies bank and step by the step clock's play time; every arrival at the end of its play time, arrivals in time order (army order at the same moment), a midnight among them at its moment (`Game::ai_move`) | Frame by frame (world.md §5): at most one arrival per call, the next step at the next frame, the frame rate deciding ties | Matches the limit of short frames; frame effects of the original are not modelled |
+| Step in place after the load | the step after is priced south of the army until its first arrival (`AiMind::stand_facing`); a respawn keeps the last direction | the cell along +0x1710: 5 (south) from the load, the path's or none after each arrival or plan | Matches |
+| Idle draws at the hero's stop | Every army it steers with a next step on its path (the original's direction below 8), a patrol radius above 0 and no building under it draws `Random(3000)` once per stop, after the windows the stop opened (`Game::armies_snap`) | 0x4ad8a0 (world.md §2.2.1) | Matches |
 | Contact with the player before he moves | Acted on only after his step | Not before his first step (§8.1) | Matches |
 
 Left out for now: what an army beaten in its own arrival then does to the hero (an attack
 or a greeting) is dropped, where the original would open a battle or a meeting with the
 beaten army; the Community's mana bill taken from the player's mana at every AI noon, and its
-short-mana flag (economy.md §1); an army takes all the steps of a slice before the next one
-moves (the original interleaves them frame by frame). An AI army's noon takes its castles'
+short-mana flag (economy.md §1); the frame effects of the step clock (world.md §5: a step
+lost to coarse frames, two arrivals sharing a frame); an AI army's attack on the hero comes
+after his whole step, where the original stops him in the frame of the arrival. An AI
+army's noon takes its castles'
 and forts' gold stock, which Razdor's economy grows only for villages so far (economy.md §3,
 "Stock growth").
 
 ## Unknowns
 
-- The side-record header value compared with the unit count when aggression is negative (§4
-  step 2): when exactly the ÷1000 applies. **unknown** (0x4a09ac, `[0xc081b0]`).
 - Whether the player's record counts as "on the map" while he is inside a building (affects
   contacts with him there). **unknown**
 - What happens when more than 512 seeds are added in one plan (no bound check; a map with

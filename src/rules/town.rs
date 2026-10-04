@@ -164,6 +164,7 @@ impl Game {
         self.pay_service(price);
         let c = self.content.clone();
         self.squad[i].heal_full(&c);
+        self.scan_on_close = true;
         Ok(Vec::new())
     }
 
@@ -188,6 +189,7 @@ impl Game {
         u.died_at = None;
         u.unpaid = false;
         u.heal_full(&c);
+        self.scan_on_close = true;
         Ok(Vec::new())
     }
 
@@ -1101,11 +1103,37 @@ mod tests {
     #[test]
     fn the_village_blessing_lasts_ten_times_its_time() {
         use crate::rules::economy::{OfferResult, VillageOffer};
-        let mut g = (0..80).map(|seed| visit_village(40, 5, seed, &|_| {})).find(|g| g.village_offer() == Some(VillageOffer::Blessing)).unwrap();
+        let blessing = |seed| visit_village(40, 5, seed, &|_| {});
+        let mut g = (0..400).map(blessing).find(|g| g.village_offer() == Some(VillageOffer::Blessing) && g.offer_roll == 0).unwrap();
         let now = g.clock.total_minutes() as u64;
-        assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "the only one of 3/5/7/9/11 the content has");
+        assert_eq!(g.accept_offer(), Some(OfferResult::Blessing(3)), "spell 3 + 2·0");
         // TimeWork 4 h × 10.
         assert_eq!(g.active_spells().iter().map(|e| (e.spell, e.until)).collect::<Vec<_>>(), [(3, now + 40 * 60)]);
+    }
+
+    /// The blessing's spell and the witch's mana are rolled as the offer's window is built
+    /// (0x4aca80: `Random(5)` before the window's chord), not at the answer: a yes draws
+    /// nothing. The blessing is spell 3 + 2·r even when the install lacks it (not cast then).
+    #[test]
+    fn the_offers_roll_is_drawn_as_it_opens() {
+        use crate::rules::economy::{OfferResult, VillageOffer};
+        let learned = |g: &mut Game| g.spells = vec![1, 2, 3];
+        for (kind, setup) in [(VillageOffer::Witch, &learned as &dyn Fn(&mut Game)), (VillageOffer::Blessing, &|_: &mut Game| {})] {
+            let mut g = (0..400).map(|seed| visit_village(40, 5, seed, setup)).find(|g| g.village_offer() == Some(kind) && g.offer_roll > 0).unwrap();
+            let r = g.offer_roll;
+            let state = g.rng.state();
+            let mana = g.mana;
+            let result = g.accept_offer();
+            assert_eq!(g.rng.state(), state, "the yes draws nothing");
+            match result {
+                Some(OfferResult::Mana(m)) => assert_eq!((m, g.mana), (300 + 50 * r, mana + m)),
+                Some(OfferResult::Blessing(id)) => {
+                    assert_eq!(id, 3 + 2 * r as u32);
+                    assert!(g.active_spells().is_empty(), "spell {id} is not in the test content");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1379,6 +1407,29 @@ mod tests {
         want.rng.random(90_000);
         assert_eq!(a.rng.state(), want.rng.state());
         assert_eq!(a.world.locations[0].shop.as_ref().unwrap().places, want.world.locations[0].shop.as_ref().unwrap().places);
+    }
+
+    /// A trade (or a heal, or a raise) asks for the events to be checked as the building
+    /// window closes (0x4ed440 → 0x4b8f63): an event the purchase allows opens then, not at
+    /// the next step; a window closed without one checks nothing.
+    #[test]
+    fn a_trade_has_the_events_checked_as_the_window_closes() {
+        use crate::dt::dtm::EventKind;
+        use crate::rules::events::EventOutcome;
+        let mut s = shop_town(2);
+        let mut e = crate::dt::dtm::Event { kind: EventKind::Global as u8, repeat: 1440, duration: 1440, once: 1, title: "t".into(), message: "m".into(), ..Default::default() };
+        (e.conditions.artifacts_check, e.conditions.artifacts, e.conditions.artifacts_owner) = (1, [24, 0, 0], [1, 0, 0]);
+        s.events = vec![e];
+        let mut g = start(&s);
+        g.drain_events();
+        g.gold = 10_000;
+        assert_eq!(g.location, Some(0), "he starts in the market");
+        assert!(g.window_closed().is_empty(), "no trade: no check");
+        let at = g.market_here().unwrap().iter().position(|i| i.0 == 24).unwrap();
+        g.buy(at).unwrap();
+        let fired = |ev: &[Event]| ev.iter().any(|e| matches!(e, Event::Script(EventOutcome::Fired { event: 1, .. })));
+        assert!(fired(&g.window_closed()), "the amulet bought: the event opens as the window closes");
+        assert!(g.window_closed().is_empty(), "asked once");
     }
 
     #[test]

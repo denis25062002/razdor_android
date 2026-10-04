@@ -178,6 +178,11 @@ pub fn class_select(
         }
     }
 
+    // Only the classes the map gives a start cell (0x4c1804); none: back to the menu.
+    let offered = scenario.as_ref().map_or([true; 3], |(e, _)| e.scenario.header.offered_classes());
+    if !offered.contains(&true) {
+        return Some(Screen::MainMenu);
+    }
     let (w, h, gap) = (300.0, 380.0, 30.0);
     let x0 = (screen_width() - (3.0 * w + 2.0 * gap)) / 2.0;
     let name = HERO_NAME.with(|n| {
@@ -190,7 +195,7 @@ pub fn class_select(
         let kind = hero.unit();
         let x = x0 + i as f32 * (w + gap);
         let y = 180.0;
-        let hover = mouse_in(x, y, w, h);
+        let hover = offered[i] && mouse_in(x, y, w, h);
         draw_rectangle(x, y, w, h, PANEL);
         draw_rectangle_lines(x, y, w, h, 2.0, if hover { ACCENT } else { DIM });
         assets.draw_unit(kind, Team::Player, x + w / 2.0, y + 80.0, 96.0);
@@ -214,6 +219,9 @@ pub fn class_select(
                 }
             }
             None => text_centered(&trf!("Gold: {gold}", gold = content.start_gold(hero)), x + w / 2.0, y + 300.0, 24.0, ACCENT),
+        }
+        if !offered[i] {
+            draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.6));
         }
         if hover && clicked() {
             cue(Cue::MenuPress);

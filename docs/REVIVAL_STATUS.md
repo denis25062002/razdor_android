@@ -23,7 +23,7 @@ install the plain screens and the built-in demo stand in.
 Controls: click the map to walk (white arrows mark the route; the time left is in the bar);
 right click / Space stops; wheel or +/− zooms; 1 / 4, or a left / right click on the bar's time
 panel, wait 1 or 4 hours; a click on the building you stand in opens it again (or its
-garrison's battle); M minimap; Tab centres the camera on the hero; J journal; B spell book
+garrison's battle; a building whose garrison you beat is entered by walking in); M minimap; Tab centres the camera on the hero; J journal; B spell book
 (a click on a spell casts it); A hero and army; F5 quick save, F9 quick load; N music off/on;
 the bar's X (or Esc) opens "Выход из игры" (quit, main menu, restart), its gears the sound
 settings; F1 lists every screen's keys. In battle: click a framed card to attack or cast, a

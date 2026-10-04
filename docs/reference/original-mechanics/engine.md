@@ -64,7 +64,11 @@ textures through a hook), redraws the whole screen, resumes drawing and **resume
 x87 unit in single precision for the rest of the run. The game never sets the FPU control word
 itself. If that holds, every float formula in the game is evaluated with 24-bit mantissas. The
 last bit of a rounded result can then differ from a double-precision reimplementation (§3.3).
-This could not be checked without running the game.
+In the running game (the diff test, Wine 11) the products are rounded with 64-bit mantissas: a
+relation price of exactly x.5 in decimal goes the way the 80-bit constant's error leads it
+(economy.md §2, FINDINGS.md §24), which single precision would not give. The game's own control
+word, Delphi's 0x1332, is also loaded again by the RTL's FPU init (0x403984). Whether a Windows
+run with DirectX 7 differs was not checked.
 
 ## 2. Clock and timing
 
@@ -181,16 +185,16 @@ All 43 call sites in the exe (none in the Community code). "When" says what trig
 | 0x483344 | 16 (one of two sites, by row parity), then 11 | plant x and y offsets (§3.3) | map load, save load |
 | 0x4cfb24 | 1000 | plant sway phase | same |
 | 0x4b4b43, 0x4b8691 | 3000 | idle-animation offset of each AI army (ms) | map load, save load |
-| 0x4ad8a0 | 3000 | the same for every idle patroller | each time the hero stops |
+| 0x4ad8a0 | 3000 | the same for every AI army on the map facing a next step (direction < 8), with a patrol radius above 0, in no building | each time the hero stops: a walk's or a wait's end, an event or an AI army stopping him; not a run into an army or a garrison (world.md §2.2.1) |
 | 0x4be178 | 5, 5, 3, k+1, k+1 | market goods: max price +1 when 0; the town's extra potion (4 of 5 cases); the healing potion 98 + r; biased item pick; candidate pick (economy.md §2) | every midnight per building whose restock time is set and due; map load (market buildings only) |
 | 0x4a1998 | D div max | barracks slot +1 when the result is 0 (D = MaxDayCountForNewUnit) | every midnight |
 | 0x4bba40 | 2, 3, 6, 6, 6 | village offer rolls: innkeeper, priest, blessing, furs, witch (economy.md §3); the draws stop at the first roll that picks an offer, and each `Random(6)` after the first is drawn only when the previous one did not pick | entering a village with stock |
 | 0x4aca80 | 5, 5 | village spell `3 + 2r`; witch mana `300 + 50r` | building the village offer |
 | 0x4a2550 | W, H (free) or the box widths (patrol) | 4 wander points of an AI army (below) | AI goal refresh |
 | 0x4a4a7c | 3 (repeated) | AI promotion option (below) | AI XP gain |
-| 0x4a548c | X | the XP of a hired AI unit: `Random(X) + X div 2` | AI hiring |
+| 0x4a548c | X | the XP of a hired AI unit: `Random(X) + X div 2` (the calls return to 0x4a6b74 for a unit the army hires, 0x4a7017 for one it buys for its garrison) | AI hiring |
 | 0x4ab150 | 20 | anti-cheat: gold becomes `5 + Random(20)` | only when the gold seal is broken |
-| 0x4d1282, 0x4d155f, 0x4d165e | 3 | which of the three event sounds plays | opening the village, shipyard or event window |
+| 0x4d1282, 0x4d155f, 0x4d165e | 3 | which of the three event sounds plays | opening the village, shipyard or event window; the event window also shows the victory box of the player's battle and the noon report, which draw it too (FINDINGS.md §14, §15) |
 | 0x49d774, 0x49d7f8 | 8; 50 000 / 60 000 / 90 000 | music rotation (§9) | real time |
 | 0x486237 | spread % | battle AI noise | **never**: the spread is 0 at every caller |
 
@@ -446,7 +450,7 @@ silent.
 |---|---|---|---|
 | Generator | the LCG `S×214013+2531011`, `random(n)` = 15 bits `mod n`, drawn even for n = 0, one state per game, not saved (`rules/rng.rs`); Razdor's own rolls use `range(lo, hi)` = one `Random(hi − lo + 1)`; the Community event generator (`EventRng`), seeded from the clock at every load; Razdor fixes the original's bug in its retry loop (the limit stays the largest multiple of n) | MSVC-style LCG `S×214013+2531011`, 15-bit output `mod n`, cap 32767; one global state; the Community generator's retry loop jumps back one step too far (bug) | Matches; Razdor fixes the original's bug (`EventRng`) |
 | Seeding | 1 at every new game and campaign map (`Game::with_world`), not saved (save format 2; format 1 saves load, their generator ignored); a save load runs the load sequence: plant hash of the map's last plant, `Random(3000)` per army of the map file, `Random(90000)` for the world music (`Rng::save_load`) | 0 at start, **1 at every map load** (before the markets), not saved; after a load it comes from the plant hash | Matches (a map without plants starts from 0, not from the last session's state; the plant hash uses f64 sin/cos, see §11) |
-| Draw order | map load: 1, the markets, the music's draw; save load as above; midnight building by building, its market restock then its barracks slots (`economy_midnight`) | fixed order at load (§3.2) and at midnight (restock, then barracks, per building) | Matches; the music rotation draws in real time and the event, village and shipyard windows draw their chord's `Random(3)` as they open (`rules::music`, `Game::event_chord`); the idle patrollers' `Random(3000)` when the hero stops is not drawn |
+| Draw order | map load: 1, the markets, the music's draw; save load as above; midnight building by building, its market restock then its barracks slots (`economy_midnight`) | fixed order at load (§3.2) and at midnight (restock, then barracks, per building) | Matches; the music rotation draws in real time and the event, village and shipyard windows and the victory box and the noon report (the event window) draw their chord's `Random(3)` as they open (`rules::music`, `Game::event_chord`); the idle patrollers' `Random(3000)` when the hero stops is not drawn |
 | Barracks roll | one `Random(D div max)` per slot with a unit, a maximum and room, also when the divisor is 0 or 1 (`economy::regrow`) | always one draw per qualifying slot | Matches |
 | Wander points | 4 points, x then y: `xmin + Random(xmax + 1 − xmin)` in the patrol box (post ± radius, clamped), else `Random(W)`, `Random(H)` over the map; no passability test; the own cell and column 0 dropped; guards draw nothing (`ai::wander_points`) | 4 points uniform over the whole map (non-patrol) or the patrol box, no passability test, own cell dropped | Matches (drawing; Razdor's goal scoring still seeds only patrollers' points and has no obstacle map, ai.md) |
 | AI promotion | `Random(3)` for Militia and Infantry, `Random(3) + 1` rejection loop for others (`ai_promote`) | same | Matches |
@@ -455,6 +459,7 @@ silent.
 | Frame pacing | macroquad `next_frame`, variable window size, game time from frame time | vsync flip, no fixed tick, all timers on a millisecond clock | equivalent in spirit |
 | Clock pause on focus loss | not modelled | Now freezes while inactive (walks, waits, music, fades stop) | missing |
 | Hero walk frames | 8 frames at 10 per second while moving (`world_view::draw_figure`) | frames 3–6 at half the WalkDelay (75 ms default); AI walk frames by game time; land idle 20 × 250 ms | differs |
+| AI walk frames | Frames 3–6, the next every 10 game minutes (`(time_cs div 1000) and 3` + 3) while the army has a step to take, by the game time interpolated inside the stretch, so they stand still with it; its standing frame without a step (`Game::army_walk_frame`) | 0x4ad660 → 0x4ad314 with `[0x68dcb8] div 1000`, from the AI's per-frame advance 0x4ade3c (only while the hero walks or waits) | Matches |
 | Water | static textures | 32 frames at 100 ms on terrain codes 0–2 | missing |
 | Cursor animation | system cursor (no animated cursors found in `src/ui`) | 50-frame cursors at 25/30/50 ms from raw time, hotspots per cursor | missing |
 | Main menu background | 9 frames at 100 ms, not cross-faded (`main_menu.rs`) | 9 frames at 150 ms cross-faded + 16 frames at 100 ms | differs |
@@ -463,7 +468,7 @@ silent.
 | Text rounding | float layout | round-half-up on the first decimal for justified spaces and list lines | differs (cosmetic) |
 | Volume | linear gain 0..1 in `audio.json` | 0..1000 with the √-shaped dB curve; options 0..100 ×10 from the ini | differs |
 | Music | `BkgMap2` at a map start or load, then the timed rotation of the 8 tracks drawn from the game's generator (`rules::music`, `ui/jukebox.rs`), tracks looped; no fades | timed random rotation of 8 tracks (BkgAuthors included), cross-fades of 2 s and 4 s, change times independent of track length | Matches but the cross-fades (presentation, left out) |
-| Effect playback | a new instance per play | one buffer per sound: a replay restarts it, never overlaps | differs |
+| Effect playback | one sound per effect, a replay stops it and starts it again (`ui/audio.rs` `play_effect`) | one buffer per sound: a replay restarts it, never overlaps | matches |
 | WAV start offset | whole sample | first 20 bytes and last 16 bytes dropped | negligible |
 | Edit box | save name: any non-control character up to 60, caret 500 ms (`ui/saves.rs`); `widgets::text_field`: any script, Esc or click elsewhere ends typing and keeps the edit | only glyph-order characters, length limited by the box width (overflow acts as Enter), Esc reverts, click elsewhere reverts, 500 ms caret | differs |
 | Key semantics | macroquad key events | "pressed" is reported on key-up (last held key) | differs (input feel) |
@@ -471,9 +476,9 @@ silent.
 
 ## 11. Unknowns
 
-- **FPU precision**: whether the game really runs with x87 single precision after the
-  Direct3D device creation. That decides the exact plant-hash seeds, and the last bit of every
-  float formula elsewhere (§1).
+- **FPU precision** on Windows with DirectX 7: whether the game runs with x87 single precision
+  after the Direct3D device creation there. Under Wine 11 it runs with 64-bit mantissas (§1).
+  That decides the exact plant-hash seeds, and the last bit of every float formula elsewhere.
 - How DDrawCompat (shipped `ddraw.dll`) changes flip timing, vsync and the FPU state.
 - The exact source rectangles of the per-frame "visible → back buffer" restore (the stack arguments
   are lost in the decompiler); assumed one copy per dirty rectangle.

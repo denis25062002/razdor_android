@@ -214,7 +214,9 @@ Right click: {right} = Правый щелчок: {right}
 Wait 1 hour (the hero stands still) = Ждать 1 час на месте
 Wait 4 hours (the hero stands still) = Ждать 4 часа на месте
 Time panel = Панель времени
-left click: wait 1 hour, right click: 4 hours = левый щелчок: ждать 1 час, правый: 4 часа
+hover: buttons to wait 1 hour, see the hero, wait 4 hours; elsewhere left click 1 hour, right click 4 hours = наведите: кнопки «ждать 1 час», «к герою», «ждать 4 часа»; в другом месте левый щелчок — 1 час, правый — 4 часа
+Click / any key while waiting = Щелчок / любая клавиша во время ожидания
+stop after the half hour under way = остановиться после текущих получаса
 Click where you stand = Щелчок по месту героя
 the building again, or its garrison's battle = снова окно постройки или бой с её гарнизоном
 

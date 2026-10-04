@@ -29,11 +29,16 @@ use super::jukebox::{self, Change, Jukebox};
 pub enum Cue {
     /// Any button (`InterfaceButtonDown`).
     Button,
-    /// A window or panel opens (`InterfacePanelDown`).
+    /// A bottom panel icon is pressed (`InterfacePanelDown`; only there in the original,
+    /// interface.md §14), or a Razdor window opens without one.
     Panel,
-    /// A scenario or hero class is picked (`MainMenuPress`).
+    /// A main menu item or a hero class is pressed (`MainMenuPress`).
     MenuPress,
-    /// A world spell is cast (`InterfaceCastSpell`), then its effect on the own army
+    /// The pointer comes onto a main menu item (`MainMenuSelect-1`: the original reads only
+    /// that key, for all five, interface.md §4).
+    MenuSelect,
+    /// A world spell is cast, or a building window's tab highlighted (`InterfaceCastSpell`),
+    /// then a spell's effect on the own army
     /// (`Spell-Good`) or on an enemy army (`Spell-Evil`).
     CastSpell,
     SpellGood,
@@ -58,7 +63,8 @@ pub enum Cue {
     Sorcery,
     /// An item of this type bought, equipped or drunk (`Item-<Type>`).
     Item(ArtefactType),
-    /// Gold gained (`Item-Gold`).
+    /// A money button (trade, hire, heal, learn, a ship) or a village's tribute taken
+    /// (`Item-Gold`).
     Gold,
     /// A battle won: the triumph music, looped until the next map track.
     Triumph,
@@ -71,6 +77,7 @@ impl Cue {
             Cue::Button => "InterfaceButtonDown",
             Cue::Panel => "InterfacePanelDown",
             Cue::MenuPress => "MainMenuPress",
+            Cue::MenuSelect => "MainMenuSelect-1",
             Cue::CastSpell => "InterfaceCastSpell",
             Cue::SpellGood => "Spell-Good",
             Cue::SpellEvil => "Spell-Evil",
@@ -107,6 +114,26 @@ pub fn cued<T>(c: Cue, value: T) -> T {
     value
 }
 
+thread_local! {
+    static ON_RELEASE: RefCell<Option<Cue>> = const { RefCell::new(None) };
+}
+
+/// Asks for `c` again when the left mouse button that pressed a button is let go: the
+/// original's hire button plays `Item-Gold` on its press and again in its click action, which
+/// runs on the release (0x4c7370, 0x4c7380), so the one buffer restarts there.
+pub fn cue_on_release(c: Cue) {
+    ON_RELEASE.with(|r| *r.borrow_mut() = Some(c));
+}
+
+/// The cue waiting for the release, once the button is up (`held` false), else nothing.
+fn released_cue(waiting: &mut Option<Cue>, held: bool) -> Option<Cue> {
+    if held {
+        None
+    } else {
+        waiting.take()
+    }
+}
+
 /// The cues of this frame, each once, in order.
 fn take_cues() -> Vec<Cue> {
     let mut cues = CUES.with(|q| std::mem::take(&mut *q.borrow_mut()));
@@ -132,11 +159,16 @@ pub struct Settings {
     /// The enemy's battle AI: `Some(true)` expert (the original's "improved enemy AI in
     /// battle"), `Some(false)` easy; `None` until chosen: the install's `OptValue9`.
     pub expert_ai: Option<bool>,
+    /// The front row's width for new games: `Some(true)` 6 cells (the Community's wide row),
+    /// `Some(false)` 4 (its two edge places are the reserve's, as the back row's are);
+    /// `None` until chosen: the install's `OptValue11`. A save keeps the width it was
+    /// started with.
+    pub wide_row: Option<bool>,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None }
+        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None, wide_row: None }
     }
 }
 
@@ -326,6 +358,10 @@ impl Audio {
 
     /// Plays this frame's cues and keeps the music of `mood` going.
     pub fn frame(&mut self, mood: Mood) {
+        let held = macroquad::input::is_mouse_button_down(macroquad::input::MouseButton::Left);
+        if let Some(c) = ON_RELEASE.with(|r| released_cue(&mut r.borrow_mut(), held)) {
+            cue(c);
+        }
         let cues = take_cues();
         if self.settings != self.saved {
             self.settings = self.settings.clamped();
@@ -384,6 +420,9 @@ impl Backend {
         let gain = settings.sfx_gain();
         match self.sfx.get(&key.to_ascii_lowercase()) {
             Some(s) if gain > 0.0 => {
+                // One buffer per sound, as the original's (engine.md §8): playing a sound that
+                // is still playing restarts it instead of layering a second copy on top.
+                stop_sound(s);
                 play_sound(s, PlaySoundParams { looped: false, volume: gain });
                 if log {
                     razdor::diag!("audio: sfx {key} ({}) at {gain:.1}", self.table.effect(&key).unwrap_or("?"));
@@ -460,6 +499,20 @@ mod tests {
         assert!(take_cues().is_empty());
     }
 
+    /// The hire's second `Item-Gold` waits while the button is held and comes once, at the
+    /// release (a press and release in one frame give one play: the restart is at once).
+    #[test]
+    fn a_release_cue_waits_for_the_button_to_go_up() {
+        let mut waiting = Some(Cue::Gold);
+        assert_eq!(released_cue(&mut waiting, true), None);
+        assert_eq!(released_cue(&mut waiting, true), None);
+        assert_eq!(released_cue(&mut waiting, false), Some(Cue::Gold));
+        assert_eq!(released_cue(&mut waiting, false), None);
+        cue(Cue::Gold);
+        cue(Cue::Gold);
+        assert_eq!(take_cues(), [Cue::Gold]);
+    }
+
     #[test]
     fn volume_steps_and_settings_file() {
         let mut s = Settings::default();
@@ -480,6 +533,20 @@ mod tests {
         assert_eq!(partial.clamped(), Settings { music_volume: 1.0, ..Settings::default() });
     }
 
+    /// The front row's width: the install's `OptValue11` until chosen, then the choice; an
+    /// older file without it keeps following the install.
+    #[test]
+    fn the_front_row_setting_falls_back_on_the_install() {
+        use crate::ui::main_menu::wide_row;
+        let old: Settings = serde_json::from_str(r#"{"music_volume": 0.5, "expert_ai": true}"#).unwrap();
+        assert_eq!(old.wide_row, None);
+        assert!(wide_row(&old, true) && !wide_row(&old, false));
+        let four = Settings { wide_row: Some(false), ..Settings::default() };
+        assert!(!wide_row(&four, true));
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&four).unwrap()).unwrap();
+        assert_eq!(back.wide_row, Some(false));
+    }
+
     #[test]
     fn every_cue_has_a_real_sound() {
         let Some(dir) = std::env::var_os(razdor::dt::install::ENV_VAR) else { return };
@@ -491,7 +558,7 @@ mod tests {
             ArtefactType::Potion, ArtefactType::Item,
         ];
         let mut cues = vec![
-            Cue::Button, Cue::Panel, Cue::MenuPress, Cue::CastSpell, Cue::SpellGood, Cue::SpellEvil,
+            Cue::Button, Cue::Panel, Cue::MenuPress, Cue::MenuSelect, Cue::CastSpell, Cue::SpellGood, Cue::SpellEvil,
             Cue::BattleHorn, Cue::CardMove, Cue::Upgrade, Cue::Fight, Cue::Shoot, Cue::Cannon,
             Cue::Cure, Cue::Bless, Cue::Sorcery, Cue::Gold,
         ];

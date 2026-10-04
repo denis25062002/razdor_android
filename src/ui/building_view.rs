@@ -58,18 +58,57 @@ pub struct BuildingView {
     pub garrison_buy: Option<(usize, Slot, i32)>,
     /// What the market's filter line holds (`ui::item_filter`).
     pub filter: String,
+    /// The village window took the tribute: its close plays `Item-Gold` (0x4c604a).
+    pub tribute_paid: bool,
+    /// A card animation of the hire tab under way.
+    anim: Option<CardAnim>,
+}
+
+/// A card animation of the hire tab (0x4b0c04, 0x4b11cc), from its start (whole ms of the
+/// clock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CardAnim {
+    kind: CardAnimKind,
+    t0_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardAnimKind {
+    /// A hired unit (squad index) slides from its recruit's portrait (index) into the army.
+    Hired { unit: usize, recruit: usize },
+    /// The cure over a healed or raised unit's card.
+    Cured { unit: usize },
+}
+
+/// How long a hired card slides, and the cure plays over a card.
+const HIRE_SLIDE_MS: i64 = 200;
+const CURE_MS: i64 = 350;
+
+fn now_ms() -> i64 {
+    (get_time() * 1000.0) as i64
 }
 
 impl BuildingView {
     pub fn new(tab: Tab) -> BuildingView {
-        BuildingView { tab, pick: None, scroll: 0, selling: false, garrison_sel: None, garrison_buy: None, filter: String::new() }
+        BuildingView { tab, pick: None, scroll: 0, selling: false, garrison_sel: None, garrison_buy: None, filter: String::new(), tribute_paid: false, anim: None }
     }
 
     fn switch(&mut self, tab: Tab) {
         if has_focus(FILTER_KEY) {
             clear_focus();
         }
-        *self = BuildingView::new(tab);
+        *self = BuildingView { tribute_paid: self.tribute_paid, ..BuildingView::new(tab) };
+    }
+
+    /// The animation under way and how far it is (0..1), if any.
+    fn anim_at(&self) -> Option<(CardAnimKind, f32)> {
+        let a = self.anim?;
+        let len = match a.kind {
+            CardAnimKind::Hired { .. } => HIRE_SLIDE_MS,
+            CardAnimKind::Cured { .. } => CURE_MS,
+        };
+        let p = (now_ms() - a.t0_ms) as f32 / len as f32;
+        (p < 1.0).then_some((a.kind, p.max(0.0)))
     }
 }
 
@@ -343,7 +382,7 @@ fn own_text(section: &str, key: &str, ours: &'static str) -> String {
 /// building's sepia interior, each portrait with "Нанять" and "Цена = N"; the money, wages
 /// and income; the army's 2×6 cards below, each with "Лечить" / "Воскресить" and its price
 /// (else the card's stat strip). Sizes follow the window.
-fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
+fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, message: &mut Option<String>, dialogs: &mut VecDeque<Dialog>) -> Option<Screen> {
     let l = game.location?;
     let k = chrome::k();
     let c = game.content.clone();
@@ -393,9 +432,17 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let pill = Rect::new(face.x + 4.0 * k, face.y + face.h + 2.0 * k, face.w - 8.0 * k, 17.0 * k);
         let hire = own_text("Army", "HireArmy", n_("Hire"));
         if chrome::pill_button(pill, &hire, can, true) {
+            // The original plays the gold on the press and again in the click action on the
+            // release (0x4c7370, 0x4c7380): the one buffer restarts.
+            super::audio::cue_on_release(Cue::Gold);
             let name = c.unit(r.unit).name.clone();
             *message = Some(match game.hire(r.unit) {
-                Ok(()) => trf!("{name} joins your army.", name),
+                Ok(()) => {
+                    // The new card slides from the recruit into the army (0x4b0c04).
+                    cue(Cue::CardMove);
+                    view.anim = Some(CardAnim { kind: CardAnimKind::Hired { unit: game.squad.len() - 1, recruit: i }, t0_ms: now_ms() });
+                    trf!("{name} joins your army.", name)
+                }
                 Err(HireError::NotEnoughGold) => tr("You cannot afford it.").into(),
                 Err(HireError::SquadFull) => tr("Your army is full.").into(),
                 Err(HireError::NotOffered) => tr("Not offered here.").into(),
@@ -413,10 +460,10 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
     let raises = game.resurrects_here();
     let form = c.formation;
     let lines = form.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
     let grid = at(f, 250.0, 330.0, 588.0, 0.0);
-    let gx = (grid.x + (grid.w - (form.cols as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
+    let gx = (grid.x + (grid.w - (form.display_cols() as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
     let cell_at = |slot: Slot| {
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()
@@ -428,9 +475,16 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         }
     }
     let mut action = None;
+    let anim = view.anim_at();
     for i in 0..game.squad.len() {
         let u = game.squad[i].clone();
-        let p = cell_at(u.slot);
+        let mut p = cell_at(u.slot);
+        if let Some((CardAnimKind::Hired { unit, recruit }, t)) = anim {
+            if unit == i {
+                let from = at(f, 258.0 + recruit as f32 * 96.0, 74.0, 88.0, 88.0);
+                p = vec2(from.x, from.y).lerp(p, t).round();
+            }
+        }
         let sq = Rect::new(p.x, p.y, card.x, card.x);
         draw_rectangle(p.x + 4.0 * k, p.y + 4.0 * k, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.45));
         assets.draw_portrait(u.def, Team::Player, sq);
@@ -453,7 +507,7 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
                 let cost = trf!("Price {price}", price = pr.amount);
                 chrome::shadow_centered(&cost, strip.center().x, pill.y + pill.h + 13.0 * k, 12.0 * k, chrome::GOLD);
             }
-            _ => super::unit_sheet::stat_strip(strip, &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, false),
+            _ => super::unit_sheet::stat_strip(strip, &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], super::unit_sheet::caster(&c, u.def), super::unit_sheet::strip_place(form, u.slot), u.hp, back_row_def(&c, u.slot), false),
         }
         if !u.alive() {
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
@@ -462,8 +516,15 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         } else if u.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
+        top_left_signs(&c, sq, &u, i > 0);
+        super::spell_badges::draw(sq, &u.spells, u.drain, game.clock.total_minutes() as u64, &c);
         if super::unit_drag::dragged() == Some(i) {
             draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
+        }
+        if let Some((CardAnimKind::Cured { unit }, t)) = anim {
+            if unit == i {
+                chrome::effect("Battle/--CURE.ugs", sq.center(), sq.w * 1.6, t, WHITE);
+            }
         }
         if mouse_in(sq.x, sq.y, sq.w, sq.h) {
             // A press on the portrait may drag the unit to another cell.
@@ -485,6 +546,9 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, message: &mut Option<St
         let r = if raise { game.resurrect(i) } else { game.heal(i) };
         match r {
             Ok(events) => {
+                // The cure over the card, with its sound (0x4b11cc, `Battle-Cure`).
+                cue(Cue::Cure);
+                view.anim = Some(CardAnim { kind: CardAnimKind::Cured { unit: i }, t0_ms: now_ms() });
                 *message = Some(if raise { trf!("{name} rises again.", name) } else { trf!("{name} is healed.", name) });
                 // What happened meanwhile: a noon report, the scenario's events.
                 next = world_view::handle_events(game, events, message, dialogs);
@@ -504,17 +568,33 @@ enum Hit {
     Cell(Slot),
 }
 
+/// The ranged defence the back row adds on a card's strip (`Row2Def`; 0 elsewhere).
+pub fn back_row_def(c: &razdor::rules::content::Content, slot: Slot) -> i32 {
+    if slot.row == razdor::rules::formation::Row::Back {
+        c.options.row2_def
+    } else {
+        0
+    }
+}
+
+/// The signs from a card's top left (493a64): the promotion for a unit of the hero's army
+/// (`own`, not the hero) that can take one, then a drunk potion.
+fn top_left_signs(c: &razdor::rules::content::Content, sq: Rect, u: &Unit, own: bool) {
+    let upgrade = own && u.upgrade_tree(c).iter().any(|&(_, _, ok)| ok);
+    chrome::card_signs(sq, true, &[(upgrade, "Sign-Upgrade", GREEN), (!u.potions.is_empty(), "sign-potion", GREEN)]);
+}
+
 /// The army screen's cards for `units` in the formation, `rel_y` below the content's top;
-/// `selected` is framed. Returns what the pointer is over.
-fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], selected: Option<usize>) -> Option<Hit> {
+/// `own`: the hero's army. `selected` is framed. Returns what the pointer is over.
+fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit], own: bool, selected: Option<usize>) -> Option<Hit> {
     let k = chrome::k();
     let c = &game.content;
     let form = c.formation;
     let lines = form.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / form.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
     let grid = at(f, 250.0, rel_y, 584.0, 0.0);
-    let gx = (grid.x + (grid.w - (form.cols as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
+    let gx = (grid.x + (grid.w - (form.display_cols() as f32 * pitch.x - 8.0 * cs * k)) / 2.0).round();
     let cell_at = |slot: Slot| {
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()
@@ -537,12 +617,14 @@ fn card_grid(game: &Game, assets: &Assets, f: &Frame, rel_y: f32, units: &[&Unit
         chrome::wounds(sq, u.hp, u.max_hp(c));
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let vs = u.stats(c);
-        super::unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], u.hp, false);
+        super::unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[razdor::rules::content::Stat::MagicPower], super::unit_sheet::caster(c, u.def), super::unit_sheet::strip_place(form, u.slot), u.hp, back_row_def(c, u.slot), false);
         if !u.alive() {
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
         } else if u.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
+        top_left_signs(c, sq, u, own && i > 0);
+        super::spell_badges::draw(sq, &u.spells, u.drain, game.clock.total_minutes() as u64, c);
         if selected == Some(i) {
             chrome::glow_frame(sq, Color::new(1.0, 0.85, 0.3, 0.95), false);
         }
@@ -565,7 +647,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     let sel = view.garrison_sel.filter(|&(g, n)| if g { n < guards.len() } else { n < game.squad.len() });
     let mut hover = Vec::new();
     let guard_units: Vec<&Unit> = guards.iter().map(|s| &s.unit).collect();
-    let top = card_grid(game, assets, f, 32.0, &guard_units, sel.filter(|s| s.0).map(|s| s.1));
+    let top = card_grid(game, assets, f, 32.0, &guard_units, false, sel.filter(|s| s.0).map(|s| s.1));
     if let Some(Hit::Unit(j)) = top {
         let u = &guards[j].unit;
         let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
@@ -576,7 +658,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
     chrome::divider(at(f, 250.0, 302.0, 584.0, 16.0));
     let squad = game.squad.clone();
     let army: Vec<&Unit> = squad.iter().collect();
-    let bottom = card_grid(game, assets, f, 330.0, &army, sel.filter(|s| !s.0).map(|s| s.1));
+    let bottom = card_grid(game, assets, f, 330.0, &army, true, sel.filter(|s| !s.0).map(|s| s.1));
     if let Some(Hit::Unit(i)) = bottom {
         let u = &squad[i];
         let lv = level_label(u.level, u.xp, u.xp_to_next(&c));
@@ -805,7 +887,8 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
         (false, Some(k)) => rows.get(k).and_then(|r| r.0).is_some_and(|i| game.gold >= game.buy_price(i)),
         _ => false,
     };
-    if button(lx, by, 130.0 * k, 40.0 * k, label, can) {
+    // The trade button plays the gold sound (interface.md §14).
+    if button_sounding(lx, by, 130.0 * k, 40.0 * k, label, can, Cue::Gold) {
         let k = view.pick.unwrap_or(0);
         let mut done = false;
         *message = Some(if view.selling {
@@ -822,7 +905,6 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
             match game.buy(k) {
                 Ok(item) => {
                     done = true;
-                    cue(Cue::Item(c.item(item).kind));
                     trf!("Bought {item}. It is in your pack.", item = c.item(item).name)
                 }
                 Err(e) => trade_error(e),
@@ -880,7 +962,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
     if let Some(s) = chosen {
         if game.knows_spell(s.id) {
             text_centered(tr("This spell is already in your book!"), x + dw / 2.0, by + 20.0 * k, 18.0 * k, MANA);
-        } else if button(x + dw - 130.0 * k, by + 50.0 * k, 130.0 * k, 40.0 * k, tr("Buy"), game.gold >= s.cost_gold) {
+        } else if button_sounding(x + dw - 130.0 * k, by + 50.0 * k, 130.0 * k, 40.0 * k, tr("Buy"), game.gold >= s.cost_gold, Cue::Gold) {
             *message = Some(match game.learn_spell(s.id) {
                 Ok(()) => trf!("{spell} is written into your book.", spell = s.name),
                 Err(e) => service_error(e),
@@ -897,7 +979,7 @@ fn sanctuary(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut 
 }
 
 /// A village: its waiting tribute and what may be asked instead.
-fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
+fn tribute(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut Option<String>) {
     let k = chrome::k();
     let Some(l) = game.location else { return };
     let (x, y, w) = (f.cx, f.cy, f.cw);
@@ -934,7 +1016,14 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
             VillageOffer::Witch => tr("Instead: the witch's gift of mana").to_string(),
         };
         if button(x, by, (460.0 * k).min(w), 42.0 * k, &label, true) {
+            // The furs, the witch and the innkeeper show their result in the event window,
+            // with its chord (0x4c2100).
+            let window = offer.result_window();
             let result = game.accept_offer();
+            if window {
+                let k = game.event_chord();
+                cue(Cue::Event(k as u8));
+            }
             let spell_name = |id: u32| game.spell(id).map_or(String::new(), |s| s.name.clone());
             *message = result.map(|r| match r {
                 OfferResult::Paid(n) => trf!("The innkeeper pays off your {n} men.", n),
@@ -947,7 +1036,9 @@ fn tribute(game: &mut Game, f: &Frame, message: &mut Option<String>) {
         by += 52.0 * k;
         if button(x, by, (460.0 * k).min(w), 42.0 * k, tr("No thanks: take the tribute"), true) {
             let (gold, mana) = (v.tribute_gold, v.tribute_mana);
-            *message = game.decline_offer().map(|t| match t {
+            let paid = game.decline_offer();
+            view.tribute_paid |= paid.is_some();
+            *message = paid.map(|t| match t {
                 razdor::rules::game::Tribute::Gold(_) => trf!("The village pays {gold} gold and {mana} mana.", gold, mana),
                 razdor::rules::game::Tribute::Item(item) => trf!("The village pays with a {item}.", item = game.content.item(item).name),
             });
@@ -973,7 +1064,7 @@ fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
     text(&trf!("A ship: {price} gold", price), x + 70.0 * k, y + 84.0 * k, 20.0 * k, ACCENT);
     let by = y + 140.0 * k;
     let label = if game.ship.is_some() { tr("Rent a new ship") } else { tr("Rent a ship") };
-    if button(x, by, 420.0 * k, 42.0 * k, label, game.gold >= price) {
+    if button_sounding(x, by, 420.0 * k, 42.0 * k, label, game.gold >= price, Cue::Gold) {
         *message = Some(match game.rent_ship() {
             Ok(_) => tr("The ship is ready. Click the water next to the shipyard to sail; leaving on foot loses it.").into(),
             Err(razdor::rules::ships::ShipError::NotEnoughGold) => tr("Not enough gold.").into(),
@@ -1015,6 +1106,8 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     for (i, &t) in tabs.iter().enumerate() {
         let r = Rect::new(tx, col.y + 12.0 * k + i as f32 * pitch, tw, th);
         if tab_button(tab_label(t), Some(t), r, view.tab == t) && view.tab != t {
+            // The tab is highlighted with the cast sound (interface.md §9.8, §14).
+            cue(Cue::CastSpell);
             view.switch(t);
             *message = None;
             if t == Tab::Garrison {
@@ -1031,11 +1124,11 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     let mut next = early;
     match view.tab {
         Tab::MainHall => next = next.or(main_hall(game, assets, &f, view, message, dialogs)),
-        Tab::Barracks => next = next.or(barracks(game, assets, &f, message, dialogs)),
+        Tab::Barracks => next = next.or(barracks(game, assets, &f, view, message, dialogs)),
         Tab::Garrison => garrison(game, assets, &f, view, message),
         Tab::Market => next = market(game, assets, &f, view, message),
         Tab::Sanctuary => sanctuary(game, &f, view, message),
-        Tab::Tribute => tribute(game, &f, message),
+        Tab::Tribute => tribute(game, &f, view, message),
         Tab::Shipyard => shipyard(game, &f, message),
     }
     if let Some(m) = message {
@@ -1047,6 +1140,16 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     let filter_keys = FILTER_KEYS.with(|f| f.replace(false));
     if close || exit || (!filter_keys && key(KeyCode::Escape)) {
         *message = None;
+        // The village and shipyard windows close with the button sound, a village whose
+        // tribute was taken with the gold sound too (0x4c604a); the building window's close
+        // is silent.
+        let chord = game.location.is_some_and(|l| matches!(game.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard));
+        if chord {
+            cue(Cue::Button);
+            if view.tribute_paid {
+                cue(Cue::Gold);
+            }
+        }
         return Some(Screen::WorldMap);
     }
     // The bar's army button opens the army screen with the way back here.

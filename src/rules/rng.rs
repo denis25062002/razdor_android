@@ -10,6 +10,50 @@
 #[derive(Clone, Debug, Default)]
 pub struct Rng(u32);
 
+/// A record of the game generator's draws, for the diff test (`difftest`): off unless
+/// [`trace::start`] was called on this thread.
+pub mod trace {
+    use std::cell::RefCell;
+    use std::panic::Location;
+
+    /// One `Random(n)`: the state before it and the source line that drew.
+    #[derive(Clone, Debug)]
+    pub struct Draw {
+        pub before: u32,
+        pub n: i32,
+        pub site: &'static Location<'static>,
+    }
+
+    thread_local! {
+        static DRAWS: RefCell<Option<Vec<Draw>>> = const { RefCell::new(None) };
+    }
+
+    /// Starts recording (and drops what was recorded).
+    pub fn start() {
+        DRAWS.with(|d| *d.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// The draws since the last take; recording goes on.
+    pub fn take() -> Vec<Draw> {
+        DRAWS.with(|d| d.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
+    }
+
+    /// Stops recording.
+    pub fn stop() {
+        DRAWS.with(|d| *d.borrow_mut() = None);
+    }
+
+    #[track_caller]
+    pub(super) fn record(before: u32, n: i32) {
+        let site = Location::caller();
+        DRAWS.with(|d| {
+            if let Some(v) = d.borrow_mut().as_mut() {
+                v.push(Draw { before, n, site });
+            }
+        });
+    }
+}
+
 /// The draw the world music makes when a map's world screen starts (engine.md §3.2, §9):
 /// the time to the next track change, `Random(90000)`. The music itself is the interface's.
 pub const WORLD_MUSIC_DRAW: i32 = 90_000;
@@ -34,7 +78,9 @@ impl Rng {
     /// The original's `Random(n)`: the state always steps, even for `n = 0` (which gives 0);
     /// then the top 15 bits mod `n`. So `n` above 32768 never gives more than 32767, and a
     /// negative `n` acts as `|n|` (the original's behaviour, kept).
+    #[track_caller]
     pub fn random(&mut self, n: i32) -> i32 {
+        trace::record(self.0, n);
         self.0 = self.0.wrapping_mul(214_013).wrapping_add(2_531_011);
         if n == 0 {
             return 0;
@@ -44,6 +90,7 @@ impl Rng {
 
     /// `lo..=hi` from one `Random(hi − lo + 1)`, for Razdor's own rolls (rules the original
     /// does not have); one draw even when the range is empty, which gives `lo`.
+    #[track_caller]
     pub fn range(&mut self, lo: i32, hi: i32) -> i32 {
         let n = (hi as i64 - lo as i64 + 1).clamp(0, i32::MAX as i64) as i32;
         lo.saturating_add(self.random(n))

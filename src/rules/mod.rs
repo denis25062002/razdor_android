@@ -22,6 +22,7 @@ pub mod save;
 mod replay;
 pub mod script;
 pub mod ships;
+pub mod spell_hint;
 pub mod town;
 pub mod units;
 pub mod world;

@@ -6,7 +6,7 @@ use razdor::rules::battle::Team;
 use razdor::rules::content::{ArtefactType, Content, ItemId, Stat, UnitId};
 use razdor::rules::experience::is_percent_stat;
 use razdor::rules::game::{Game, PACK_SIZE};
-use razdor::rules::items::{bonus_name, EquipError};
+use razdor::rules::items::{bonus_name, EquipError, Given, ItemFrom};
 use razdor::rules::units::Unit;
 
 use super::assets::Assets;
@@ -163,6 +163,32 @@ fn use_pack_item(game: &mut Game, unit: usize, i: usize) -> Option<String> {
             cue(Cue::Item(kind));
         }
         done.err().map(equip_error)
+    }
+}
+
+/// An item dropped on squad member `to`'s card ([`Game::give_item`]): a potion is drunk,
+/// the hero's card sends anything else to the pack, another unit wears it. The message to
+/// show, if any.
+fn give_on_card(game: &mut Game, from: From, to: usize) -> Option<String> {
+    let c = game.content.clone();
+    let source = match from {
+        From::Pack(i) => ItemFrom::Pack(i),
+        From::Worn(unit, slot) => ItemFrom::Worn { unit, slot },
+    };
+    let item = match source {
+        ItemFrom::Pack(i) => game.pack.get(i).copied(),
+        ItemFrom::Worn { unit, slot } => game.squad.get(unit).and_then(|u| u.items[slot]),
+    }?;
+    let kind = c.item(item).kind;
+    let name = game.squad.get(to)?.name(&c).to_string();
+    match game.give_item(source, to) {
+        Ok(Given::Drunk(healed)) if healed > 0 => Some(cued(Cue::Item(kind), razdor::trf!("{name} drinks it: +{healed} hits.", name, healed))),
+        Ok(Given::Drunk(_)) => Some(cued(Cue::Item(kind), razdor::trf!("{name} drinks it. The effect lasts until the next battle ends.", name))),
+        Ok(_) => {
+            cue(Cue::Item(kind));
+            None
+        }
+        Err(e) => Some(equip_error(e)),
     }
 }
 
@@ -342,6 +368,8 @@ pub fn squad(
     let sheet_rect = at(2.0, 27.0, 244.0, 570.0);
     if let Some(slot) = unit_sheet::draw(assets, &c, sheet_rect, &sheet, true, &mut hover) {
         if let Some(item) = u.items[slot] {
+            // An item taken up plays its sound, and again where it goes (interface.md §14).
+            cue(Cue::Item(c.item(item).kind));
             held = Some(Held { from: From::Worn(sel, slot), item, at: pointer().into(), moved: false });
         }
     }
@@ -379,6 +407,7 @@ pub fn squad(
     if show_tree {
         tree_view(game, assets, sel, &u, content, message);
     } else if let Some(i) = pack_view(game, assets, content, scroll, &mut hover, filtering.then_some(&kept_ids[..])) {
+        cue(Cue::Item(c.item(game.pack[i]).kind));
         held = Some(Held { from: From::Pack(i), item: game.pack[i], at: pointer().into(), moved: false });
     }
     // Enter wears or drinks the first match on the selected unit.
@@ -469,9 +498,9 @@ pub fn squad(
     // The army: the cards as in battle, the selected one lit.
     let f = c.formation;
     let lines = f.display_lines() as f32;
-    let cs = 1.0f32.min(2.0 / lines).min(6.0 / f.cols as f32);
+    let cs = 1.0f32.min(2.0 / lines).min(6.0 / f.display_cols() as f32);
     let (card, pitch) = (vec2(88.0 * cs * k, 128.0 * cs * k).round(), vec2(96.0 * cs * k, 133.0 * cs * k));
-    let grid_w = f.cols as f32 * pitch.x - 8.0 * cs * k;
+    let grid_w = f.display_cols() as f32 * pitch.x - 8.0 * cs * k;
     let gx = (strip.x + (strip.w - grid_w) / 2.0).round();
     let cell_at = |slot: razdor::rules::formation::Slot| {
         let (line, col) = f.display(slot);
@@ -493,7 +522,7 @@ pub fn squad(
         chrome::wounds(sq, v.hp, v.max_hp(&c));
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let vs = v.stats(&c);
-        unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[Stat::MagicPower], v.hp, i == sel);
+        unit_sheet::stat_strip(Rect::new(p.x, p.y + card.x, card.x, card.y - card.x), &vs, &vs, vs[Stat::MagicPower], unit_sheet::caster(&c, v.def), unit_sheet::strip_place(f, v.slot), v.hp, super::building_view::back_row_def(&c, v.slot), i == sel);
         if !v.alive() {
             draw_rectangle(sq.x, sq.y, sq.w, sq.h, Color::new(0.0, 0.0, 0.0, 0.55));
             draw_line(sq.x + 10.0, sq.y + 10.0, sq.x + sq.w - 10.0, sq.y + sq.h - 10.0, 3.0, RED);
@@ -501,12 +530,11 @@ pub fn squad(
         } else if v.unpaid {
             chrome::badge("sign-payment", sq.x + sq.w - 12.0 * k, sq.y + 12.0 * k, 20.0 * k, RED);
         }
-        if i > 0 && v.upgrade_tree(&c).iter().any(|&(_, _, ok)| ok) {
-            chrome::badge("Sign-Upgrade", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, GREEN);
-        }
-        if i == 0 {
-            chrome::badge("SI_Helm", sq.x + 12.0 * k, sq.y + 12.0 * k, 20.0 * k, chrome::GOLD);
-        }
+        // The original's signs from the top left (493a64): the promotion, then a drunk potion
+        // (the hero's helm, Razdor's, in the first place).
+        let upgrade = i > 0 && v.upgrade_tree(&c).iter().any(|&(_, _, ok)| ok);
+        chrome::card_signs(sq, true, &[(i == 0, "SI_Helm", chrome::GOLD), (upgrade, "Sign-Upgrade", GREEN), (!v.potions.is_empty(), "sign-potion", GREEN)]);
+        super::spell_badges::draw(sq, &v.spells, v.drain, game.clock.total_minutes() as u64, &c);
         if super::unit_drag::dragged() == Some(i) {
             draw_rectangle(p.x, p.y, card.x, card.y, Color::new(0.0, 0.0, 0.0, 0.55));
         }
@@ -545,26 +573,24 @@ pub fn squad(
         } else {
             HELD.with(|c| c.set(None));
             let over_pack = !show_tree && content.contains(vec2(mx, my));
-            let target = if h.moved { card_under.or_else(|| sheet_rect.contains(vec2(mx, my)).then_some(sel)) } else { None };
-            match (h.from, h.moved) {
-                (From::Pack(i), false) => *message = use_pack_item(game, sel, i),
-                (From::Worn(unit, slot), false) => *message = game.unequip(unit, slot).err().map(equip_error),
-                (From::Pack(i), true) => {
-                    if let Some(t) = target {
-                        *message = use_pack_item(game, t, i);
+            // A drop on a card is the army window's (0x4979c4); on the unit panel, the hero
+            // window's: it wears the item.
+            let card = if h.moved { card_under } else { None };
+            let on_sheet = h.moved && card.is_none() && sheet_rect.contains(vec2(mx, my));
+            match (h.from, h.moved, card) {
+                (From::Pack(i), false, _) => *message = use_pack_item(game, sel, i),
+                (From::Worn(unit, slot), false, _) => *message = game.unequip(unit, slot).err().map(equip_error),
+                (from, true, Some(t)) => *message = give_on_card(game, from, t),
+                (From::Pack(i), true, None) if on_sheet => *message = use_pack_item(game, sel, i),
+                (From::Worn(unit, slot), true, None) if on_sheet && sel != unit => {
+                    let done = game.give(unit, slot, sel);
+                    if done.is_ok() {
+                        cue(Cue::Item(c.item(h.item).kind));
                     }
+                    *message = done.err().map(equip_error);
                 }
-                (From::Worn(unit, slot), true) => match target {
-                    Some(t) if t != unit => {
-                        let done = game.give(unit, slot, t);
-                        if done.is_ok() {
-                            cue(Cue::Item(c.item(h.item).kind));
-                        }
-                        *message = done.err().map(equip_error);
-                    }
-                    None if over_pack => *message = game.unequip(unit, slot).err().map(equip_error),
-                    _ => {}
-                },
+                (From::Worn(unit, slot), true, None) if over_pack => *message = game.unequip(unit, slot).err().map(equip_error),
+                _ => {}
             }
         }
     }

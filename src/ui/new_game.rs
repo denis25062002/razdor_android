@@ -29,6 +29,8 @@ thread_local! {
     static PICKED: Cell<usize> = const { Cell::new(0) };
     static SCROLL: Cell<f32> = const { Cell::new(0.0) };
     static HERO: Cell<usize> = const { Cell::new(0) };
+    /// Whether the hero window is open (its class was set on opening).
+    static HERO_OPEN: Cell<bool> = const { Cell::new(false) };
     /// The map preview of the scenario shown: (index into `scenarios`, texture).
     static PREVIEW: RefCell<Option<(usize, Texture2D)>> = const { RefCell::new(None) };
     /// The scenario's own picture, decoded once per scenario shown (`None`: it has none).
@@ -251,8 +253,8 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
             let cy = r.y + head_h + n as f32 * chapter_h + chapter_h * 0.5 + small * 0.36;
             chrome::shadow_text(&ellipsize(title(&scenarios[c]), r.w - 60.0 * k, small), r.x + 52.0 * k, cy, small, CREAM);
         }
+        // A row is picked silently (the original's list makes no sound).
         if hover && clicked() {
-            cue(Cue::Button);
             if row == picked {
                 next = Some(Screen::ClassSelect { scenario: Some(g.first) });
             }
@@ -327,7 +329,7 @@ pub fn scenario_select(scenarios: &[ScenarioEntry], has_install: bool) -> Option
     }
     let can = !list.is_empty();
     if (win.button(369.0, 116.0, &own("Buttons", "Next", n_("Next")), can) || (can && key(KeyCode::Enter))) && next.is_none() {
-        cue(Cue::MenuPress);
+        cue(Cue::Button);
         next = list.get(picked).map(|g| Screen::ClassSelect { scenario: Some(g.first) });
     }
     if win.button(492.0, 95.0, &own("Buttons", "Cancel", n_("Cancel")), true) || closed || key(KeyCode::Escape) {
@@ -428,15 +430,29 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
     super::main_menu::backdrop();
     let (win, closed) = Win::open(&own("NewHero", "Title", n_("The hero's starting characteristics")));
     let k = win.k;
+    // As the original (0x4c1804, 0x4743c8): only a class whose preset has a start cell is
+    // offered; the window opens on the first one, or is not opened at all when there is
+    // none. A greyed portrait takes no click, so a class the map leaves out cannot be
+    // started (there is no key for it either).
+    let offered = e.scenario.header.offered_classes();
+    if !HERO_OPEN.with(|o| o.replace(true)) {
+        match e.scenario.header.first_offered_class() {
+            Some(c) => HERO.with(|h| h.set(c)),
+            None => return leave_hero_window(Screen::MainMenu),
+        }
+    }
     let mut pick = HERO.with(|h| h.get()).min(2);
     // The three heroes.
     for (i, hero) in HeroClass::ALL.into_iter().enumerate() {
         let r = win.rect(27.0 + i as f32 * 185.0, 38.0, 170.0, 150.0);
-        let hover = !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
+        let hover = offered[i] && !input_blocked() && r.contains(crate::ui::widgets::pointer().into());
         draw_rectangle(r.x + 3.0 * k, r.y + 3.0 * k, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.5));
         match chrome::win(["Hero0", "hero1", "hero2"][i]) {
             Some(t) => chrome::tex_src(&t, Rect::new(0.0, (t.height() - t.height() * 150.0 / 170.0) / 2.0, t.width(), t.height() * 150.0 / 170.0), r, WHITE),
             None => assets.draw_portrait(hero.unit(), razdor::rules::battle::Team::Player, r),
+        }
+        if !offered[i] {
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.6));
         }
         if i == pick {
             chrome::glow_frame(r, Color::new(0.35, 1.0, 0.35, 1.0), true);
@@ -444,10 +460,16 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
             chrome::glow_frame(r, Color::new(0.35, 0.55, 1.0, 0.9), false);
         }
         let name = &content.unit(hero.unit()).name;
-        with_face(Face::Title, || chrome::shadow_centered(name, r.center().x, r.y + r.h + 18.0 * k, 16.0 * k, if i == pick { GOLD } else { CREAM }));
+        let ink = if i == pick { GOLD } else if offered[i] { CREAM } else { Color::new(0.5, 0.48, 0.44, 1.0) };
+        with_face(Face::Title, || chrome::shadow_centered(name, r.center().x, r.y + r.h + 18.0 * k, 16.0 * k, ink));
         if hover && clicked() {
-            cue(Cue::Button);
-            pick = i;
+            // Choosing another class plays the menu press (interface.md §14); the class
+            // already picked, nothing.
+            let was = pick;
+            pick = choose_class(offered, pick, i);
+            if pick != was {
+                cue(Cue::MenuPress);
+            }
         }
     }
     HERO.with(|h| h.set(pick));
@@ -528,20 +550,41 @@ pub fn class_select(game: &mut Option<Game>, demo: &Arc<Content>, scenario: Opti
         chrome::shadow_text(line, right, y + (j + 1) as f32 * 14.0 * k, small, CREAM);
     }
     if win.button(369.0, 116.0, &own("NewHero", "Start", n_("Start")), true) || key(KeyCode::Enter) {
-        cue(Cue::MenuPress);
+        cue(Cue::Button);
         *game = Some(screens::start_game(demo, Some((e, &content)), hero, &name));
-        return Some(Screen::WorldMap);
+        return leave_hero_window(Screen::WorldMap);
     }
     // Back or Esc returns to the main menu, not to the scenario list (0x4c0fd4).
     if win.button(492.0, 95.0, &own("Buttons", "Prev", n_("Back")), true) || closed || key(KeyCode::Escape) {
-        return Some(Screen::MainMenu);
+        return leave_hero_window(Screen::MainMenu);
     }
     None
+}
+
+/// Closes the hero window: the next opening starts again on the map's first offered class.
+fn leave_hero_window(next: Screen) -> Option<Screen> {
+    HERO_OPEN.with(|o| o.set(false));
+    Some(next)
+}
+
+/// The class picked after a click on portrait `clicked`: a class the map does not offer
+/// keeps the current pick (the original's hit test skips a disabled portrait, 0x4743c8).
+fn choose_class(offered: [bool; 3], pick: usize, clicked: usize) -> usize {
+    if offered[clicked] { clicked } else { pick }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_class_the_map_does_not_offer_cannot_be_clicked() {
+        let offered = [true, false, true];
+        assert_eq!(choose_class(offered, 0, 1), 0, "the greyed archmage keeps the knight");
+        assert_eq!(choose_class(offered, 2, 1), 2);
+        assert_eq!(choose_class(offered, 0, 2), 2);
+        assert_eq!(choose_class(offered, 2, 0), 0);
+    }
 
     #[test]
     fn campaigns_are_grouped_by_their_next_map_chain() {

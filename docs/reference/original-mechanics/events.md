@@ -48,8 +48,11 @@ The scan (0x4abfbc, §2) is started from these places. **code**
   *met army* (§9). If an event fires, the battle the contact would start does not happen.
 - **After a dialog is finished** (OK, 0x4abea0), **after a No** (0x4c2452, 0x4c2480), after a
   chained event's timer with nothing to chain (0x4af6c9), after the village chooser (0x4bbd2f).
-- **When a building window closes** after the player hired, healed or traded there
-  (flag 0x4ed440, set at 0x4b13cb, 0x4b14dc, 0x4b9fd9; checked at 0x4b8f63).
+- **When a window over the map closes** (0x4b8d28(0), not when another window replaces it)
+  after the player healed, raised or traded in the building window (flag 0x4ed440, set by
+  heal and raise at 0x4b13cb and 0x4b14dc and by a purchase or a sale at 0x4b9fd9; checked
+  at 0x4b8f63; a hire does not set it). The flag is cleared when a scan goes idle (0x4ac3a6).
+  Razdor: the same (`Game::window_closed`).
 
 ## 2. The scan
 
@@ -73,6 +76,16 @@ The scan (0x4abfbc, §2) is started from these places. **code**
 - Otherwise the loop stops; the dialog (or, for an event with no texts but with a spell,
   lanterns, a shown army, a battle or a delay, a direct finish) takes over, and the scan is
   started again when it ends.
+
+So the events after a shown window, a silent one too, are not even checked until that window
+is closed: its OK finishes it (0x4c206c → 0x4ab1ec), then its chain runs or the scan starts
+again, finding the next event, whose own window waits for the next OK. Checked live (Frida on
+0x4abfbc, 0x4a8ae8, 0x4ab1ec; РК1, the hero entering the church at (47,27)): the scan opens
+event 9 (shown) and returns; OK finishes 9 and the new scan opens 10 (its chord); OK finishes
+10 and the new scan opens and finishes 19 at once (silent, it activates army 2: its wander
+points' draws come only now, and the stop's snap before them did not count it; FINDINGS.md
+§22). A building's local events stay candidates through these rescans (the entry mark is
+cleared only when the scan goes idle).
 
 **Noon.** If no event was taken in the pass, now ≥ the next noon and no world spell is being
 cast, the scan does the noon processing (Ranger healing, wages, the noon report; see
@@ -253,6 +266,14 @@ the same two steps without a window. **code**
 
 Opening a later firing of the event clears the answer again (6.1), and finishing an event
 clears it too (0x4ab51b tail), so "happened with No" means "the last response was No". **code**
+
+So a many-times question declined in a building is not asked again during that visit (the
+No's firing guard, then the scan skips the building the move began in, §2) and is asked again
+when the hero enters the building on a later move; a Yes makes it a once-event. Example, РК2's
+village offers of peasants for the two mines (events 8, 9 and the replacement offer 10, which
+a Yes to 9 opens a day later and which asks only while no peasant is left and the quest's end,
+27, has not fired): two groups of three staff the two mines (19, 24), and 27 completes the
+campaign quest only after both. Razdor: the same (`rk2_the_peasant_offers_and_the_mines`).
 
 ### 6.3 Look of the window
 
@@ -448,6 +469,9 @@ the box is left empty. **code**
   that pass the full check of §3–§4 are listed, quests in one colour and rumours in another.
 - Taking an entry opens its dialog at once, without a new check: a question first if it asks,
   else its results.
+- The places the taken event shows (lanterns, a shown army) are flown to at its window's OK,
+  over the world map, before the building window comes back (interface.md §9.8; checked
+  under Wine on РК1), not when the building window is closed.
 - Rumours have no price of their own: a rumour that costs money has a negative gold result
   (and usually a gold condition and a question). In shipped maps prices run from 5 to 700.
   Combined with the Yes rule of §6.2, a rumour that asks is heard **once**.
@@ -575,12 +599,14 @@ world, carry-over), `src/rules/journal.rs`, `src/dt/dtm.rs` (record and flag scr
 | Yes answer | Yes clears ask and sets once := byte 149 xor 1; ask is set back for later firings, with a message or without | Yes sets once := byte 149 xor 1; the question returns for later firings (§6.2), but without a message the write misses the event and ask stays 0 (bug) | Razdor fixes the original's bug (no message) |
 | Ask with empty message | Yes finishes it at once: artifacts, units and spells never applied | Artifacts, units and spells are never applied (§6.2) | Matches |
 | When results apply | The window's results (gains, losses, units added, removed, spells) when it opens, then the finish's in the exe's order, then battle, spell, delay (`EventEngine::show`, `finish`) | Artifacts, units, spells when the window opens; the rest at OK (§6.1, §7.2) | Matches (the finish follows the opening at once: nothing happens while the window is up) |
+| Events behind a window | A message window holds the scan: the next events, and the shown event's chain, run when it is closed (`EventEngine::window_closed`, `Game::event_window_closed`; the interface and the replay call it at the window's OK) | The scan stops at a shown window and runs again after its OK (§2) | Matches; an event without texts that only shows lanterns, an army or a spell does not hold the scan in Razdor (the original waits for the animation) |
 | Flag test | Substring search of the one flag string; first `^` dropped; `/` negates; empty or `end_tutorial` passes | Substring of the flag string (§5) | Matches |
 | Flag action | `+X` appends X with a non-breaking space if not a substring yet; `-X` removes the first occurrence and the next character; counters only with `^`; `-X^` without X changes nothing; actions of ≤ 2 characters ignored | Same (§5), but `-X^` does not check that X exists and lowers an unrelated character (bug) | Matches; Razdor fixes the original's bug (`-X^`) |
 | Engine flags | `Sea` added when the hero goes to sea and removed when he lands, `EnterShipyard` removed when he goes to sea (`Game::sea_changed`) | `Sea` aboard a ship, `EnterShipyard` in the ship logic | `Sea` matches; `EnterShipyard` is only removed at sea: its setting is left out (Razdor does not track the ship's shipyard; no shipped event tests it) |
 | Quests in buildings | Listed in the main hall with the rumours and fired when taken; villages and shipyards fire them on entering | Listed in the main hall and taken by the player, except in villages and shipyards (§2, §10) | Matches |
 | Event points | Every listed event, whatever its type | Every listed event, whatever its type | Matches |
 | Rumour or quest list | The building's quests and rumours that pass the full check (`EventEngine::hall`); taking one opens it without a new check | Quests and rumours of the building that pass the full check | Matches |
+| Places shown by a taken quest | Flown to at its window's OK over the map, then the building window comes back (`App::fly_from_building`) | At the OK, over the world screen, then the building window again (§10, interface.md §9.8; live on РК1) | Matches |
 | Journal | The engine's journal: re-added on every finish, completion removes the last entry, a new engine on the next map; Razdor's history is a separate extra | Re-added on every finish; completion removes the last entry; emptied on the next map | Matches |
 | Journal detail | Active quests: question then message, `#HERONAME` not filled, markers raw, and the time since the event last fired (`Game::quest_row`) | Title, a label, question then message as one justified block (no `#HERONAME` fill, markers raw), a label and the time since the event last fired, long calendar (§10) | Matches in content; the justified layout and the long calendar's wording are presentation, left |
 | Dismissed unit on a full army | Lowest level value (`experience::level_value`: level stats, no items, raw multiplier) of units 2–12, first on a tie; its worn items to the pack | Lowest mode-0 tactical cost of slots 2–12, first on a tie (§7.1) | Matches |

@@ -1609,14 +1609,15 @@ mod quick_battle {
 
 /// The gameplay video's fort battle ("Форт в Трясине", РК3, 09:49): the garrison's starting
 /// strength gives a pool of 75, a share of 25 for a unit that attacked all battle, and the
-/// cuirassier, the sorceress and the hero gained "+25", "+24" and "+26". Razdor pays shares
-/// at that rate (`PLAYER_XP_MODIFICATOR`), not the Community Update's halved one.
+/// cuirassier, the sorceress and the hero gained "+25", "+24" and "+26" (a rate of 100).
+/// Razdor pays shares at the install's `HeroExpirienceModificator`, as the original does: the
+/// Community Update's 50 halves the video's share.
 #[test]
-fn real_fort_battle_pays_the_videos_xp() {
+fn real_fort_battle_pays_the_installs_xp_rate() {
     let Some(dir) = std::env::var_os(crate::dt::install::ENV_VAR) else { return };
     let dt = crate::dt::install::DtInstall::load(std::path::Path::new(&dir)).expect("install loads");
     let c = Arc::new(Content::from_dt(&dt));
-    assert_eq!(c.options.hero_experience_modificator, 100);
+    assert_eq!(c.options.hero_experience_modificator, dt.options.hero_experience_modificator);
     let map = dt.maps.iter().find(|m| m.name.starts_with("РК3")).expect("РК3").load().expect("loads");
     let mut g = crate::rules::game::Game::from_scenario(c.clone(), &map, crate::rules::content::HeroClass::Archmage);
     let l = g.world.locations.iter().position(|l| l.name == "Форт в Трясине").expect("the fort");
@@ -1629,8 +1630,13 @@ fn real_fort_battle_pays_the_videos_xp() {
     // Three units in the video's army; one that attacked with every action.
     let share = crate::rules::experience::share(pool, 3, Front, 1, 1, 0);
     assert_eq!(share, 25);
-    // With a garrison's correction of 100 and "impossible difficulty" (F 100): the video's +25.
-    assert_eq!(crate::rules::experience::player_gain(share, c.options.hero_experience_modificator, 100, 100), 25);
+    // With a garrison's correction of 100 and "impossible difficulty" (F 100): the video's +25
+    // at a rate of 100, and the share at the install's rate otherwise.
+    assert_eq!(crate::rules::experience::player_gain(share, 100, 100, 100), 25);
+    let at_install = crate::rules::experience::player_gain(share, c.options.hero_experience_modificator, 100, 100);
+    if c.options.hero_experience_modificator == 50 {
+        assert_eq!(at_install, 12, "25 × 0.5 rounds half to even");
+    }
 }
 
 #[test]
@@ -1858,6 +1864,25 @@ fn row41_the_normal_ai_tests_the_kill_on_the_target_s_own_hp() {
     bt.fighters[0].hp = dmg + 1;
     bt.fighters[3].hp = 30;
     assert_eq!(bt.ai_choice(), none, "its own HP no longer matter");
+}
+
+/// FINDINGS §27: in the original, past its own list the wrong-side read lands on the side's
+/// buffer, so an off-screen battle's old records decided the kill test. Razdor fixes the
+/// original's bug: the test reads the target's own HP, so the old records change nothing.
+#[test]
+fn row41_old_side_records_do_not_change_the_kill_test() {
+    let killable = |old_hp: i32| {
+        let mut bt = prepared(&content_with(vec![], Formation::WIDE), &[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2)), (18, b(2))], Team::Player);
+        let mut old = [[0; RECORDS]; 2];
+        old[1][2] = old_hp;
+        bt.set_side_records(old);
+        bt.begin();
+        turn_of(&mut bt, 3);
+        let hp = bt.fighters[2].hp;
+        (bt.killable(3, 2, hp - 1), bt.killable(3, 2, hp), bt.stale_reads())
+    };
+    assert_eq!(killable(0), (false, true, vec![]), "the 3rd bag's own HP");
+    assert_eq!(killable(500), (false, true, vec![]), "an old record of 500 HP alike");
 }
 
 #[test]

@@ -12,10 +12,11 @@ Spells, items and the event engine have their own files now (§4–§6 point to 
 - **Rounding** (code, 0x402dd0): `Round` is round-half-to-even (2.5 → 2, 3.5 → 4). It is applied to
   the x87 result, so whether a "half" really is a half depends on the constants and on the x87
   precision setting (see the relation factor, §2). Integer division (`div`) truncates towards 0.
-- **x87 precision** (unknown, engine.md §1): the RTL default is 64-bit mantissas, but the DirectDraw
-  set-up asks DirectX to put the x87 unit in single precision (24-bit mantissas) and the game never
-  sets it back. If that holds at run time, every float product is rounded to single precision
-  before `Round`. This only matters for results that land on or next to a half.
+- **x87 precision** (engine.md §1): the RTL default is 64-bit mantissas (0x1332), and the
+  DirectDraw set-up asks DirectX to put the x87 unit in single precision (24-bit mantissas). The
+  running game (Wine 11) computes with 64-bit mantissas: the relation factor's halves (§2) come
+  out as the 64-bit product gives them. This only matters for results that land on or next to a
+  half.
 - **Game time** (code): kept in 1/100 minutes (`0x68dcb8`). "now" means that value /100 plus an
   offset (`0x68dcbc`), in minutes. A day is 1440 minutes.
 - **Unit HP** (code): −1 means unhurt, 0 means dead, a positive value is a wounded unit.
@@ -143,15 +144,20 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
   | m | 1.7 | 1.45 | 1.25 | 1.1 | 1 (no rounding) | 0.9 | 0.75 |
 
   An attitude outside −3..3 leaves the price unchanged.
-- **Halves** (unknown: depends on the x87 precision, §0). The constants are code: 1.25 and 0.75 are
-  single floats (exact), 1.7, 1.45, 1.1 and 0.9 are the double values widened to 80 bits, so
-  slightly off (1.7 and 1.45 a little low, 1.1 and 0.9 a little high). A product that would be
-  exactly x.5 in decimal then gives:
-  - with 64-bit mantissas (RTL default): **down** for 1.7 and 1.45 (15 → 25, 30 → 43), **up** for
-    1.1 and 0.9 (15 → 17, 5 → 5);
-  - with single precision (what the DirectX set-up asks for): the product rounds to an exact half
-    first, so **half to even** for every factor (15 → 26, 30 → 44, 15 → 16, 5 → 4).
-  1.25 and 0.75 round halves to even either way. Away from halves both settings agree.
+- **Halves.** The code is `fild base`, `fmul` by the constant, then `Round` (0x402dd0:
+  `fistp`). The constants: 1.25 and 0.75 are single floats (exact), 1.7, 1.45, 1.1 and 0.9 the
+  double values widened to 80 bits (0x4a0524, 0x4a0518, 0x4a0508, 0x4a04fc), so slightly off
+  (1.7 and 1.45 a little low, 1.1 and 0.9 a little high). The game's own control word is
+  Delphi's Default8087CW 0x1332 (64-bit mantissas, round to nearest even), loaded at the start
+  and again by the RTL's FPU init (0x403984: `fninit`, `fldcw [0x4e8024]`, called from six
+  RTL sites); its other `fldcw` sites only save and restore around conversions. With 64-bit
+  mantissas the product keeps the constant's error, and a price that would be exactly x.5 in
+  decimal rounds **down** for 1.7 and 1.45 (15 → 25, 30 → 43), **up** for 1.1 and 0.9
+  (15 → 17, 5 → 5, 75 → 83), and to even for 1.25 and 0.75; negative bases symmetrically.
+  This is what the running game does (Wine 11: Проклятое озеро's church at attitude 0
+  charged 83 for an item of Cost 75, FINDINGS.md §24), and Razdor follows it. Under single
+  precision (what a Direct3D 7 device created without "FPU preserve" would set, §0) every
+  half would go to even instead (82); not seen in the running game.
 
 **Player market** (code, 0x4b9e18):
 - **Buying**: price = relation factor on the item's `Cost` (the sign is taken off the goods id, not
@@ -214,6 +220,13 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
   goods keeps them until bought; its timer stays at 1, so the routine still runs every midnight,
   and a **town** with no random goods and 1–4 fixed goods gets one new healing potion each
   midnight (step 3 edge; the previous one is dropped as a random good).
+- **The first midnight**: the load's stocking passes the clock as `time div 100 + start`
+  (0x4b5549), where `start` is the header's start minute **+ 1**, so its timer is the start
+  + 721; a midnight passes the minute of the AI driver's frame in which it comes (0x4a1998).
+  On a map that starts at noon the timer falls one minute after the first midnight: the market
+  restocks there when that frame's minute is past the midnight's, and not when it is the
+  midnight's own minute. The length of the frame decides (FINDINGS.md §5); from the second
+  midnight on the timer is always due.
 - **Steps**:
   1. Random goods (positive ids) are dropped. R = byte 295 minus the fixed goods still there.
   2. Price window: MX = min(word 335, 5000), plus 1 with chance 1/5 (`Rand(5) = 0`); MN = max(word
@@ -357,6 +370,16 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
 - Mana stocks of castles, forts and towns are never collected.
 
 **Entering a village** (code, 0x4bbc84). Entering an unguarded village first captures it (world.md).
+Seen in the running game (diff test, memory of the building record): the hero's step into a
+neutral village sets its owner to the player (ДС1 village 13, Проклятое озеро villages 2 and 30),
+and one an AI army took sets it back (РК1, `rk1-village-taken.jsonl`: army 9 takes the hero's
+start village 6 at 13:00 with its whole stock; the hero walks in at 18:30 the same day, the
+owner becomes the player again and the village window pays nothing). So the tribute is only
+what is in stock: an army that came first the same day leaves nothing until the midnight
+refill. Razdor: the same (`rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day`).
+The events are scanned first; one that opens its window keeps the village pending (0x4ed42c)
+until it is read, and a walk that ends in the village as an event opens enters it only after
+that window (world.md §7.2): the offer rolls below come after the event's OK.
 - A hero of Nature Rogue gets nothing: no offer, no window.
 - Otherwise, if the village has gold in stock and it is not the village of the last offer (0x671d0c),
   the offer chooser runs (below). If it offers something, the offer opens.
@@ -381,9 +404,16 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
     after an empty visit. Army size counts the dead.
 - What each gives: 1 casts spell 3 + 2·Rand(5) (3, 5, 7, 9 or 11) with the long event duration;
   2 casts spell 1; 3 gives item 135 (furs; Cost 1000, so it sells for 250 with F = 100); 4 gives
-  300 + 50·Rand(5) mana; 5 marks every unit paid with last paid = now.
+  300 + 50·Rand(5) mana; 5 marks every unit paid with last paid = now. **Both `Rand(5)` are drawn
+  when the offer is made**, as its question is built (0x4aca80: 0x4acb89, 0x4acd76), right after
+  the chooser's rolls and before the event window's chord; the answer draws nothing. The
+  blessing's spell is 3 + 2·Rand(5) whatever spells the install has.
 - **Every option is a Yes/No question.** Yes applies it and **empties both stocks without paying
-  them**. No re-enters the village, which (being the village of the last offer) opens the plain
+  them**. The offer's event record (0x4aca80) carries a result message for 3, 4 and 5
+  (`VillageBonus3/4/5Result`), none for 1 and 2: so a Yes to the furs, the witch or the
+  innkeeper opens the event window again with that message (0x4c2100: its chord is drawn,
+  its OK finishes the offer, 0x4ab966), while a Yes to the blessing or the priest finishes at
+  once with no window. No re-enters the village, which (being the village of the last offer) opens the plain
   window, where the stocks can be taken.
 
 **Rumours** (unknown): no fixed rumour price exists in the code. Rumours are events, so their cost
@@ -393,6 +423,12 @@ is the event's gold result (events.md).
 - **An army**:
   - Gold = `enemy gold div VictoryGoldDiv`. `MinVictoryGold` is not used.
   - Plus the enemy's wage bill when its byte +0x3822 is 0 and its style is below 2 (not peasants).
+    The bill is the record's +0x16e0 as its last recount (0x4a16d4) left it: the player's battle
+    recounts neither side (its write-back, 0x4988c0, copies HP only), so a gang he wipes out pays
+    the wages of the units it had at its last arrival in a building, AI battle, respawn or the map
+    load. Checked on Проклятое озеро (diff test, `lake-gang.jsonl`): army 17, 150 gold, two
+    robbers (Cost 70) and a chieftainess (130) behind its leader, pays 75 + 85 (18 + 18 + 49; the
+    leader draws no wage). +0x3822 is the map's byte 62, "units carry no money".
   - Every item the enemy units wore and its 12-item pack go to the loot list (32 entries; a larger
     haul would overrun the loot gold and mana that follow it in memory).
   - If the building the beaten army stood in (+0x3788) is a castle or fort with an empty garrison,
@@ -401,8 +437,14 @@ is the event's gold result (events.md).
   - Gold = the building's gold stock + the garrison's gold + **one day's income** (word 282); no
     division. The stock is reset.
   - The building becomes the player's; faction and attitudes are copied from him.
+  - Items: as for an army, every item the garrison's units wore (unit by unit, slot by slot),
+    then its 12-item pack (0x4c50ec reads the beaten record whichever it is).
   - Ruins: at load their treasure gold (word 335) becomes the garrison's gold, and their **first 5**
-    goods become garrison items (worn or packed, 0x4b554e), so both come back through this rule.
+    goods become garrison items (0x4b554e): with garrison units, each good in turn goes to the
+    unit whose tactical value (mode 2) it raises most, the first of equals, else into the pack
+    (0x4a273c, as an AI army's starting items); with no units, all five go straight into the
+    pack. So the garrison fights wearing them, and both come back through this rule. The
+    building's own goods words are not cleared (ruins keep them as the map has them).
 - Mana: the battle code's value (0x66ae44); not traced here (battle owner).
 
 **AI-vs-AI loot** (code, 0x4a4c68):
@@ -517,7 +559,7 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Stock growth | Every building with a maximum; the mana sum capped at the maximum (`grow_mana`) | Every building with a max > 0; byte wrap for mana (bug) | Razdor fixes the original's bug (the byte wrap) |
 | Ranger heal | 15% at noon, 20% more when the report is shown | 15%, plus 20% when the report is shown | Matches |
 | Medic, garrison heal | 10% / GarrisonAutoHeal% at midnight; a dead medic counts | Same (a dead medic counts) | Matches |
-| Relation factor | Exact table, half to even; an attitude outside −3..3 leaves the price unchanged | Same table; halves to even under single precision, or down for 1.7/1.45 and up for 1.1/0.9 under 64-bit precision (unknown which) | Yes or almost (halves) |
+| Relation factor | The x87 product of the code's constants, rounded to 64 bits then to even (`relation_price`); an attitude outside −3..3 leaves the price unchanged | Same table; halves down for 1.7/1.45, up for 1.1/0.9, to even for 1.25/0.75 (64-bit precision, §2) | Yes |
 | Buy / sell / spells / hire / ship prices | As the original; a fixed good of negative Cost has a negative price that pays the buyer; a dead Merchant counts | §2 | Matches |
 | Market buildings | Towns, markets, churches only: the map load drops every other building's goods | Towns, markets, churches only | Matches |
 | Market stock | 12 places with the map's goods fixed in theirs; a 12-hour timer; bands walking down the window, town potions (one of 95/96/97/114/115 when more than 6 remain, the rest 98 + Rand(3)), type and school rules, 1/n widening, run-down lists, 26 tries, no overwrite, not sorted (`restock_market`); a list that runs out gives no good (`Candidates`; the original's bug read on past its end: the zeroed buffer, item 1, then its own locals and stack). Where fewer than two items can ever fit the original hangs; Razdor gives up on that good | Bands walking down the window, n − 1 healing potions + one of 95/96/97/114/115 when R > 6 remains, type and school rules, 1/n widening, no overwrite of a full list, not sorted; a list that runs out reads on past its end (bug) | Matches; Razdor fixes the original's bug (a list that runs out) |
@@ -533,6 +575,8 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Market display | Prices as charged; the sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test; opens on the goods when there are some | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Matches |
 | Village offers | Every roll drawn until one passes, the last kind's included (it cannot pass); "last" becomes none after an empty visit; innkeeper and priest against army size div 2, the priest counting the living; all options are questions (`Game::visit_village`) | Rolls every step; "last" becomes none after an empty visit; all options are questions | Matches |
 | Village tribute | No attitude test | No attitude test (entering captures the village) | Matches |
+| Ruins' goods | The first 5 go to the garrison at load, worn by the unit they help most or packed (`ai::give_item_to`); a win loots the worn items, then the pack | 0x4b554e, 0x4a273c; loot 0x4c50ec | Matches |
+| Village under an event's window | A walk that ends in the clicked village as an event opens enters it when the windows are read (`Game::enter_waiting_building`): offer rolls, window and tribute then; the tribute is taken as the window opens | Entered after the event's OK (0x4ed42c, 0x4bbc84); the stock is paid when the village window closes (0x4c6000) | Order matches; the tribute's moment within the window differs (no draw in between) |
 | Player's loot | gold div VictoryGoldDiv + wage bill unless peasant or "no money" | Same (the "no money" byte is +0x3822) | Yes |
 | AI-vs-AI loot | Threshold only when the defender wins; wage bills by style; winner style 0/1 (ai.md §10) | Threshold only when the defender wins; wage bills by style; winner must be style 0/1 | Yes |
 | Castle capture gold | Stock + income (garrisons carry no gold) | Stock + garrison gold + income | Yes |
@@ -548,5 +592,4 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
   affects the Rear Service factor and the innkeeper test until the first noon.
 - How the global "last village offer" is reset when a map or save loads (0x4b58fe, 0x4b850f).
 - Rumour prices (expected to be the event's own gold result).
-- The x87 precision at run time (64-bit or single), which decides the relation factor's halves (§2)
   and the last bit of every other float formula here (engine.md).

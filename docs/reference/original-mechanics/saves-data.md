@@ -274,7 +274,14 @@ Saves use bzip2 level 1 and 64 KiB blocks; the list caches use one chunk. **code
    maps are created empty.
 8. **All army records are cleared.** The clock starts (§0); the autosave flag is cleared.
 9. The hero (§10.4), the map's armies (§10.5), the ship slot, the buildings (§10.6), then every
-   army's units are set to full health and recomputed and their wages computed.
+   army's units are set to full health and recomputed and their wages computed. Every army,
+   the hero's (record 0) included, and every garrison is then put through a battle side and
+   back (0x49855c with all living units, then 0x4988c0): the side is **auto-arranged**
+   (battle.md, 483b3c) and its grid becomes the army's formation. So the hero's starting army
+   stands as the auto-arrange puts it, not where AddUnit put it (reserve first). His building
+   defence is still 0 here (he is put on his cell after the loop, 0x497c68). A campaign map
+   that carries the army over copies the old army's units and formation back after the load
+   (0x4b5b64).
 10. The AI buffers are cleared and the AI initialised; the hero's gold and mana are set; lit
     lanterns reveal the fog (§10.7).
 
@@ -306,8 +313,22 @@ from column 0 and the right column from column W−1.
   added, **skipping unit ids 1–3** (the hero types); the three items (bytes 41–43) go into the
   pack; the six spells (bytes 44–49) are learned; gold is set from the low 16 bits of bytes 8–11
   (signed), mana likewise from bytes 12–15; the hero stands exactly at bytes 37/39.
-- A class can be picked on the new-game screen only when its start x or start y is non-zero
-  (0x4c1804).
+- A class is offered on the new-game screen only when its preset's start x or start y is
+  non-zero (0x4c1804); the other bytes of the preset do not matter. The hero window opens on
+  the first offered class (knight, archmage, ranger order), and with none offered it does not
+  open. A class that is not offered cannot be picked at all: its portrait is disabled and the
+  hit test (0x4743c8) skips it, and the window has no keys for the class (interface.md §5).
+  Checked in the running game on Устье Трейна, the one shipped map with a class left out (the
+  archmage; his preset still names start building 26 and a troop).
+- **The one way round it is a campaign.** Loading the next campaign map (0x4b5b64) keeps the
+  class (`0x68dccc`) and runs the load above with it, without looking at whether that map
+  offers the class. With an empty preset the hero then stands exactly at its cell (0,0) (no
+  search for a free cell), the preset's start building (byte 16) is still given if it is not
+  0, gold and mana are set from the empty preset (0) and its troops, items and spells add
+  nothing, then the carry-over flags bring back gold, mana and the army as usual (§15); the
+  buildings flagged for the class (bytes 353–355) are given and the attitudes come from row 0
+  as always. No shipped campaign leaves a class out of a later map, so this needs a
+  user-made campaign; not checked in the running game.
 
 ### 10.5 Armies — code
 For each 89-byte record, in file order, into slot k = index + 1 (offsets are dtm-format.md §7):
