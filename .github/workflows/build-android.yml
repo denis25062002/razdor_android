@@ -19,7 +19,7 @@ jobs:
           targets: aarch64-linux-android
 
       - name: Setup Android NDK
-        uses: nsetup/setup-ndk@v1
+        uses: nndungx/setup-ndk@v1
         with:
           ndk-version: r27c
 
@@ -28,7 +28,6 @@ jobs:
 
       - name: Build for Android (arm64-v8a)
         env:
-          # Флаг выравнивания страниц памяти 16 KB для Android 16
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
           cargo ndk -t arm64-v8a -o ./build_output build --release
@@ -39,4 +38,4 @@ jobs:
           name: razdor-android-arm64
           path: |
             build_output/arm64-v8a/
-            target/aarch64-linux-android/release/razdor
+            target/aarch64-linux-android/release/
