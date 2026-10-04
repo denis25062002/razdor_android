@@ -135,9 +135,11 @@ Clicking an unexplored cell does nothing.
    sea).
 4. The mask closes:
    - cells of armies that **patrol with radius 0** (patrol flag +0x16bb set, radius +0x16bc
-     = 0; stationary guards) and are on the map, except the clicked army;
-   - cells of armies with a **meeting event waiting** (+0x3826) standing at distance exactly 1
-     of the hero (§4.1 distance, i.e. any of the 8 neighbours), except the clicked army;
+     = 0; stationary guards) and are on the map (+0x16a1), except the clicked army (0x4cc583);
+     friend or foe, only the army's own cell;
+   - cells of armies with a **meeting event waiting** (+0x3826) on the map standing at distance
+     exactly 1 of the hero (§4.1 distance, i.e. any of the 8 neighbours), except the clicked
+     army (0x4cc601);
    - footprints of castles and forts whose attitude to the player (+0x152) is ≤ 0, and of
      ruins whose owner is not the player — except the clicked building and the one he stands
      in;
@@ -629,7 +631,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | Planner algorithm | the original's flood from the target, cell left priced, early stop, steepest descent, cell (0,0) quirk, seed rules of 0x482984 (a seed on the walker's cell dropped) (`TileMap::flood_route`); AI armies keep Razdor's A* | flood from the target, pricing the cell **left**, stops at the first value reaching the hero, route by steepest descent with direction-order ties | Matches (hero) |
 | Click into the dark | not a target, nothing happens (`Game::can_target`) | not a valid target, nothing happens | Matches |
 | First / second click | first click shows the route, second click walks (`world_view.rs`) | same | none |
-| Mask: armies | every army's cell closed (player's request) | only stationary guards and meeting-waiting armies next to him | known deviation |
+| Mask: armies | the cells of stationary guards and of armies with a meeting event waiting next to him, except the army clicked or chased; moving armies are crossed and met on the step (`Game::plan_from`) | only stationary guards and meeting-waiting armies next to him | Matches (until 2026-10-04 every army's cell was closed, a player's request since withdrawn) |
 | Mask: buildings | castles/forts with attitude ≤ 0, ruins not his (`Location::bars_hero`) | castles/forts with attitude ≤ 0, ruins not his only | Matches |
 | Mask: bridges at sea | closed only when clicking land or standing on a bridge; a bridge is no target at sea | only when clicking land or standing in a bridge | Matches |
 | Hero step time | cost of the cell left × speed, ×1.5 diagonal, the cost read as he comes onto the cell with the at-sea flag before it (`Game::step_base`): the first step after going to sea, or from a map's start on the water, is free | same | Matches |

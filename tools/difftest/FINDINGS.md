@@ -483,10 +483,10 @@ The manual cover run on РК1 (`runs/cover-res1`).
 - After the fix `cover-res1` is 52 of 53 steps equal (47 before; the one left is step 47's
   §5 frame noise); rk1-day1 41 of 44 and the recorded repros as before.
 
-## 23. A hero route around an army: the known deviation of the hero's mask
+## 23. A hero route around an army: the hero's mask closed every army
 
-**Status: not fixed — a deviation the user asked for** (world.md §1.3, "Razdor now →
-original": "Mask: armies"). Candidate C1004-052035 (Другой берег).
+**Status: fixed** (`Game::plan_from`; world.md §1.3; the user withdrew the deviation he had
+asked for, 2026-10-04). Candidate C1004-052035 (Другой берег).
 
 - Другой берег (ranger), step 20 (`click_map 17 12` from (37,38)): the original arrives 12
   minutes sooner (1765 against 1777), 57 steps against 58.
@@ -498,9 +498,15 @@ original": "Mask: armies"). Candidate C1004-052035 (Другой берег).
   and meeting-waiting armies next to the hero, so its route crosses the army's cell (the hero
   reached the church without meeting it); Razdor closes every army's cell (`Game::plan_from`, "no
   army can be walked through: the player's request") and goes round it.
-- To follow the original, `plan_from` would close only the armies with patrol radius 0 on
-  the map and the meeting-waiting armies at distance 1 (both except the clicked one). Left as
-  it is for the user to decide.
+- The original's mask (0x4cc583 and 0x4cc601 at a click, 0x4aee3e and 0x4aeec3 in the
+  pursuit): for each army on the map (+0x16a1) other than the clicked or chased one, its own
+  cell closes when it is a stationary guard (patrol flag +0x16bb, radius +0x16bc = 0), or when
+  it has a meeting event waiting (+0x3826) and stands at distance 1 (0x4826f8) of the hero.
+  No attitude test; ships and armies in buildings follow the same rule. Razdor now does the
+  same; a crossed army still on its cell is engaged by the step (§4.2, `Game::step_contact`).
+- After the fix the repro's step 20 arrives at 1765 as the original (`m1-c052035`; the run
+  stays 3 of 21 equal: its earlier steps differ by the AI's frame noise, §5). rk1-day1 as
+  before (16 of 44, `m1-rk1-day1`).
 
 ## 24. A relation price of exactly x.5 rounds as the x87 product
 

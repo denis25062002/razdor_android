@@ -13,6 +13,10 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **The hero's route crosses moving armies, as in the original:** only stationary guards, and
+  an army a meeting waits for standing next to you, close the way; any other army's cell can
+  be walked through, and stepping onto it while it is still there meets or fights it (every
+  army's cell was closed before, which sent some routes the long way round).
 - **Save and load on the bottom bar as the original's:** save stands next to the message box and
   load beside it, each with the original's picture; the two buttons had each other's action.
 - **Armies on the map step as in the original:** their walk frames follow the game time, so

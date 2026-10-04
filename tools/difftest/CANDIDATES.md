@@ -480,6 +480,8 @@ NEW candidates, and one from the manual resurrect check:
   route read at the click: mask, costs and explored cells equal; army 11 stands on (12,22),
   which the original's route crosses (only stationary guards are closed) and Razdor's goes
   round (every army closed, the user's request). Not changed: for the user to decide.
+- **Fixed** at the user's request (the original's mask; FINDINGS.md §23): step 20 arrives at
+  1765 on both sides (`m1-c052035`).
 
 ## C1004-052338: Проклятое озеро, step 7 `buy 1`
 

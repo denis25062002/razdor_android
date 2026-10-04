@@ -748,7 +748,9 @@ fn cursed_lake_casts_as_the_original() {
 /// tools/difftest/VIDEO.md): РК3 as the archmage with РК2's flags `Band` and `King`, the
 /// map explored; at the capital the opening chain gives the normal reward (+1000) and,
 /// through the two reports the flags allow, the large one (+750 and item 93), as in the
-/// gameplay video. Without the flags only the normal reward comes.
+/// gameplay video. Without the flags only the normal reward comes. On the way the route
+/// crosses a friendly army's cell (only stationary guards close the way, world.md §1.3):
+/// stepping onto it meets it (events 50 and 55, one window), and a second click goes on.
 #[test]
 fn rk3_carry_over_flags_open_the_large_reward() {
     let Some(dt) = install() else { return };
@@ -757,6 +759,8 @@ fn rk3_carry_over_flags_open_the_large_reward() {
             r#"{{"op":"new_game","map":"РК3","hero":2,"carry":{{"gold":3154,"mana":1172,"hero_level":4,"units":[[14,3],[28,3],[27,2]],"book":[1,11],"flags":[{flags}],"reveal":true}}}}
 {{"op":"ok"}}
 {{"op":"click_map","x":14,"y":189}}
+{{"op":"ok"}}
+{{"op":"click_map","x":63,"y":143}}
 {{"op":"ok"}}
 {{"op":"click_map","x":63,"y":143}}
 {{"op":"ok"}}
@@ -776,11 +780,12 @@ fn rk3_carry_over_flags_open_the_large_reward() {
     assert_eq!(s.hero.units.iter().map(|u| u.kind).collect::<Vec<_>>(), [2, 14, 28, 27]);
     // Each window of the chain is read in turn (an OK each): the scan goes on only as one
     // closes (FINDINGS §22).
-    let s = &states[11];
+    assert!([50, 55].iter().all(|e| states[5].events_done.contains(e)), "{:?}", states[5].events_done);
+    let s = &states[13];
     assert!([11, 13].iter().all(|e| s.events_done.contains(e)), "{:?}", s.events_done);
     assert_eq!(s.hero.pack, [93]);
     let (states, _) = replay(Source::Install(&dt), &list("")).unwrap();
-    let s = &states[11];
+    let s = &states[13];
     assert!(s.events_done.contains(&11) && !s.events_done.contains(&13), "{:?}", s.events_done);
     assert!(s.hero.pack.is_empty());
 }

@@ -855,7 +855,7 @@ impl Game {
         if !a.arrived || self.goal == Some(at) {
             return true;
         }
-        let path = self.plan_from(self.tile(), at, self.click_buildings, false);
+        let path = self.plan_from(self.tile(), at, self.click_buildings, Some(uid), false);
         if path.is_empty() {
             self.talk_to = None;
             self.path.clear();
@@ -912,15 +912,17 @@ impl Game {
     /// the clicked cell ([`TileMap::flood_route`]) on the hero's planner map, with these cells
     /// closed: castles and forts whose attitude to him is 0 or less and ruins not his
     /// (unless it is the building clicked or the one he stands in); at sea, when he stands on
-    /// a bridge or clicked land, every bridge; every unexplored cell; and every army's cell
-    /// except the one clicked (the original closes only stationary guards, but in Razdor no
-    /// army can be walked through: the player's request). Other buildings are crossed. A
-    /// click on the parked ship costs 1 there for the plan.
+    /// a bridge or clicked land, every bridge; every unexplored cell; the cells of the
+    /// stationary guards and of the armies with a meeting event waiting that stand next to
+    /// him (both except the army clicked; 0x4cc583, 0x4cc601). Moving armies and other
+    /// buildings are crossed. A click on the parked ship costs 1 there for the plan.
     pub fn plan(&self, to: Tile) -> Vec<Tile> {
         if !self.can_target(to) {
             return Vec::new();
         }
-        self.plan_from(self.tile(), to, self.buildings_of_click(to), true)
+        let w = &self.world;
+        let clicked = w.armies.iter().find(|a| a.tile(&w.map) == to).map(|a| a.uid);
+        self.plan_from(self.tile(), to, self.buildings_of_click(to), clicked, true)
     }
 
     /// The building under a click on `to` and the one the hero stands in: the planner leaves
@@ -931,18 +933,34 @@ impl Game {
 
     /// [`Game::plan`] from `from`, `(target, standing)` the buildings left open; `reopen`:
     /// the hero's own cell is reopened before the fog (the click does so, the pursuit does
-    /// not, and keeps the buildings of the original click: 0x4aedd1).
-    fn plan_from(&self, from: Tile, to: Tile, (target, standing): (Option<usize>, Option<usize>), reopen: bool) -> Vec<Tile> {
+    /// not, and keeps the buildings of the original click: 0x4aedd1); `clicked`: the army
+    /// clicked or chased, which the army mask leaves open.
+    fn plan_from(&self, from: Tile, to: Tile, (target, standing): (Option<usize>, Option<usize>), clicked: Option<u32>, reopen: bool) -> Vec<Tile> {
         let w = &self.world;
         let map = &w.map;
-        let Some(ti) = map.mask_index(to) else { return Vec::new() };
+        if map.mask_index(to).is_none() {
+            return Vec::new();
+        }
         let ship_click = self.parked_ship() == Some(to);
         let cost = |t: Tile| if ship_click && t == to { 1 } else { self.planner_cost(t) };
         let at_sea = self.aboard();
         let bridges = at_sea && (standing.is_some_and(|l| w.locations[l].kind.is_bridge()) || !is_water(map.surface(to)));
         let mut mask = vec![1u16; (map.w * map.h).max(0) as usize];
+        // The armies (0x4cc583 and 0x4cc601 at a click, 0x4aee3e and 0x4aeec3 in the
+        // pursuit): an army on the map (+0x16a1) other than the one clicked or chased closes
+        // its own cell when it is a stationary guard (patrol flag +0x16bb, radius +0x16bc 0),
+        // or when a meeting event waits for it (+0x3826) and it stands next to the hero
+        // (0x4826f8 distance 1, any of the 8 neighbours). Friend or foe alike; every other
+        // army, a moving one included, can be walked through (its contact comes on the step,
+        // `Game::step_contact`).
         for a in &w.armies {
-            if let Some(i) = map.mask_index(a.tile(map)).filter(|&i| i != ti) {
+            if Some(a.uid) == clicked {
+                continue;
+            }
+            let t = a.tile(map);
+            let closed = ai::stationary(a)
+                || (map.distance(t, from) == 1 && self.script.as_deref().is_some_and(|e| e.meeting_waiting(self, a.id)));
+            if let Some(i) = map.mask_index(t).filter(|_| closed) {
                 mask[i] = 0;
             }
         }
@@ -4008,19 +4026,37 @@ mod tests {
     }
 
     #[test]
-    fn no_army_can_be_walked_through() {
+    fn a_moving_army_is_walked_through_and_engaged_on_the_step() {
+        // World.md §1.3 (0x4cc583): only stationary guards close the hero's route; a
+        // patrolling army standing in the gap leaves it open. Stepping onto its cell engages
+        // it (§4.2, 0x4ad94c): he stops on the cell before it.
         let mut s = strip();
         for y in [0u32, 1, 3, 4, 5] {
             tk::set(&mut s, 10, y, crate::dt::dtm::Surface::DeepSea);
         }
-        let mut friend = army(1, 10, 2, 1, &[troop(4, 0, 1)]);
-        friend.patrols = 1;
-        friend.patrol_radius = 5;
-        s.armies = vec![friend];
+        let mut foe = army(1, 10, 2, -2, &[troop(4, 0, 1)]);
+        foe.patrols = 1;
+        foe.patrol_radius = 5;
+        s.armies = vec![foe];
         let mut g = start(&s);
         g.fog = Fog::disabled(24, 6);
-        assert!(!g.set_destination((20, 2)), "a patrolling army standing in the gap blocks it");
-        assert!(g.set_destination((10, 2)), "the army itself can be clicked");
+        let a = &mut g.world.armies[0];
+        a.mind.scripted = true;
+        a.path.clear();
+        assert!(g.set_destination((20, 2)), "a patrolling army in the gap does not close it");
+        assert!(g.path.contains(&(10, 2)));
+        assert_eq!(g.talk_to, None, "the army is not the one clicked");
+        let events = walk_until_stopped(&mut g);
+        assert_eq!((events.last(), g.tile(), g.foe), (Some(&Event::Encounter(0)), (9, 2), Some(Foe::Army(0))));
+        // Gone from the gap before he gets there, it is not met: he walks on.
+        let mut g = start(&s);
+        g.fog = Fog::disabled(24, 6);
+        g.world.armies[0].mind.scripted = true;
+        g.world.armies[0].path.clear();
+        assert!(g.set_destination((20, 2)));
+        g.world.armies[0].pos = g.world.map.center((12, 5));
+        walk_until_stopped(&mut g);
+        assert_eq!(g.tile(), (20, 2));
     }
 
     #[test]

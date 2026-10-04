@@ -1985,6 +1985,34 @@ mod tests {
         assert_eq!(g.foe, Some(Foe::Army(0)));
     }
 
+    #[test]
+    fn an_army_with_a_meeting_waiting_next_to_the_hero_closes_his_route() {
+        // World.md §1.3 (0x4cc601): an army a meeting event waits for closes its cell when it
+        // stands next to the hero (any of the 8 neighbours), unless it is the army clicked;
+        // further away, or without the event, it is walked through like any moving army.
+        let mut talk = ev(EventKind::Global);
+        talk.conditions.meet_army = 2;
+        let routes = |events: Vec<DtEvent>, at: (u16, u16), to: (i32, i32)| {
+            let mut s = world(events);
+            let mut friend = army(2, at.0, at.1, 1, &[troop(4, 0, 1)]);
+            (friend.patrols, friend.patrol_radius) = (1, 5);
+            s.armies = vec![friend];
+            let mut g = start(&s);
+            read(&mut g);
+            g.fog = crate::rules::fog::Fog::disabled(16, 12);
+            (g.route_to(to), g.route_to(g.world.armies[0].tile(&g.world.map)))
+        };
+        let (route, clicked) = routes(vec![talk.clone()], (3, 2), (4, 2));
+        assert!(!route.is_empty() && !route.contains(&(3, 2)), "{route:?}");
+        assert_eq!(clicked, vec![(3, 2)], "the army clicked stays open");
+        let (route, _) = routes(vec![talk.clone()], (3, 3), (4, 4));
+        assert!(!route.contains(&(3, 3)), "a diagonal neighbour too: {route:?}");
+        let (route, _) = routes(vec![talk], (4, 2), (6, 2));
+        assert!(route.contains(&(4, 2)), "two cells away: {route:?}");
+        let (route, _) = routes(vec![], (3, 2), (4, 2));
+        assert_eq!(route, vec![(3, 2), (4, 2)], "no meeting waits for it");
+    }
+
     /// The hero walks from (2, 2) to (8, 4) while army 2 (`attitude`) steps from (5, 2) to
     /// (4, 2), next to him after his first step, to (3, 3); an event fires on meeting it.
     fn walk_past_army_with_event(attitude: i8) -> (Game, Vec<Event>) {
