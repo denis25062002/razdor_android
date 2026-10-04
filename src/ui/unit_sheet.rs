@@ -7,6 +7,7 @@ use macroquad::prelude::*;
 use razdor::i18n::{n_, tr};
 use razdor::rules::battle::{bless_effect, curse_effect, Buff};
 use razdor::rules::content::{Bonus, Content, HeroClass, ItemId, MagicDirection, MagicSchool, Stat, UnitId};
+use razdor::rules::formation::{Formation, Slot};
 use razdor::rules::units::Stats;
 
 use super::assets::Assets;
@@ -234,23 +235,50 @@ fn strip_color(cur: i32, base: i32) -> Color {
     }
 }
 
-/// The card's attack piece: `A:` melee, `S:` ranged, `Pwr:` magic.
-fn attack_piece(s: &Stats, base: &Stats, power: i32) -> (String, Color) {
-    if s.is_warrior() || base.is_warrior() {
-        (razdor::trf!("A: {v}", v = s[Stat::AttackBlow]), strip_color(s[Stat::AttackBlow], base[Stat::AttackBlow]))
-    } else if s.is_shooter() || base.is_shooter() {
-        (razdor::trf!("S: {v}", v = s[Stat::AttackShot]), strip_color(s[Stat::AttackShot], base[Stat::AttackShot]))
+/// The card's attack piece (0x49462c): "Pwr:" with the magic power for a caster (attack kind
+/// 0x11) whose melee attack is 0 or that stands outside the original's places 1–4 (see
+/// [`strip_place`]); for anyone else "A:" with the ranged attack when it is above the melee
+/// attack, else the melee attack. Blue when any of the three attacks is above its value in
+/// `base`, else red when any is below.
+fn attack_piece(s: &Stats, base: &Stats, power: i32, caster: bool, place: usize) -> (String, Color) {
+    let (ab, sh) = (s[Stat::AttackBlow], s[Stat::AttackShot]);
+    let now = [ab, sh, power];
+    let was = [base[Stat::AttackBlow], base[Stat::AttackShot], base[Stat::MagicPower]];
+    let color = if now.iter().zip(was).any(|(n, w)| *n > w) {
+        BLUE_TEXT
+    } else if now.iter().zip(was).any(|(n, w)| *n < w) {
+        RED_TEXT
     } else {
-        (razdor::trf!("Pwr: {power}", power), strip_color(power, base[Stat::MagicPower]))
-    }
+        STRIP_INK
+    };
+    let text = if caster && (ab <= 0 || !(1..=4).contains(&place)) {
+        razdor::trf!("Pwr: {power}", power)
+    } else {
+        razdor::trf!("A: {v}", v = if ab < sh { sh } else { ab })
+    };
+    (text, color)
+}
+
+/// The original's card place (0..11, 0x492940) of `slot`: the six places of the front line,
+/// then the six of the back line, as the formation draws them. The stat strip's "Pwr:" test
+/// reads places 1–4 as the front (so on the wide row the front's two outer places are not).
+pub fn strip_place(f: Formation, slot: Slot) -> usize {
+    let (line, col) = f.display(slot);
+    line * 6 + col as usize
+}
+
+/// Whether `unit`'s type is a caster (attack kind 0x11) for the stat strip.
+pub fn caster(c: &Content, unit: UnitId) -> bool {
+    razdor::rules::ai::attack_kind(c, unit) == 0x11
 }
 
 /// The strip under a card's portrait, as the original's: "A: 45  D: 35/40", "Mnvr: 1
 /// Ini: 12", "Hits: 70" (or "Hits: 45/70"). `row2` is added to the ranged defence shown
 /// (the back row's `Row2Def`, 0 elsewhere: 0x49462c). `lit` reddens it (the unit acting, or
-/// the one selected on the army screen).
+/// the one selected on the army screen). `caster` and `place` choose the attack piece
+/// ([`caster`], [`strip_place`]).
 #[allow(clippy::too_many_arguments)]
-pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, row2: i32, lit: bool) {
+pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, caster: bool, place: usize, hp: i32, row2: i32, lit: bool) {
     let k = k();
     chrome::surface(strip, chrome::Skin::Strip);
     if lit {
@@ -260,7 +288,7 @@ pub fn stat_strip(strip: Rect, now: &Stats, base: &Stats, power: i32, hp: i32, r
     let fs = (strip.h * 0.30).round().max(9.0);
     let lh = strip.h / 3.0;
     let (x0, x1) = (strip.x + 3.0 * k, strip.x + strip.w - 3.0 * k);
-    let (att, ac) = attack_piece(now, base, power);
+    let (att, ac) = attack_piece(now, base, power, caster, place);
     shadow_text(&att, x0, strip.y + lh - 2.0 * k, fs, ac);
     let d = razdor::trf!("D: {blow}/{shot}", blow = now[Stat::DefenceBlow], shot = now[Stat::DefenceShot] + row2);
     let dc = strip_color(now[Stat::DefenceBlow] + now[Stat::DefenceShot], base[Stat::DefenceBlow] + base[Stat::DefenceShot]);
@@ -476,5 +504,46 @@ mod tests {
         assert_eq!(ranged_defence(&content, true, 0), format!("{base} + {r2}"));
         assert_eq!(ranged_defence(&content, true, 3), format!("{base} + {}", 3 + r2));
         assert_eq!(ranged_defence(&content, false, 3), format!("{base} + 3"));
+    }
+
+    /// The strip's attack piece as the original's (0x49462c): "A:" with the larger attack for
+    /// a fighter or a shooter, "Pwr:" for a caster without melee or outside places 1–4.
+    #[test]
+    fn the_strip_writes_a_for_shooters_and_pwr_for_casters_off_the_front() {
+        let content = Content::builtin();
+        let mut s = Stats::of_level(&content, UnitId(content.units[0].id), 0);
+        s[Stat::AttackBlow] = 4;
+        s[Stat::AttackShot] = 9;
+        s[Stat::MagicPower] = 0;
+        let piece = |s: &Stats, caster, place| attack_piece(s, s, 7, caster, place).0;
+        assert_eq!(piece(&s, false, 8), "A: 9");
+        s[Stat::AttackShot] = 4;
+        assert_eq!(piece(&s, false, 8), "A: 4");
+        assert_eq!(piece(&s, true, 2), "A: 4");
+        assert_eq!(piece(&s, true, 0), "Pwr: 7");
+        assert_eq!(piece(&s, true, 5), "Pwr: 7");
+        assert_eq!(piece(&s, true, 8), "Pwr: 7");
+        s[Stat::AttackBlow] = 0;
+        assert_eq!(piece(&s, true, 2), "Pwr: 7");
+        assert_eq!(piece(&s, false, 2), "A: 4");
+        // Colours: any of the three attacks above its start is blue, else any below red.
+        let mut start = s.clone();
+        start[Stat::AttackShot] = 2;
+        assert_eq!(attack_piece(&s, &start, 0, false, 1).1, BLUE_TEXT);
+        start[Stat::AttackShot] = 6;
+        assert_eq!(attack_piece(&s, &start, 0, false, 1).1, RED_TEXT);
+    }
+
+    /// The original's places: the front line 0–5, the back line 6–11, as drawn.
+    #[test]
+    fn strip_places_follow_the_drawn_lines() {
+        use razdor::rules::formation::Row;
+        let (wide, short) = (Formation::WIDE, Formation::VANILLA);
+        assert_eq!(strip_place(wide, Slot::new(Row::Front, 0)), 0);
+        assert_eq!(strip_place(wide, Slot::new(Row::Front, 5)), 5);
+        assert_eq!(strip_place(wide, Slot::new(Row::Back, 1)), 7);
+        assert_eq!(strip_place(short, Slot::new(Row::Front, 0)), 1);
+        assert_eq!(strip_place(short, Slot::new(Row::Front, 3)), 4);
+        assert_eq!(strip_place(short, Slot::new(Row::Back, 0)), 7);
     }
 }

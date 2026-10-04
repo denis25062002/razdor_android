@@ -647,7 +647,8 @@ impl BattleView {
         draw_rectangle_lines(sq.x, sq.y, sq.w, sq.h, 1.0, Color::new(0.85, 0.85, 0.85, 0.8));
         let strip = Rect::new(p.x, p.y + w, w, h - w);
         let row2 = if f.slot.row == Row::Back { self.battle.content().options.row2_def } else { 0 };
-        unit_sheet::stat_strip(strip, s, base, f.power, f.hp, row2, frame.is_some_and(|(c, _)| c == ACTIVE));
+        let (caster, place) = (unit_sheet::caster(self.battle.content(), f.unit), unit_sheet::strip_place(self.battle.formation, f.slot));
+        unit_sheet::stat_strip(strip, s, base, f.power, caster, place, f.hp, row2, frame.is_some_and(|(c, _)| c == ACTIVE));
 
         // The original's signs (493a64): a drunk potion, then the blessing, from the top
         // left; poison (a negative regeneration), then the curse, from the top right; 23 px
