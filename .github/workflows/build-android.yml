@@ -18,10 +18,10 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Setup Android NDK
-        uses: nndungx/setup-ndk@v1
-        with:
-          ndk-version: r27c
+      - name: Install Android NDK via SDKManager
+        run: |
+          yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;27.0.12077973"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.0.12077973" >> $GITHUB_ENV
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
