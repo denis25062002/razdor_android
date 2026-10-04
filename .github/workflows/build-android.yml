@@ -1,4 +1,4 @@
-name: Build Android arm64
+name: Build Android Clean APK
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ main, master ]
 
 jobs:
-  build-android:
+  build-apk:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,20 +21,21 @@ jobs:
       - name: Add Android target explicitly
         run: rustup target add aarch64-linux-android
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+      - name: Install cargo-quad-apk
+        run: cargo install cargo-quad-apk
 
-      - name: Build for Android (arm64-v8a)
+      - name: Ensure assets directory exists
+        run: mkdir -p assets
+
+      - name: Build Android APK (arm64-v8a)
         env:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
           export ANDROID_NDK_HOME=$ANDROID_NDK_ROOT
-          cargo ndk -t arm64-v8a -o ./build_output build --release
+          cargo quad-apk build --release
 
-      - name: Upload Android Binary
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: razdor-android-arm64
-          path: |
-            build_output/
-            target/aarch64-linux-android/release/razdor
+          name: razdor-engine-apk
+          path: target/**/*.apk
