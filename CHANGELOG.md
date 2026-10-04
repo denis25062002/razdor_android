@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **Armies on the map step as in the original:** their walk frames follow the game time, so
+  a figure no longer marches in place while the world stands still, and a step an army takes
+  in place now stands for its time instead of hurrying its next steps along.
 - **A building taken from its garrison is entered by walking in:** after the battle you stand
   where you attacked from, as in the original, and a click on the building now walks you into
   it and opens its window on arrival (it opened at once from outside, and the building's own

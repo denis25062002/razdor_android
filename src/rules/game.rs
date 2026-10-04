@@ -395,6 +395,10 @@ pub struct Game {
     /// Real seconds since the world last moved, for drawing armies between cells.
     #[serde(skip)]
     pub(crate) since_step: f32,
+    /// Game minutes of the last stretch (a hero's step or a wait tick), for drawing: the
+    /// armies' walk frames follow the game time inside it ([`Game::army_walk_frame`]).
+    #[serde(skip)]
+    pub(crate) stretch_minutes: f32,
     /// The hero stopped: the armies' snap and its idle draws are due ([`Game::armies_snap`]),
     /// after the windows the stop opened have drawn their chords.
     #[serde(skip)]
@@ -540,6 +544,7 @@ impl Game {
             reading: None,
             queued_casts: Vec::new(),
             since_step: 0.0,
+            stretch_minutes: 0.0,
             snap_due: false,
             snapped: false,
             improved_ai: false,
@@ -1103,6 +1108,21 @@ impl Game {
         a.walk.at(self.since_step / STEP_SECONDS).unwrap_or(a.pos)
     }
 
+    /// The walk frame of army `a`'s figure (engine.md §7: the original's AI walk frames run
+    /// by game time, 0x4ad660 → 0x4ad314): frames 3–6, the next every 10 game minutes, while
+    /// it has a step to take; `None` (its standing frame) without one. Game time only flows
+    /// while the hero walks or waits, so the frames stand still with it; inside a stretch it
+    /// runs smoothly, as the clock does between the original's ticks.
+    pub fn army_walk_frame(&self, a: &Army) -> Option<u32> {
+        if a.path.is_empty() {
+            return None;
+        }
+        let k = (self.since_step / STEP_SECONDS).clamp(0.0, 1.0) as f64;
+        let minutes = self.clock.total_minutes() - (1.0 - k) * self.stretch_minutes as f64;
+        let tens = (minutes / 10.0).floor() as i64;
+        Some(3 + tens.rem_euclid(4) as u32)
+    }
+
     /// Advance the world by `real_dt` seconds (world.md §2): each hero step and each wait
     /// tick plays over [`STEP_SECONDS`]; the game time a step takes is its own cost. Time only
     /// flows while the party walks or waits.
@@ -1480,6 +1500,7 @@ impl Game {
     /// step clock (a hero's step is one, however long: the original banks it at once).
     fn pass_time_as(&mut self, minutes: f32, slice: f32, events: &mut Vec<Event>) {
         let mut left = minutes.max(0.0);
+        self.stretch_minutes = left;
         // A new stretch for drawing: the steps of this time play in the next window.
         for a in &mut self.world.armies {
             a.walk.points.clear();
@@ -3862,6 +3883,60 @@ mod tests {
         // Moved by other means since: drawn where it is.
         g.world.armies[0].pos = (1.0, 1.0);
         assert_eq!(at(&mut g, 0.5), (1.0, 1.0));
+    }
+
+    /// The armies' walk frames run by game time (engine.md §7): frames 3–6, the next every
+    /// 10 game minutes, smoothly inside a stretch and standing still while time does; the
+    /// standing frame without a step to take.
+    #[test]
+    fn army_walk_frames_follow_the_game_time() {
+        let mut s = strip();
+        s.armies = vec![army(1, 12, 2, 1, &[troop(4, 0, 1)])];
+        let mut g = start(&s);
+        g.world.armies[0].path.clear();
+        assert_eq!(g.army_walk_frame(&g.world.armies[0]), None, "no step to take: standing");
+        g.world.armies[0].path = vec![(13, 2)];
+        let t0 = g.clock.total_minutes();
+        g.stretch_minutes = 30.0;
+        g.clock.set_total_minutes(t0 + 30.0);
+        let frame = |g: &mut Game, k: f32| {
+            g.since_step = k * STEP_SECONDS;
+            g.army_walk_frame(&g.world.armies[0]).unwrap()
+        };
+        // 30 minutes of a tick: three frames go by, one per 10 game minutes, in 3..=6.
+        let seen: Vec<u32> = (0..30).map(|i| frame(&mut g, i as f32 / 30.0)).collect();
+        assert!(seen.iter().all(|f| (3..=6).contains(f)), "{seen:?}");
+        let changes = seen.windows(2).filter(|w| w[0] != w[1]).count();
+        assert!((2..=3).contains(&changes), "{seen:?}");
+        // Time stands: so does the frame, however long the screen shows it.
+        let still = frame(&mut g, 1.0);
+        g.since_step = 50.0;
+        assert_eq!(g.army_walk_frame(&g.world.armies[0]), Some(still));
+    }
+
+    /// A step in place takes its time on the figure's walk too: it stands for it, so a later
+    /// step plays at its own moment (0x4a399c plays the steps in turn).
+    #[test]
+    fn a_step_in_place_stands_for_its_time() {
+        let mut s = strip();
+        let mut lord = army(1, 12, 2, 1, &[troop(4, 0, 1)]);
+        lord.patrols = 1;
+        lord.patrol_radius = 8;
+        s.armies = vec![lord];
+        let mut g = start(&s);
+        let a = &mut g.world.armies[0];
+        let at = a.pos;
+        a.mind.scripted = true;
+        a.path.clear();
+        a.budget = 25.0;
+        let mut events = Vec::new();
+        g.pass_time(25.0, &mut events);
+        let a = &g.world.armies[0];
+        assert!(!a.walk.minutes.is_empty(), "it stepped in place");
+        assert!(a.walk.points.iter().all(|&p| p == at));
+        assert_eq!(a.walk.points.len(), a.walk.minutes.len() + 1);
+        g.since_step = 0.5 * STEP_SECONDS;
+        assert_eq!(g.army_display_pos(&g.world.armies[0]), at);
     }
 
     #[test]

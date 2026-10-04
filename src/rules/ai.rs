@@ -1746,6 +1746,13 @@ impl Game {
         if moves {
             a.mind.walked += 1;
         }
+        // For drawing, every step takes its time on the figure's walk: one in place, or one
+        // the hero's cell barred, stands for its play time (0x4a399c plays each in turn).
+        let stays = !(moves && next.is_some() && on_path);
+        if stays {
+            a.walk.points.push(a.pos);
+            a.walk.minutes.push(minutes);
+        }
         let renew = match next {
             Some(t) if on_path => {
                 if moves {

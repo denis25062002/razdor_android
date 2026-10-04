@@ -413,6 +413,16 @@ What the world needs:
   makes (wander points, plans, the arrival rules) follow that order. A midnight comes at the
   end of the frame it falls in, after that frame's arrivals (0x4a1998 ends the advance).
   The tick of a hero's step is that whole step (one bank, one window), however long.
+- **How an army is drawn** (0x4ad660, from the per-frame advance 0x4ade3c): between the cell
+  it leaves and the next one by its step's play time, `left / total` of the way back from the
+  next cell (+0x1718 the play time left, +0x1698 its total), so it glides over exactly its
+  play time. A step never reaches into the next tick: its play time is clamped to what is
+  left of the window (+0x37e8 in the record, reset to the tick at each tick), so an army
+  whose bank pays a step only every few ticks glides over one tick and stands over the
+  others (its bank fills). Checked live on РК1 (a memory poll every few ms during two 4-hour
+  waits: every step's total within 3000 centi-minutes, army 1 one cell a tick, army 9 up to
+  six). Razdor draws the same ([`Walk`]: the steps of each stretch over its real time, steps
+  in place standing for their time).
 - **The frame rate decides the details**: there is no frame cap but the display's vertical
   sync, and a tick plays over WalkDelay of real time, so a tick has WalkDelay ÷ frame time
   frames (about 9 at 60 Hz with the shipped WalkSpeed; about 17 under the diff test's

@@ -769,13 +769,22 @@ enum Stand {
 /// Draws a map figure (or ship) at world `pos`, heading towards `next`, drawn at one
 /// sprite pixel per map pixel whatever its frame size. Returns false if the install has no
 /// such sprite.
-fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, cam: &Camera, stand: Stand) -> bool {
+/// The hero's walk frame: 8 frames at 10 a second while he has a step to take, else 0.
+fn hero_frame(next: Option<(f32, f32)>) -> u32 {
+    if next.is_some() {
+        (get_time() * 10.0) as u32 % 8
+    } else {
+        0
+    }
+}
+
+fn draw_figure(art: Option<&DtArt>, stem: &str, pos: (f32, f32), next: Option<(f32, f32)>, frame: u32, cam: &Camera, stand: Stand) -> bool {
     let Some(sheet) = art.and_then(|a| a.figure_sheet(stem)) else { return false };
     let n = sheet.width() / 8.0;
     let p = cam.to_screen(pos);
     let heading = next.map_or(Vec2::ZERO, |n| cam.to_screen(n) - p);
     let row = facing_row(heading);
-    let frame = if next.is_some() { ((get_time() * 10.0) as i32 % 8) as f32 } else { 0.0 };
+    let frame = frame.min(7) as f32;
     let size = n * cam.scale / PX;
     let dest = match stand {
         Stand::Feet => {
@@ -813,12 +822,14 @@ fn draw_ship(cam: &Camera, pos: (f32, f32), sail: Color) {
 fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let next = a.path.first().map(|&t| game.world.map.center(t));
     let pos = game.army_display_pos(a);
+    // Its walk frames run by game time (engine.md §7), not by the clock on the wall.
+    let frame = game.army_walk_frame(a).unwrap_or(0);
     if a.sails() {
-        if !draw_figure(art, ship_stem(a.ship), pos, next, cam, Stand::Afloat) {
+        if !draw_figure(art, ship_stem(a.ship), pos, next, frame, cam, Stand::Afloat) {
             let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
             draw_ship(cam, pos, sail);
         }
-    } else if !draw_figure(art, figure_stem(a.model), pos, next, cam, Stand::Feet) {
+    } else if !draw_figure(art, figure_stem(a.model), pos, next, frame, cam, Stand::Feet) {
         let c = cam.to_screen(pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
@@ -842,12 +853,12 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
     let c = cam.to_screen(game.display_pos());
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
     if game.aboard() {
-        if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), game.display_pos(), next, cam, Stand::Afloat) {
+        if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), game.display_pos(), next, hero_frame(next), cam, Stand::Afloat) {
             draw_ship(cam, game.display_pos(), HERO_SAIL);
         }
         return;
     }
-    if !draw_figure(art, figure_stem(model), game.display_pos(), next, cam, Stand::Feet) {
+    if !draw_figure(art, figure_stem(model), game.display_pos(), next, hero_frame(next), cam, Stand::Feet) {
         assets.draw_unit(game.hero().def, Team::Player, c.x, c.y - 10.0, 30.0);
     }
 }
@@ -911,7 +922,7 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera, preview: Option<&[Tile
             Drawable::Ship => {
                 if let Some(ship) = game.ship {
                     let at = map.center(ship.tile);
-                    if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), at, None, cam, Stand::Afloat) {
+                    if !draw_figure(art, ship_stem(razdor::rules::ships::kind::HERO), at, None, 0, cam, Stand::Afloat) {
                         draw_ship(cam, at, HERO_SAIL);
                     }
                 }

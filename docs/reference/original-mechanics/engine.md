@@ -459,6 +459,7 @@ silent.
 | Frame pacing | macroquad `next_frame`, variable window size, game time from frame time | vsync flip, no fixed tick, all timers on a millisecond clock | equivalent in spirit |
 | Clock pause on focus loss | not modelled | Now freezes while inactive (walks, waits, music, fades stop) | missing |
 | Hero walk frames | 8 frames at 10 per second while moving (`world_view::draw_figure`) | frames 3–6 at half the WalkDelay (75 ms default); AI walk frames by game time; land idle 20 × 250 ms | differs |
+| AI walk frames | Frames 3–6, the next every 10 game minutes (`(time_cs div 1000) and 3` + 3) while the army has a step to take, by the game time interpolated inside the stretch, so they stand still with it; its standing frame without a step (`Game::army_walk_frame`) | 0x4ad660 → 0x4ad314 with `[0x68dcb8] div 1000`, from the AI's per-frame advance 0x4ade3c (only while the hero walks or waits) | Matches |
 | Water | static textures | 32 frames at 100 ms on terrain codes 0–2 | missing |
 | Cursor animation | system cursor (no animated cursors found in `src/ui`) | 50-frame cursors at 25/30/50 ms from raw time, hotspots per cursor | missing |
 | Main menu background | 9 frames at 100 ms, not cross-faded (`main_menu.rs`) | 9 frames at 150 ms cross-faded + 16 frames at 100 ms | differs |
