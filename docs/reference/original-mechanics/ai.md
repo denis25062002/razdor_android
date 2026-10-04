@@ -118,7 +118,9 @@ this function (§6, §9.1).
 **code** (0x4a0710, 0x4a08f8).
 
 **Simulation.** The scoring army fights the other side with the full battle engine, the AI
-playing both sides, to the end. The scoring side takes only its **living, paid** units; the
+playing both sides, to the end, from the two static sides that keep what earlier battles
+left beyond their units (battle.md, "Killable"): so the same two armies can fight out
+differently after other battles. The scoring side takes only its **living, paid** units; the
 other side all its living units. Each side keeps its building defence bonus (the defence of
 the building it stands in, §9.1). The result is each side's **strength** (483ecc,
 experience.md §3: the units' strengths scaled by their HP, by rows) at the start (A0, B0: side

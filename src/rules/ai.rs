@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use crate::dt::dtm::Army as DtArmy;
 
-use super::battle::{Battle, Outcome, Team};
+use super::battle::{Battle, Outcome, Team, RECORDS};
 use super::clock::MINUTES_PER_DAY;
 use super::content::{Bonus, Content, GlobalOptions, ItemId, Nature, UnitId, WageKind};
 use super::economy::{delphi_round, rear_service, relation_price};
@@ -702,7 +702,7 @@ pub struct Side {
 /// Sets up the off-screen battle between `a` (attacking) and `b` (0x4a0710): the battle
 /// engine on both sides, AI mode 0, both sides auto-arranged, each with its own building
 /// defence; played to its end.
-fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
+fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool, records: SideRecords) -> Battle {
     let side: Vec<(usize, &Unit)> = a.units.iter().enumerate().map(|(k, u)| (k + 1, u)).collect();
     let mut bt = Battle::new(c.clone(), &side, &b.units, Team::Player);
     bt.set_simulation();
@@ -719,6 +719,7 @@ fn fight(c: &Arc<Content>, a: &Side, b: &Side, predict: bool) -> Battle {
     bt.set_strength_defence(Team::Enemy, b.strength_defence);
     bt.auto_arrange(Team::Player);
     bt.auto_arrange(Team::Enemy);
+    bt.set_side_records(records);
     bt.begin();
     let mut steps = 0;
     while bt.outcome() == Outcome::Ongoing && steps < MAX_BATTLE_STEPS {
@@ -745,8 +746,23 @@ fn sim_result(bt: &Battle) -> SimResult {
 
 /// Plays a simulated battle (the AI's scoring, 0x4a0710) and returns its side strengths.
 pub fn simulate(c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
-    let bt = fight(c, a, b, false);
+    let bt = fight(c, a, b, false, [[0; RECORDS]; 2]);
     sim_result(&bt)
+}
+
+/// The two static sides of the off-screen battles (0xc081ac attacker, 0xc08a00 defender):
+/// the HP of each of their 12 unit records as their last use left them. 49855c writes an
+/// army's units into records 1..n and leaves the rest; a battle copies its sides back out
+/// (48bb10). The killable test's wrong-side read (486d03) reads the records beyond a side's
+/// units, so an off-screen battle depends on what came before it (never cleared, not
+/// saved).
+pub type SideRecords = [[i32; RECORDS]; 2];
+
+/// Writes `hps` into records 1..n of side `k` (49855c), the rest left as they were.
+fn fill_records(r: &mut SideRecords, k: usize, hps: impl IntoIterator<Item = i32>) {
+    for (slot, hp) in r[k].iter_mut().zip(hps) {
+        *slot = hp;
+    }
 }
 
 /// What a simulated battle depends on: each side's units (type, level, HP, worn items),
@@ -770,24 +786,68 @@ impl SimKey {
 }
 
 /// Simulated battles already played (not saved): the AI rescores the same matchups often.
+/// A result depends on the side records it starts from too ([`SideRecords`]), which it
+/// leaves changed: both are kept with it.
 #[derive(Clone, Debug, Default)]
-pub struct SimCache(std::collections::HashMap<SimKey, SimResult>);
+pub struct SimCache {
+    /// By the sides' units: the battles played, each with the old records it read (side,
+    /// record, HP) and the records it left in place of its units.
+    played: std::collections::HashMap<SimKey, Vec<Played>>,
+    entries: usize,
+    /// The static sides as the last off-screen battle or side pass left them.
+    pub(crate) records: SideRecords,
+}
+
+/// A simulated battle in the cache: it plays the same from any side records that hold the
+/// same values where it read them.
+#[derive(Clone, Debug)]
+struct Played {
+    reads: Vec<(usize, usize, i32, bool)>,
+    result: SimResult,
+    counts: [usize; 2],
+    left: SideRecords,
+}
 
 /// Entries the cache holds before it starts afresh.
 const SIM_CACHE_SIZE: usize = 50_000;
 
 impl SimCache {
     fn get(&mut self, c: &Arc<Content>, a: &Side, b: &Side) -> SimResult {
+        self.stage(a, b);
         let key = SimKey::of(a, b);
-        if let Some(&r) = self.0.get(&key) {
+        let records = self.records;
+        if let Some(p) = self.played.get(&key).and_then(|v| v.iter().find(|p| p.reads.iter().all(|&(k, i, dmg, killable)| (records[k][i] <= dmg) == killable))) {
+            let (r, counts, left) = (p.result, p.counts, p.left);
+            for k in 0..2 {
+                self.records[k][..counts[k]].copy_from_slice(&left[k][..counts[k]]);
+            }
             return r;
         }
-        if self.0.len() >= SIM_CACHE_SIZE {
-            self.0.clear();
+        if self.entries >= SIM_CACHE_SIZE {
+            self.played.clear();
+            self.entries = 0;
         }
-        let r = simulate(c, a, b);
-        self.0.insert(key, r);
+        let bt = fight(c, a, b, false, records);
+        let r = sim_result(&bt);
+        let left = bt.side_records();
+        let reads = bt.stale_reads();
+        self.played.entry(key).or_default().push(Played { reads, result: r, counts: bt.start_counts(), left });
+        self.entries += 1;
+        self.records = left;
         r
+    }
+
+    /// The sides of a battle are written into the static sides: the attacker's units into
+    /// the first, the defender's into the second (0x4a0710 → 49855c).
+    fn stage(&mut self, a: &Side, b: &Side) {
+        fill_records(&mut self.records, 0, a.units.iter().map(|u| u.hp));
+        fill_records(&mut self.records, 1, b.units.iter().map(|u| u.hp));
+    }
+
+    /// An army passed through the first static side and back to rearrange it (49855c,
+    /// 4988c0: a respawn, an arrival's garrison reshuffle).
+    pub(crate) fn pass_through(&mut self, hps: impl IntoIterator<Item = i32>) {
+        fill_records(&mut self.records, 0, hps);
     }
 }
 
@@ -2704,6 +2764,13 @@ impl Game {
             }
         }
         self.world.locations[l].garrison = held;
+        // The army, then the garrison, are passed through the first static side and back
+        // (0x4a7923, 0x4a7989: 49855c, 4988c0).
+        let army_hp: Vec<i32> = self.world.armies[i].troops.iter().map(|t| troop_unit(&c, t).hp).collect();
+        let held_hp: Vec<i32> = self.world.locations[l].garrison.iter().map(|t| troop_unit(&c, t).hp).collect();
+        let mut sims = self.sims.borrow_mut();
+        sims.pass_through(army_hp);
+        sims.pass_through(held_hp);
     }
 }
 
@@ -2814,7 +2881,14 @@ impl Game {
             Defender::Garrison(l) => (0..self.world.locations[l].stationed.len()).filter(|&k| self.world.locations[l].stationed[k].unit.alive()).collect(),
             Defender::Army(_) => Vec::new(),
         };
-        let bt = fight(&c, &side_a, &side_b, true);
+        // The battle is played from the static sides and leaves them changed (0x4a0710).
+        let bt = {
+            let mut sims = self.sims.borrow_mut();
+            sims.stage(&side_a, &side_b);
+            let bt = fight(&c, &side_a, &side_b, true, sims.records);
+            sims.records = bt.side_records();
+            bt
+        };
         let na = side_a.units.len();
         drop((side_a, side_b));
         self.ai_stats.battles += 1;
@@ -3181,6 +3255,9 @@ impl Game {
             // so the events' "beaten" conditions no longer hold for it.
             self.beaten_armies.remove(&army.id);
             self.ai_beaten.remove(&army.id);
+            // Rearranged through the first static side and back (0x4a28d0: 49855c, 4988c0).
+            let hps: Vec<i32> = army.troops.iter().map(|t| troop_unit(&self.content, t).hp).collect();
+            self.sims.borrow_mut().pass_through(hps);
             let uid = army.uid;
             self.insert_army(army);
             self.mark_dirty(uid);

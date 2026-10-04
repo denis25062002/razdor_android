@@ -558,6 +558,32 @@ ai.md §8.1). Campaign round (РК7 started without carry-over, run `c1-РК7`).
 - After the fix the РК7 run is 12 of 13 steps equal (10 before; the one left is the event's
   gold before its OK, window timing); the other recorded runs as before.
 
+## 27. The off-screen battles' static sides keep their old records
+
+**Status: fixed** (`SideRecords`, `SimCache`, `Battle::set_side_records`, `Battle::killable`;
+battle.md "Killable", ai.md §4). Campaign round (РК4, run `c1-РК4`).
+
+- РК4 (knight), step 3 (`wait 1`): army 9's leader ends at 1 HP in the original, one of its
+  peasants dead in Razdor. Frida (`damage` and hooks on 48b75c and 0x4a0710) shows the
+  original's battle was another one (army [10, 69] against army 9; downstream of the AI's
+  positions, step 2), but also that the side buffers of the off-screen battles, 0xc081ac and
+  0xc08a00, are never cleared: records beyond a battle's units hold HP from earlier battles
+  (e.g. after a one-unit side, records 2-12 still hold [70, 143, 97, 104, 156, …]).
+- The normal and the off-screen battle AI tests "killable" on the actor's own side at the
+  target's list index (486d03, 486feb); past the actor's units that read lands on those old
+  records. Razdor read 0 there (always killable).
+- Razdor now keeps both static sides (`SimCache::records`): each off-screen battle writes its
+  units into the first records, plays with the rest as they are, and leaves its survivors,
+  zeros for its dead and the old records beyond; an arrival's garrison reshuffle and a
+  respawn pass the army through the first side. The cache keeps the records with each
+  result. The records Razdor gives at each of the first 269 off-screen battles of РК4's
+  opening (the map load's 186 included) are the original's, value for value; in the РК4 list 42
+  off-screen battles come out otherwise than with empty records. The recorded runs
+  compare as before (their differences come earlier or are elsewhere).
+- Seen on the way, not fixed: two of РК4's garrisons (units of level 1, defence 5) start
+  their battles with another side strength in the original (552 against Razdor's 617, 1724
+  against 1794); see CANDIDATES.md.
+
 ## Not differences
 
 - **Events queued behind the window on screen** (candidate C1003-174531, Обучающий1 step 5):

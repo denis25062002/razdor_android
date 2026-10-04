@@ -481,9 +481,19 @@ column c:
   `HP ≤ actionsLeft × dmg`.
 - Otherwise the test is meant to be `HP ≤ dmg`, but the code (486d03 melee, 486feb shots) reads
   the HP of the unit **with the target's list index on the actor's own side**. So the normal
-  enemy AI, and every AI army off-screen, judges "killable" from an unrelated own unit's HP
-  When that index is past the end of the actor's own list, the slot read is empty or stale.
-  **code**; not yet seen in play.
+  enemy AI, and every AI army off-screen, judges "killable" from an unrelated own unit's HP.
+  When that index is past the end of the actor's own list, the record read is one the side
+  holds beyond its units: a record a death emptied this battle (a removal shifts the records
+  down and zeroes the last, 489f69) reads 0; one beyond the side's units at the start holds
+  whatever was there before the battle. The off-screen battles (0x4a0710) are played from
+  two static sides, 0xc081ac (attacker) and 0xc08a00 (defender), copied whole into the battle
+  (48b75c) and back out at its end (48bb10); 49855c writes an army's units into records
+  1..n and leaves the others, and nothing clears them. So a record beyond the units holds
+  the HP the last battle, or army passed through that side (an arrival's garrison
+  reshuffle, a respawn: 49855c + 4988c0 on the first side), left there: an off-screen
+  battle's targets depend on the battles before it. Checked in the running game (Frida on
+  48b75c and 0x4a0710, РК4's opening: the records of the first 269 off-screen battles, the
+  map load's included, are the ones this model gives; FINDINGS.md §27).
 
 **No randomness.**
 - The picker would add `rand((max − min) × B+9 / 100)` from the game's own LCG (4832fc), but

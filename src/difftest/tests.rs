@@ -902,9 +902,14 @@ fn rk2_the_peasant_offers_and_the_mines() {
     r.apply(&start[0]).unwrap();
     let peasants = |r: &Runner| r.game().unwrap().squad.iter().filter(|u| u.def.0 == 60).count();
     let question = |r: &Runner| r.game().unwrap().pending_question();
-    // Closes the windows in front of a question (or all of them).
+    // Closes the windows in front of a question (or all of them); a village's own offer
+    // (its roll depends on the state of the generator) is declined.
     let read = |r: &mut Runner| {
-        for _ in 0..6 {
+        for _ in 0..8 {
+            if r.dialogs.front().is_some_and(|d| d.offer) {
+                r.apply(&Action::Answer { yes: false }).unwrap();
+                continue;
+            }
             if r.dialogs.is_empty() || r.dialogs.front().is_some_and(|d| d.question) {
                 break;
             }

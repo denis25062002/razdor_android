@@ -1196,7 +1196,7 @@ fn an_ai_battle_beats_a_side_whose_end_strength_is_0() {
     let mut g = start_with(&s, c);
     let cc = g.content.clone();
     let side = |g: &Game, i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
-    let bt = fight(&cc, &side(&g, 0), &side(&g, 1), true);
+    let bt = fight(&cc, &side(&g, 0), &side(&g, 1), true, Default::default());
     assert!(bt.fighters.iter().all(|f| f.alive()));
     assert_eq!(bt.strength_now(Team::Enemy), 0);
     assert!(bt.strength_now(Team::Player) > 0);
@@ -1824,7 +1824,7 @@ fn a_simulated_battle_counts_side_strengths_not_hit_points() {
     let cc = g.content.clone();
     let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
     let r = simulate(&cc, &side(0), &side(1));
-    let bt = fight(&cc, &side(0), &side(1), false);
+    let bt = fight(&cc, &side(0), &side(1), false, Default::default());
     assert_eq!((r.own, r.theirs), (bt.start_of(Team::Player).strength, bt.start_of(Team::Enemy).strength));
     assert_eq!((r.own_left, r.theirs_left), (bt.strength_now(Team::Player), bt.strength_now(Team::Enemy)));
     assert_ne!(r.own, 120, "not the warrior's hit points");
@@ -1930,4 +1930,33 @@ fn contacts_with_the_hero_need_his_step_flag() {
     let cells = |boundary| HeroCells { cells: [Some((30, 10)), None], at: (30, 10), boundary };
     assert_eq!(g.ai_arrive(uid, &cells(false)), None, "mid-step, or before his first walk");
     assert_eq!(g.ai_arrive(uid, &cells(true)), Some(Contact::Attack));
+}
+
+/// FINDINGS §27: the off-screen battles are played from two static sides (0xc081ac,
+/// 0xc08a00) that nothing clears: a battle writes its units into the first records, the
+/// records beyond keep what an earlier use left, and the battle leaves its survivors' HP,
+/// zeros where its dead were, and the old records beyond. The cache keeps the records with
+/// each result.
+#[test]
+fn off_screen_battles_keep_the_static_side_records() {
+    let mut s = map();
+    s.armies = vec![army(1, (30, 10), 4, ENEMY, 0, &[troop(6, 0, 1)]), army(2, (31, 10), 2, ALLY, 0, &[troop(4, 0, 2)])];
+    let g = start(&s);
+    let cc = g.content.clone();
+    let side = |i: usize| Side { units: army_units(&cc, &g.world.armies[i]), defence: 0, strength_defence: 0 };
+    let mut old = [[0; RECORDS]; 2];
+    old[0] = [7; RECORDS];
+    old[1] = [9; RECORDS];
+    let mut cache = SimCache { records: old, ..SimCache::default() };
+    let r = cache.get(&cc, &side(0), &side(1));
+    let after = cache.records;
+    // The strong warrior lives on at its HP; the two weak ones died: their records are 0.
+    assert!(r.theirs_left == 0 && after[0][0] > 0, "{r:?} {after:?}");
+    assert_eq!(&after[0][1..], &[7; RECORDS - 1], "beyond the attacker's unit: as before");
+    assert_eq!(&after[1][..2], &[0, 0]);
+    assert_eq!(&after[1][2..], &[9; RECORDS - 2]);
+    // The same battle from other records is played again; from the same, taken from the cache.
+    cache.records = old;
+    assert_eq!(cache.get(&cc, &side(0), &side(1)), r);
+    assert_eq!(cache.records, after);
 }

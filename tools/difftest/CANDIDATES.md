@@ -569,3 +569,31 @@ read, a walk, a wait of an hour, the nearest building entered (runs `c1-<map>`).
   original's did not, and greeted him in the wait after the walk. **Resolved: fixed,
   FINDINGS.md §26** (`r4f7-c1-РК7` 12 of 13, the last a window timing).
 
+## Campaign: РК4, step 2 `click_map 8 68` and step 3 `wait 1`
+
+- Step 2: army 21 ends 6 cells off (y 55 against 49) with the generator equal; step 3 the
+  arrival order of two armies at one moment differs (their wander-point draws swap), and
+  army 9 fights another army in each (Razdor: army 6's swordsman; the original: an army of
+  [10, 69] that beat army 6 first), so its losses differ. Not traced to a cause; the
+  generator stays equal through step 3, which points at the frame timing of FINDINGS §5.
+- Found on the way and **fixed: FINDINGS.md §27** (the off-screen battles' static side
+  records).
+- **Open:** two garrisons (units of level 1, defence 5) start their off-screen battles with
+  another side strength in the original: B0 552 against Razdor's 617 ([66 (71 HP), 65, 65,
+  65]) and 1724 against 1794 ([44, 43 ×4, 47]); every other side of the opening's 269
+  battles starts equal. Next: Frida on 483ecc for those sides (each unit's +0x64 strength),
+  against Razdor's `tactical` for level-1 garrison units.
+
+## Campaign: РК5, step 12 `click_map 177 11`
+
+- Armies 13 and 21 one cell off and Razdor one `Random(3000)` ahead (the stop's snap counts
+  one patroller more); the first 43 draws equal. Like FINDINGS §5's frame noise (an arrival
+  at the step's end in one side only); not rerun. Left open.
+
+## Campaign: РК6, step 3 `click_map 91 198`
+
+- Two armies' first arrivals: army 26 at 8.0 minutes and army 18 at 9.0 in Razdor; the
+  original takes both in its frame at 9.0, in army order (18 first), so their wander-point
+  draws swap (`Random(6)/(7)` and `Random(11)`), and everything after differs (army 5's
+  purchases in its castle included). FINDINGS §5's frame noise; not a rule difference.
+

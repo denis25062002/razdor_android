@@ -1822,6 +1822,24 @@ fn row41_the_normal_ai_reads_the_kill_hp_on_its_own_side() {
     assert_eq!(bt.ai_choice(), Some((0, ActionKind::Melee)), "its own 30 HP make the 1st bag killable");
 }
 
+/// FINDINGS §27: past its own list the wrong-side read lands on the side's buffer: in an
+/// off-screen battle its records beyond the units hold what an earlier battle left there,
+/// so the 3rd bag is killable only if that old record's HP is at most the damage.
+#[test]
+fn row41_past_its_list_the_kill_test_reads_the_sides_old_records() {
+    let killable = |old_hp: i32| {
+        let mut bt = prepared(&content_with(vec![], Formation::WIDE), &[(18, f(1)), (18, f(2)), (18, f(3))], &[(10, f(2)), (18, b(2))], Team::Player);
+        let mut old = [[0; RECORDS]; 2];
+        old[1][2] = old_hp;
+        bt.set_side_records(old);
+        bt.begin();
+        turn_of(&mut bt, 3);
+        bt.killable(3, 2, 20)
+    };
+    assert!(killable(0), "an empty old record");
+    assert!(!killable(500), "its own record 3 still holds 500 HP from an earlier battle");
+}
+
 #[test]
 fn row39_the_shot_scores_halve_for_one_manevres_only_on_back_row_mages() {
     // A Manevres-1 bag (power 10: 11 × 20 × 1 = 220) against a Manevres-2 warrior of power 4

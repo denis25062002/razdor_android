@@ -52,7 +52,7 @@ const SPLASH_FRIENDLY: u8 = 4;
 /// `Suicide`: the regeneration its unit is left with, which removes it at the next turn start.
 const SUICIDE_REGEN: i32 = -99;
 /// A side has at most 12 battle records.
-const RECORDS: usize = 12;
+pub(crate) const RECORDS: usize = 12;
 /// The drain loader's floor for a type with magic power but no school: the unused slot of the
 /// floor table holds these bytes (c28480).
 const SCHOOLLESS_FLOOR: i32 = 16_777_215;
@@ -597,6 +597,17 @@ pub struct Battle {
     pub(crate) ai_level: u8,
     /// Mana a side's surrender gives the winner.
     surrender_mana: [i32; 2],
+    /// The HP of each side's unit records beyond its units, as the side's buffer held them
+    /// when the battle was set up (the off-screen battles' static sides 0xc081ac and
+    /// 0xc08a00 keep what their last use left there; 0 for the battle on screen), and each
+    /// side's count of units at the start: the killable test's wrong-side read (486d03)
+    /// can land beyond the units ([`Battle::set_side_records`]).
+    stale: [[i32; RECORDS]; 2],
+    start_count: [usize; 2],
+    /// The kill tests that read an old record (side, record index, damage, killable), for
+    /// the AI's cache of simulated battles: the battle plays the same from any records that
+    /// give the same answers.
+    stale_reads: std::cell::RefCell<Vec<(usize, usize, i32, bool)>>,
     /// The pre-simulation (48b75c): played before the first turn unless switched off.
     predict: bool,
     /// Each side's HP lost in the pre-simulation, the predicted loss of the XP pool (side +8).
@@ -715,6 +726,9 @@ impl Battle {
             crippled: [[false; RECORDS]; 2],
             ai_level: 1,
             surrender_mana: [0; 2],
+            stale: [[0; RECORDS]; 2],
+            start_count: [0; 2],
+            stale_reads: Default::default(),
             predict: true,
             predicted: [0; 2],
             turn_lost: [0; 2],
@@ -2502,8 +2516,62 @@ impl Battle {
             return self.fighters[t].hp <= f.actions * dmg;
         }
         let index = self.living_ids(self.fighters[t].team).iter().position(|&i| i == t).unwrap_or(0);
-        let hp = self.living_ids(f.team).get(index).map_or(0, |&i| self.fighters[i].hp);
-        hp <= dmg
+        if let Some(&i) = self.living_ids(f.team).get(index) {
+            return self.fighters[i].hp <= dmg;
+        }
+        let k = f.team.index();
+        if index < self.start_count[k] {
+            return 0 <= dmg;
+        }
+        let killable = self.stale[k].get(index).copied().unwrap_or(0) <= dmg;
+        let mut reads = self.stale_reads.borrow_mut();
+        if !reads.contains(&(k, index, dmg, killable)) {
+            reads.push((k, index, dmg, killable));
+        }
+        killable
+    }
+
+    /// The kill tests on old side records so far (side 0 the player's, record, damage,
+    /// killable). Past the actor's living units the read lands on a record a death emptied
+    /// (the removal shifts the records down and zeroes the last, 489f69: HP 0), or on one
+    /// beyond the side's units at the start, as the side's buffer held it.
+    pub(crate) fn stale_reads(&self) -> Vec<(usize, usize, i32, bool)> {
+        self.stale_reads.borrow().clone()
+    }
+
+    /// Each side's number of units at the start ([`Battle::set_side_records`]).
+    pub(crate) fn start_counts(&self) -> [usize; 2] {
+        self.start_count
+    }
+
+    /// The side buffers this off-screen battle is played from (0x4a0710: 49855c writes the
+    /// units into records 1..n of the static sides, the records beyond keep the HP their
+    /// last use left; 48b75c copies both whole): player side first. Call after the sides are
+    /// built.
+    pub(crate) fn set_side_records(&mut self, records: [[i32; RECORDS]; 2]) {
+        self.stale = records;
+        for team in [Team::Player, Team::Enemy] {
+            self.start_count[team.index()] = self.living_ids(team).len();
+        }
+    }
+
+    /// The side buffers as this battle leaves them (48bb10 copies its sides out): each side's
+    /// living units' HP in record order, 0 in the records its deaths emptied (and all of
+    /// them after a surrender), the records beyond as they were.
+    pub(crate) fn side_records(&self) -> [[i32; RECORDS]; 2] {
+        let mut out = self.stale;
+        for team in [Team::Player, Team::Enemy] {
+            let k = team.index();
+            let live = self.living_ids(team);
+            for (r, slot) in out[k].iter_mut().enumerate() {
+                if let Some(&i) = live.get(r) {
+                    *slot = self.fighters[i].hp.max(0);
+                } else if r < self.start_count[k] {
+                    *slot = 0;
+                }
+            }
+        }
+        out
     }
 
     /// The best cell by the original's picker (4860cc): rows front to back, columns in the

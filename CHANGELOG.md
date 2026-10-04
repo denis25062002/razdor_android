@@ -574,6 +574,9 @@ old id, and their versions give both.
   do while he stands or waits after a walk, as in the original: a friendly army walking
   beside him greets him when it catches him at a step's end, and one that reaches him while
   he waits stops the wait with its meeting or its battle.
+- The AI armies' battles among themselves, and the ones they imagine to choose their way,
+  pick their targets as the original's do, including its slip of reading leftovers of an
+  earlier battle: the same two armies can fight out differently as the game goes on.
 
 ## 0.2.2 — 2026-10-01
 
