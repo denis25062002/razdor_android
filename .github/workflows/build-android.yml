@@ -17,8 +17,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+
+      - name: Install Android Rust targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
 
       - name: Install Android SDK and NDK
         run: |
@@ -56,12 +57,13 @@ jobs:
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-          # Симлинки для aarch64-linux-android и arm-linux-androideabi
+          # Симлинки тулчейна для всех поддерживаемых архитектур
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
           ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+          ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/arm-linux-androideabi-strip"
 
       - name: Build APK
         env:
