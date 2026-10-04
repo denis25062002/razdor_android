@@ -14,6 +14,8 @@ old id, and their versions give both.
 
 ## 0.3.0 — 2026-10-04
 
+Commit `eeaa582` (tag `v0.3.0`).
+
 Razdor now plays by the original Discord Times' own rules, read from the original game and
 checked against it running side by side: the map, the AI armies, battles, the economy,
 spells, items, scenario events and saves. Where the original has a bug, Razdor plays what
@@ -231,6 +233,13 @@ now fixed with the rule the original evidently meant:
   original kept its first time of death), and an army shopping values its buyer again after
   each purchase (the original paid for a good the unit could no longer wear).
 - The noon autosave on day 9 of a month is named with its leading zero.
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+41e172907809972b16cdfaa46f42ce4aaa45958743cb0b880059d0c63604f179  razdor
+8ab4b5cbda58478ecc3f84deef0abc02a07dbec076bf41bcdc084be9218544b2  Razdor.exe
+3e7e3564d3ae6d569e615f1dbf48611fe90f4e40b153c1f9e2e36663c1e12f86  razdor-macos
+```
 
 ## 0.2.2 — 2026-10-01
 
