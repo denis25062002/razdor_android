@@ -21,6 +21,10 @@ jobs:
       - name: Add Android target explicitly
         run: rustup target add aarch64-linux-android
 
+      - name: Install Android SDK Platform 29
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29"
+
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
