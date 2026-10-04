@@ -40,7 +40,7 @@ was seen on and what to check.
    the events as the window closes (0x4ed440, 0x4b8f63), Razdor only at the next step. The
    other screen differences of those runs come from AI walks that part (FINDINGS §5) or from
    `battle_auto`. No window of dt-original was found open over another one; what was seen on
-   dt-feat should be checked again after it merges.
+   dt-feat should be checked again after it merges. Commit 50dcb52.
 
 2. **Entering a village must not make it the hero's.** The player only takes the village's
    money, and only if nobody else has taken it that day. This **contradicts the current spec**:
@@ -62,7 +62,7 @@ was seen on and what to check.
    `rk1_a_village_emptied_by_an_army_pays_the_hero_nothing_that_day`; in the free run the two
    games' AI walks part before the village, FINDINGS §5, so army 9 meets Razdor's hero on the
    way). If the wish stands (villages never change hands for the player), it is a change of
-   the original's rules, for dt-feat.
+   the original's rules, for dt-feat. Commit a63970b.
 
 3. **Missing animations: units in battle and levelling up.** Fights lack the units' animations,
    and a level-up has none. To check: which battle animations the original plays (attack,
@@ -94,7 +94,7 @@ was seen on and what to check.
    on the army and building screens (not on a recruit offer). Seen under Xvfb in РК1's ruins
    battle: the novice and the archer of the back row show "D: 0/5", the panel "5 + 3" for a
    guard in its building. Razdor now shows the same on the card strips (battle, army, building
-   windows) and in the panel's ranged defence line; the damage was already right.
+   windows) and in the panel's ranged defence line; the damage was already right. Commit f5ed454.
 
 5. **Feature request: a setting for the front row's width.** In the settings, a choice between a
    wide front row (6 cells) and a short one (4 cells). With the short row, the 2 edge cells of the
@@ -111,7 +111,7 @@ was seen on and what to check.
    settings window now has "Front row in battle (new games)": 6 or 4 cells, kept in
    `audio.json` with the other settings (`wide_row`; until chosen the install's `OptValue11`),
    applied to games started afterwards; saves keep their width. The 4-column formation is now
-   drawn as the original's places (it was three lines of four).
+   drawn as the original's places (it was three lines of four). Commit 7019060.
 
 6. **The camera jumps back to the hero on the first click.** With the hero off screen (the map
    scrolled away), a single click on a place moves the view straight back to the hero. Wanted:
@@ -127,7 +127,7 @@ was seen on and what to check.
    400 px off the hero, the first click drew the route and left the camera at (210, 440); the
    second set him off and the camera went to (608, 440). Razdor reset the view on every
    click on a target; now a click leaves it and the walk brings it back (`camera_look`), so
-   this is parity, not a Razdor choice.
+   this is parity, not a Razdor choice. Commit 60e1eaf.
 
 7. **Second campaign map: the "send the peasants to the mines" offers.** There are three offers to
    send a group of peasants to the mines. The player accepted two and declined one. The declined
@@ -159,3 +159,4 @@ was seen on and what to check.
    the next visit, staffs the north mine (quest 18 done, 4 not), loses the other three, gets
    offer 10 a day later and staffs the south mine (27 fires, quest 4 done). What dt-feat
    changed for repeating questions should be checked against this test when it merges.
+   Commit 0d4057a.
