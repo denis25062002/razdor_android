@@ -1146,9 +1146,11 @@ impl World {
 
     /// Where and with what the hero of `class` starts in scenario `s` (its header preset):
     /// exactly on the preset's cell (world.md §7, no relocation); his start buildings
-    /// ([`World::start_buildings`]) become his without moving him.
+    /// ([`World::start_buildings`]) become his without moving him. A class the map does not
+    /// offer starts from the map's first offered preset ([`start_preset`]).
     pub fn hero_start(&self, s: &Scenario, content: &Content, class: HeroClass) -> HeroStart {
-        let archetype = match class {
+        let from = start_preset(s, class);
+        let archetype = match from {
             HeroClass::Knight => Archetype::Knight,
             HeroClass::Archmage => Archetype::Archmage,
             HeroClass::Ranger => Archetype::Ranger,
@@ -1167,7 +1169,7 @@ impl World {
             items: artifact_ids(content, p.artifacts.iter().filter(|&&x| x != 0).map(|&x| x as u32)),
             spells: p.spells.iter().copied().filter(|&x| x != 0).collect(),
             location: self.location_at(tile),
-            owned: self.start_buildings(s, class),
+            owned: self.start_buildings(s, from),
         }
     }
 
@@ -1499,6 +1501,22 @@ pub(crate) mod testkit {
     }
 }
 
+/// The class whose header preset starts the hero of `class` on scenario `s`: his own when the
+/// map offers it ([`crate::dt::dtm::HeroPreset::offered`]: a start cell), else the map's first
+/// offered class (knight, archmage, ranger). Razdor fixes the original's bug: a campaign's
+/// next map keeps the class it was started with without looking at whether that map offers
+/// it (0x4b5b64), so a hero of a class the map leaves out started on cell (0, 0) of the
+/// empty preset. Here he keeps his class and record, and starts where, and with what, the
+/// map's first offered hero would. A map that offers no class keeps his own preset.
+pub fn start_preset(s: &Scenario, class: HeroClass) -> HeroClass {
+    let k = HeroClass::ALL.iter().position(|&c| c == class).unwrap_or(0);
+    let offered = s.header.offered_classes();
+    match s.header.first_offered_class() {
+        Some(first) if !offered[k] => HeroClass::ALL[first],
+        _ => class,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::testkit::*;
@@ -1799,6 +1817,31 @@ mod tests {
         let g = Game::from_scenario(std::sync::Arc::new(c), &s, HeroClass::Archmage);
         let f = &g.world.locations[0];
         assert_eq!((g.tile(), g.location, f.owner, f.faction, f.attitude), ((6, 5), Some(0), Owner::Player, 1, 3));
+    }
+
+    /// Razdor fixes the original's bug: a class the map does not offer (a campaign's next
+    /// map can carry one) starts from the first offered preset, not on cell (0, 0).
+    #[test]
+    fn a_class_the_map_leaves_out_starts_from_the_first_offered_preset() {
+        let mut s = scenario(12, 12);
+        s.buildings = vec![building(BuildingType::Fort, 6, 6, (2, 2))];
+        s.header.heroes[1] = hero(6, 5, 500, &[troop(4, 0, 1)]);
+        s.header.heroes[1].start_building = 1;
+        // The knight and the ranger have no start cell: the archmage is the first offered.
+        assert_eq!(start_preset(&s, HeroClass::Ranger), HeroClass::Archmage);
+        assert_eq!(start_preset(&s, HeroClass::Knight), HeroClass::Archmage);
+        assert_eq!(start_preset(&s, HeroClass::Archmage), HeroClass::Archmage);
+        let c = content();
+        let w = World::from_scenario(&s, &c);
+        let r = w.hero_start(&s, &c, HeroClass::Ranger);
+        assert_eq!((r.class, r.tile, r.gold, r.location, r.owned.clone()), (HeroClass::Ranger, (6, 5), 500, Some(0), vec![0]));
+        // With the knight offered too, he is the first.
+        s.header.heroes[0] = hero(3, 3, 150, &[]);
+        assert_eq!(start_preset(&s, HeroClass::Ranger), HeroClass::Knight);
+        assert_eq!(w.hero_start(&s, &c, HeroClass::Ranger).tile, (3, 3));
+        // A map offering nobody keeps the class's own (empty) preset.
+        s.header.heroes = Default::default();
+        assert_eq!(start_preset(&s, HeroClass::Ranger), HeroClass::Ranger);
     }
 
     #[test]

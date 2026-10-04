@@ -1053,6 +1053,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 17 | Esc on the map | Matches: opens the game menu (Razdor has no spell targeting on the map) | Leaves spell targeting, else opens the exit menu | 7.7 |
 | 18 | Esc in the main menu | Matches: quits at once | Quits the game at once, without a question | 4 |
 | 19 | Hero choice Back / Esc | Matches: back to the main menu | Back to the main menu | 5 |
+| 19a | Classes on offer | Matches on a new game: only a class whose preset has a start cell, the window on the first one. Razdor fixes the original's bug on a campaign's next map: a carried class the map leaves out starts from the map's first offered preset (`world::start_preset`) | A new game offers only those classes; a campaign's next map keeps the class unchecked, the hero then at cell (0,0) of the empty preset | 5 |
 | 20 | Yes/No boxes | Matches: Esc = No, any other key except Tab, Alt, Up, Down = Yes (on the key's press, not its release) | Esc = No, any other key except Tab, Alt, Up, Down = Yes | 11 |
 | 21 | Battle deployment | Matches: none, the battle starts when the window opens (`BattleView::new`) | None: the battle starts when the window opens | 12 |
 | 22 | Space in battle | Matches: as a click on the actor's own card (a pass, or a spell on itself) | Same as clicking the actor's own card: one pass (100 ms) or a self heal/bless | 12 |

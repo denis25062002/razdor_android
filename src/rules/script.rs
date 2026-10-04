@@ -2322,6 +2322,8 @@ mod tests {
         s.next_map = "Next.DTm".into();
         s.header.carry_over = [1, 1, 1, 1, 1, 1, 1];
         s.named_characters = vec![crate::dt::dtm::NamedCharacter { unit: 4, name: "Herald".into() }];
+        // The archmage's own preset, alone (an empty one would start him from the knight's).
+        s.header.heroes[1] = hero(2, 2, 100, &[]);
         let mut g = Game::from_scenario(Arc::new(content()), &s, HeroClass::Archmage);
         read(&mut g);
         let next = g.next_map().expect("a victory with a next map");
@@ -2343,6 +2345,9 @@ mod tests {
         assert_eq!(g2.script_end(), None);
         assert!(g2.script().unwrap().flag("Band"));
         assert_eq!(g2.archetype, 2);
+        // The next map offers only the knight: Razdor fixes the original's bug, the carried
+        // archmage starts on the knight's cell, not on cell (0, 0) of his empty preset.
+        assert_eq!(g2.tile(), (2, 2));
         assert!(g2.squad.iter().any(|u| u.named == 1));
 
         // A restart (0x4b5ff8) starts the map again from that hand-over, the restart snapshot

@@ -698,6 +698,9 @@ now fixed with the rule the original evidently meant:
   wear, paid for and lost).
 - The noon autosave on day 9 of a month is named with its leading zero (the original's
   padding slip printed `9`).
+- A campaign's next map that does not offer the hero's class starts him where its first
+  offered hero would, keeping his class and record (the original's bug dropped him on cell
+  (0, 0) of the empty preset).
 
 ## 0.2.2 — 2026-10-01
 

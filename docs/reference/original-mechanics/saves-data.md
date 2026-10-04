@@ -329,6 +329,10 @@ from column 0 and the right column from column W−1.
   buildings flagged for the class (bytes 353–355) are given and the attitudes come from row 0
   as always. No shipped campaign leaves a class out of a later map, so this needs a
   user-made campaign; not checked in the running game.
+  Razdor fixes the original's bug: the hero keeps his class and his carried record, and
+  starts where the map's first offered class would (its preset's cell, start building,
+  flagged buildings, gold, mana, troops, items and spells, before the carry-over), not at
+  (0,0) (`world::start_preset`).
 
 ### 10.5 Armies — code
 For each 89-byte record, in file order, into slot k = index + 1 (offsets are dtm-format.md §7):
@@ -620,6 +624,7 @@ id, army occupant, two transient mark bytes, the anchor cell index.
 | Battle autosave name | Matches: the army's or building's name cut at the first `#`, trailing spaces trimmed (no leader-name fallback) | the same | `save::autosave_foe` |
 | Restart | Matches: a campaign map restarts from what it was handed over (kept in saves), a new-game map from its preset in the starting class | the restart snapshot of §15 | `Game::restart` |
 | Carry-over gold | Matches: set to the old amount | set to the old amount, not added | `Game::apply_carry_over` |
+| Carried class left out | Razdor fixes the original's bug: a class the next campaign map does not offer starts from that map's first offered preset, keeping the hero's class and record | the class kept unchecked; with an empty preset the hero stands at cell (0,0) | `world::start_preset`, `World::hero_start` |
 | Play options | Matches: `OptValue9`/`10`/`11` and `[Tutorial] Completed` on when they read 1 (loosely); `OptValue11` picks the 6- or 4-wide front row, and a loaded game keeps the width it was saved with, which holds for the rest of the session (next new game, restart, campaign map) | flags read at start, 1 = on; the wide row 6 or 4 per row; a save load sets the row width for the session | `dt/install.rs` `PlayOptions`, `Content::from_dt`, `save::restore` |
 
 ## Unknowns

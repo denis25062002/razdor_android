@@ -3,6 +3,26 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-04, dt-feat: dt-original merged
+
+1. **A campaign's next map that leaves the carried class out** (the dt-original note of
+   2026-10-03 below asked dt-feat to treat it as an original bug). Done, as "Razdor fixes the
+   original's bug": the hero keeps his class and his carried record and starts where the
+   map's first offered class would, on its preset's cell with its start building and preset
+   (then the carry-over as usual), not on cell (0, 0) of the empty preset
+   (`world::start_preset`; saves-data.md §10.4, interface.md row 19a). Of the two options,
+   switching him to an offered class would have clashed with the carried hero record (his
+   unit type, level, items and book), so the class stays and only the start moves. A new
+   game still offers only the classes the map defines, as the original.
+2. **РК2's peasant offers after the merge.** Re-run: `rk2_the_peasant_offers_and_the_mines`
+   passes on dt-feat unchanged. dt-feat's fix for repeating questions applies only to an
+   asking event without a message; offers 8, 9 and 10 all have one, so their declines, the
+   next visit's questions, offer 10's replacement and the quest's end play as on dt-original
+   (the original's).
+3. **Stacked windows** (note 1 of 2026-10-03, "what was seen on dt-feat should be checked
+   again after it merges"): dt-feat now has dt-original's window order (one event window at
+   a time, the events behind a window waiting for it); not re-checked by playing yet.
+
 ## 2026-10-04, dt-original: spell badges on the unit cards, items dropped on the hero
 
 1. **"In the grid of units I don't see what buffs or debuffs (magic) they have on them."**
