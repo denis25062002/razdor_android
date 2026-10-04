@@ -20,27 +20,29 @@ jobs:
 
       - name: Install Compatible NDK (r25b) and SDK Platform 29
         run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
+            --install "platforms;android-29" "ndk;25.2.9519653"
 
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
 
       - name: Vendor and sanitize dependencies
         run: |
-          # 1. Понижаем encoding_rs до версии на Edition 2018 до генерации vendor
+          # Понижаем encoding_rs до версии на Edition 2018
           cargo update -p encoding_rs --precise 0.8.33 || true
 
-          # 2. Понижаем версию формата Cargo.lock до v3
+          # Cargo.lock v4 -> v3
           sed -i 's/version = 4/version = 3/' Cargo.lock || true
 
-          # 3. Скачиваем все зависимости локально в vendor
+          # Vendor dependencies
           mkdir -p .cargo
           cargo vendor > .cargo/config.toml
 
-          # 4. Заменяем edition = "2024" во всех вендорных библиотеках на "2021"
-          find vendor/ -name "Cargo.toml" -type f -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
+          # Заменяем edition 2024 -> 2021
+          find vendor/ -name "Cargo.toml" -type f \
+            -exec sed -i 's/edition = "2024"/edition = "2021"/g' {} +
 
-          # 5. Очищаем хэши файлов в .cargo-checksum.json через Python
+          # Очищаем checksum
           python3 -c '
           import glob, json
           for path in glob.glob("vendor/**/.cargo-checksum.json", recursive=True):
@@ -59,15 +61,15 @@ jobs:
           RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
         run: |
           NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+
           export ANDROID_NDK_ROOT="$NDK_PATH"
           export NDK_HOME="$NDK_PATH"
+          export ANDROID_NDK_HOME="$NDK_PATH"
+
           export PATH="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
-          # Создаем симлинк для тулчейна ar
-          cd "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          ln -sf llvm-ar arm-linux-androideabi-ar || true
-
           cd "$GITHUB_WORKSPACE"
+
           cargo quad-apk build --release --offline
 
       - name: Upload APK Artifact
