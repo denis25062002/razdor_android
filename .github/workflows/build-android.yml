@@ -22,10 +22,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # Install SDK platform 33 (required for modern macroquad window insets)
+      # Install SDK platform 33 and trick cargo-quad-apk into using it as API 29
       - name: Install Android SDK and NDK
         run: |
           yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-33" "ndk;25.2.9519653"
+          
+          # Create a symlink so cargo-quad-apk finds "android-29" but actually uses API 33 headers
+          ln -sf $ANDROID_SDK_ROOT/platforms/android-33 $ANDROID_SDK_ROOT/platforms/android-29
 
       # 2. Switch to Java 8 for cargo-quad-apk (it requires rt.jar)
       - name: Setup Java 8 (for cargo-quad-apk)
