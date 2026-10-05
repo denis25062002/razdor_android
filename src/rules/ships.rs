@@ -48,7 +48,7 @@ pub struct Ship {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShipError {
-    /// The hero is not in a friendly shipyard.
+    /// The hero is not in a shipyard.
     NoShipyard,
     NotEnoughGold,
 }
@@ -191,11 +191,12 @@ impl Game {
         self.content.options.ship_cost.max(0)
     }
 
-    /// The shipyard the hero stands in, if it serves him (not ill-disposed).
+    /// The shipyard the hero stands in. Every shipyard serves him: the original opens its
+    /// ship window for any building of type 9 (0x4bbc84) and buys with no attitude or owner
+    /// test (0x4c60ac).
     pub fn shipyard_here(&self) -> Option<usize> {
         let l = self.location?;
-        let loc = &self.world.locations[l];
-        (loc.kind == LocationKind::Shipyard && !loc.hostile()).then_some(l)
+        (self.world.locations[l].kind == LocationKind::Shipyard).then_some(l)
     }
 
     /// Buys a ship at the shipyard here for [`Game::ship_price`] (world.md §8, 0x4c60ac): any
@@ -418,6 +419,40 @@ mod tests {
         assert!(g2.can_target((15, 5)));
         g.gold = 0;
         assert_eq!(g.ship, None);
+    }
+
+    #[test]
+    fn a_shipyard_opens_its_ship_window_on_land_and_nothing_at_sea() {
+        // 0x4bbc84: type 9 with the at-sea flag clear opens the ship window (0x4d3ec0), with
+        // it set nothing at all.
+        let s = strait();
+        let mut g = at_yard(&s);
+        use crate::rules::town::Tab;
+        assert_eq!(g.window_at(0), Some(Tab::Shipyard));
+        assert_eq!(g.tabs_here(), [Tab::Shipyard], "no main hall, no other tab");
+        g.ship = Some(Ship { tile: g.tile(), aboard: true });
+        assert!(g.aboard());
+        assert_eq!(g.window_at(0), None);
+        assert!(g.tabs_here().is_empty());
+    }
+
+    #[test]
+    fn an_ill_disposed_shipyard_rents_a_ship_too() {
+        // Twelve of the shipped maps' 30 shipyards start ill-disposed (ДС1's «Старый причал» at
+        // −2, Проклятое озеро's two ports at −1 …); the original's window has no attitude
+        // test (0x4bbc84, 0x4c60ac).
+        let mut s = strait();
+        s.buildings[0].relations = [-3, 0, 0, 0];
+        s.buildings[0].faction = 4;
+        let mut g = at_yard(&s);
+        assert!(g.world.locations[0].hostile());
+        use crate::rules::town::{first_tab, Tab};
+        assert_eq!(first_tab(&g.world.locations[0], &g.content), Some(Tab::Shipyard));
+        assert_eq!(g.rent_ship(), Ok(()));
+        assert_eq!(g.gold, 350);
+        assert!(g.set_destination((12, 5)));
+        walk_until_stopped(&mut g);
+        assert!(g.aboard() && g.tile() == (12, 5));
     }
 
     #[test]

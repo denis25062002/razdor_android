@@ -28,7 +28,8 @@ pub enum Tab {
     Sanctuary,
     /// A village's tribute and its alternatives.
     Tribute,
-    /// Rent a ship (`rules::ships`).
+    /// Not a tab: a shipyard opens the original's small ship window instead of the building
+    /// window (0x4bbc84, 0x4d3ec0), with "Нанять корабль" (`rules::ships`) and "Отмена".
     Shipyard,
 }
 
@@ -61,12 +62,18 @@ pub enum ServiceError {
 /// - the player's castles and forts: the garrison;
 /// - a building with goods (only towns, markets and churches keep them): the market; with
 ///   spells: the sanctuary;
-/// - villages: the tribute; friendly shipyards: ships for rent.
+/// - villages: the tribute.
 ///
-/// Bridges, the obelisk, the demo's camps and a garrison still to be beaten have none.
+/// A shipyard has no building window: only [`Tab::Shipyard`], the original's ship window,
+/// whatever its attitude, owner, barracks, goods or spells (0x4bbc84 opens it for every
+/// type-9 building and tests neither attitude nor owner). Bridges, the obelisk, the demo's
+/// camps and a garrison still to be beaten have none.
 pub fn tabs(l: &Location, c: &Content) -> Vec<Tab> {
     if l.kind.is_bridge() || matches!(l.kind, LocationKind::Obelisk | LocationKind::Camp) || l.defended() {
         return Vec::new();
+    }
+    if l.kind == LocationKind::Shipyard {
+        return vec![Tab::Shipyard];
     }
     let mut tabs = vec![Tab::MainHall];
     if l.hires(c) {
@@ -84,14 +91,11 @@ pub fn tabs(l: &Location, c: &Content) -> Vec<Tab> {
     if l.kind == LocationKind::Village {
         tabs.push(Tab::Tribute);
     }
-    if l.kind == LocationKind::Shipyard && !l.hostile() {
-        tabs.push(Tab::Shipyard);
-    }
     tabs
 }
 
-/// The tab a building window opens on: a village's tribute, a shipyard's ships, else the
-/// main hall.
+/// The tab a building window opens on: a village's tribute, a shipyard's ship window, else
+/// the main hall.
 pub fn first_tab(l: &Location, c: &Content) -> Option<Tab> {
     let t = tabs(l, c);
     t.iter().copied().find(|&t| matches!(t, Tab::Tribute | Tab::Shipyard)).or_else(|| t.first().copied())
@@ -102,9 +106,25 @@ impl Game {
         self.location.map(|l| &self.world.locations[l])
     }
 
-    /// Tabs of the building the hero stands in.
+    /// Tabs of the building the hero stands in: none in a shipyard while he is at sea (the
+    /// original opens nothing there, 0x4bbc84).
     pub fn tabs_here(&self) -> Vec<Tab> {
-        self.here().map_or_else(Vec::new, |l| tabs(l, &self.content))
+        match self.here() {
+            Some(l) if l.kind == LocationKind::Shipyard && self.aboard() => Vec::new(),
+            Some(l) => tabs(l, &self.content),
+            None => Vec::new(),
+        }
+    }
+
+    /// The window building `l` opens for the hero, by its first tab ([`first_tab`]): none
+    /// for a shipyard while he is at sea (0x4bbc84 tests the at-sea flag there and opens
+    /// nothing; on land it opens the ship window).
+    pub fn window_at(&self, l: usize) -> Option<Tab> {
+        let loc = &self.world.locations[l];
+        if loc.kind == LocationKind::Shipyard && self.aboard() {
+            return None;
+        }
+        first_tab(loc, &self.content)
     }
 
     fn offers(&self, tab: Tab) -> bool {
@@ -512,7 +532,10 @@ mod tests {
         altar.recruit_all_types = 1;
         altar.random_artifacts_for_sale = 2;
         let obelisk = town(BuildingType::Obelisk, 9, 7, 1);
-        s.buildings = vec![t, castle, fort, village, church, tavern, market, hostile, bridge, altar, obelisk];
+        let mut yard = town(BuildingType::Shipyard, 11, 7, -2);
+        yard.barracks[0] = RecruitSlot { unit: 9, start_count: 1, max_count: 1 };
+        yard.recruit_all_types = 1;
+        s.buildings = vec![t, castle, fort, village, church, tavern, market, hostile, bridge, altar, obelisk, yard];
         let g = start(&s);
         let c = g.content.clone();
         let tabs: Vec<Vec<Tab>> = g.world.locations.iter().map(|l| tabs(l, &c)).collect();
@@ -528,6 +551,8 @@ mod tests {
         assert!(tabs[8].is_empty());
         assert_eq!(tabs[9], [MainHall, Barracks], "the all-types byte opens it; an altar keeps no goods");
         assert!(tabs[10].is_empty(), "the obelisk has no window");
+        assert!(g.world.locations[11].hostile());
+        assert_eq!(tabs[11], [Shipyard], "an ill-disposed shipyard opens its ship window, no attitude test, and nothing else even with a barracks slot (0x4bbc84)");
     }
 
     #[test]
@@ -1024,24 +1049,39 @@ mod tests {
         assert!(events.contains(&Event::Captured(0)), "{events:?}");
         assert!(g.world.locations[0].owned());
         assert!(g.village_offer().is_some() || events.iter().any(|e| matches!(e, Event::Tribute { .. })), "{events:?}");
-        // Guarded by an ill-disposed army living there, the guard is met instead.
-        let mut s = map();
-        let mut v = town(BuildingType::Village, 8, 2, -1);
-        (v.gold_per_day, v.gold_max) = (40, 40);
-        s.buildings = vec![v];
-        let mut guard = crate::rules::world::testkit::army(1, 12, 6, -2, &[crate::rules::world::testkit::troop(4, 0, 1)]);
-        guard.home_building = 1;
-        (guard.patrols, guard.patrol_radius) = (1, 0);
-        s.armies = vec![guard];
-        let mut g = start(&s);
-        assert!(g.set_destination(g.world.locations[0].tile));
-        let mut events = Vec::new();
-        while g.moving() {
-            events.extend(g.tick(0.05));
-        }
+        // Guarded by an ill-disposed army standing in it (on another of its cells), the
+        // guard is met instead. Only an army in the building guards it (+0x3788, the
+        // building it stands in), not one whose home it is that is away.
+        let walk = |guard_at: (u16, u16)| {
+            let mut s = map();
+            let mut v = crate::rules::world::testkit::building(BuildingType::Village, 8, 2, (1, 2));
+            v.relations = [-1, 0, 0, 0];
+            v.faction = 4;
+            (v.gold_per_day, v.gold_max) = (40, 40);
+            s.buildings = vec![v];
+            let mut guard = crate::rules::world::testkit::army(1, guard_at.0, guard_at.1, -2, &[crate::rules::world::testkit::troop(4, 0, 1)]);
+            guard.home_building = 1;
+            (guard.patrols, guard.patrol_radius) = (1, 0);
+            s.armies = vec![guard];
+            let mut g = start(&s);
+            let cell = (8, 2);
+            assert_eq!(g.world.location_covering(cell), Some(0));
+            assert!(g.set_destination(cell));
+            let mut events = Vec::new();
+            while g.moving() {
+                events.extend(g.tick(0.05));
+            }
+            (g, events)
+        };
+        let other = (8, 1);
+        let (g, events) = walk(other);
+        assert_eq!(g.world.location_covering((8, 1)), Some(0));
         assert_eq!(events.last(), Some(&Event::Encounter(0)), "{events:?}");
         assert!(!g.world.locations[0].owned() && g.location.is_none());
         assert_eq!(g.world.locations[0].tribute_gold, 40);
+        let (g, events) = walk((12, 6));
+        assert!(events.contains(&Event::Captured(0)), "its army is away: {events:?}");
+        assert!(g.world.locations[0].owned());
     }
 
     /// A village with `gold`/`mana` waiting, the hero entering it with `rng` seed `seed`.

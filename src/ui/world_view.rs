@@ -15,7 +15,6 @@ use razdor::rules::clock::duration_label;
 use razdor::rules::content::HeroClass;
 use razdor::rules::game::{Event, Foe, Game};
 use razdor::rules::magic::{CastOutcome, CastTarget};
-use razdor::rules::town::first_tab;
 use razdor::rules::map::{object_class, Decoration, Grid, Tile, TileMap};
 use razdor::rules::world::{Army, Location, LocationKind, Troop};
 
@@ -798,10 +797,23 @@ fn draw_building(l: &Location, art: Option<&DtArt>, cam: &Camera) {
     let base = cam.to_screen(footprint_base(cam.grid, l));
     let zoom = cam.scale / PX;
     let sprite = art.and_then(|a| a.map_atlas()).and_then(|at| Some((at, at.building(l.picture.0, l.picture.1)?)));
-    let (w, h) = if let Some((atlas, r)) = sprite {
+    // The original draws just the sprite (RenderWorld_BuildingAndRest 0x4c9b5b), its owner
+    // shown only on the minimap. Razdor adds a ring on the ground under castles, forts,
+    // towns and villages in the owner's colour, as under the armies (a Razdor choice).
+    if matches!(l.kind, LocationKind::Castle | LocationKind::Fort | LocationKind::Town | LocationKind::Village) {
+        let ring = if l.owned() {
+            faction_color(1)
+        } else if l.hostile() {
+            faction_color(4)
+        } else {
+            faction_color(l.faction)
+        };
+        let (rx, ry) = (l.size.0 as f32 * cam.scale * 0.55, l.size.1 as f32 * cam.cell_size().y * 0.5);
+        draw_ellipse_lines(base.x, base.y - ry, rx, ry, 0.0, 2.0, ring);
+    }
+    if let Some((atlas, r)) = sprite {
         let (w, h) = (r.w * zoom, r.h * zoom);
         draw_texture_ex(&atlas.texture, base.x - w / 2.0, base.y - h, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), source: Some(r), ..Default::default() });
-        (w, h)
     } else {
         let (w, h) = (l.size.0 as f32 * cam.scale, (l.size.1 as f32 * cam.cell_size().y).max(cam.scale * 0.8));
         let wall = match l.kind {
@@ -821,18 +833,30 @@ fn draw_building(l: &Location, art: Option<&DtArt>, cam: &Camera) {
             let letter: String = l.kind.label().chars().take(1).collect();
             text_centered(&letter, base.x, base.y - h * 0.3, (h * 0.6).clamp(10.0, 30.0), BLACK);
         }
-        (w, h)
-    };
-    // A pennant in the owner's colour over castles, forts, towns and villages.
-    if matches!(l.kind, LocationKind::Castle | LocationKind::Fort | LocationKind::Town | LocationKind::Village) {
-        let (px, py) = (base.x - w * 0.3, base.y - h * 0.9);
-        let col = if l.owned() { faction_color(1) } else { faction_color(l.faction) };
-        draw_line(px, py, px, py + 16.0 * zoom, 2.0, BLACK);
-        draw_triangle(vec2(px, py), vec2(px + 12.0 * zoom, py + 4.0 * zoom), vec2(px, py + 8.0 * zoom), col);
     }
 }
 
-/// `Graphics/Units/*.ugs` figure for an army's map model or the hero's class.
+/// The game's 13 map figures (`Graphics/Units/*.ugs`), by an army's figure (army +0x169d,
+/// [`razdor::rules::world::Army::figure`]): the names at 0x4ed238, loaded in this order by
+/// 0x4ce30c and drawn by 0x4ad314 (`0x71c430 + figure·0x2c00`).
+pub(super) const FIGURES: [&str; 13] = [
+    "Hero-Knight",
+    "Hero-Mage",
+    "Hero-Ranger",
+    "Hero-Ship-Vesla",
+    "Rogue",
+    "Peasant",
+    "Knight",
+    "Necromant",
+    "Zombie",
+    "Ghost",
+    "Mage",
+    "Ship-Merchant",
+    "Ship-Pirat",
+];
+
+/// `Graphics/Units/*.ugs` figure for the editor's army picture (`.DTm` byte 5) or the hero's
+/// class (1–3). The game draws an army by its own figure ([`FIGURES`]), not by byte 5.
 pub(super) fn figure_stem(model: u8) -> &'static str {
     match model {
         1 => "Hero-Knight",
@@ -937,7 +961,9 @@ fn draw_army(game: &Game, a: &Army, assets: &Assets, art: Option<&DtArt>, cam: &
             let sail = if a.hostile() { Color::new(0.15, 0.12, 0.12, 1.0) } else { Color::new(0.92, 0.9, 0.82, 1.0) };
             draw_ship(cam, pos, sail);
         }
-    } else if !draw_figure(art, figure_stem(a.model), pos, next, frame, cam, Stand::Feet) {
+    } else if !FIGURES.get(a.figure as usize).is_some_and(|stem| draw_figure(art, stem, pos, next, frame, cam, Stand::Feet)) {
+        // A figure past the table (an event's opcode 17 can set any byte) reads past the
+        // original's sprites; Razdor draws the leader instead *(guess)*.
         let c = cam.to_screen(pos);
         if let Some(leader) = a.leader() {
             assets.draw_unit(leader, if a.hostile() { Team::Enemy } else { Team::Player }, c.x, c.y - 8.0, 26.0);
@@ -974,13 +1000,6 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
 fn draw_world(game: &Game, assets: &Assets, cam: &Camera, preview: Option<&[Tile]>) {
     let art = assets.dt.as_ref();
     draw_terrain(game, art, cam);
-    // The route being walked, or the one a first click shows, lies on the ground under the
-    // figures.
-    if game.moving() {
-        draw_route(game, &game.path, cam);
-    } else if let Some(path) = preview {
-        draw_route(game, path, cam);
-    }
     let map = &game.world.map;
     let ((c0, c1), (r0, r1)) = cam.visible(map);
     let rh = cam.grid.row_height();
@@ -988,10 +1007,25 @@ fn draw_world(game: &Game, assets: &Assets, cam: &Camera, preview: Option<&[Tile
     let (below, side) = (10, 8);
     let mut items: Vec<(f32, Drawable)> = Vec::new();
     let fog = &game.fog;
+    // The original (0x4c8864) draws the hills of classes 1-3 in a pass of their own before
+    // anything else, so they lie under every tree, mountain, building and army, the ones
+    // above them included. Its test is `0x100 < class·256 + sprite < 0x401`: class 4's
+    // sprites are 10 and up, so the yellow hills are drawn with the mountains, row by row.
     for o in map.objects_in_rows(r0 - 1, r1 + below) {
         if o.tile.0 >= c0 - side && o.tile.0 < c1 + side && razdor::rules::map::object_cells(o).any(|t| fog.explored_near(t, minimap::FEATHER)) {
-            items.push((o.tile.1 as f32 * rh, Drawable::Object(*o)));
+            if (object_class::HILLS..=object_class::ROCKY_HILLS).contains(&o.class) {
+                draw_object(o, art, cam);
+            } else {
+                items.push((o.tile.1 as f32 * rh, Drawable::Object(*o)));
+            }
         }
+    }
+    // The route being walked, or the one a first click shows, lies on the ground under the
+    // figures (the original's second pass, over the hills).
+    if game.moving() {
+        draw_route(game, &game.path, cam);
+    } else if let Some(path) = preview {
+        draw_route(game, path, cam);
     }
     // Buildings stand in front of the scenery: hills, rocks and trees south of one would
     // hide it, so they are drawn after every object, sorted among themselves. Bridges lie
@@ -1269,7 +1303,7 @@ fn reopen_here(game: &mut Game, t: Tile) -> Option<Screen> {
         game.foe = Some(Foe::Garrison(l));
         return Some(saves::battle(game));
     }
-    first_tab(loc, &game.content).map(|first| Screen::Building(BuildingView::new(first)))
+    game.window_at(l).map(|first| Screen::Building(BuildingView::new(first)))
 }
 
 
@@ -1337,7 +1371,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
             Event::Encounter(_) => {}
             Event::Arrived(l) => {
                 if game.foe.is_some() {
-                } else if let Some(first) = first_tab(&game.world.locations[l], &game.content) {
+                } else if let Some(first) = game.window_at(l) {
                     *message = None;
                     next = Some(Screen::Building(BuildingView::new(first)));
                 }
@@ -1416,7 +1450,7 @@ pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> 
         BarButton::Save => Screen::Save(SaveView::new(game, Back::Map)),
         BarButton::Load => Screen::Load(LoadView::new(Back::Map)),
         BarButton::Journal => Screen::Journal(Default::default()),
-        BarButton::Squad => Screen::Squad { selected: 0, scroll: 0, back: None },
+        BarButton::Squad => Screen::Squad { selected: Default::default(), scroll: 0, back: None },
         BarButton::Spells => Screen::Spellbook { selected: 0 },
         BarButton::Map => Screen::WorldMap,
     })
@@ -1458,7 +1492,7 @@ fn bottom_bar(game: &mut Game, message: &mut Option<String>, minimap_open: bool,
         Some(BarButton::Journal) => Some(Screen::Journal(Default::default())),
         Some(BarButton::Squad) => {
             *message = None;
-            Some(Screen::Squad { selected: 0, scroll: 0, back: None })
+            Some(Screen::Squad { selected: Default::default(), scroll: 0, back: None })
         }
         Some(BarButton::Spells) => {
             *message = None;

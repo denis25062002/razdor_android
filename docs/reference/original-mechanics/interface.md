@@ -672,17 +672,24 @@ Outside battle the formation is edited by clicking cards, never by dragging; act
 - Pressing a unit with nothing selected selects it (its card pulses).
 - Pressing another unit while one is selected **swaps the two cells at once** (`Card-Move`
   plays; no slide) and clears the selection.
-- Pressing an empty cell while a unit is selected queues a card slide (4b0c04); when it ends
-  the unit is placed in that cell.
-- Every press then switches the right side to the pack or the promotion view of the selected
-  unit (498d0c).
+- Pressing an empty cell while a unit is selected queues a card slide (4b0c04, `Card-Move`,
+  `round(0.7 × distance)` ms, at most 200); when it ends the unit is placed in that cell and the
+  selection is cleared. Presses wait while the card slides.
+- A press then switches the right side to the pack or the promotion view of the selected unit
+  (498d0c): after a select, the unit's tree; after a swap or a press on an empty cell with
+  nothing selected, the pack. A **deselection skips it**, and so does the end of a slide: the
+  deselected (or slid) unit's promotion tree and Dismiss button stay up with nothing selected,
+  until a later press switches them. **code**
+- "Nothing selected" and "the hero selected" both show the pack (498d0c: unit < 2), but with
+  the hero selected a press on another unit swaps it with the hero.
 
 There is no restriction on cells: any unit, **the hero included**, can be put in any of the 12
 cells, the reserve included, and any two units can swap. **code** (no unit test in 4c346c or
 in the same-army end of 4b0c04)
 
 **Building window** (4c653c hero grid, 4c6f50 garrison grid): the same select, swap and slide
-rules inside one army. Across the hero's army and the garrison a swap exchanges the two unit
+rules inside one army, the hero grid in every tab that shows it (the hire tab too), each swap
+and slide with `Card-Move`. Across the hero's army and the garrison a swap exchanges the two unit
 records in place, and a move into an empty cell slides; the hero and named characters can
 never be swapped or moved into a garrison, and an unpaid garrison unit moved to the hero first
 asks for its price. Details are in economy.md §2 (garrison moves). **code**
@@ -720,8 +727,13 @@ other unit selected it shows the promotion choice instead: the four tree portrai
 272×191 description box. **code**
 
 **Promotion portraits** (494340): portrait 0 is the unit, 1–3 its next types. When the unit's
-level is 0 or its type has no next type, every portrait (the unit's own included) is greyed
-and darkened with a lock on top; an empty option is a plain background. **code**
+level is 0 or its type has no next type, every portrait (the unit's own included) is locked:
+turned grey (weights 100/200/100 for red, green, blue), each channel scaled by 1600/1024 and
+lowered by 48 (red), 176 (green) and 256 (blue), which gives a dark brown, and darkened at
+the edges by subtracting a 92×92 vignette built at start-up (squares inset by d = 0..18 px of
+grey 96 − d·5334/1000: the border loses 96, the middle nothing). The "lock" is this vignette,
+no picture of the install. Otherwise each portrait is plain under a glow frame. An empty
+option is a plain background. The original writes no text on this view. **code**
 
 **Pack scrolling** (49a718). The pack holds 256 slots; its length is the last used slot + 1.
 The first shown slot is `5 × Round(max(0, length div 5 − 4) × s)`, where s is the scroll bar
@@ -774,6 +786,24 @@ wage total. **code**
   while one of those two tabs is open. Esc (with the shared latch) closes the window through
   its close button (4cd930). **code**
 
+- **The shipyard's ship window** (built by 4d3ec0, opened by 4bbc84, drawn by 4d1314): a
+  shipyard (type 9) never opens the building window. With the hero on land it opens this
+  small window; at sea it opens nothing. The window is the generated 634×516 frame (the one
+  of the exit dialogs) centred over the map area (195, 83 at 1024×768), titled with the
+  building's name. Inside: the `S_ShipYard` picture at (5, 32); a text box at (18, 45), 598
+  wide and as tall as its text plus 14 above and below, at most 193 (a longer text is
+  centred in it); `[Building] AboutShipyard` with `#NAME1` replaced by the building's owner
+  name and, when the gold is below `[Costs] ShipCost`, an empty line and `NoMoneyForShip` in
+  red; under the box (17 px) the line "`CostShip` = ShipCost", centred with a shadow. At the
+  bottom, 10 px from the edges, two `Btn3` buttons: `BuyShip` on the left, enabled only when
+  ShipCost ≤ gold (fixed as it opens), and `[Buttons] Cancel` on the right; the close box at
+  the top right. No attitude or owner test. Every button plays the button sound as it is
+  pressed. Buying (4c60ac) closes the window, removes any old ship, switches the planner to
+  the MIXED map, takes ShipCost (read again) and plays `Item-Gold`. Cancel, the close box and
+  Esc (4c6118, 4cd8d0) only close it: the hero still stands in the shipyard. Its frame only
+  keeps the sound and the map music going (no timeline). It opens with an event chord (§14).
+  The village window (4d3a38) is a separate window of the same frame. **code**
+
 ### 9.9 After a won battle: the experience cards (4b09e8, 4b0684)
 
 During the 2.5 s hold after a win (§12) the battle screen rebuilds every unit's stats, clears
@@ -818,6 +848,27 @@ nothing (there is no status-line fallback). **code** (callers 4b933e, 4b9586)
 - **Event dialogs** (events subsystem): 634 px wide, height from the content, centred on the
   map view. Their text uses line breaks, colour markers, a centring marker and justified
   paragraphs with an indent. **code** (48e438, 4a9b75)
+- **Text markup** (48e438 with its inner line reader 48e1cc): read in four places only: the
+  event window's own text (an event's message, or its question when it asks; the tutorial
+  offer, the village offers and a unit's pay demand are shown as events too), the restart box
+  and the delete-save box. The victory, defeat and resource texts of the event window and the
+  journal's quest text are not read: there the marks show as typed. **code** (4aa3e6,
+  4aa427, 4bf818, 4c05ac; journal 49c388)
+  - Lines end at CR LF or at the two characters `#\`; an empty text adds nothing, a text
+    ending in a break gets an empty last line, shown as a blank row.
+  - In each line every `*`, `|` and `@` is removed wherever it stands, and picks the line's
+    font: `*` plain white, `|` blue (55, 180, 255), `@` orange (255, 175, 85), else pale
+    yellow (255, 255, 155); the fonts are tints of the white `Benguiat.lit` (red, green, blue
+    deltas 0/0/0, −200/−75/0, 0/−80/−170, 0/0/−100). With several kinds the last in the order
+    `*`, `|`, `@` wins.
+  - A `^` anywhere (every one removed) centres the line. Any other line is justified, behind
+    six `_` that the font draws as spaces (it has no `_`): an indent that does not stretch.
+  - Each line is word-wrapped: characters are added until the width passes the box, the row
+    ends after the last space seen and drops its trailing spaces (after a run of spaces only
+    the first is skipped). Justified rows share the free room equally between their spaces,
+    each space's position rounded half up; the last row of a line is left aligned.
+  - The line keeps its break's first character (the CR or the `#`); neither has a glyph, so
+    it draws as nothing.
 - **Text lists**: the wheel scrolls one line per wheel step; a click gives the list the
   keyboard, and the Up and Down keys then repeat every 50 ms. Scroll bars move by 0.1 of the
   range per arrow and 0.5 per page. **code** (47ede0, 47eb84, 47b8d4)
@@ -1029,7 +1080,7 @@ call in the game code; the process functions found are library code)
 
 Razdor files: `src/ui/world_view.rs`, `hotkeys.rs`, `main_menu.rs`, `game_bar.rs`,
 `minimap.rs`, `battle_view.rs`, `audio.rs`, `jukebox.rs`, `dialog.rs`, `saves.rs`,
-`screens.rs`. Rows marked "extra" are Razdor features the original does not have; per the
+`screens.rs`, `story.rs`, `new_game.rs`, `src/dt/markup.rs`. Rows marked "extra" are Razdor features the original does not have; per the
 parity rule they are candidates to hide or remove, not bugs to copy.
 
 | # | Topic | Razdor now | Original | § |
@@ -1074,7 +1125,7 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 37 | Hover bells |  Matches: `MainMenuSelect-1` as the pointer comes onto an item  | Main-menu hover: the same `MainMenuSelect-1` sound for every item | 4, 14 |
 | 38 | `InterfaceCastSpell` |  Matches: world spell cast, the building window's opening and tab switches (Razdor's load window has no tabs)  | Spell book cast, building tab switch, load window tab switch | 14 |
 | 39 | `InterfaceBarScroll` | Unused | Options slider test sound | 14 |
-| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn, a ship), the village tribute as its window closes; a hire plays it on the press and restarts it on the release, as the original's two calls  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
+| 40 | `Item-Gold` |  Matches: the money buttons (trade, hire, heal, learn), the ship window's Buy after its button sound, the village tribute as its window closes; a hire plays it on the press and restarts it on the release, as the original's two calls  | Presses of money buttons (trade, hire), event dialog button, village tribute, ship purchase | 14 |
 | 41 | Random generator | Matches: the music picks and the event chord draw from the game's generator | Music picks and the event chord use the game's generator | 13, 14 |
 | 42 | Hints | Razdor tooltips at once | Hint boxes with a 300 ms fade, flip-and-clamp placement, off when option 6 is ticked | 10 |
 | 43 | Options window | Music and sound volume, battle AI, the front row's width for new games (6 or 4: a switch for `OptValue11`, which stays the default until chosen; a save keeps its own width) | Five sliders and eight checkboxes; slider test sound | 16 |
@@ -1084,14 +1135,16 @@ parity rule they are candidates to hide or remove, not bugs to copy.
 | 47 | Info card magic | Own formula set (strike and curses for ToEnemy, heal and blessings for ToAlly; Death heals 0) | Ten lines from 49f8a0 by school, nature and direction (Death heals for Undead, Elemental and Hero natures; Life also strikes and curses; Life and Death write the two Atk/Def numbers in opposite orders) | 9.1 |
 | 48 | Info card wage | Shown when the wage is above 0 | Recruit wage of the type's Cost; hidden for hero classes, named characters, wage kind 3 and Undead | 9.1 |
 | 49 | Card stat strip | Labels match: "Pwr:" for a caster (attack kind 0x11) with no melee attack or outside the places 1–4, else "A:" with the larger attack (`unit_sheet::attack_piece`); the attack line blue when any of the three attacks is above, red when any is below; `Row2Def` on r in the back row as the original; colours against the start-of-battle value (none outside battle); D colour by the sum of both defences | "Pwr:" for a caster outside the front or with no melee, else "A:" with the larger attack; colours against the current value; D colour from one defence only | 9.5 |
-| 50 | Formation editing | Drag a card onto another cell (swap or move) | Click to select, click another unit to swap at once, click an empty cell to slide there; acts on the press; the hero may go anywhere | 9.6 |
+| 50 | Formation editing | Matches: presses as the original's, in the army window (`items_view::ArmySel`, `unit_drag::grid_press`; the deselection and the slide's end leave the right side as it was), the hire tab's hero grid and the garrison grids (a refused hero or named unit keeps the selection), `Card-Move` on every swap and slide, the army window's and hire tab's slides timed as 0x4b0c04. Extra: a card can also be dragged onto another cell (a press that swaps starts no drag) | Click to select, click another unit to swap at once, click an empty cell to slide there; acts on the press; the hero may go anywhere | 9.6 |
 | 51 | Item text | Kind name, then f-, d-, p- values and the bonus, comma-joined | Name, usage line by type and school, description, then "label value" entries with "=" (f-), "+" (d-), "%" (p-), potion heal/revive rules, defence merging with its lost-value quirks, bonus name | 9.2 |
 | 52 | Spell text | Effect summary, school, mana and casting time, duration and target | Name, effect entries (heal/curse label by the sign of DeltaFixedHits, AB = AS and DB = DS merged), `Mana`/`Reading`, duration; red when unaffordable, blue for own-army spells | 9.3 |
 | 53 | Pack scrolling | Wheel by one row over the whole 256-slot pack | Scroll bar over `max(0, length div 5 − 4)` rows of the used part, rounded | 9.7 |
-| 54 | Army window right side | Gear, pack and promotion views | Pack when nothing or the hero is selected, the promotion tree for any other unit (greyed with a lock when it cannot be promoted) | 9.7 |
+| 54 | Army window right side | Matches: the pack with nothing or the hero selected, the promotion tree for any other unit, every portrait locked as the original's (grey, dark brown, vignette: `chrome::lock_portrait`) when the unit is at its first level or of a final class, no note under it; the "Lv" labels and the arrows' colours are Razdor's | Pack when nothing or the hero is selected, the promotion tree for any other unit (every portrait greyed, browned and vignetted when it cannot be promoted) | 9.7 |
 | 55 | Panel icon hover | (see row 42) | A hint box with the icon's name only when hints are on; nothing otherwise | 6, 10 |
 | 56 | Spell badges | Matches: up to four badges along the portrait's bottom on the army, building and battle cards, from the units' slots (running spells with a mana cost, slot order), composed from the install's art (a coloured disc without one), added on hover; the hint with the picture, name, effect text (49b63c), `LifeLost` line and time left with the original's words and quirks (`spell_hint`, `ui::spell_badges`); the box is Razdor's parchment, flipped and clamped to the screen | Four 22 px badges 23 px apart at card + 0x47; 420 px hint box | 9.4 |
 | 57 | Battle card signs | Matches: potion and blessing from the top left, poison and curse from the top right, 23 px apart; the curse and blessing signs set as a magic or a blessing effect ends on the card and kept to the battle's end (the turn order number, Razdor's, moved to the bottom right). The army and building cards show the promotion (the hero's army) and then the potion sign from the top left in the same places (`chrome::card_signs`; the hero's helm, Razdor's, takes the first place); their payment sign is still Razdor's and they show no poison sign yet | `Sign-*` badges by the unit's potion, +0xc9, regeneration < 0, +0xc5; outside battle (493a64) also `Sign-Upgrade` first from the left (the hero's army, a promotion to take) and `Sign-Payment` first from the right (unpaid), poison on any card | 12 |
+| 58 | Shipyard window | Matches: a shipyard opens the original's small ship window on land and nothing at sea (no main hall, no other tab): its picture, the install's `AboutShipyard` text with the owner's name, `NoMoneyForShip` when the gold is short, the price line, "Нанять корабль" (enabled iff ShipCost ≤ gold) and "Отмена"; Buy closes it (`building_view::ship_window`, `Game::window_at`). The text box's font is Razdor's, so its lines wrap a little differently | The ship window on land, nothing at sea; Buy closes it (4bbc84, 4d3ec0, 4c60ac) | 9.8 |
+| 59 | Text markup | Matches: event windows, the tutorial offer and the restart and delete-save boxes read the marks (`dt::markup`): the lines at CR LF and `#\`, the four fonts' colours, `^` centred, the rest justified behind the six-space indent, blank lines kept; the journal shows the marks as typed, as the original's. The text keeps Razdor's face (the original draws it in Benguiat) | `*` `\|` `@` pick the font, `^` centres, other lines justified with an indent; only in the event window's own text and the restart and delete-save boxes | 11 |
 
 ## Unknowns
 
