@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.2 — 2026-10-05
+
 ### Fixed
 - **A shipyard opens the original's ship window, not the building window:** on land it
   shows the shipyard's picture, the harbour master's words with the owner's name, the price

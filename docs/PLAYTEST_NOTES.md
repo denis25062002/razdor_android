@@ -3,6 +3,26 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-05, main: the leftovers of the Discord reports, and the scenario texts' marks
+
+1. **The original's shipyard window.** Done (0x4bbc84, 0x4d3ec0, 0x4d1314, 0x4c60ac): on land
+   a shipyard opens its own small window (picture, `AboutShipyard` with the owner, the price
+   line, «Нанять корабль» and «Отмена», `NoMoneyForShip` in red when gold is short); buying
+   closes it; at sea nothing opens.
+2. **Arranging the army by clicks** (0x4c346c, 0x4c653c, 0x4c6f50, 0x4b0c04). Done: a press on
+   another unit with one selected swaps them, on an empty cell slides the card there, both
+   with `Card-Move`, ending with none selected; the hero is a unit like the others. By the
+   disassembly a press on the selected unit only deselects it and leaves its tree up (the
+   0.3.1 fix brought the pack back at once; the user chose the original's way); a press on an
+   empty cell with nothing selected brings the pack back.
+3. **A unit that cannot be promoted** (level 0 or no next type) shows every tree portrait
+   locked: grey, darkened, with the vignette (0x494340); Razdor's own notes under the tree went.
+4. **"| ^ @ * — these marks in the scenarios"** (the tavern channel). Done: the original reads
+   them with 0x48e438 / 0x48e1cc in the event window, the tutorial offer, the restart and
+   delete-save boxes (`*` white, `|` blue, `@` orange, unmarked pale yellow; `^` centred,
+   else justified behind a six-`_` indent; `#\` or CR LF a break). Only the two tutorials'
+   events and a few ini texts use them. The journal shows them raw in the original too.
+
 ## 2026-10-05, main: a player's reports from the Discord thread
 
 From the forum thread «Razdor - открытый движок для "Времена Раздора"» (cheats left out).
