@@ -1399,9 +1399,9 @@ impl Game {
     /// 1. An army stands there: it is engaged, friendly or not, unless the cell belongs to a
     ///    town, tavern, church, smithy, shipyard, altar or dungeon, or the army is well
     ///    disposed to him (attitude above 0) and the cell is a building other than a bridge.
-    /// 2. A cell of a village, castle, fort, ruins or bridge: the last army on the map whose
-    ///    home it is guards it, and is engaged when ill-disposed to him (0 or less) or on a
-    ///    bridge.
+    /// 2. A cell of a village, castle, fort, ruins or bridge: the last army on the map
+    ///    standing in it (+0x3788, the building it stands in, not its home) guards it, and is
+    ///    engaged when ill-disposed to him (0 or less) or on a bridge.
     /// 3. Unguarded: a castle or fort whose attitude is 0 or less, or ruins, with an empty
     ///    garrison is taken (else the garrison is engaged); a village is taken whatever its
     ///    owner, also when the route only crosses it.
@@ -1423,7 +1423,7 @@ impl Game {
         if !matches!(loc.kind, K::Village | K::Castle | K::Fort | K::Ruins | K::Camp) && !loc.kind.is_bridge() {
             return None;
         }
-        if let Some(g) = w.armies.iter().rposition(|a| a.home == Some(l)) {
+        if let Some(g) = w.armies.iter().rposition(|a| a.mind.standing == Some(l)) {
             if w.armies[g].attitude <= 0 || loc.kind.is_bridge() {
                 return Some(StepContact::Army(g));
             }

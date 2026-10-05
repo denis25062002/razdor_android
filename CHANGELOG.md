@@ -12,6 +12,11 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Fixed
+- **A building is guarded only by an army standing in it, as in the original:** stepping onto
+  a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
+  takes it); that army no longer comes from across the map to fight you before you move.
+
 ## 0.3.0 — 2026-10-04
 
 Commit `eeaa582` (tag `v0.3.0`).
