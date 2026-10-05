@@ -16,6 +16,9 @@ old id, and their versions give both.
 - **A building is guarded only by an army standing in it, as in the original:** stepping onto
   a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
   takes it); that army no longer comes from across the map to fight you before you move.
+- **Hills lie under everything, as in the original:** the green and rocky hills are drawn
+  before the trees, mountains, buildings and armies, and the route over them, so nothing
+  standing above a hill is hidden by it.
 
 ## 0.3.0 — 2026-10-04
 
