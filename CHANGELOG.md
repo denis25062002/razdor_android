@@ -12,6 +12,14 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.3 — 2026-10-05
+
+### Fixed
+- **The new game's map list scrolls:** the wheel over the list moves it again (every frame
+  pulled it back to the top, so with more maps than fit the lower ones could not be reached),
+  and a campaign only partly in view shows its part instead of vanishing with the maps after
+  it.
+
 ## 0.3.2 — 2026-10-05
 
 Commit `e3fba2d` (tag `v0.3.2`).

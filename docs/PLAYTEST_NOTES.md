@@ -3,6 +3,16 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-05, main: the new game's map list does not scroll
+
+1. **"The player cannot scroll the maps in the menu after «Новая игра»."** Done. Reproduced on
+   Xvfb with four extra maps in a copy of the install and XTest wheel clicks: the wheel moved
+   the list for one frame, then `wheel().signum()` (1.0 for no turn) pulled it back up every
+   frame; a campaign block only partly in view was skipped, hiding it and what followed. The
+   list now keeps its scroll and clips its rows to the box. With the 15 shipped maps the list
+   fits (at any window size), so it showed only with more maps. The original's
+   list (4d2a30) is a text list with a scroll bar; Razdor's grouped list has none.
+
 ## 2026-10-05, main: the leftovers of the Discord reports, and the scenario texts' marks
 
 1. **The original's shipyard window.** Done (0x4bbc84, 0x4d3ec0, 0x4d1314, 0x4c60ac): on land
