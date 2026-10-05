@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.2 — 2026-10-05
 
+Commit `e3fba2d` (tag `v0.3.2`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+f85267fbbfc061d3cfb901891d87db1ebbfa00a7fa31e9177e5e0f42b167525f  razdor
+41dc27bbcd3972d1671bc65b4d130664045fce45c976397604506a2ab2c1a898  Razdor.exe
+75f93ba6cb2901aced6cd9729ff07da812bde63b354f16c30008e60f2f449d1c  razdor-macos
+```
+
 ### Fixed
 - **A shipyard opens the original's ship window, not the building window:** on land it
   shows the shipyard's picture, the harbour master's words with the owner's name, the price
