@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.1 — 2026-10-05
 
+Commit `563eaa3` (tag `v0.3.1`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+3f6f60171809508ee8453d2bb88a820c31bce36db10649e9568348e61defe558  razdor
+c4d020209d2586d9534da0cb8e686bd5891e1ecb5136265c9012711b38c3afd8  Razdor.exe
+879c37c18f64d52441fdc8d29628b1186e1f2fe613a13447b71e29231d2573b9  razdor-macos
+```
+
 ### Fixed
 - **A building is guarded only by an army standing in it, as in the original:** stepping onto
   a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
