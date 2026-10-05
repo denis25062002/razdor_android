@@ -3,6 +3,31 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-05, main: a player's reports from the Discord thread
+
+From the forum thread «Razdor - открытый движок для "Времена Раздора"» (cheats left out).
+
+1. **"They aren't supposed to be highlighted in red. Plus some strange flags on the map."**
+   Done. The minimap coloured every building by its faction and drew Razdor's own symbols;
+   now it follows Minimap_Refresh 0x49e28c and the icon tables 0x4ed520/0x4ed5d4 (only
+   castles and forts by side; armies as 9×9 shields, red unless a meeting with a friendly
+   army waits, none inside buildings). The flag was Razdor's pennant over buildings; the
+   original draws none (0x4c9b5b). By the user's choice a ring in the owner's colour under
+   castles, forts, towns and villages replaces it, as under the armies.
+2. **"How do I buy a ship?"** Done. The shipyard was ill-disposed and Razdor hid the ship tab
+   at such shipyards; the original's ship window (0x4bbc84) tests neither attitude nor owner.
+   Left: the original's shipyard is its own small window (`AboutShipyard`, Buy, Cancel, the
+   buy closes it, nothing at sea); Razdor keeps its building window with a ships tab.
+3. **"Wrong model"** (Разбойники у дороги, Другой берег army 40). Done. The figure is the
+   original's +0x169d from the map loader 0x4b4824 (style, undead and mage leaders, ships),
+   not byte 5; this army walks as the Rogue. Left: event opcode 17 on the hero changes his
+   figure in the original; Razdor draws him by class.
+4. **"Levelling blocks the inventory."** Done. The tree replacing the pack for a selected unit
+   is the original's (0x498d0c); Razdor lacked the deselect (0x4c346c: pressing the selected
+   unit, the end of a swap or slide). Left: the original swaps two units by pressing one then
+   the other, Razdor by dragging; a final-class unit's portraits are greyed with a lock in
+   the original (0x494340).
+
 ## 2026-10-04, dt-feat: dt-original merged
 
 1. **A campaign's next map that leaves the carried class out** (the dt-original note of

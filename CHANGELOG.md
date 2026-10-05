@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.1 — 2026-10-05
+
 ### Fixed
 - **A building is guarded only by an army standing in it, as in the original:** stepping onto
   a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
@@ -19,6 +21,29 @@ old id, and their versions give both.
 - **Hills lie under everything, as in the original:** the green and rocky hills are drawn
   before the trees, mountains, buildings and armies, and the route over them, so nothing
   standing above a hill is hidden by it.
+- **Every shipyard rents a ship, whatever its attitude to you,** as in the original: an
+  ill-disposed shipyard showed only its main hall, so 12 of the 30 shipyards of the shipped
+  maps (both ports of Проклятое озеро among them) could not rent one.
+- **Armies walk as the original's figures:** an army's figure comes from its style and its
+  leader, as the original's map loader picks it (knight, rogue or peasant; zombie, ghost or
+  necromancer under an undead leader; mage under a priest, mage or witch). Razdor read the
+  map editor's picture code instead, and 188 of the 391 armies of the shipped maps walked
+  as the wrong figure, most of them as a knight.
+- **The pack comes back on the army screen:** pressing the selected unit again deselects it,
+  and moving a unit ends with none selected, as in the original, so the pack replaces the
+  unit's promotion tree again (it stayed hidden until the hero's card was pressed).
+- **The minimap's markers as the original's:** only castles and forts take a side's colour;
+  villages show full or empty by their gold, shipyards the harbour colour, ruins, smithies,
+  altars and dungeons grey, towns, taverns, markets and churches white (all were coloured by
+  their faction, so taverns and markets showed red). Taverns, markets and smithies have the
+  plain house, an altar the skull or the gravestone. Armies are small shields, red unless a
+  meeting with a friendly one waits; armies inside buildings are not shown, and the hero's
+  mark no longer pulses.
+
+### Changed
+- **A ring under castles, forts, towns and villages in their owner's colour,** as under the
+  armies (a Razdor extra), replacing the pennant Razdor drew over them; the original marks
+  owners only on the minimap.
 
 ## 0.3.0 — 2026-10-04
 
