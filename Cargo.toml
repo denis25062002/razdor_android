@@ -27,3 +27,4 @@ opt-level = 2
 build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
 package_name = "com.indicozy.razdor"
 label = "Razdor"
+icon = "@drawable/icon"
