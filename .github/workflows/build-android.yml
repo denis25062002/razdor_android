@@ -1,4 +1,4 @@
-﻿name: Build Android APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -12,54 +12,136 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      # 1. Enable Java 17 for the modern Android sdkmanager
+      - name: Setup Java 17 (for Android SDK)
+        uses: actions/setup-java@v4
         with:
-          targets: aarch64-linux-android
+          distribution: 'temurin'
+          java-version: '17'
 
+      # Install SDK platform 33 and build-tools 30.0.3 (contains dx tool)
       - name: Install Android SDK and NDK
         run: |
-          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-29" "ndk;25.2.9519653"
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-33" "build-tools;30.0.3" "ndk;25.2.9519653"
+          
+          # Symlink android-33 as android-29 for cargo-quad-apk compatibility
+          ln -sf $ANDROID_SDK_ROOT/platforms/android-33 $ANDROID_SDK_ROOT/platforms/android-29
+
+          # Fix missing dx binary in modern build-tools by redirecting 37.0.0 to 30.0.3
+          rm -rf $ANDROID_SDK_ROOT/build-tools/37.0.0
+          ln -sf $ANDROID_SDK_ROOT/build-tools/30.0.3 $ANDROID_SDK_ROOT/build-tools/37.0.0
+
+      # 2. Switch to Java 8 for cargo-quad-apk (it requires rt.jar)
+      - name: Setup Java 8 (for cargo-quad-apk)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '8'
+
+      # Pin Rust to 1.77.2 to maintain Cargo.lock format v3 compatibility with cargo-quad-apk
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.77.2
+
+      - name: Add Android Rust targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
 
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
+
+      - name: Pin encoding_rs and fix Cargo.lock format
+        run: |
+          cargo add encoding_rs@=0.8.33
+          sed -i 's/^version = 4/version = 3/' Cargo.lock || true
+
+      - name: Ensure assets directory exists
+        run: mkdir -p assets
 
       - name: Configure NDK
         run: |
           NDK_PATH="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
           TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin"
-
+          
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
+          # Symlinks for NDK binary utilities
+          ln -sf "$TOOLCHAIN/llvm-readelf" "$TOOLCHAIN/aarch64-linux-android-readelf"
+          ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
+          ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
+          ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/aarch64-linux-android-strip"
+          ln -sf "$TOOLCHAIN/aarch64-linux-android29-clang" "$TOOLCHAIN/aarch64-linux-android-clang"
+          ln -sf "$TOOLCHAIN/aarch64-linux-android29-clang" "$TOOLCHAIN/aarch64-linux-android-gcc"
+          
+          ln -sf "$TOOLCHAIN/llvm-readelf" "$TOOLCHAIN/arm-linux-androideabi-readelf"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/arm-linux-androideabi-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+          ln -sf "$TOOLCHAIN/llvm-strip" "$TOOLCHAIN/arm-linux-androideabi-strip"
+          ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-clang"
+          ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-gcc"
 
-          ls -l "$TOOLCHAIN/llvm-ar"
-          ls -l "$TOOLCHAIN/llvm-ranlib"
-          ls -l "$TOOLCHAIN/arm-linux-androideabi-ar"
-          ls -l "$TOOLCHAIN/arm-linux-androideabi-ranlib"
+          # Linker wrapper script for aarch64
+          cat << 'EOF' > "$TOOLCHAIN/aarch64-linux-android-ld"
+          #!/usr/bin/env bash
+          TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/aarch64 2>/dev/null | head -n 1)"
+          ARGS=()
+          for arg in "$@"; do
+            if [[ "$arg" == -Wl,* ]]; then
+              cleaned="${arg#-Wl,}"
+              IFS=',' read -ra PARTS <<< "$cleaned"
+              for part in "${PARTS[@]}"; do
+                ARGS+=("$part")
+              done
+            else
+              ARGS+=("$arg")
+            fi
+          done
+          exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
+          EOF
+          chmod +x "$TOOLCHAIN/aarch64-linux-android-ld"
 
-      - name: Verify Rust target
-        run: rustup target list --installed
+          # Linker wrapper script for armv7
+          cat << 'EOF' > "$TOOLCHAIN/arm-linux-androideabi-ld"
+          #!/usr/bin/env bash
+          TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          CLANG_DIR="$(ls -d "$TOOLCHAIN_DIR"/../lib*/clang/*/lib/linux/arm 2>/dev/null | head -n 1)"
+          ARGS=()
+          for arg in "$@"; do
+            if [[ "$arg" == -Wl,* ]]; then
+              cleaned="${arg#-Wl,}"
+              IFS=',' read -ra PARTS <<< "$cleaned"
+              for part in "${PARTS[@]}"; do
+                ARGS+=("$part")
+              done
+            else
+              ARGS+=("$arg")
+            fi
+          done
+          exec "$TOOLCHAIN_DIR/ld.lld" -L"$CLANG_DIR" "${ARGS[@]}"
+          EOF
+          chmod +x "$TOOLCHAIN/arm-linux-androideabi-ld"
 
-      - name: Verify Android configuration
-        run: |
-          echo "Android configuration:"
-          grep -A10 'package.metadata.android' Cargo.toml || true
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TOOLCHAIN/aarch64-linux-android-ld" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$TOOLCHAIN/arm-linux-androideabi-ld" >> "$GITHUB_ENV"
 
       - name: Build APK
         env:
-          RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
-        run: cargo quad-apk build --release --offline
+          RUSTFLAGS: "-C link-arg=-z -C link-arg=max-page-size=16384"
+        run: |
+          sed -i 's/^version = 4/version = 3/' Cargo.lock || true
+          cargo quad-apk build --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: razdor-engine-apk
-          path: target/**/*.apk
+          name: razdor-android-apk
+          path: |
+            target/**/*.apk
+            !target/**/*_unaligned.apk
