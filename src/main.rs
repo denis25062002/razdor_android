@@ -11,10 +11,24 @@ use razdor::rules::content::Content;
 use ui::assets::Assets;
 use ui::App;
 
+/// Ensures that the working directory on Android points to the external storage folder
+/// where the original game files and assets reside.
+#[cfg(target_os = "android")]
+fn setup_android_environment() {
+    let android_files_dir = "/sdcard/Android/data/com.indicozy.razdor/files";
+    let _ = std::fs::create_dir_all(android_files_dir);
+    if let Err(e) = std::env::set_current_dir(android_files_dir) {
+        eprintln!("Failed to set working directory on Android: {}", e);
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn setup_android_environment() {}
+
 /// Only one Razdor at a time: an exclusive lock on `razdor.lock` in the runtime folder, held
 /// until the process ends (the OS drops it on exit or crash). A second copy says so and quits
 /// before opening a window. `conf` runs before the window exists, so the check lives there.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 fn single_instance() {
     use std::os::unix::io::AsRawFd;
     static LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
@@ -31,10 +45,12 @@ fn single_instance() {
     let _ = LOCK.set(file);
 }
 
-#[cfg(not(unix))]
+#[cfg(not(all(unix, not(target_os = "android"))))]
 fn single_instance() {}
 
 fn conf() -> Conf {
+    setup_android_environment();
+
     // `--replay <actions.jsonl>`: the diff test's script mode, played without a window
     // (`razdor::difftest`). `conf` runs before the window opens, so it ends here.
     let args: Vec<String> = std::env::args().skip(1).collect();
