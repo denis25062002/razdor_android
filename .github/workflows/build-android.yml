@@ -15,8 +15,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Устанавливаем Java 8 для cargo-quad-apk (содержит rt.jar)
-      - name: Setup Java 8
+      # 1. Включаем Java 17 для работы современного Android sdkmanager
+      - name: Setup Java 17 (for Android SDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Android SDK and NDK
+        run: |
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
+
+      # 2. Переключаемся на Java 8 для работы cargo-quad-apk (которому нужен rt.jar)
+      - name: Setup Java 8 (for cargo-quad-apk)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -27,10 +38,6 @@ jobs:
 
       - name: Add Android Rust targets
         run: rustup target add aarch64-linux-android armv7-linux-androideabi
-
-      - name: Install Android SDK and NDK
-        run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
 
       - name: Install cargo-quad-apk
         run: cargo install cargo-quad-apk
