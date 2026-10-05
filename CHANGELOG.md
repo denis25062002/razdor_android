@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.3 — 2026-10-05
 
+Commit `7b0180d` (tag `v0.3.3`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+c45c30f8dcffd700c9f2f819999322c08d912c2b338b6b6fd0e21a527e5b3075  razdor
+6eae0e522499f67348da8b98eb5ecab96100ff8a134db74c9af9207659dafc2b  Razdor.exe
+0551851a7d0f52370cf3b294261822be888a7a7754758a2088f99170f6ae2bc6  razdor-macos
+```
+
 ### Fixed
 - **The new game's map list scrolls:** the wheel over the list moves it again (every frame
   pulled it back to the top, so with more maps than fit the lower ones could not be reached),
