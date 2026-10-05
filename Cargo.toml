@@ -24,9 +24,7 @@ audio = ["macroquad/audio"]
 opt-level = 2
 
 [package.metadata.android]
-build_targets = ["aarch64-linux-android"]
-
-[package.metadata.android]
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
 package_name = "com.indicozy.razdor"
 label = "Razdor"
 icon = "icon.png"
