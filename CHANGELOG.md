@@ -13,6 +13,9 @@ old id, and their versions give both.
 ## Unreleased
 
 ### Changed
+- **A building is guarded only by an army standing in it, as in the original:** stepping onto
+  a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
+  takes it); that army no longer comes from across the map to fight you before you move.
 - **A ruins' garrison is weighed as in the original:** until its first battle the AI counts
   its units without the treasure items they were handed at the start, so its armies judge
   such ruins as the original's do.
