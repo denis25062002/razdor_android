@@ -12,6 +12,14 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Fixed
+- **A shipyard opens the original's ship window, not the building window:** on land it
+  shows the shipyard's picture, the harbour master's words with the owner's name, the price
+  of a ship and "Нанять корабль" and "Отмена" (with a warning when your gold is short); at
+  sea it opens nothing. Hiring the ship closes the window, so you can click the water next to
+  the shipyard to sail. The shipyard's main hall and "Корабли" tab are gone, as the original
+  has none.
+
 ## 0.3.1 — 2026-10-05
 
 Commit `563eaa3` (tag `v0.3.1`).
