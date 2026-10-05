@@ -15,18 +15,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. Включаем Java 17 для работы современного Android sdkmanager
+      # 1. Enable Java 17 for the modern Android sdkmanager
       - name: Setup Java 17 (for Android SDK)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
+      # Install SDK platform 33 (required for modern macroquad window insets)
       - name: Install Android SDK and NDK
         run: |
-          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-29" "ndk;25.2.9519653"
+          yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-33" "ndk;25.2.9519653"
 
-      # 2. Переключаемся на Java 8 для работы cargo-quad-apk (которому нужен rt.jar)
+      # 2. Switch to Java 8 for cargo-quad-apk (it requires rt.jar)
       - name: Setup Java 8 (for cargo-quad-apk)
         uses: actions/setup-java@v4
         with:
@@ -60,7 +61,7 @@ jobs:
           echo "NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
           echo "$TOOLCHAIN" >> "$GITHUB_PATH"
 
-          # Симлинки бинарных утилит NDK
+          # Symlinks for NDK binary utilities
           ln -sf "$TOOLCHAIN/llvm-readelf" "$TOOLCHAIN/aarch64-linux-android-readelf"
           ln -sf "$TOOLCHAIN/llvm-ar" "$TOOLCHAIN/aarch64-linux-android-ar"
           ln -sf "$TOOLCHAIN/llvm-ranlib" "$TOOLCHAIN/aarch64-linux-android-ranlib"
@@ -75,7 +76,7 @@ jobs:
           ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-clang"
           ln -sf "$TOOLCHAIN/armv7a-linux-androideabi29-clang" "$TOOLCHAIN/arm-linux-androideabi-gcc"
 
-          # Скрипт-обертка линкера для aarch64
+          # Linker wrapper script for aarch64
           cat << 'EOF' > "$TOOLCHAIN/aarch64-linux-android-ld"
           #!/usr/bin/env bash
           TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,7 +97,7 @@ jobs:
           EOF
           chmod +x "$TOOLCHAIN/aarch64-linux-android-ld"
 
-          # Скрипт-обертка линкера для armv7
+          # Linker wrapper script for armv7
           cat << 'EOF' > "$TOOLCHAIN/arm-linux-androideabi-ld"
           #!/usr/bin/env bash
           TOOLCHAIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
