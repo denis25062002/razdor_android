@@ -12,6 +12,85 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.2 — 2026-10-05
+
+Commit `e3fba2d` (tag `v0.3.2`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+f85267fbbfc061d3cfb901891d87db1ebbfa00a7fa31e9177e5e0f42b167525f  razdor
+41dc27bbcd3972d1671bc65b4d130664045fce45c976397604506a2ab2c1a898  Razdor.exe
+75f93ba6cb2901aced6cd9729ff07da812bde63b354f16c30008e60f2f449d1c  razdor-macos
+```
+
+### Fixed
+- **A shipyard opens the original's ship window, not the building window:** on land it
+  shows the shipyard's picture, the harbour master's words with the owner's name, the price
+  of a ship and "Нанять корабль" and "Отмена" (with a warning when your gold is short); at
+  sea it opens nothing. Hiring the ship closes the window, so you can click the water next to
+  the shipyard to sail. The shipyard's main hall and "Корабли" tab are gone, as the original
+  has none.
+- **Army cards are arranged by clicks, as in the original:** with a unit selected, pressing
+  another unit swaps the two at once, and pressing an empty cell slides the card there; both
+  play the card sound and end with none selected. The hero is a unit like any other here:
+  selected, a press on another unit swaps it with the hero (before, it only selected that
+  unit). Pressing the selected unit deselects it but, as in the original, leaves its promotion
+  tree up until the next press; a press on an empty cell with nothing selected brings the pack
+  back. The barracks' army grid takes the same clicks, and in the garrison a refused hero or
+  named unit stays selected. Dragging a card still works.
+- **A unit that cannot be promoted shows its promotion tree locked, as in the original:** at
+  its first level, or in a final class, every portrait of the tree, the unit's own included,
+  is greyed, tinted dark brown and darkened at the edges. Razdor showed the unit's portrait
+  plainly with a note of its own ("The final class…"), which the original does not have.
+- **Scenario texts are laid out as in the original, without the stray `*`, `^`, `|` and
+  `@`:** an event's window reads these marks as the original does: a line with `*` is white,
+  with `|` blue, with `@` orange, the others pale yellow; a line with `^` is centred (the
+  tutorials' headings), the others are justified paragraphs with an indent, and blank lines
+  stay. The tutorial offer and the restart and delete-save questions read them too. The
+  journal still shows them as typed, as the original's does.
+
+## 0.3.1 — 2026-10-05
+
+Commit `563eaa3` (tag `v0.3.1`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+3f6f60171809508ee8453d2bb88a820c31bce36db10649e9568348e61defe558  razdor
+c4d020209d2586d9534da0cb8e686bd5891e1ecb5136265c9012711b38c3afd8  Razdor.exe
+879c37c18f64d52441fdc8d29628b1186e1f2fe613a13447b71e29231d2573b9  razdor-macos
+```
+
+### Fixed
+- **A building is guarded only by an army standing in it, as in the original:** stepping onto
+  a castle, fort, village or ruins whose own army is away on patrol storms its garrison (or
+  takes it); that army no longer comes from across the map to fight you before you move.
+- **Hills lie under everything, as in the original:** the green and rocky hills are drawn
+  before the trees, mountains, buildings and armies, and the route over them, so nothing
+  standing above a hill is hidden by it.
+- **Every shipyard rents a ship, whatever its attitude to you,** as in the original: an
+  ill-disposed shipyard showed only its main hall, so 12 of the 30 shipyards of the shipped
+  maps (both ports of Проклятое озеро among them) could not rent one.
+- **Armies walk as the original's figures:** an army's figure comes from its style and its
+  leader, as the original's map loader picks it (knight, rogue or peasant; zombie, ghost or
+  necromancer under an undead leader; mage under a priest, mage or witch). Razdor read the
+  map editor's picture code instead, and 188 of the 391 armies of the shipped maps walked
+  as the wrong figure, most of them as a knight.
+- **The pack comes back on the army screen:** pressing the selected unit again deselects it,
+  and moving a unit ends with none selected, as in the original, so the pack replaces the
+  unit's promotion tree again (it stayed hidden until the hero's card was pressed).
+- **The minimap's markers as the original's:** only castles and forts take a side's colour;
+  villages show full or empty by their gold, shipyards the harbour colour, ruins, smithies,
+  altars and dungeons grey, towns, taverns, markets and churches white (all were coloured by
+  their faction, so taverns and markets showed red). Taverns, markets and smithies have the
+  plain house, an altar the skull or the gravestone. Armies are small shields, red unless a
+  meeting with a friendly one waits; armies inside buildings are not shown, and the hero's
+  mark no longer pulses.
+
+### Changed
+- **A ring under castles, forts, towns and villages in their owner's colour,** as under the
+  armies (a Razdor extra), replacing the pennant Razdor drew over them; the original marks
+  owners only on the minimap.
+
 ## 0.3.0 — 2026-10-04
 
 Commit `eeaa582` (tag `v0.3.0`).

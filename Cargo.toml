@@ -1,6 +1,6 @@
 [package]
 name = "razdor"
-version = "0.3.0"
+version = "0.3.2"
 edition = "2021"
 authors = ["@indicozy"]
 license = "MIT"
@@ -22,3 +22,9 @@ audio = ["macroquad/audio"]
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[package.metadata.android]
+build_targets = ["aarch64-linux-android", "armv7-linux-androideabi"]
+package_name = "com.indicozy.razdor"
+label = "Razdor"
+icon = "icon.png"

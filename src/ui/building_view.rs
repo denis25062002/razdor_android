@@ -20,7 +20,7 @@ use razdor::rules::world::LocationKind;
 
 use super::assets::Assets;
 use super::chrome;
-use super::audio::{cue, Cue};
+use super::audio::{cue, cued, Cue};
 use super::dialog::{resource_icon, Dialog, Resource, MANA};
 use super::item_filter;
 use super::items_view::{level_gains, unit_stat_lines};
@@ -78,6 +78,9 @@ enum CardAnimKind {
     Hired { unit: usize, recruit: usize },
     /// The cure over a healed or raised unit's card.
     Cured { unit: usize },
+    /// A unit (squad index) of the hero's grid slides from (x, y) to its new cell, pressed
+    /// there with it selected (0x4c653c → 0x4b0c04), in `ms`.
+    Slid { unit: usize, from: (i32, i32), ms: i64 },
 }
 
 /// How long a hired card slides, and the cure plays over a card.
@@ -106,6 +109,7 @@ impl BuildingView {
         let len = match a.kind {
             CardAnimKind::Hired { .. } => HIRE_SLIDE_MS,
             CardAnimKind::Cured { .. } => CURE_MS,
+            CardAnimKind::Slid { ms, .. } => ms.max(1),
         };
         let p = (now_ms() - a.t0_ms) as f32 / len as f32;
         (p < 1.0).then_some((a.kind, p.max(0.0)))
@@ -255,7 +259,6 @@ fn main_hall(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingVie
             LocationKind::Market | LocationKind::Smithy => Some("S_Market"),
             LocationKind::Tavern => Some("S_Tavern"),
             LocationKind::Village => Some("S_Village"),
-            LocationKind::Shipyard => Some("S_Shipyard"),
             LocationKind::Ruins => Some("S_Ruin"),
             _ => None,
         };
@@ -468,14 +471,20 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
         let (line, col) = form.display(slot);
         vec2(gx + col as f32 * pitch.x, grid.y + line as f32 * pitch.y).round()
     };
+    // A press on a card or an empty cell of the hero's grid (0x4c653c), acted on below.
+    let mut pressed = None;
     for slot in form.slots() {
         if !game.squad.iter().any(|u| u.slot == slot) {
             let p = cell_at(slot);
             chrome::empty_cell(Rect::new(p.x, p.y, card.x, card.y), chrome::CellIcon::of(form, slot), true);
+            if mouse_in(p.x, p.y, card.x, card.y) && clicked() {
+                pressed = Some((None, slot));
+            }
         }
     }
     let mut action = None;
     let anim = view.anim_at();
+    let selected = view.garrison_sel.filter(|&(g, i)| !g && i < game.squad.len()).map(|s| s.1);
     for i in 0..game.squad.len() {
         let u = game.squad[i].clone();
         let mut p = cell_at(u.slot);
@@ -483,6 +492,11 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
             if unit == i {
                 let from = at(f, 258.0 + recruit as f32 * 96.0, 74.0, 88.0, 88.0);
                 p = vec2(from.x, from.y).lerp(p, t).round();
+            }
+        }
+        if let Some((CardAnimKind::Slid { unit, from, .. }, t)) = anim {
+            if unit == i {
+                p = vec2(from.0 as f32, from.1 as f32).lerp(p, t).round();
             }
         }
         let sq = Rect::new(p.x, p.y, card.x, card.x);
@@ -526,19 +540,51 @@ fn barracks(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
                 chrome::effect("Battle/--CURE.ugs", sq.center(), sq.w * 1.6, t, WHITE);
             }
         }
+        if selected == Some(i) {
+            chrome::glow_frame(sq, Color::new(0.35, 1.0, 0.35, 1.0), true);
+        }
         if mouse_in(sq.x, sq.y, sq.w, sq.h) {
-            // A press on the portrait may drag the unit to another cell.
             if clicked() {
-                super::unit_drag::press(i, u.def);
+                pressed = Some((Some(i), u.slot));
             }
             chrome::glow_frame(sq, Color::new(0.35, 0.55, 1.0, 0.9), false);
             hover_lines = vec![(u.name(&c).to_string(), ACCENT)];
             hover_lines.extend(unit_stat_lines(&c, &u, game.wage(i)).into_iter().map(|s| (s, INK)));
         }
     }
+    // The press, as the original's hero grid within the hero's army (0x4c653c); none while a
+    // card moves (busy 0x68dc63).
+    if let (Some((on, slot)), None) = (pressed, anim) {
+        let press = super::unit_drag::grid_press(selected, on);
+        view.garrison_sel = match press {
+            super::unit_drag::GridPress::Select(i) => Some((false, i)),
+            super::unit_drag::GridPress::Nothing => view.garrison_sel,
+            _ => None,
+        };
+        match press {
+            super::unit_drag::GridPress::Swap { selected: s, pressed: p } => {
+                cue(Cue::CardMove);
+                game.move_unit(s, game.squad[p].slot);
+            }
+            super::unit_drag::GridPress::Slide(s) => {
+                cue(Cue::CardMove);
+                let from = cell_at(game.squad[s].slot);
+                let ms = super::unit_drag::slide_ms(from, cell_at(slot), k);
+                game.move_unit(s, slot);
+                view.anim = Some(CardAnim { kind: CardAnimKind::Slid { unit: s, from: (from.x as i32, from.y as i32), ms }, t0_ms: now_ms() });
+            }
+            // Razdor's drag starts from a press that does not swap.
+            _ => {
+                if let Some(i) = on {
+                    super::unit_drag::press(i, game.squad[i].def);
+                }
+            }
+        }
+    }
     let cells: Vec<(Slot, Rect)> = form.slots().map(|s| (s, Rect::new(cell_at(s).x, cell_at(s).y, card.x, card.y))).collect();
     if let Some((unit, slot)) = super::unit_drag::update(assets, &cells, card) {
         game.move_unit(unit, slot);
+        view.garrison_sel = None;
     }
     let mut next = None;
     if let Some((i, raise)) = action {
@@ -673,7 +719,7 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
         if button(r.x + r.w - 190.0 * k, r.y + 6.0 * k, 85.0 * k, 32.0 * k, tr("Yes"), true) {
             view.garrison_buy = None;
             *message = Some(match game.take_from_garrison(j, Some(cell), true) {
-                Ok(()) => tr("Back in your army.").into(),
+                Ok(()) => cued(Cue::CardMove, tr("Back in your army.").to_string()),
                 Err(e) => service_error(e),
             });
         } else if button(r.x + r.w - 95.0 * k, r.y + 6.0 * k, 85.0 * k, 32.0 * k, tr("No"), true) {
@@ -697,20 +743,26 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
                 done = false;
                 None
             }
+            // Within one army: a swap or a slide, both with `Card-Move` (0x4c7029, 0x4c65f8;
+            // the slide's own at 0x4b0d19).
             (Some((true, j)), Some(Hit::Unit(n)), _) => {
                 game.move_guard(j, guards[n].unit.slot);
+                cue(Cue::CardMove);
                 None
             }
             (Some((true, j)), Some(Hit::Cell(cell)), _) => {
                 game.move_guard(j, cell);
+                cue(Cue::CardMove);
                 None
             }
             (Some((false, i)), _, Some(Hit::Unit(n))) => {
                 game.move_unit(i, squad[n].slot);
+                cue(Cue::CardMove);
                 None
             }
             (Some((false, i)), _, Some(Hit::Cell(cell))) => {
                 game.move_unit(i, cell);
+                cue(Cue::CardMove);
                 None
             }
             (Some((false, i)), Some(Hit::Unit(j)), _) => Some(game.swap_with_garrison(i, j, false)),
@@ -729,12 +781,17 @@ fn garrison(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView
                 None
             }
         };
-        if done {
+        // The hero and named units are refused without a word and the selection stays, as in
+        // the original (0x4c667e, 0x4c70d6, 0x4c7233 jump past the deselection).
+        let refused = matches!(result, Some(Err(ServiceError::Hero | ServiceError::Named)));
+        if done && !refused {
             view.garrison_sel = None;
         }
-        // The hero and named units are refused without a word, as in the original.
-        if let Some(Err(e)) = result.filter(|r| !matches!(r, Err(ServiceError::Hero | ServiceError::Named))) {
-            *message = Some(service_error(e));
+        match result {
+            // A move across plays `Card-Move` too (the swap's 0x4c66a0 / 0x4c70fe, the slide's).
+            Some(Ok(())) => cue(Cue::CardMove),
+            Some(Err(e)) if !refused => *message = Some(service_error(e)),
+            _ => {}
         }
     }
     tooltip(&hover);
@@ -876,7 +933,7 @@ fn market(game: &mut Game, assets: &Assets, f: &Frame, view: &mut BuildingView, 
     let by = y + dh + 10.0 * k;
     let mut next = None;
     if button(x, by, 150.0 * k, 40.0 * k, tr("Inventory"), true) {
-        next = Some(Screen::Squad { selected: 0, scroll: 0, back: Some(view.clone()) });
+        next = Some(Screen::Squad { selected: Default::default(), scroll: 0, back: Some(view.clone()) });
     }
     resource_icon(Resource::Gold, x + 180.0 * k, by + 20.0 * k, 34.0 * k);
     text(&trf!("Gold {gold}", gold = game.gold), x + 202.0 * k, by + 27.0 * k, 20.0 * k, ACCENT);
@@ -1051,32 +1108,78 @@ fn tribute(game: &mut Game, f: &Frame, view: &mut BuildingView, message: &mut Op
     description_box(&v.description, x, dy, w, f.y + f.h - dy - 10.0 * k);
 }
 
-/// A shipyard: buy a ship for `ShipCost` gold. As in the original none appears: the hero
-/// steps out of the shipyard onto the water to sail.
-fn shipyard(game: &mut Game, f: &Frame, message: &mut Option<String>) {
-    let k = chrome::k();
-    let Some(l) = game.location else { return };
-    let (x, y, w) = (f.cx, f.cy, f.cw);
+/// The shipyard's ship window (0x4d3ec0, opened by 0x4bbc84 when the hero is on land), in
+/// the original's pixels: the generated 634×516 frame centred over the map, the building's
+/// name as its title, `S_Shipyard` at (5, 32), a text box at (18, 45), 598 wide and as tall
+/// as its text plus 28 (at most 193), with `AboutShipyard` (`#NAME1` = the owner's name)
+/// and, when the gold is short of `ShipCost`, an empty line and `NoMoneyForShip` in red; the
+/// "CostShip = ShipCost" line 17 px under the box (0x4d1314); "Нанять корабль" at the bottom
+/// left, enabled iff ShipCost ≤ gold, and "Отмена" at the bottom right (`Btn3`). No attitude
+/// or owner test. Every button sounds as it is pressed (0x4b958c). Buying (0x4c60ac) closes
+/// the window, any old ship is gone, the gold paid, `Item-Gold`; "Отмена", the close box and
+/// Esc (0x4c6118, 0x4cd8d0) close it, the hero still standing in the shipyard.
+fn ship_window(game: &mut Game) -> Option<Screen> {
+    let l = game.location?;
+    // Screen pixels per pixel of the original's 1024×768.
+    let o = chrome::k() * 0.9375;
+    let (w, h) = ((634.0 * o).round(), (516.0 * o).round());
+    let (x, y) = (((screen_width() - w) / 2.0).round(), ((screen_height() - chrome::bar_height() - h) / 2.0).max(2.0).round());
+    let loc = &game.world.locations[l];
+    // The title is the building's name as it is, even an empty one (0x4bbc84).
+    let (_, closed) = chrome::window(Rect::new(x, y, w, h), &loc.name, chrome::Skin::Marble, true);
+    if let Some(t) = chrome::win("S_Shipyard") {
+        let (pw, ph) = ((t.width() * o).min(w - 10.0 * o), (t.height() * o).min(h - 34.0 * o));
+        chrome::tex_src(&t, Rect::new(0.0, 0.0, pw / o, ph / o), Rect::new(x + 5.0 * o, y + 32.0 * o, pw, ph), WHITE);
+    }
     let price = game.ship_price();
-    draw_rectangle(x, y, w, 120.0 * k, Color::new(0.2, 0.12, 0.07, 1.0));
-    text_fit(tr("The shipwright rents out ships. One ship at a time: a new one sends the old one home."), x + 16.0 * k, y + 28.0 * k, w - 32.0 * k, 18.0 * k, INK);
-    resource_icon(Resource::Gold, x + 40.0 * k, y + 76.0 * k, 40.0 * k);
-    text(&trf!("A ship: {price} gold", price), x + 70.0 * k, y + 84.0 * k, 20.0 * k, ACCENT);
-    let by = y + 140.0 * k;
-    let label = if game.ship.is_some() { tr("Rent a new ship") } else { tr("Rent a ship") };
-    if button_sounding(x, by, 420.0 * k, 42.0 * k, label, game.gold >= price, Cue::Gold) {
-        *message = Some(match game.rent_ship() {
-            Ok(_) => tr("The ship is ready. Click the water next to the shipyard to sail; leaving on foot loses it.").into(),
-            Err(razdor::rules::ships::ShipError::NotEnoughGold) => tr("Not enough gold.").into(),
-            Err(razdor::rules::ships::ShipError::NoShipyard) => tr("The shipwright will not deal with you.").into(),
-        });
+    let affordable = price <= game.gold;
+    let about = own_text("Building", "AboutShipyard", n_("You have entered a harbour owned by #NAME1. The harbour master tells you that a ship can be hired here.\n\nThe terms are simple: for a fixed price the ship takes you anywhere on the coast. When you go ashore, it stays and waits for you to come back."))
+        .replace("#NAME1", &loc.owner_name);
+    let size = (15.0 * o).round();
+    let line_h = (17.0 * o).round();
+    let (bx, by, bw) = (x + 18.0 * o, y + 45.0 * o, 598.0 * o);
+    let lines_of = |t: &str| t.split('\n').flat_map(|p| if p.trim().is_empty() { vec![String::new()] } else { wrap(p, bw - 32.0 * o, size) }).collect::<Vec<_>>();
+    let mut lines: Vec<(String, Color)> = lines_of(&about).into_iter().map(|t| (t, BOX_INK)).collect();
+    if !affordable {
+        lines.push((String::new(), BOX_INK));
+        let short = own_text("Building", "NoMoneyForShip", n_("You have no money to hire a ship right now!"));
+        lines.extend(lines_of(&short).into_iter().map(|t| (t, chrome::RED_TEXT)));
     }
-    let notes = [tr("With a ship, click the water to sail; click the shore to land."), tr("The ship waits where you land; walk back onto it to sail again.")];
-    for (i, n) in notes.iter().enumerate() {
-        text_fit(n, x, by + 70.0 * k + i as f32 * 20.0 * k, w, 16.0 * k, DIM);
+    let text_h = lines.len() as f32 * line_h;
+    // As tall as the text with 14 above and below, at most 193; a longer text is centred in
+    // it and cut at both ends (0x4bbc84).
+    let bh = (text_h + 28.0 * o).min(193.0 * o);
+    let top = if text_h + 28.0 * o <= 193.0 * o { 14.0 * o } else { (bh - text_h) / 2.0 };
+    chrome::text_box(Rect::new(bx, by, bw, bh));
+    for (i, (t, c)) in lines.iter().enumerate() {
+        let ly = by + top + i as f32 * line_h;
+        if ly >= by && ly + line_h <= by + bh {
+            chrome::shadow_centered(t, bx + bw / 2.0, ly + size, size, *c);
+        }
     }
-    let dy = by + 120.0 * k;
-    description_box(&game.world.locations[l].description, x, dy, w, f.y + f.h - dy - 10.0 * k);
+    let cost = format!("{} = {price}", own_text("Building", "CostShip", n_("Price of hiring a ship")));
+    chrome::shadow_centered(&cost, x + w / 2.0, by + bh + 17.0 * o + size, size, chrome::GOLD);
+    let (btn_w, btn_h) = chrome::win("Btn3Up").map_or((180.0, 40.0), |t| (t.width(), t.height()));
+    let (btn_w, btn_h) = (btn_w * o, btn_h * o);
+    let btn_y = y + h - 10.0 * o - btn_h;
+    let buy = own_text("Building", "BuyShip", n_("Hire a ship"));
+    let cancel = own_text("Buttons", "Cancel", n_("Cancel"));
+    if button(x + 10.0 * o, btn_y, btn_w, btn_h, &buy, affordable) {
+        if game.rent_ship().is_ok() {
+            cue(Cue::Gold);
+        }
+        return Some(Screen::WorldMap);
+    }
+    let cancelled = button(x + w - btn_w - 10.0 * o, btn_y, btn_w, btn_h, &cancel, true);
+    if closed {
+        cue(Cue::Button);
+    }
+    // Esc closes it as "Отмена" does (0x4cd8d0), with the button sound the replay hears when
+    // Esc closes the village window (tools/difftest/AV.md §5).
+    if key(KeyCode::Escape) {
+        cue(Cue::Button);
+    }
+    (cancelled || closed || key(KeyCode::Escape)).then_some(Screen::WorldMap)
 }
 
 /// The building window. `Exit` (or Escape) returns to the map.
@@ -1088,6 +1191,14 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     let tabs = game.tabs_here();
     if tabs.is_empty() {
         return Some(Screen::WorldMap);
+    }
+    // A shipyard opens its own small window, not the building window.
+    if tabs == [Tab::Shipyard] {
+        let bar_next = bar.map(|b| match b {
+            Screen::Squad { selected, scroll, .. } => Screen::Squad { selected, scroll, back: Some(view.clone()) },
+            other => other,
+        });
+        return early.or(ship_window(game)).or(bar_next);
     }
     if !tabs.contains(&view.tab) {
         view.switch(tabs[0]);
@@ -1129,7 +1240,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
         Tab::Market => next = market(game, assets, &f, view, message),
         Tab::Sanctuary => sanctuary(game, &f, view, message),
         Tab::Tribute => tribute(game, &f, view, message),
-        Tab::Shipyard => shipyard(game, &f, message),
+        Tab::Shipyard => {}
     }
     if let Some(m) = message {
         let w = measure(m, 20.0).width + 40.0;
@@ -1140,10 +1251,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut BuildingView, message:
     let filter_keys = FILTER_KEYS.with(|f| f.replace(false));
     if close || exit || (!filter_keys && key(KeyCode::Escape)) {
         *message = None;
-        // The village and shipyard windows close with the button sound, a village whose
-        // tribute was taken with the gold sound too (0x4c604a); the building window's close
-        // is silent.
-        let chord = game.location.is_some_and(|l| matches!(game.world.locations[l].kind, LocationKind::Village | LocationKind::Shipyard));
+        // The village window closes with the button sound, with the gold sound too when its
+        // tribute was taken (0x4c604a); the building window's close is silent.
+        let chord = game.location.is_some_and(|l| game.world.locations[l].kind == LocationKind::Village);
         if chord {
             cue(Cue::Button);
             if view.tribute_paid {

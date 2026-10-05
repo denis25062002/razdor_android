@@ -311,8 +311,10 @@ runs on its first arrival on a new cell after noon (0x4a5534). In order:
 **Garrison moves** (code, hero grid click 0x4c653c, garrison grid click 0x4c6f50, slide
 0x4b0c04 from 0x4b0ff5):
 - Both grids have 12 cells. One click selects a unit (in either grid); clicking it again
-  deselects it. The second click acts, then the selection is cleared. Clicks are ignored while a
-  slide animation runs. The garrison grid reacts only in the garrison tab.
+  deselects it. The second click acts, then the selection is cleared; a refused move (below) does
+  nothing at all and the selection stays. Every swap and slide plays `Card-Move`. Clicks are
+  ignored while a slide animation runs. The garrison grid reacts only in the garrison tab; the
+  hero grid follows the same rules within the hero's army in every tab that shows it.
 - **Same grid**: clicking another unit swaps the two places; clicking an empty cell slides the
   unit there. Only the formation changes.
 - **Hero's army → empty garrison cell**: the unit slides into the garrison. The **hero** (unit 1)
@@ -565,11 +567,12 @@ Razdor's code as read for this pass: `src/rules/economy.rs`, `town.rs`, `world.r
 | Market stock | 12 places with the map's goods fixed in theirs; a 12-hour timer; bands walking down the window, town potions (one of 95/96/97/114/115 when more than 6 remain, the rest 98 + Rand(3)), type and school rules, 1/n widening, run-down lists, 26 tries, no overwrite, not sorted (`restock_market`); a list that runs out gives no good (`Candidates`; the original's bug read on past its end: the zeroed buffer, item 1, then its own locals and stack). Where fewer than two items can ever fit the original hangs; Razdor gives up on that good | Bands walking down the window, n − 1 healing potions + one of 95/96/97/114/115 when R > 6 remains, type and school rules, 1/n widening, no overwrite of a full list, not sorted; a list that runs out reads on past its end (bug) | Matches; Razdor fixes the original's bug (a list that runs out) |
 | Barracks regrowth | `1/(10 div max)` | Same | Yes |
 | Heal price | As the original, exact rational | Same formula in floating point | Yes |
+| Where to rent a ship | Every shipyard, whatever its attitude: the ship window opens on land, nothing at sea, with no main hall or other tab; `rent_ship` tests only the building type, and Buy closes the window (`town::tabs`, `Game::window_at`, `Game::shipyard_here`, `building_view::ship_window`) | The ship window for every type-9 building entered on land (nothing at sea), no attitude or owner test; Buy iff ShipCost ≤ gold, and it closes the window (0x4bbc84, 0x4d3ec0, 0x4c60ac) | Matches |
 | Where to heal / hire | Any building whose hire tab shows (a barracks unit, all of ordinary Nature or the all-types byte); no attitude test (`Location::hires`) | Any building whose hire tab shows (ordinary barracks or byte 356); no attitude test | Matches |
 | Resurrection | Town or church, no time limit for the player; corpses stay until raised or buried by hand; raised paid, last pay kept | Town or church, **no time limit** for the player; corpses are never buried automatically (only by hand, Bury) | Matches |
 | Resurrection currency bug | Elementals pay in mana, everyone else in gold; each price checked against its own currency (`resurrect_price`, `can_pay_service`) | Cost ≡ 2 (mod 256) pays in mana (unit 56), after a gold check; an Elemental's heal is checked against the gold and paid in mana (bugs) | Razdor fixes the original's bugs |
 | Garrison take-back | Unpaid units cost one day's kind-1 wage, asked only below the gold, into an empty cell; the paid marks are set when the tab opens (`open_garrison`, `take_from_garrison`) | Unpaid units cost one day's wage (into an empty cell) | Matches |
-| Garrison moves | Hero and named units refused; corpses move both ways; a cross-grid swap exchanges the records with no price, last pay refreshed only in one click order (`swap_with_garrison`) | Hero and named units refused; corpses move both ways; a cross-grid swap exchanges records with no price (unpaid stays unpaid) and is the only way into a full army | Matches |
+| Garrison moves | Hero and named units refused, the selection kept; `Card-Move` on swaps and moves; corpses move both ways; a cross-grid swap exchanges the records with no price, last pay refreshed only in one click order (`swap_with_garrison`) | Hero and named units refused; corpses move both ways; a cross-grid swap exchanges records with no price (unpaid stays unpaid) and is the only way into a full army | Matches |
 | Dismiss / Bury | A confirm step; no refund; worn items lost; the pack untouched; only the hero protected; the hero selected after | A confirm step; no refund; **worn items are lost**; the pack is untouched; only the hero is protected | Matches |
 | Hire timing | Immediate | The unit, gold and slot count change when the card slide ends | Yes (no visible difference) |
 | Market display | Prices as charged; the sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test; opens on the goods when there are some | Prices as charged; sell list only Cost > 1; unaffordable buy prices red; Buy enabled iff price ≤ gold, no pack test | Matches |

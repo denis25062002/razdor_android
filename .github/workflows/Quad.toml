@@ -1,0 +1,7 @@
+[package]
+name = "razdor"
+
+[package.android]
+android_package_name = "com.indicozy.razdor"
+label = "Razdor"
+icon = "assets/icon.png"
