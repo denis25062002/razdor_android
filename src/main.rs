@@ -15,11 +15,23 @@ use ui::App;
 /// where the original game files and assets reside.
 #[cfg(target_os = "android")]
 fn setup_android_environment() {
-    let android_files_dir = "/sdcard/Android/data/com.indicozy.razdor/files";
-    let _ = std::fs::create_dir_all(android_files_dir);
-    if let Err(e) = std::env::set_current_dir(android_files_dir) {
-        eprintln!("Failed to set working directory on Android: {}", e);
+    let pkg = "com.indicozy.razdor";
+    let possible_paths = [
+        format!("/storage/emulated/0/Android/data/{pkg}/files"),
+        format!("/sdcard/Android/data/{pkg}/files"),
+    ];
+
+    for path in &possible_paths {
+        let p = std::path::Path::new(path);
+        let _ = std::fs::create_dir_all(p);
+        if p.exists() {
+            if std::env::set_current_dir(p).is_ok() {
+                razdor::diag!("Android working directory changed to: {}", path);
+                return;
+            }
+        }
     }
+    eprintln!("Failed to set any Android working directory");
 }
 
 #[cfg(not(target_os = "android"))]
