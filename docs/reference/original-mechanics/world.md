@@ -322,8 +322,10 @@ Checked for the cell he is about to enter, before he moves (§2.2):
    altar or dungeon (types 1, 5, 7–11), or the army's attitude to the player is > 0 and the
    cell is a building other than a bridge. On open ground every army is engaged.
 2. Else, **a building cell** of a village, castle, fort, ruins or bridge (types 2–4, 12–14):
-   the last on-map army whose home building it is guards it; the guard is engaged when its
-   attitude to the player is ≤ 0, or always on a bridge.
+   the last on-map army **standing in** that building guards it (army +0x3788, the building
+   under its cell, cleared when it leaves; not its home building: a castle's own army away
+   on patrol does not guard it); the guard is engaged when its attitude to the player is
+   ≤ 0, or always on a bridge.
 3. No guard: a castle, fort or ruins whose attitude (+0x152) is ≤ 0 (ruins always) with a
    garrison record: an empty garrison means the building is **captured** (owner = player,
    the hero's faction and attitudes copied); otherwise the garrison is engaged. An unguarded
@@ -639,7 +641,7 @@ Razdor's code read for this table: `src/rules/map.rs`, `fog.rs`, `game.rs`, `wor
 | AI never enters the hero's cells | a step onto his cell or the one he steps from, or, standing, the cell ahead of him in his last step's direction (`Game::facing`), spends its time, the army stays | his cell plus his direction, which a stop does not clear; waits in place, then contact | Matches |
 | Stationary guards' clock | skipped (no bank) | skipped | Matches |
 | Pacing | 150 ms per step / wait tick, game time added per step | same; game time also interpolated inside the step | none for rules |
-| Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); AI adjacency after AI steps | Matches |
+| Contact on the hero's step | the cell he steps onto: an army (any on open ground; a friend is met, Razdor's guess), a guard, a garrison (`Game::step_contact`); AI armies that stepped next to him after his step | the cell he steps onto holds an army (any army on open ground); a building's guard is an army standing in it (+0x3788); AI adjacency after AI steps | Matches (until 2026-10-04 Razdor's guard was the army whose home it is, wherever it stood) |
 | Village crossed on the way | an unguarded village (or an empty castle, fort or ruins) stepped on is his, with no window; the walk goes on | captured when crossed, no window, the walk goes on | Matches (Razdor showed a capture window that stopped the walk until 2026-10-03) |
 | Building under an event's window on the way | the walk an event's window cuts short ends on his cell; the clicked building he stands in opens after the windows (`Game::stop_for_reading`) | 0x4aed41 → 0x4ae5d8, pending 0x4aed64 | Matches (until 2026-10-04 Razdor left him on the map) |
 | Building entered when crossed | entered on its second footprint cell or where the walk ends; the window only at the end (`Game::move_to_cell`) | entered when 2+ footprint cells are crossed (events may fire), window only at the end | Matches |

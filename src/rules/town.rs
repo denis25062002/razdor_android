@@ -1026,24 +1026,39 @@ mod tests {
         assert!(events.contains(&Event::Captured(0)), "{events:?}");
         assert!(g.world.locations[0].owned());
         assert!(g.village_offer().is_some() || events.iter().any(|e| matches!(e, Event::Tribute { .. })), "{events:?}");
-        // Guarded by an ill-disposed army living there, the guard is met instead.
-        let mut s = map();
-        let mut v = town(BuildingType::Village, 8, 2, -1);
-        (v.gold_per_day, v.gold_max) = (40, 40);
-        s.buildings = vec![v];
-        let mut guard = crate::rules::world::testkit::army(1, 12, 6, -2, &[crate::rules::world::testkit::troop(4, 0, 1)]);
-        guard.home_building = 1;
-        (guard.patrols, guard.patrol_radius) = (1, 0);
-        s.armies = vec![guard];
-        let mut g = start(&s);
-        assert!(g.set_destination(g.world.locations[0].tile));
-        let mut events = Vec::new();
-        while g.moving() {
-            events.extend(g.tick(0.05));
-        }
+        // Guarded by an ill-disposed army standing in it (on another of its cells), the
+        // guard is met instead. Only an army in the building guards it (+0x3788, the
+        // building it stands in), not one whose home it is that is away.
+        let walk = |guard_at: (u16, u16)| {
+            let mut s = map();
+            let mut v = crate::rules::world::testkit::building(BuildingType::Village, 8, 2, (1, 2));
+            v.relations = [-1, 0, 0, 0];
+            v.faction = 4;
+            (v.gold_per_day, v.gold_max) = (40, 40);
+            s.buildings = vec![v];
+            let mut guard = crate::rules::world::testkit::army(1, guard_at.0, guard_at.1, -2, &[crate::rules::world::testkit::troop(4, 0, 1)]);
+            guard.home_building = 1;
+            (guard.patrols, guard.patrol_radius) = (1, 0);
+            s.armies = vec![guard];
+            let mut g = start(&s);
+            let cell = (8, 2);
+            assert_eq!(g.world.location_covering(cell), Some(0));
+            assert!(g.set_destination(cell));
+            let mut events = Vec::new();
+            while g.moving() {
+                events.extend(g.tick(0.05));
+            }
+            (g, events)
+        };
+        let other = (8, 1);
+        let (g, events) = walk(other);
+        assert_eq!(g.world.location_covering((8, 1)), Some(0));
         assert_eq!(events.last(), Some(&Event::Encounter(0)), "{events:?}");
         assert!(!g.world.locations[0].owned() && g.location.is_none());
         assert_eq!(g.world.locations[0].tribute_gold, 40);
+        let (g, events) = walk((12, 6));
+        assert!(events.contains(&Event::Captured(0)), "its army is away: {events:?}");
+        assert!(g.world.locations[0].owned());
     }
 
     /// A village with `gold`/`mana` waiting, the hero entering it with `rng` seed `seed`.
