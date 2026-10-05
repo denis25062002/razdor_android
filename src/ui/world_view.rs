@@ -798,8 +798,20 @@ fn draw_building(l: &Location, art: Option<&DtArt>, cam: &Camera) {
     let base = cam.to_screen(footprint_base(cam.grid, l));
     let zoom = cam.scale / PX;
     let sprite = art.and_then(|a| a.map_atlas()).and_then(|at| Some((at, at.building(l.picture.0, l.picture.1)?)));
-    // Just the sprite: the original draws no owner's mark over a building (RenderWorld_
-    // BuildingAndRest 0x4c9b5b); its owner shows only on the minimap.
+    // The original draws just the sprite (RenderWorld_BuildingAndRest 0x4c9b5b), its owner
+    // shown only on the minimap. Razdor adds a ring on the ground under castles, forts,
+    // towns and villages in the owner's colour, as under the armies (a Razdor choice).
+    if matches!(l.kind, LocationKind::Castle | LocationKind::Fort | LocationKind::Town | LocationKind::Village) {
+        let ring = if l.owned() {
+            faction_color(1)
+        } else if l.hostile() {
+            faction_color(4)
+        } else {
+            faction_color(l.faction)
+        };
+        let (rx, ry) = (l.size.0 as f32 * cam.scale * 0.55, l.size.1 as f32 * cam.cell_size().y * 0.5);
+        draw_ellipse_lines(base.x, base.y - ry, rx, ry, 0.0, 2.0, ring);
+    }
     if let Some((atlas, r)) = sprite {
         let (w, h) = (r.w * zoom, r.h * zoom);
         draw_texture_ex(&atlas.texture, base.x - w / 2.0, base.y - h, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), source: Some(r), ..Default::default() });
