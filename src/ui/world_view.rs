@@ -86,6 +86,9 @@ pub struct MapView {
     /// The building window that stepped aside for the flights of an event read in it: it
     /// comes back as it was once the camera is back on the hero.
     pub(super) back_to: Option<super::building_view::BuildingView>,
+    /// The messages above the bar, oldest first, with when each came (a Razdor extra, the
+    /// player's wish: they stack and fade out, [`TOAST_SECONDS`]).
+    toasts: VecDeque<(String, f64)>,
     /// The view gliding back to the hero (the centre button or Tab, 0x4af96c): when it set
     /// off and from where. The map takes no input meanwhile.
     centring: Option<(f64, (f32, f32))>,
@@ -93,7 +96,7 @@ pub struct MapView {
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None, grab: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None, grab: None, toasts: VecDeque::new() }
     }
 }
 
@@ -1859,13 +1862,40 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         let right = hint("cp_Wait4Hour", n_("Wait 4 hours (the hero stands still)"));
         tooltip(&[(trf!("Left click: {left}", left), INK), (trf!("Right click: {right}", right), INK)]);
     }
-    if let Some(m) = message {
-        let w = measure(m, 22.0).width + 40.0;
-        let (cx, y) = (screen_width() / 2.0, screen_height() - bar_h() - 50.0);
-        draw_rectangle(cx - w / 2.0, y, w, 36.0, PANEL);
-        text_centered(m, cx, y + 25.0, 22.0, ACCENT);
+    if let Some(m) = message.take() {
+        razdor::diag::play(&game.clock.label(), &format!("MESSAGE {m}"));
+        view.toasts.push_back((m, get_time()));
+        while view.toasts.len() > TOAST_MAX {
+            view.toasts.pop_front();
+        }
     }
+    draw_toasts(&mut view.toasts, get_time());
     next
+}
+
+/// Seconds a message stays above the bar; it fades out over its last [`TOAST_FADE`].
+const TOAST_SECONDS: f64 = 5.0;
+const TOAST_FADE: f64 = 0.6;
+/// Messages shown at once; a new one pushes the oldest out.
+const TOAST_MAX: usize = 5;
+
+/// The messages above the bar, the newest at the bottom, the older ones stacked above it;
+/// the run-out ones are dropped.
+fn draw_toasts(toasts: &mut VecDeque<(String, f64)>, now: f64) {
+    toasts.retain(|(_, at)| now - at < TOAST_SECONDS);
+    let k = super::chrome::k();
+    let (size, h, gap) = ((18.0 * k).max(14.0), (30.0 * k).max(24.0), 6.0 * k);
+    let cx = screen_width() / 2.0;
+    let mut y = screen_height() - bar_h() - 14.0 * k - h;
+    for (m, at) in toasts.iter().rev() {
+        let left = TOAST_SECONDS - (now - at);
+        let a = (left / TOAST_FADE).clamp(0.0, 1.0) as f32;
+        let w = (measure(m, size).width + 40.0 * k).min(screen_width() - 16.0);
+        draw_rectangle(cx - w / 2.0, y, w, h, Color { a: PANEL.a * a, ..PANEL });
+        draw_rectangle_lines(cx - w / 2.0, y, w, h, 1.0, Color { a: 0.5 * a, ..super::chrome::SILVER });
+        text_centered(m, cx, y + h * 0.5 + size * 0.36, size, Color { a, ..ACCENT });
+        y -= h + gap;
+    }
 }
 
 #[cfg(test)]
