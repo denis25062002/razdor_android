@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.9 — 2026-10-06
 
+Commit `895599e` (tag `v0.3.9`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+68c74fcf1beecfdd17ec92771e2c2b26c4775c6598c6b736a53f3531fd724af8  razdor
+ce4d1a8b7a30d386581836cf76152ec1b49909341a3e2431c4af10895b52a03d  Razdor.exe
+9eca1e7c621009ffd276f4709a308c69953f010e64636b79449a3cc0e7e2ccbb  razdor-macos
+```
+
 ### Fixed
 - **A message for a building's window is shown in it again:** since 0.3.7 the map took the
   message into its stack even when a building's window opened in the same moment, so the
