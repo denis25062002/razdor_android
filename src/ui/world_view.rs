@@ -1862,7 +1862,9 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         let right = hint("cp_Wait4Hour", n_("Wait 4 hours (the hero stands still)"));
         tooltip(&[(trf!("Left click: {left}", left), INK), (trf!("Right click: {right}", right), INK)]);
     }
-    if let Some(m) = message.take() {
+    // A message for the screen this frame opens (a building's window, a battle) is that
+    // screen's to show.
+    if let Some(m) = message.take_if(|_| next.is_none()) {
         razdor::diag::play(&game.clock.label(), &format!("MESSAGE {m}"));
         view.toasts.push_back((m, get_time()));
         while view.toasts.len() > TOAST_MAX {

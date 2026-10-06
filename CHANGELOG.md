@@ -12,6 +12,13 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.9 — 2026-10-06
+
+### Fixed
+- **A message for a building's window is shown in it again:** since 0.3.7 the map took the
+  message into its stack even when a building's window opened in the same moment, so the
+  window did not show it.
+
 ## 0.3.8 — 2026-10-06
 
 Commit `dc8037d` (tag `v0.3.8`).
