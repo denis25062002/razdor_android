@@ -66,14 +66,27 @@ async fn load_png(path: &str) -> Option<Texture2D> {
     if !Path::new(path).exists() {
         return None;
     }
-    match load_texture(path).await {
+
+    // On Android, load_texture() only works with assets inside the APK.
+    // For external files, we use Texture2D::from_file_with_format,
+    // which works with the OS filesystem.
+    match Texture2D::from_file_with_format(path, None) {
         Ok(tex) => {
             tex.set_filter(FilterMode::Nearest);
             Some(tex)
         }
         Err(e) => {
-            razdor::diag!("could not load {path}: {e}");
-            None
+            // Fallback to load_texture in case the file is actually inside the APK
+            match load_texture(path).await {
+                Ok(tex) => {
+                    tex.set_filter(FilterMode::Nearest);
+                    Some(tex)
+                }
+                Err(e2) => {
+                    razdor::diag!("could not load {path}: {e}, {e2}");
+                    None
+                }
+            }
         }
     }
 }

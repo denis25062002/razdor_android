@@ -5,3 +5,13 @@ name = "razdor"
 android_package_name = "com.indicozy.razdor"
 label = "Razdor"
 icon = "icon.png"
+
+[[package.android.permission]]
+name = "android.permission.MANAGE_EXTERNAL_STORAGE"
+
+[[package.android.permission]]
+name = "android.permission.READ_EXTERNAL_STORAGE"
+
+[[package.android.permission]]
+name = "android.permission.WRITE_EXTERNAL_STORAGE"
+
