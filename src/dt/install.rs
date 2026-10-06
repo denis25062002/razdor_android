@@ -48,7 +48,10 @@ pub struct DtInstall {
 }
 
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> DtError + '_ {
-    move |source| DtError::Io { path: path.to_path_buf(), source }
+    move |source| {
+        razdor::diag!("I/O error at {}: {}", path.display(), source);
+        DtError::Io { path: path.to_path_buf(), source }
+    }
 }
 
 /// `dir/name`, matching the name ignoring case (the game comes from Windows).

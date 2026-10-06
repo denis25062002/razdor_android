@@ -69,6 +69,7 @@ fn single_instance() {
 fn single_instance() {}
 
 fn conf() -> Conf {
+    razdor::diag::init();
     setup_android_environment();
 
     // `--replay <actions.jsonl>`: the diff test's script mode, played without a window
@@ -78,7 +79,6 @@ fn conf() -> Conf {
         std::process::exit(code);
     }
     // The log of this start (`razdor.log`, see `razdor::diag`), before anything can fail.
-    razdor::diag::init();
     // `RAZDOR_DT_DIR` and the other settings may come from a `.env` file.
     razdor::dt::install::load_dotenv();
     single_instance();
