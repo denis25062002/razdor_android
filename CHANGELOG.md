@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.4 — 2026-10-06
 
+Commit `068db21` (tag `v0.3.4`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+d4b9885e42efc410bd6ff4f7bacddfb379c7556b9ce9d91a9896564d23172f1d  razdor
+dad2043a599ef3c841f6e43b9c54658cffeaec770954ef355040d863ae9746c7  Razdor.exe
+9ce8b6da21f12e6450e408151cb775e1a49d56dff0b2d70dcc8efdea9511b7ad  razdor-macos
+```
+
 ### Fixed
 - **No crash when the window is minimized on the world map:** Windows makes a minimized
   window 1 pixel high, which left the map's view less than nothing high, and the game failed
