@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.6 — 2026-10-06
+
 ### Added
 - **A close button on the battle window,** as in the original: the red cross in its title bar
   opens the leave-battle window, as Esc does.
