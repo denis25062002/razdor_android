@@ -15,11 +15,15 @@ use ui::App;
 /// where the original game files and assets reside.
 #[cfg(target_os = "android")]
 fn setup_android_environment() {
-    // On Android, game assets are expected to be in the external files directory.
-    // We try both /storage/emulated/0 and /sdcard as they are common aliases.
+    // On Android, game assets are expected to be in the external storage folder.
+    // We try several common locations to increase the chance of finding the files.
     let paths = [
         "/storage/emulated/0/Android/data/com.indicozy.razdor/files",
         "/sdcard/Android/data/com.indicozy.razdor/files",
+        "/storage/emulated/0/Download/razdor",
+        "/sdcard/Download/razdor",
+        "/storage/emulated/0/razdor",
+        "/sdcard/razdor",
     ];
 
     for path in paths {
