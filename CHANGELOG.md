@@ -12,6 +12,13 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.7 — 2026-10-06
+
+### Changed
+- **The map's messages stack and fade out:** each message above the bottom bar now stays
+  for 5 seconds and then fades; new ones stack on top of the older ones (up to five), instead
+  of one message that stayed until the next replaced it.
+
 ## 0.3.6 — 2026-10-06
 
 Commit `b6b8ede` (tag `v0.3.6`).
