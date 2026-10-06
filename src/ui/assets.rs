@@ -68,10 +68,10 @@ async fn load_png(path: &str) -> Option<Texture2D> {
     }
 
     // On Android, load_texture() only works with assets inside the APK.
-    // For external files, we use Texture2D::from_file_with_format,
-    // which works with the OS filesystem.
-    match Texture2D::from_file_with_format(path, None) {
-        Ok(tex) => {
+    // For external files, we read the bytes first and then create the texture.
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let tex = Texture2D::from_file_with_format(&bytes, None);
             tex.set_filter(FilterMode::Nearest);
             Some(tex)
         }
