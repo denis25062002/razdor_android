@@ -12,6 +12,10 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Added
+- **A close button on the battle window,** as in the original: the red cross in its title bar
+  opens the leave-battle window, as Esc does.
+
 ### Fixed
 - **Garrisons and armies start in a sensible formation:** at a map's start the original
   arranges every army and garrison as it does a side in battle. Razdor did it only for the
