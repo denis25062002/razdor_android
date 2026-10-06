@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.6 — 2026-10-06
 
+Commit `b6b8ede` (tag `v0.3.6`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+796769fe97f84a95d4be1bdbdf89aab419eb84afa5ea95f3d714820cd2b6dca5  razdor
+4000b70fd4f60ff87476b53d1a209611294b0855ed7e4fa1cd0d6bb93649c84b  Razdor.exe
+01abfe7e1e8f5e0c3674ccd84ad147a254ae8fca5ddcd8ebf45ba9884089d35e  razdor-macos
+```
+
 ### Added
 - **A close button on the battle window,** as in the original: the red cross in its title bar
   opens the leave-battle window, as Esc does.
