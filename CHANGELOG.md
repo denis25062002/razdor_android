@@ -20,6 +20,13 @@ old id, and their versions give both.
   allows, as before; 1×, 1.5×, 2×, 2.5×, 3× or 4× keep it smaller on a big screen. A scale
   larger than the window allows is not offered.
 
+### Fixed
+- **An attacking army no longer comes out of nowhere:** the other armies' steps were drawn
+  one step after the hero's, and an attack opened the battle before the attacker's last
+  steps were drawn, so it seemed to jump in from far away. The hero and the armies now move
+  together, and the battle opens once the attacker is seen arriving next to the hero, as in
+  the original. Walking into an army no longer slides the hero towards it first.
+
 ## 0.3.4 — 2026-10-06
 
 Commit `068db21` (tag `v0.3.4`).
