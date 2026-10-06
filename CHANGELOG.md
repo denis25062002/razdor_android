@@ -12,6 +12,8 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.5 — 2026-10-06
+
 ### Added
 - **Windowed, borderless or full screen:** a new "Screen" setting. Borderless is a window
   without a frame over the whole monitor; full screen is the system's own. The choice is kept
