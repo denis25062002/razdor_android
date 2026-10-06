@@ -12,6 +12,15 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.10 — 2026-10-06
+
+### Fixed
+- **A campaign's next map decides what carries over:** Razdor read the carry-over settings of
+  the map being left, the original those of the map being entered. So going from Столица
+  (РК3) to Восточная провинция (РК4) kept the army and the pack, where the original takes
+  both away and leaves only the hero with his own items, gold and mana. Thanks to the player
+  who noticed.
+
 ## 0.3.9 — 2026-10-06
 
 Commit `895599e` (tag `v0.3.9`).
