@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.7 — 2026-10-06
 
+Commit `7f097b5` (tag `v0.3.7`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+350b1eeba1c66cb402688682143a57c109f0db9649554aec66f05dbacba70445  razdor
+2b4a3420a90fa24af9e68650b59a8ea417f52b0cec34ae7287c10cc4f4ef0dc2  Razdor.exe
+fb5390acdd928274fe70023f9951acb4f388255d17eb3995fcbb1bfb715f23c4  razdor-macos
+```
+
 ### Changed
 - **The map's messages stack and fade out:** each message above the bottom bar now stays
   for 5 seconds and then fades; new ones stack on top of the older ones (up to five), instead
