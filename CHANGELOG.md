@@ -12,6 +12,13 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.8 — 2026-10-06
+
+### Fixed
+- **The map no longer shakes during a wait:** since 0.3.5 every wait tick replayed the hero's
+  last step, and the view, which follows him, slid one cell and jumped back each half hour of
+  the wait. Thanks to the player who sent the video.
+
 ## 0.3.7 — 2026-10-06
 
 Commit `7f097b5` (tag `v0.3.7`).
