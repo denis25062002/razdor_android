@@ -167,6 +167,9 @@ pub struct BattleView {
     quick_played: bool,
     /// Esc opened "Варианты выхода из битвы" (and its restart question is open).
     exiting: bool,
+    /// The window's red close button was clicked: the ways out open at the next frame, as
+    /// with Esc (interface.md §12).
+    close_clicked: bool,
     exit_asking: bool,
     /// What that window chose, for the app to carry out.
     pub exit: Option<super::saves::ExitChoice>,
@@ -303,6 +306,7 @@ impl BattleView {
             news: None,
             quick_played: false,
             exiting: false,
+            close_clicked: false,
             exit_asking: false,
             exit: None,
             hold: None,
@@ -476,7 +480,7 @@ impl BattleView {
         // Esc opens the ways out, also while a strike or spell plays. The window opens on the
         // next frame, so the Esc that opened it does not also close it.
         let mut just_opened = false;
-        if !self.exiting && ongoing && key(KeyCode::Escape) {
+        if !self.exiting && ongoing && (key(KeyCode::Escape) || std::mem::take(&mut self.close_clicked)) {
             self.exiting = true;
             just_opened = true;
         }
@@ -578,7 +582,7 @@ impl BattleView {
         // player's, 0x4c57bc after each of the enemy's).
         game.battle_write_back(&self.battle);
         world_view::backdrop(game, assets);
-        self.draw(&l, &battle_title(game), game.clock.total_minutes() as u64, assets);
+        self.close_clicked |= self.draw(&l, &battle_title(game), game.clock.total_minutes() as u64, assets);
         self.controls(&l, over);
         if over && !self.quick_played {
             self.result_shown();
@@ -615,7 +619,7 @@ impl BattleView {
         let outer = input_blocked();
         let (over, just_opened) = self.advance(&l);
         super::main_menu::backdrop();
-        self.draw(&l, tr("Custom battle"), 0, assets);
+        self.close_clicked |= self.draw(&l, tr("Custom battle"), 0, assets);
         self.controls(&l, over);
         if over && !self.quick_played {
             if self.result_shown() {
@@ -669,7 +673,8 @@ impl BattleView {
         }
     }
 
-    fn draw(&self, l: &Layout, title: &str, now: u64, assets: &Assets) {
+    /// Draws the battle; true when the window's close button was clicked.
+    fn draw(&self, l: &Layout, title: &str, now: u64, assets: &Assets) -> bool {
         let b = &self.battle;
         let k = l.k;
         let active = b.active();
@@ -686,7 +691,10 @@ impl BattleView {
         let hovered_cell = self.cell_under_mouse(l);
 
         // The window: red marble, the title with both armies, the turn in the corner.
-        let (_, _) = chrome::window(l.win, title, Skin::Red, false);
+        // Its red close button asks to leave the battle, as Esc does (4daa80).
+        let ongoing = b.outcome() == Outcome::Ongoing;
+        let (_, close) = chrome::window(l.win, title, Skin::Red, ongoing);
+        let close = close && !self.exiting && !input_blocked();
         // The frame between the panel and the formations.
         draw_line(l.panel.x + l.panel.w + 1.0, l.panel.y, l.panel.x + l.panel.w + 1.0, l.panel.y + l.panel.h, 1.5 * k, chrome::SILVER);
 
@@ -782,6 +790,7 @@ impl BattleView {
         if player_turn && !super::spell_badges::hovered() {
             self.draw_preview(l, active.expect("player turn"));
         }
+        close
     }
 
     /// The strip's text: the last action, or what the player can do.

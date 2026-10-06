@@ -12,6 +12,162 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.10 — 2026-10-06
+
+Commit `b20b510` (tag `v0.3.10`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+7b8faa1259b0aae7351f9d1105c65479eba7f8b8fff025cf3bce35249335fb7a  razdor
+6e61cf37575605439189b3ceb8b26a96dccfc5ddcffc2ec59c942c74102bf81d  Razdor.exe
+710e1ae800e335805083f3bd38991ff45adb6841910a1c95bf891adc9421c465  razdor-macos
+```
+
+### Fixed
+- **A campaign's next map decides what carries over:** Razdor read the carry-over settings of
+  the map being left, the original those of the map being entered. So going from Столица
+  (РК3) to Восточная провинция (РК4) kept the army and the pack, where the original takes
+  both away and leaves only the hero with his own items, gold and mana. Thanks to the player
+  who noticed.
+
+## 0.3.9 — 2026-10-06
+
+Commit `895599e` (tag `v0.3.9`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+68c74fcf1beecfdd17ec92771e2c2b26c4775c6598c6b736a53f3531fd724af8  razdor
+ce4d1a8b7a30d386581836cf76152ec1b49909341a3e2431c4af10895b52a03d  Razdor.exe
+9eca1e7c621009ffd276f4709a308c69953f010e64636b79449a3cc0e7e2ccbb  razdor-macos
+```
+
+### Fixed
+- **A message for a building's window is shown in it again:** since 0.3.7 the map took the
+  message into its stack even when a building's window opened in the same moment, so the
+  window did not show it.
+
+## 0.3.8 — 2026-10-06
+
+Commit `dc8037d` (tag `v0.3.8`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+230f826d6313c93ae07655ec32e22df0f528cd951cd28d72f6c373d50dc3b83f  razdor
+e6ec8fcbd3d5ff5405afd1afb8e80a289c291311f99a029cf4d8d94101520adc  Razdor.exe
+d06581c682ec61162b8864dcd4b89a19f041c7aa880d93fa30ffedca26f915e4  razdor-macos
+```
+
+### Fixed
+- **The map no longer shakes during a wait:** since 0.3.5 every wait tick replayed the hero's
+  last step, and the view, which follows him, slid one cell and jumped back each half hour of
+  the wait. Thanks to the player who sent the video.
+
+## 0.3.7 — 2026-10-06
+
+Commit `7f097b5` (tag `v0.3.7`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+350b1eeba1c66cb402688682143a57c109f0db9649554aec66f05dbacba70445  razdor
+2b4a3420a90fa24af9e68650b59a8ea417f52b0cec34ae7287c10cc4f4ef0dc2  Razdor.exe
+fb5390acdd928274fe70023f9951acb4f388255d17eb3995fcbb1bfb715f23c4  razdor-macos
+```
+
+### Changed
+- **The map's messages stack and fade out:** each message above the bottom bar now stays
+  for 5 seconds and then fades; new ones stack on top of the older ones (up to five), instead
+  of one message that stayed until the next replaced it.
+
+## 0.3.6 — 2026-10-06
+
+Commit `b6b8ede` (tag `v0.3.6`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+796769fe97f84a95d4be1bdbdf89aab419eb84afa5ea95f3d714820cd2b6dca5  razdor
+4000b70fd4f60ff87476b53d1a209611294b0855ed7e4fa1cd0d6bb93649c84b  Razdor.exe
+01abfe7e1e8f5e0c3674ccd84ad147a254ae8fca5ddcd8ebf45ba9884089d35e  razdor-macos
+```
+
+### Added
+- **A close button on the battle window,** as in the original: the red cross in its title bar
+  opens the leave-battle window, as Esc does.
+
+### Fixed
+- **A building's tooltip shows its garrison whoever holds it:** holding the right button on
+  your own or a friendly castle or fort now shows its defenders (your units left there
+  too), as the original does; before, only a hostile building showed them. As in the
+  original, ruins say they are guarded but hide by whom, and towns show none.
+- **Garrisons and armies start in a sensible formation:** at a map's start the original
+  arranges every army and garrison as it does a side in battle. Razdor did it only for the
+  hero's army, so a castle's archers stood in front and its infantry in the reserve's edge
+  places (seen on Проклятое озеро).
+
+## 0.3.5 — 2026-10-06
+
+Commit `0fa9ebf` (tag `v0.3.5`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+3ec767509f84b86eab63a1f82f8e9d7671081710a8a6d22420678477022cfec3  razdor
+b185bc528d07e1d8e2ac1419bcec9c13626eff1039c20e8fc368a633544a3334  Razdor.exe
+c39614e1db7b26d93397d15ffd52fa3990ee0cc5a0935f38cf3c3676543e07b1  razdor-macos
+```
+
+### Added
+- **Windowed, borderless or full screen:** a new "Screen" setting. Borderless is a window
+  without a frame over the whole monitor; full screen is the system's own. The choice is kept
+  for the next start.
+- **Interface scale, as in Minecraft:** "Auto" makes the interface as large as the window
+  allows, as before; 1×, 1.5×, 2×, 2.5×, 3× or 4× keep it smaller on a big screen. A scale
+  larger than the window allows is not offered.
+
+### Fixed
+- **An attacking army no longer comes out of nowhere:** the other armies' steps were drawn
+  one step after the hero's, and an attack opened the battle before the attacker's last
+  steps were drawn, so it seemed to jump in from far away. The hero and the armies now move
+  together, and the battle opens once the attacker is seen arriving next to the hero, as in
+  the original. Walking into an army no longer slides the hero towards it first.
+- **A unit's abilities are always shown on its panel:** they came last, under the stats and
+  the description, and were cut off at the panel's bottom. A healer's or caster's long stat
+  list left no room for its ability (Wrath of God on the priests and bishops of the Evolution
+  mod), and long ability texts of mods were cut short. Now the text moves up over the figure
+  to make room, and in battle the description gives way first.
+
+## 0.3.4 — 2026-10-06
+
+Commit `068db21` (tag `v0.3.4`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+d4b9885e42efc410bd6ff4f7bacddfb379c7556b9ce9d91a9896564d23172f1d  razdor
+dad2043a599ef3c841f6e43b9c54658cffeaec770954ef355040d863ae9746c7  Razdor.exe
+9ce8b6da21f12e6450e408151cb775e1a49d56dff0b2d70dcc8efdea9511b7ad  razdor-macos
+```
+
+### Fixed
+- **No crash when the window is minimized on the world map:** Windows makes a minimized
+  window 1 pixel high, which left the map's view less than nothing high, and the game failed
+  with "min > max, or either was NaN. min = 0.0, max = -39.0". The view is now empty
+  instead. Thanks to the player who sent the crash report.
+
+## 0.3.3 — 2026-10-05
+
+Commit `7b0180d` (tag `v0.3.3`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+c45c30f8dcffd700c9f2f819999322c08d912c2b338b6b6fd0e21a527e5b3075  razdor
+6eae0e522499f67348da8b98eb5ecab96100ff8a134db74c9af9207659dafc2b  Razdor.exe
+0551851a7d0f52370cf3b294261822be888a7a7754758a2088f99170f6ae2bc6  razdor-macos
+```
+
+### Fixed
+- **The new game's map list scrolls:** the wheel over the list moves it again (every frame
+  pulled it back to the top, so with more maps than fit the lower ones could not be reached),
+  and a campaign only partly in view shows its part instead of vanishing with the maps after
+  it.
+
 ## 0.3.2 — 2026-10-05
 
 Commit `e3fba2d` (tag `v0.3.2`).

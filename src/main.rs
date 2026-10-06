@@ -84,11 +84,17 @@ fn conf() -> Conf {
     single_instance();
     let (window_width, window_height) = ui::snapshot::size().unwrap_or((1280, 800));
     razdor::diag::step(&format!("opening the window ({window_width}x{window_height}, OpenGL)"));
+    // On Linux the WM_CLASS is how `ui::display` finds the game's own X11 window.
+    #[cfg(target_os = "linux")]
+    let platform = macroquad::miniquad::conf::Platform { linux_wm_class: ui::display::WM_CLASS, ..Default::default() };
+    #[cfg(not(target_os = "linux"))]
+    let platform = macroquad::miniquad::conf::Platform::default();
     Conf {
         window_title: "Razdor".to_owned(),
         window_width,
         window_height,
         high_dpi: true,
+        platform,
         ..Default::default()
     }
 }

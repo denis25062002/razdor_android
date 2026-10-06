@@ -3,6 +3,52 @@
 Things noticed while playing Razdor, to look into. Newest first. Each note says which branch it
 was seen on and what to check.
 
+## 2026-10-06, main: РК3 → РК4 keeps the army and the items
+
+1. **"The move from the capital to the eastern province takes away your soldiers and all
+   items but the hero's own; now the army stayed (and the items would have, had I not sold
+   them)."** Done. The hand-over (0x4b5b64) reads the carry-over bytes 0x110–0x116 of the map
+   it has just loaded, the **next** one (events.md §12); Razdor read the old map's. РК3 has
+   `[1,1,1,1,1,1,1]`, РК4 `[1,1,1,1,1,0,0]`: no pack, no army. `Game::next_map` now hands
+   over everything and `Game::apply_carry_over` takes what the new map's bytes allow; a test
+   on the install's РК3 → РК4 checks it (`rk4_takes_neither_the_army_nor_the_pack_of_rk3`).
+
+## 2026-10-06, main: abilities missing from the unit panel
+
+1. **"Not all abilities are marked: Wrath of God does not show on healers, nor custom
+   abilities of mods."** Done. Seen with the Community Update Evolution install, whose
+   priests and bishops (units 32, 33) have `Bonus=GodAnger`: the unit panel drew the traits
+   last and cut them at its bottom, and a caster's stat list (the magic lines) left one or
+   two lines of room, none at smaller windows. The panel now measures the traits first and
+   starts the name and stats higher, over the figure, when they would not fit; in battle the
+   description takes only what is left (`unit_sheet::draw`). A token the loader does not
+   know is no bonus in the original (0x48efd0) and stays unshown.
+
+## 2026-10-06, main: an attacker comes out of nowhere
+
+1. **"Sometimes you walk and the battle opens: an enemy ran into you, but while you walked he
+   was far away. In the original you at least see him coming."** Done. The rules' order
+   already matched the original (the armies walk inside the hero's step, their attack comes
+   at its end, 0x4ade3c); only the drawing did not. Razdor slid the hero towards his next cell
+   *before* the step was worked out and the armies' steps of that time *after* it, a window
+   later, and an attack opened the battle in the frame it was decided, so the attacker's
+   steps of that window were never drawn: it jumped from its old place. Now the hero's step
+   and the armies' steps play over the same window (`Game::display_pos`, `hero_glide`), and
+   what the step brought (its events, the battle) waits until that window has played
+   (`Game::tick_shown`, `Game::step_playing`): the attacker is seen walking up to him. Running
+   into an army is decided before he moves, so he no longer slides towards it first. The
+   diff test and the replays call `Game::tick`, unchanged.
+
+## 2026-10-05, main: the new game's map list does not scroll
+
+1. **"The player cannot scroll the maps in the menu after «Новая игра»."** Done. Reproduced on
+   Xvfb with four extra maps in a copy of the install and XTest wheel clicks: the wheel moved
+   the list for one frame, then `wheel().signum()` (1.0 for no turn) pulled it back up every
+   frame; a campaign block only partly in view was skipped, hiding it and what followed. The
+   list now keeps its scroll and clips its rows to the box. With the 15 shipped maps the list
+   fits (at any window size), so it showed only with more maps. The original's
+   list (4d2a30) is a text list with a scroll bar; Razdor's grouped list has none.
+
 ## 2026-10-05, main: the leftovers of the Discord reports, and the scenario texts' marks
 
 1. **The original's shipyard window.** Done (0x4bbc84, 0x4d3ec0, 0x4d1314, 0x4c60ac): on land

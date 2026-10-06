@@ -440,8 +440,14 @@ pub fn grey_out(r: Rect) {
 // Geometry and plain drawing
 // ------------------------------------------------------------------------------------------
 
-/// Screen pixels per pixel of the 960×720 reference video (the original ran at 1024×768).
+/// Screen pixels per pixel of the 960×720 reference video (the original ran at 1024×768):
+/// the settings' interface scale, never more than [`fit_k`].
 pub fn k() -> f32 {
+    super::display::scale(fit_k())
+}
+
+/// The largest interface scale the window fits (the settings' "Auto").
+pub fn fit_k() -> f32 {
     ((screen_width() / 1024.0).min(screen_height() / 768.0) / 0.9375).max(0.5)
 }
 

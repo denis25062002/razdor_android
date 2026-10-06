@@ -164,11 +164,15 @@ pub struct Settings {
     /// `None` until chosen: the install's `OptValue11`. A save keeps the width it was
     /// started with.
     pub wide_row: Option<bool>,
+    /// Windowed, borderless or full screen.
+    pub display: super::display::DisplayMode,
+    /// The interface scale (`display::SCALES`); `0` is Auto, the largest that fits.
+    pub ui_scale: f32,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None, wide_row: None }
+        Settings { music_volume: 0.6, sfx_volume: 0.8, music_muted: false, sfx_muted: false, show_fps: false, expert_ai: None, wide_row: None, display: Default::default(), ui_scale: 0.0 }
     }
 }
 
@@ -192,7 +196,8 @@ impl Settings {
 
     fn clamped(self) -> Settings {
         let fix = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.5 };
-        Settings { music_volume: fix(self.music_volume), sfx_volume: fix(self.sfx_volume), ..self }
+        let ui_scale = if super::display::SCALES.contains(&self.ui_scale) { self.ui_scale } else { 0.0 };
+        Settings { music_volume: fix(self.music_volume), sfx_volume: fix(self.sfx_volume), ui_scale, ..self }
     }
 
     fn save(&self) {

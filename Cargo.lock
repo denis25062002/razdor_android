@@ -453,7 +453,7 @@ dependencies = [
 
 [[package]]
 name = "razdor"
-version = "0.3.2"
+version = "0.3.10"
 dependencies = [
  "bzip2",
  "dirs",

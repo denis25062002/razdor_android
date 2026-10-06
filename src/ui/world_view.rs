@@ -45,6 +45,14 @@ const HERO_SAIL: Color = Color::new(0.35, 0.8, 0.45, 1.0);
 fn bar_h() -> f32 {
     super::chrome::bar_height()
 }
+/// The map view: the window above the bottom bar.
+fn map_area() -> Rect {
+    map_area_in(screen_width(), screen_height(), bar_h())
+}
+/// Never less than nothing: a minimized window on Windows is 1 pixel high, under the bar.
+fn map_area_in(w: f32, h: f32, bar: f32) -> Rect {
+    Rect::new(0.0, 0.0, w.max(0.0), (h - bar).max(0.0))
+}
 use super::dialog::MANA;
 
 /// World-map view state kept between frames.
@@ -78,6 +86,9 @@ pub struct MapView {
     /// The building window that stepped aside for the flights of an event read in it: it
     /// comes back as it was once the camera is back on the hero.
     pub(super) back_to: Option<super::building_view::BuildingView>,
+    /// The messages above the bar, oldest first, with when each came (a Razdor extra, the
+    /// player's wish: they stack and fade out, [`TOAST_SECONDS`]).
+    toasts: VecDeque<(String, f64)>,
     /// The view gliding back to the hero (the centre button or Tab, 0x4af96c): when it set
     /// off and from where. The map takes no input meanwhile.
     centring: Option<(f64, (f32, f32))>,
@@ -85,7 +96,7 @@ pub struct MapView {
 
 impl Default for MapView {
     fn default() -> Self {
-        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None, grab: None }
+        MapView { zoom: 1.0, minimap: false, look: None, shows: VecDeque::new(), returning: None, opening: None, spell_fx: VecDeque::new(), preview: None, last_frame_ms: None, back_to: None, centring: None, grab: None, toasts: VecDeque::new() }
     }
 }
 
@@ -542,7 +553,7 @@ impl Camera {
     /// Centred on world position `at` (clamped to the map), in the map view left of the
     /// side panel.
     fn looking_at(game: &Game, zoom: f32, at: (f32, f32)) -> Camera {
-        Camera::looking_in(game, zoom, at, Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h()))
+        Camera::looking_in(game, zoom, at, map_area())
     }
 
     fn looking_in(game: &Game, zoom: f32, at: (f32, f32), view: Rect) -> Camera {
@@ -983,7 +994,7 @@ fn draw_hero(game: &Game, assets: &Assets, art: Option<&DtArt>, cam: &Camera) {
         Some(HeroClass::Ranger) => 3,
         _ => 1,
     };
-    let next = game.path.first().map(|&t| game.world.map.center(t));
+    let next = game.display_heading();
     let c = cam.to_screen(game.display_pos());
     draw_circle(c.x, c.y + 4.0, 9.0 * cam.scale / PX + 3.0, Color::new(0.3, 0.9, 0.4, 0.35));
     if game.aboard() {
@@ -1207,11 +1218,27 @@ fn location_tooltip(game: &Game, l: &Location) -> Tooltip {
     if l.kind == LocationKind::Village && l.tribute_gold <= 0 && l.tribute_mana <= 0 {
         lines.push((info("VillageEmptyGold", n_("(tribute already collected)")), TIP_NOTE));
     }
-    let troops = if l.defended() { l.garrison.clone() } else { Vec::new() };
+    // The garrison, whoever holds the building (0x4cb18c): the player's units left there too.
+    // A town shows none; ruins say they are guarded but hide by whom.
+    let mut troops: Vec<Troop> = l.garrison.iter().filter(|t| t.alive()).cloned().collect();
+    for s in l.stationed.iter().filter(|s| s.unit.alive()) {
+        let u = &s.unit;
+        let mut t = Troop::new(u.def, u.level, u.slot);
+        t.hurt = (u.max_hp(&game.content) - u.hp).max(0);
+        troops.push(t);
+    }
+    if l.kind == LocationKind::Town || l.cleared {
+        troops.clear();
+    }
     if !troops.is_empty() {
         lines.push((info("Defenders", n_("The garrison's defenders:")), DIM));
+        if l.kind == LocationKind::Ruins {
+            lines.push((info("NoNameArmy", n_("Unknown army")), INK));
+            troops.clear();
+        }
     }
-    Tooltip { title, lines, troops, team: Team::Enemy, footer: Vec::new() }
+    let team = if l.owned() { Team::Player } else { Team::Enemy };
+    Tooltip { title, lines, troops, team, footer: Vec::new() }
 }
 
 fn draw_tooltip(game: &Game, assets: &Assets, t: &Tooltip) {
@@ -1413,7 +1440,7 @@ pub(super) fn handle_events(game: &mut Game, events: Vec<Event>, message: &mut O
 /// interactive, with the bar's buttons greyed (`lit`: the open screen's button).
 pub fn backdrop_lit(game: &Game, assets: &Assets, lit: Option<BarButton>) {
     clear_background(rgb(10, 12, 10));
-    let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
+    let full = map_area();
     let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
     draw_world(game, assets, &cam, None);
     cam.draw_fog(game);
@@ -1430,7 +1457,7 @@ pub fn backdrop(game: &Game, assets: &Assets) {
 /// the screen it opens (the lit one, or the map button, closes the window).
 pub fn window_backdrop(game: &Game, assets: &Assets, lit: Option<BarButton>) -> Option<Screen> {
     clear_background(rgb(10, 12, 10));
-    let full = Rect::new(0.0, 0.0, screen_width(), screen_height() - bar_h());
+    let full = map_area();
     let cam = Camera::looking_in(game, 1.0, game.display_pos(), full);
     draw_world(game, assets, &cam, None);
     cam.draw_fog(game);
@@ -1697,7 +1724,7 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
     // Time stands still while a window is open.
     let mut events = game.drain_events();
     if !input_blocked() && events.is_empty() {
-        events = game.tick(get_frame_time().min(0.1));
+        events = game.tick_shown(get_frame_time().min(0.1));
     }
     let mut next = handle_events(game, events, message, dialogs).or(reopened);
 
@@ -1835,13 +1862,42 @@ pub fn frame(game: &mut Game, assets: &Assets, view: &mut MapView, message: &mut
         let right = hint("cp_Wait4Hour", n_("Wait 4 hours (the hero stands still)"));
         tooltip(&[(trf!("Left click: {left}", left), INK), (trf!("Right click: {right}", right), INK)]);
     }
-    if let Some(m) = message {
-        let w = measure(m, 22.0).width + 40.0;
-        let (cx, y) = (screen_width() / 2.0, screen_height() - bar_h() - 50.0);
-        draw_rectangle(cx - w / 2.0, y, w, 36.0, PANEL);
-        text_centered(m, cx, y + 25.0, 22.0, ACCENT);
+    // A message for the screen this frame opens (a building's window, a battle) is that
+    // screen's to show.
+    if let Some(m) = message.take_if(|_| next.is_none()) {
+        razdor::diag::play(&game.clock.label(), &format!("MESSAGE {m}"));
+        view.toasts.push_back((m, get_time()));
+        while view.toasts.len() > TOAST_MAX {
+            view.toasts.pop_front();
+        }
     }
+    draw_toasts(&mut view.toasts, get_time());
     next
+}
+
+/// Seconds a message stays above the bar; it fades out over its last [`TOAST_FADE`].
+const TOAST_SECONDS: f64 = 5.0;
+const TOAST_FADE: f64 = 0.6;
+/// Messages shown at once; a new one pushes the oldest out.
+const TOAST_MAX: usize = 5;
+
+/// The messages above the bar, the newest at the bottom, the older ones stacked above it;
+/// the run-out ones are dropped.
+fn draw_toasts(toasts: &mut VecDeque<(String, f64)>, now: f64) {
+    toasts.retain(|(_, at)| now - at < TOAST_SECONDS);
+    let k = super::chrome::k();
+    let (size, h, gap) = ((18.0 * k).max(14.0), (30.0 * k).max(24.0), 6.0 * k);
+    let cx = screen_width() / 2.0;
+    let mut y = screen_height() - bar_h() - 14.0 * k - h;
+    for (m, at) in toasts.iter().rev() {
+        let left = TOAST_SECONDS - (now - at);
+        let a = (left / TOAST_FADE).clamp(0.0, 1.0) as f32;
+        let w = (measure(m, size).width + 40.0 * k).min(screen_width() - 16.0);
+        draw_rectangle(cx - w / 2.0, y, w, h, Color { a: PANEL.a * a, ..PANEL });
+        draw_rectangle_lines(cx - w / 2.0, y, w, h, 1.0, Color { a: 0.5 * a, ..super::chrome::SILVER });
+        text_centered(m, cx, y + h * 0.5 + size * 0.36, size, Color { a, ..ACCENT });
+        y -= h + gap;
+    }
 }
 
 #[cfg(test)]
@@ -1922,6 +1978,15 @@ mod tests {
         assert_eq!(g.step(vec2(164.0, 100.0), true, 32.0), GrabStep::Drag(vec2(8.0, 10.0)));
         assert_eq!(g.step(vec2(100.0, 100.0), true, 32.0), GrabStep::Drag(vec2(10.0, 10.0)));
         assert_eq!(g.step(vec2(100.0, 100.0), false, 32.0), GrabStep::Dropped, "a drag is no click");
+    }
+
+    /// A minimized window (1 pixel high on Windows) left the map view −39 high, and the
+    /// fog's border panicked on `clamp` (crash report, 0.3.2).
+    #[test]
+    fn a_minimized_window_leaves_an_empty_map_view() {
+        let v = map_area_in(1920.0, 1.0, 40.0);
+        assert_eq!((v.w, v.h), (1920.0, 0.0));
+        assert_eq!(map_area_in(1280.0, 800.0, 40.0).h, 760.0);
     }
 
     #[test]
