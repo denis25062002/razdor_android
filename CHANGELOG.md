@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.8 — 2026-10-06
 
+Commit `dc8037d` (tag `v0.3.8`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+230f826d6313c93ae07655ec32e22df0f528cd951cd28d72f6c373d50dc3b83f  razdor
+e6ec8fcbd3d5ff5405afd1afb8e80a289c291311f99a029cf4d8d94101520adc  Razdor.exe
+d06581c682ec61162b8864dcd4b89a19f041c7aa880d93fa30ffedca26f915e4  razdor-macos
+```
+
 ### Fixed
 - **The map no longer shakes during a wait:** since 0.3.5 every wait tick replayed the hero's
   last step, and the view, which follows him, slid one cell and jumped back each half hour of
