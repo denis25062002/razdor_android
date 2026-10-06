@@ -12,6 +12,14 @@ old id, and their versions give both.
 
 ## Unreleased
 
+## 0.3.4 — 2026-10-06
+
+### Fixed
+- **No crash when the window is minimized on the world map:** Windows makes a minimized
+  window 1 pixel high, which left the map's view less than nothing high, and the game failed
+  with "min > max, or either was NaN. min = 0.0, max = -39.0". The view is now empty
+  instead. Thanks to the player who sent the crash report.
+
 ## 0.3.3 — 2026-10-05
 
 Commit `7b0180d` (tag `v0.3.3`).
