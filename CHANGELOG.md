@@ -12,6 +12,12 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Fixed
+- **Garrisons and armies start in a sensible formation:** at a map's start the original
+  arranges every army and garrison as it does a side in battle. Razdor did it only for the
+  hero's army, so a castle's archers stood in front and its infantry in the reserve's edge
+  places (seen on Проклятое озеро).
+
 ## 0.3.5 — 2026-10-06
 
 Commit `0fa9ebf` (tag `v0.3.5`).
