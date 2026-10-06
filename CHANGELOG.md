@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.5 — 2026-10-06
 
+Commit `0fa9ebf` (tag `v0.3.5`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+3ec767509f84b86eab63a1f82f8e9d7671081710a8a6d22420678477022cfec3  razdor
+b185bc528d07e1d8e2ac1419bcec9c13626eff1039c20e8fc368a633544a3334  Razdor.exe
+c39614e1db7b26d93397d15ffd52fa3990ee0cc5a0935f38cf3c3676543e07b1  razdor-macos
+```
+
 ### Added
 - **Windowed, borderless or full screen:** a new "Screen" setting. Borderless is a window
   without a frame over the whole monitor; full screen is the system's own. The choice is kept
