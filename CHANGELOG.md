@@ -12,6 +12,14 @@ old id, and their versions give both.
 
 ## Unreleased
 
+### Added
+- **Windowed, borderless or full screen:** a new "Screen" setting. Borderless is a window
+  without a frame over the whole monitor; full screen is the system's own. The choice is kept
+  for the next start.
+- **Interface scale, as in Minecraft:** "Auto" makes the interface as large as the window
+  allows, as before; 1×, 1.5×, 2×, 2.5×, 3× or 4× keep it smaller on a big screen. A scale
+  larger than the window allows is not offered.
+
 ## 0.3.4 — 2026-10-06
 
 Commit `068db21` (tag `v0.3.4`).

@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod console;
 pub mod custom_battle;
 pub mod dialog;
+pub mod display;
 pub mod dt_art;
 pub mod dt_font;
 pub mod editor;
@@ -674,6 +675,7 @@ impl App {
     }
 
     pub fn frame(&mut self) {
+        display::follow_settings(&self.audio.settings);
         chrome::begin_frame();
         widgets::track_held_key();
         self.follow_language();

@@ -354,7 +354,7 @@ pub fn options(audio: &mut super::audio::Settings, install_wide: bool) -> bool {
 /// The settings window alone (over the main menu, or over the map from the bar's gears).
 pub fn options_window(audio: &mut super::audio::Settings, install_wide: bool) -> bool {
     let title = own("Options", "Title", n_("Sound, graphics and gameplay settings"));
-    let (inner, closed) = window(&title, 594.0, 368.0);
+    let (inner, closed) = window(&title, 594.0, 484.0);
     let k = chrome::k();
     let rows = [
         (own("Options", "OptionSld0", n_("Background music volume")), audio.music_volume, true),
@@ -419,6 +419,27 @@ pub fn options_window(audio: &mut super::audio::Settings, install_wide: bool) ->
     if over_row && clicked() {
         cue(Cue::Button);
         audio.wide_row = Some(!wide);
+    }
+    // Windowed, borderless or full screen, set at once (`display::follow_settings`).
+    let y = y + 58.0 * k;
+    chrome::shadow_text(tr("Screen"), inner.x + 24.0 * k, y + 18.0 * k, 14.0 * k, chrome::CREAM);
+    let dr = Rect::new(ar.x, y, ar.w, ar.h);
+    let over_display = dr.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
+    chrome::marble_button(dr, audio.display.label(), true, over_display);
+    if over_display && clicked() {
+        cue(Cue::Button);
+        audio.display = audio.display.next();
+    }
+    // The interface scale, as Minecraft's: Auto (the largest that fits) or a fixed one below it.
+    let y = y + 58.0 * k;
+    chrome::shadow_text(tr("Interface scale"), inner.x + 24.0 * k, y + 18.0 * k, 14.0 * k, chrome::CREAM);
+    let fit = chrome::fit_k();
+    let sr = Rect::new(ar.x, y, ar.w, ar.h);
+    let over_scale = sr.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
+    chrome::marble_button(sr, &super::display::scale_label(audio.ui_scale, fit), true, over_scale);
+    if over_scale && clicked() {
+        cue(Cue::Button);
+        audio.ui_scale = super::display::next_scale(audio.ui_scale, fit);
     }
     let ok = Rect::new(inner.x + inner.w - 120.0 * k, inner.y + inner.h - 44.0 * k, 96.0 * k, 28.0 * k);
     let over_ok = ok.contains(crate::ui::widgets::pointer().into()) && !input_blocked();
