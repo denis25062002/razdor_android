@@ -15,10 +15,30 @@ use ui::App;
 /// where the original game files and assets reside.
 #[cfg(target_os = "android")]
 fn setup_android_environment() {
-    let android_files_dir = "/sdcard/Android/data/com.indicozy.razdor/files";
-    let _ = std::fs::create_dir_all(android_files_dir);
-    if let Err(e) = std::env::set_current_dir(android_files_dir) {
-        eprintln!("Failed to set working directory on Android: {}", e);
+    // On Android, game assets are expected to be in the external files directory.
+    // We try both /storage/emulated/0 and /sdcard as they are common aliases.
+    let paths = [
+        "/storage/emulated/0/Android/data/com.indicozy.razdor/files",
+        "/sdcard/Android/data/com.indicozy.razdor/files",
+    ];
+
+    for path in paths {
+        if std::path::Path::new(path).exists() {
+            // Instead of changing the current working directory (which often fails on Android),
+            // we set the environment variable that the engine uses to locate the installation.
+            std::env::set_var(razdor::dt::install::ENV_VAR, path);
+            razdor::diag::step(&format!("Android assets directory found and set: {}", path));
+            return;
+        }
+    }
+
+    // If no existing directory is found, try to create the primary one.
+    let primary_path = paths[0];
+    if let Err(e) = std::fs::create_dir_all(primary_path) {
+        eprintln!("Failed to create Android assets directory {}: {}", primary_path, e);
+    } else {
+        std::env::set_var(razdor::dt::install::ENV_VAR, primary_path);
+        razdor::diag::step(&format!("Created and set Android assets directory: {}", primary_path));
     }
 }
 
