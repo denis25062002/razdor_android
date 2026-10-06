@@ -14,6 +14,15 @@ old id, and their versions give both.
 
 ## 0.3.10 — 2026-10-06
 
+Commit `b20b510` (tag `v0.3.10`).
+
+SHA-256 of the released programs (built by the release pipeline):
+```
+7b8faa1259b0aae7351f9d1105c65479eba7f8b8fff025cf3bce35249335fb7a  razdor
+6e61cf37575605439189b3ceb8b26a96dccfc5ddcffc2ec59c942c74102bf81d  Razdor.exe
+710e1ae800e335805083f3bd38991ff45adb6841910a1c95bf891adc9421c465  razdor-macos
+```
+
 ### Fixed
 - **A campaign's next map decides what carries over:** Razdor read the carry-over settings of
   the map being left, the original those of the map being entered. So going from Столица
